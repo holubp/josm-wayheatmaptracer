@@ -133,6 +133,116 @@ public final class MetricRegion {
         return containsSegment(start, end, cancellation, admission, owner, true, membershipIndex);
     }
 
+    /**
+     * Optional fail-closed segment authority. Distinct representable edge events are never
+     * coalesced by the historical geometric tolerance; unresolved arithmetic refuses authority.
+     * This does not alter the established segment predicates used by other callers.
+     */
+    public boolean containsSegmentWithConservativeEvents(MetricPoint start, MetricPoint end,
+            CancellationProbe cancellation, LongConsumer admission, AttemptMemoryLedger.Owner owner) {
+        if (cancellation == null || admission == null)
+            throw new IllegalArgumentException("Segment authority work controls are required");
+        cancellation.checkpoint();
+        if (start == null || end == null) return false;
+        long edges = 0;
+        for (List<MetricPoint> polygon : polygons) {
+            cancellation.checkpoint(); admission.accept(1);
+            edges = Math.addExact(edges, polygon.size());
+        }
+        long eventBound = Math.addExact(2L, Math.multiplyExact(2L, edges));
+        if (eventBound > Integer.MAX_VALUE) return false;
+        AttemptMemoryLedger.Owner scratch = owner == null ? null : owner.child("conservative-segment-authority");
+        try {
+            if (scratch != null) scratch.reserve(AttemptMemoryLedger.objectBytes(56)
+                + AttemptMemoryLedger.objectBytes(16) + AttemptMemoryLedger.objectBytes(24));
+            if (!containsConservatively(start, cancellation, admission)
+                    || !containsConservatively(end, cancellation, admission)) return false;
+            admission.accept(1); // Bounded event-list facade, before construction.
+            List<Double> events = new BoundedEventList((int) eventBound, cancellation, admission, scratch);
+            appendEvent(events, 0.0);
+            appendEvent(events, 1.0);
+            for (List<MetricPoint> polygon : polygons) {
+                for (int index = 0; index < polygon.size(); index++) {
+                    cancellation.checkpoint(); admission.accept(1);
+                    if (!addConservativeIntersection(start, end, polygon.get(index),
+                            polygon.get((index + 1) % polygon.size()), events, cancellation, admission)) return false;
+                }
+            }
+            cancellation.checkpoint();
+            admission.accept(Math.multiplyExact((long) events.size(),
+                64L - Long.numberOfLeadingZeros(events.size())));
+            Collections.sort(events);
+            for (int index = 1; index < events.size(); index++) {
+                cancellation.checkpoint(); admission.accept(1);
+                double left = events.get(index - 1), right = events.get(index);
+                if (left == right) continue;
+                double span = right - left;
+                if (!(span > EPSILON)) return false;
+                double middle = left + span * 0.5;
+                if (!(middle > left && middle < right)) return false;
+                double dx = end.xMeters() - start.xMeters();
+                double dy = end.yMeters() - start.yMeters();
+                double x = start.xMeters() + middle * dx;
+                double y = start.yMeters() + middle * dy;
+                if (!Double.isFinite(x) || !Double.isFinite(y)) return false;
+                admission.accept(1); // Midpoint object before the point query.
+                if (!containsConservatively(new MetricPoint(x, y), cancellation, admission)) return false;
+            }
+            return true;
+        } finally {
+            if (scratch != null) scratch.close();
+        }
+    }
+
+    /** Optional point authority for measured connector profiles, without tolerant boundary credit. */
+    public boolean containsConservatively(MetricPoint point, CancellationProbe cancellation,
+            LongConsumer admission) {
+        if (cancellation == null || admission == null)
+            throw new IllegalArgumentException("Point authority work controls are required");
+        cancellation.checkpoint();
+        if (point == null) return false;
+        for (List<MetricPoint> polygon : polygons) {
+            int result = conservativePolygonMembership(polygon, point, cancellation, admission);
+            if (result > 0) return true;
+        }
+        return false;
+    }
+
+    private static int conservativePolygonMembership(List<MetricPoint> polygon, MetricPoint point,
+            CancellationProbe cancellation, LongConsumer admission) {
+        boolean inside = false;
+        for (int current = 0, previous = polygon.size() - 1; current < polygon.size(); previous = current++) {
+            cancellation.checkpoint(); admission.accept(1);
+            MetricPoint a = polygon.get(previous), b = polygon.get(current);
+            double dx = b.xMeters() - a.xMeters(), dy = b.yMeters() - a.yMeters();
+            double px = point.xMeters() - a.xMeters(), py = point.yMeters() - a.yMeters();
+            double cross = dx * py - dy * px;
+            double scale = Math.max(1.0, Math.hypot(dx, dy));
+            if (!Double.isFinite(dx) || !Double.isFinite(dy) || !Double.isFinite(px)
+                    || !Double.isFinite(py) || !Double.isFinite(cross) || !Double.isFinite(scale)) return -1;
+            boolean nearBox = point.xMeters() >= Math.min(a.xMeters(), b.xMeters()) - 1e-9
+                && point.xMeters() <= Math.max(a.xMeters(), b.xMeters()) + 1e-9
+                && point.yMeters() >= Math.min(a.yMeters(), b.yMeters()) - 1e-9
+                && point.yMeters() <= Math.max(a.yMeters(), b.yMeters()) + 1e-9;
+            if (nearBox && Math.abs(cross) <= 1e-9 * scale) {
+                boolean exactAxisBoundary = dx == 0.0 && point.xMeters() == a.xMeters()
+                    || dy == 0.0 && point.yMeters() == a.yMeters();
+                if (exactAxisBoundary && point.xMeters() >= Math.min(a.xMeters(), b.xMeters())
+                        && point.xMeters() <= Math.max(a.xMeters(), b.xMeters())
+                        && point.yMeters() >= Math.min(a.yMeters(), b.yMeters())
+                        && point.yMeters() <= Math.max(a.yMeters(), b.yMeters())) return 1;
+                return -1;
+            }
+            if ((a.yMeters() > point.yMeters()) != (b.yMeters() > point.yMeters())) {
+                double crossing = (b.xMeters() - a.xMeters()) * (point.yMeters() - a.yMeters())
+                    / (b.yMeters() - a.yMeters()) + a.xMeters();
+                if (!Double.isFinite(crossing) || point.xMeters() == crossing) return -1;
+                if (point.xMeters() < crossing) inside = !inside;
+            }
+        }
+        return inside ? 1 : 0;
+    }
+
     private boolean containsSegment(MetricPoint start, MetricPoint end,
             CancellationProbe cancellation, LongConsumer admission, AttemptMemoryLedger.Owner owner,
             boolean boundedEvents, YMembershipIndex membershipIndex) {
@@ -434,6 +544,61 @@ public final class MetricRegion {
     private static MetricPoint interpolate(MetricPoint start, MetricPoint end, double fraction) {
         return new MetricPoint(start.xMeters() + fraction * (end.xMeters() - start.xMeters()),
             start.yMeters() + fraction * (end.yMeters() - start.yMeters()));
+    }
+
+    private static boolean addConservativeIntersection(MetricPoint p, MetricPoint q,
+            MetricPoint a, MetricPoint b, List<Double> events,
+            CancellationProbe cancellation, LongConsumer admission) {
+        double rx = q.xMeters() - p.xMeters(), ry = q.yMeters() - p.yMeters();
+        double sx = b.xMeters() - a.xMeters(), sy = b.yMeters() - a.yMeters();
+        double apx = a.xMeters() - p.xMeters(), apy = a.yMeters() - p.yMeters();
+        if (!Double.isFinite(rx) || !Double.isFinite(ry) || !Double.isFinite(sx)
+                || !Double.isFinite(sy) || !Double.isFinite(apx) || !Double.isFinite(apy)) return false;
+        // Disjoint axis boxes prove that even a nearly parallel edge cannot touch this segment.
+        if (Math.max(p.xMeters(), q.xMeters()) < Math.min(a.xMeters(), b.xMeters())
+                || Math.max(a.xMeters(), b.xMeters()) < Math.min(p.xMeters(), q.xMeters())
+                || Math.max(p.yMeters(), q.yMeters()) < Math.min(a.yMeters(), b.yMeters())
+                || Math.max(a.yMeters(), b.yMeters()) < Math.min(p.yMeters(), q.yMeters())) return true;
+        double denominator = rx * sy - ry * sx;
+        double offset = apx * ry - apy * rx;
+        if (!Double.isFinite(denominator) || !Double.isFinite(offset)) return false;
+        if (Math.abs(denominator) <= EPSILON) {
+            if (denominator != 0.0) return false;
+            // Only exactly shared axis lines are used as collinear authority here.
+            boolean horizontal = ry == 0.0 && sy == 0.0 && p.yMeters() == a.yMeters();
+            boolean vertical = rx == 0.0 && sx == 0.0 && p.xMeters() == a.xMeters();
+            if (!horizontal && !vertical) return false;
+            double lengthSquared = rx * rx + ry * ry;
+            if (!Double.isFinite(lengthSquared)) return false;
+            if (lengthSquared == 0.0) return true;
+            double first = (apx * rx + apy * ry) / lengthSquared;
+            double second = ((b.xMeters() - p.xMeters()) * rx
+                + (b.yMeters() - p.yMeters()) * ry) / lengthSquared;
+            return addConservativeEvent(events, first, cancellation, admission)
+                && addConservativeEvent(events, second, cancellation, admission);
+        }
+        double t = (apx * sy - apy * sx) / denominator;
+        double u = offset / denominator;
+        if (!Double.isFinite(t) || !Double.isFinite(u)) return false;
+        if (t >= 0.0 && t <= 1.0 && u >= 0.0 && u <= 1.0)
+            return addConservativeEvent(events, t, cancellation, admission);
+        // A numerically near-endpoint crossing is unresolved, not an outside proof.
+        if (t >= -EPSILON && t <= 1.0 + EPSILON
+                && u >= -EPSILON && u <= 1.0 + EPSILON) return false;
+        return true;
+    }
+
+    private static boolean addConservativeEvent(List<Double> events, double value,
+            CancellationProbe cancellation, LongConsumer admission) {
+        if (!Double.isFinite(value)) return false;
+        if (value < 0.0 || value > 1.0)
+            return value < -EPSILON || value > 1.0 + EPSILON;
+        for (double existing : events) {
+            cancellation.checkpoint(); admission.accept(1);
+            if (existing == value) return true;
+        }
+        appendEvent(events, value);
+        return true;
     }
 
     private static void addIntersectionParameters(MetricPoint p, MetricPoint q, MetricPoint a,
