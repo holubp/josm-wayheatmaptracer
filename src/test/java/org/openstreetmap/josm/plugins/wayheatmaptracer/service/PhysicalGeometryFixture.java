@@ -5,6 +5,7 @@ import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 
 /** Independent straight image ridge sampled through regular or folded source-normal charts. */
@@ -12,6 +13,7 @@ final class PhysicalGeometryFixture {
     static final double CENTER = 64.0;
     static final double DISPLACEMENT = 9.7;
     static final double NATIVE_PITCH = 1.556;
+    static final double PRESERVATION_PIXEL_PITCH = 1.0;
 
     private PhysicalGeometryFixture() { }
 
@@ -68,5 +70,140 @@ final class PhysicalGeometryFixture {
         }
         return new RenderedHeatmapSampler().sampleMultiScaleProfilesOnScaledRaster(raster, anchors,
                 25, 1, "hot", 1, 1, IntensitySamplingMode.DIRECT_VALUE, NATIVE_PITCH).levelZeroProfiles();
+    }
+
+    /** Builds two independent thin circular strands with a quantized dark gap at the sampling frame. */
+    static ParallelFrame parallelFrame(double amplitude) {
+        int center = 80;
+        double innerRadius = 24.0;
+        double sourceRadius = 28.0;
+        double outerRadius = 32.0;
+        BufferedImage raster = parallelRaster(amplitude, center, innerRadius, outerRadius);
+        List<Point2D.Double> anchors = new ArrayList<>();
+        List<Point2D.Double> inner = new ArrayList<>();
+        List<Point2D.Double> outer = new ArrayList<>();
+        int profileCount = 81;
+        for (int i = 0; i < profileCount; i++) {
+            double angle = Math.toRadians(-40.0 + 80.0 * i / (profileCount - 1.0));
+            anchors.add(new Point2D.Double(center + sourceRadius * Math.cos(angle),
+                center + sourceRadius * Math.sin(angle)));
+            inner.add(new Point2D.Double(center + innerRadius * Math.cos(angle),
+                center + innerRadius * Math.sin(angle)));
+            outer.add(new Point2D.Double(center + outerRadius * Math.cos(angle),
+                center + outerRadius * Math.sin(angle)));
+        }
+        MultiScaleProfileSet profiles = new RenderedHeatmapSampler().sampleMultiScaleProfilesOnScaledRaster(
+            raster, anchors, 12, 1, "hot", 1.0, 1.0, IntensitySamplingMode.DIRECT_VALUE,
+            PRESERVATION_PIXEL_PITCH);
+        return new ParallelFrame(raster, profiles, inner, outer, PRESERVATION_PIXEL_PITCH);
+    }
+
+    static List<RenderedHeatmapSampler.CrossSectionProfile> parallelFrameProfiles() {
+        return parallelFrame(0.95).profileSet().levelZeroProfiles();
+    }
+
+    /** Resamples equivalent curved source polylines before image sampling, with one off-grid collinear insertion. */
+    static CollinearInsertionFrame collinearInsertionFrame() {
+        List<EastNorth> source = new ArrayList<>();
+        for (double x : new double[] {20.0, 40.0, 64.0, 88.0, 108.0}) {
+            source.add(new EastNorth(x, sourceCurveY(x)));
+        }
+        List<EastNorth> inserted = new ArrayList<>();
+        for (int i = 0; i < source.size() - 1; i++) {
+            EastNorth start = source.get(i);
+            EastNorth end = source.get(i + 1);
+            inserted.add(start);
+            inserted.add(new EastNorth(start.east() + (end.east() - start.east()) * 0.37,
+                start.north() + (end.north() - start.north()) * 0.37));
+        }
+        inserted.add(source.get(source.size() - 1));
+
+        List<EastNorth> resampled = PolylineMath.resampleBySpacing(source, 2.0);
+        List<EastNorth> insertedResampled = PolylineMath.resampleBySpacing(inserted, 2.0);
+        BufferedImage raster = curvedRidgeRaster();
+        List<Point2D.Double> resampledAnchors = toRasterAnchors(resampled);
+        List<Point2D.Double> insertedAnchors = toRasterAnchors(insertedResampled);
+        RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
+        MultiScaleProfileSet originalProfiles = sampler.sampleMultiScaleProfilesOnScaledRaster(
+            raster, resampledAnchors, 12, 1, "hot", 1.0, 1.0, IntensitySamplingMode.DIRECT_VALUE,
+            PRESERVATION_PIXEL_PITCH);
+        MultiScaleProfileSet insertedProfiles = sampler.sampleMultiScaleProfilesOnScaledRaster(
+            raster, insertedAnchors, 12, 1, "hot", 1.0, 1.0, IntensitySamplingMode.DIRECT_VALUE,
+            PRESERVATION_PIXEL_PITCH);
+        return new CollinearInsertionFrame(raster, originalProfiles, insertedProfiles, resampled,
+            insertedResampled, PRESERVATION_PIXEL_PITCH);
+    }
+
+    static double independentCurvedRidgeY(double x) {
+        return sourceCurveY(x) + 4.5 * Math.sin(Math.PI * (x - 20.0) / 88.0);
+    }
+
+    static double distanceToParallelStrand(Point2D point, int profileIndex, int strand, ParallelFrame frame) {
+        Point2D.Double expected = (strand == 0 ? frame.innerRidge() : frame.outerRidge()).get(profileIndex);
+        return point.distance(expected);
+    }
+
+    private static double sourceCurveY(double x) {
+        return 50.0 + 0.005 * (x - 64.0) * (x - 64.0);
+    }
+
+    private static BufferedImage parallelRaster(double amplitude, int center, double innerRadius, double outerRadius) {
+        BufferedImage raster = new BufferedImage(160, 160, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < raster.getHeight(); y++) {
+            for (int x = 0; x < raster.getWidth(); x++) {
+                double radius = Math.hypot(x - center, y - center);
+                double inner = amplitude * Math.exp(-0.5 * Math.pow((radius - innerRadius) / 0.65, 2.0));
+                double outer = amplitude * Math.exp(-0.5 * Math.pow((radius - outerRadius) / 0.65, 2.0));
+                raster.setRGB(x, y, grayscale(Math.max(inner, outer)));
+            }
+        }
+        return raster;
+    }
+
+    private static BufferedImage curvedRidgeRaster() {
+        BufferedImage raster = new BufferedImage(128, 96, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < raster.getHeight(); y++) {
+            for (int x = 0; x < raster.getWidth(); x++) {
+                double value = 0.95 * Math.exp(-0.5 * Math.pow((y - independentCurvedRidgeY(x)) / 0.65, 2.0));
+                raster.setRGB(x, y, grayscale(value));
+            }
+        }
+        return raster;
+    }
+
+    private static int grayscale(double value) {
+        int sample = (int) Math.round(Math.max(0.0, Math.min(1.0, value)) * 255.0);
+        return 0xff000000 | sample << 16 | sample << 8 | sample;
+    }
+
+    private static List<Point2D.Double> toRasterAnchors(List<EastNorth> points) {
+        return points.stream().map(point -> new Point2D.Double(point.east(), point.north())).toList();
+    }
+
+    record ParallelFrame(
+        BufferedImage raster,
+        MultiScaleProfileSet profileSet,
+        List<Point2D.Double> innerRidge,
+        List<Point2D.Double> outerRidge,
+        double sourcePixelPitch
+    ) {
+        ParallelFrame {
+            innerRidge = List.copyOf(innerRidge);
+            outerRidge = List.copyOf(outerRidge);
+        }
+    }
+
+    record CollinearInsertionFrame(
+        BufferedImage raster,
+        MultiScaleProfileSet originalProfiles,
+        MultiScaleProfileSet insertedProfiles,
+        List<EastNorth> originalResampledSource,
+        List<EastNorth> insertedResampledSource,
+        double sourcePixelPitch
+    ) {
+        CollinearInsertionFrame {
+            originalResampledSource = List.copyOf(originalResampledSource);
+            insertedResampledSource = List.copyOf(insertedResampledSource);
+        }
     }
 }
