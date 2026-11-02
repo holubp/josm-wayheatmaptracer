@@ -25,7 +25,7 @@ public final class DetachedScalarProfileSampler {
             requireEmissionComponentBudget(binding.materializationBytes());
             CorridorTraceInput input = request.corridorInput().orElseThrow();
             var retained = retained(evidence, fieldName, input, request.permissions().ordinaryRadiusMeters(),
-                request.profileChainage().sourceOriginGroundMeters(), budget);
+                request.profileChainage().sourceOriginGroundMeters(), budget, binding);
             return OptionalEmissionContextFactory.fromDetached(binding, retained);
         }
     }
@@ -38,7 +38,7 @@ public final class DetachedScalarProfileSampler {
                 evidence, fieldName, input, chainage, halfWidth, budget, owner)) {
             requireEmissionComponentBudget(binding.materializationBytes());
             var retained = retained(evidence, fieldName, input, halfWidth,
-                chainage.sourceOriginGroundMeters(), budget);
+                chainage.sourceOriginGroundMeters(), budget, binding);
             return OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(binding, retained);
         }
     }
@@ -51,27 +51,35 @@ public final class DetachedScalarProfileSampler {
 
     private static RenderedHeatmapSampler.RetainedScalarProfiles retained(EvidenceSnapshot evidence,
             String fieldName, CorridorTraceInput input, double halfWidth, double sourceOrigin,
-            EmissionWorkBudget budget) {
+            EmissionWorkBudget budget, OptionalEmissionContextFactory.SourceBinding binding) {
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
         double pitch = evidence.resolution().outputRasterPitchMeters();
         return new RenderedHeatmapSampler().sampleDetachedRetainingL0(evidence, fieldName,
             input.profileLocations(), halfWidth / pitch, input.lateralStepMeters() / pitch,
-            maximumSourcePitch(evidence, input.profileLocations(), sourceOrigin) / pitch, budget);
+            emissionSourcePitchRasterPixels(evidence, input, sourceOrigin, budget), budget, binding);
     }
 
     /** Computes the existing native component bound without materializing a scalar field or profiles. */
     public static long estimatedEmissionMaterializationBytes(EvidenceSnapshot evidence, String fieldName,
             CorridorTraceInput input, ProfileChainage chainage, double halfWidth,
             CancellationProbe cancellation) {
+        return estimatedEmissionMaterializationBytes(evidence, fieldName, input, chainage, halfWidth,
+            cancellation, null);
+    }
+
+    /** Retained-path estimate with the same checked variable preparation as production. */
+    public static long estimatedEmissionMaterializationBytes(EvidenceSnapshot evidence, String fieldName,
+            CorridorTraceInput input, ProfileChainage chainage, double halfWidth,
+            CancellationProbe cancellation, EmissionWorkBudget budget) {
         if (input == null || chainage == null) {
             throw new IllegalArgumentException("Detached emission sampling input is incomplete");
         }
         validateInputs(evidence, fieldName, input.profileLocations(), halfWidth,
-            input.lateralStepMeters(), cancellation, chainage.sourceOriginGroundMeters());
+            input.lateralStepMeters(), cancellation, chainage.sourceOriginGroundMeters(), budget);
         cancellation.checkpoint();
         double outputPitch = evidence.resolution().outputRasterPitchMeters();
         double sourcePitch = maximumSourcePitch(evidence, input.profileLocations(),
-            chainage.sourceOriginGroundMeters()) / outputPitch;
+            chainage.sourceOriginGroundMeters(), budget) / outputPitch;
         if (!Double.isFinite(sourcePitch) || sourcePitch <= 0
                 || sourcePitch > Integer.MAX_VALUE / 4.0) {
             throw new IllegalArgumentException("Source pitch cannot be represented on the output raster");
@@ -164,6 +172,14 @@ public final class DetachedScalarProfileSampler {
             List<DetachedProfileSamplingLocation> anchors, double searchHalfWidthMeters,
             double lateralStepMeters, CancellationProbe cancellation,
             double sourceOriginGroundMeters) {
+        validateInputs(evidence, fieldName, anchors, searchHalfWidthMeters, lateralStepMeters,
+            cancellation, sourceOriginGroundMeters, null);
+    }
+
+    private static void validateInputs(EvidenceSnapshot evidence, String fieldName,
+            List<DetachedProfileSamplingLocation> anchors, double searchHalfWidthMeters,
+            double lateralStepMeters, CancellationProbe cancellation, double sourceOriginGroundMeters,
+            EmissionWorkBudget budget) {
         if (evidence == null || fieldName == null || fieldName.isBlank()
             || anchors == null || anchors.size() < 2
             || !Double.isFinite(searchHalfWidthMeters) || searchHalfWidthMeters <= 0.0
@@ -175,6 +191,7 @@ public final class DetachedScalarProfileSampler {
         validateOutputRasterFrame(evidence);
         double previousChainage = -1.0;
         for (int index = 0; index < anchors.size(); index++) {
+            if (budget != null) budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
             DetachedProfileSamplingLocation anchor = Objects.requireNonNull(
                 anchors.get(index), "detached sampling anchor");
             if (!anchor.coordinateFrame().equals(evidence.coordinateFrame())
@@ -184,12 +201,16 @@ public final class DetachedScalarProfileSampler {
             double chainage = anchor.cumulativeGroundDistanceMeters();
             if (index == 0 && Double.doubleToLongBits(chainage) != Double.doubleToLongBits(0.0)
                 || index > 0 && chainage <= previousChainage
-                || !evidence.routePositionAuthorized(anchor.metricPoint())) {
+                || !(budget == null ? evidence.routePositionAuthorized(anchor.metricPoint())
+                    : evidence.decisionRegion().contains(anchor.metricPoint(), cancellation,
+                        units -> budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, units)))) {
                 throw new IllegalArgumentException(
                     "Detached sampling anchors require zero-based monotonic ground chainage inside the decision region");
             }
             previousChainage = chainage;
         }
+        if (budget != null) budget.charge(EmissionWorkBudget.Operation.PREPARATION,
+            evidence.resolution().spatialPitchSamples().size());
         evidence.resolution().effectivePitchMetersAt(sourceOriginGroundMeters + previousChainage);
     }
 
@@ -198,8 +219,23 @@ public final class DetachedScalarProfileSampler {
         List<DetachedProfileSamplingLocation> anchors,
         double sourceOriginGroundMeters
     ) {
+        return maximumSourcePitch(evidence, anchors, sourceOriginGroundMeters, null);
+    }
+
+    /** Exact existing source-pitch ratio, with its variable resolution scan admitted first. */
+    public static double emissionSourcePitchRasterPixels(EvidenceSnapshot evidence, CorridorTraceInput input,
+            double sourceOrigin, EmissionWorkBudget budget) {
+        return maximumSourcePitch(evidence, input.profileLocations(), sourceOrigin, budget)
+            / evidence.resolution().outputRasterPitchMeters();
+    }
+
+    private static double maximumSourcePitch(EvidenceSnapshot evidence,
+            List<DetachedProfileSamplingLocation> anchors, double sourceOriginGroundMeters,
+            EmissionWorkBudget budget) {
         double maximum = 0.0;
         for (DetachedProfileSamplingLocation anchor : anchors) {
+            if (budget != null) budget.charge(EmissionWorkBudget.Operation.PREPARATION,
+                1L + evidence.resolution().spatialPitchSamples().size());
             maximum = Math.max(maximum, evidence.resolution().effectivePitchMetersAt(
                 sourceOriginGroundMeters + anchor.cumulativeGroundDistanceMeters()));
         }

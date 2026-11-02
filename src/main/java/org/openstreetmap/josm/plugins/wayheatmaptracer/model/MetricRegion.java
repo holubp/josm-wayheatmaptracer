@@ -300,7 +300,10 @@ public final class MetricRegion {
         else events.add(value);
     }
 
-    private boolean contains(MetricPoint point, CancellationProbe cancellation, LongConsumer admission) {
+    /** Identical point membership with caller-owned admission before each examined polygon edge. */
+    public boolean contains(MetricPoint point, CancellationProbe cancellation, LongConsumer admission) {
+        if (cancellation == null || admission == null)
+            throw new IllegalArgumentException("Membership work controls are required");
         if (point == null) return false;
         for (List<MetricPoint> polygon : polygons) {
             if (contains(polygon, point, cancellation, admission)) return true;

@@ -1,6 +1,9 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission;
 
 import java.util.Optional;
+import java.util.List;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.DetachedProfileSamplingLocation;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
@@ -37,6 +40,9 @@ public final class OptionalEmissionContextFactory {
         private final AttemptMemoryLedger.Reservation metadata;
         private final AttemptMemoryLedger.Reservation materialization;
         private boolean published;
+        private boolean producing;
+        private RetainedScalarProfiles produced;
+        private final double rasterHalfWidth, rasterStep, rasterSourcePitch;
 
         private SourceBinding(EvidenceSnapshot source, String fieldName, CorridorTraceInput input,
                 ProfileChainage chainage, double halfWidth, String hash, String requestIdentity, Optional<TraceBudgets> originalBudgets,
@@ -56,6 +62,11 @@ public final class OptionalEmissionContextFactory {
             this.owner = owner;
             this.metadata = metadata;
             this.materialization = materialization;
+            double outputPitch = source.resolution().outputRasterPitchMeters();
+            rasterHalfWidth = halfWidth / outputPitch;
+            rasterStep = input.lateralStepMeters() / outputPitch;
+            rasterSourcePitch = DetachedScalarProfileSampler.emissionSourcePitchRasterPixels(
+                source, input, chainage.sourceOriginGroundMeters(), budget);
         }
 
         public long materializationBytes() { return materialization.bytes(); }
@@ -69,7 +80,44 @@ public final class OptionalEmissionContextFactory {
         Optional<TraceBudgets> originalBudgets() { return originalBudgets; }
         OptionalEmissionContext.Origin origin() { return origin; }
         EmissionWorkBudget budget() { return budget; }
-        @Override public void close() {
+        /** Claims the exact pre-admitted native producer once, before its first allocation. */
+        public synchronized void beginProduction(EvidenceSnapshot evidence, String selectedField,
+                List<DetachedProfileSamplingLocation> locations, double width, double step, double pitch,
+                EmissionWorkBudget sharedBudget) {
+            if (source == null || published || producing || produced != null || owner.isClosed()
+                    || source != evidence || !fieldName.equals(selectedField) || budget != sharedBudget
+                    || locations != input.profileLocations()
+                    || Double.doubleToLongBits(width) != Double.doubleToLongBits(rasterHalfWidth)
+                    || Double.doubleToLongBits(step) != Double.doubleToLongBits(rasterStep)
+                    || Double.doubleToLongBits(pitch) != Double.doubleToLongBits(rasterSourcePitch)) {
+                throw new IllegalArgumentException("Native producer does not match its active reserved permit");
+            }
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            producing = true;
+        }
+
+        /** Completes only the private producer result belonging to this active permit. */
+        public synchronized void completeProduction(RetainedScalarProfiles retained) {
+            if (!producing || source == null || owner.isClosed() || retained == null || !retained.boundTo(this))
+                throw new IllegalArgumentException("Native producer is not active on this permit");
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION, 0);
+            produced = retained;
+            producing = false;
+        }
+
+        /** Actual retained-query admission; these methods grant no independent allowance. */
+        public void beforeNodeRead() { budget.charge(EmissionWorkBudget.Operation.NODE_READ, 1); }
+        public void beforeCellQuery() { budget.charge(EmissionWorkBudget.Operation.CELL_QUERY, 1); }
+        public void preparation(long units) { budget.charge(EmissionWorkBudget.Operation.PREPARATION, units); }
+        public boolean routePositionAuthorized(MetricPoint point, CancellationProbe cancellation) {
+            return source.decisionRegion().contains(point, cancellation,
+                units -> budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, units));
+        }
+        public boolean routeSegmentAuthorized(MetricPoint first, MetricPoint second, CancellationProbe cancellation) {
+            return source.decisionRegion().containsSegment(first, second, cancellation,
+                units -> budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, units), owner);
+        }
+        @Override public synchronized void close() {
             if (!published) owner.close();
             source = null; // The final context retains facts/L0, not the complete original source snapshot.
         }
@@ -143,7 +191,7 @@ public final class OptionalEmissionContextFactory {
             return false;
         };
         long materializationBytes = DetachedScalarProfileSampler.estimatedEmissionMaterializationBytes(
-            evidence, fieldName, input, chainage, halfWidth, checkpoints);
+            evidence, fieldName, input, chainage, halfWidth, checkpoints, budget);
         long metadataBytes = estimatedMetadataBytes(evidence, fieldName, input, request);
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
         var owner = parent.child("optional-emission-input");
@@ -189,9 +237,11 @@ public final class OptionalEmissionContextFactory {
 
     private static SampledEmissionInput publish(SourceBinding binding, RetainedScalarProfiles retained,
             OptionalEmissionContext.Origin origin) {
-        if (binding == null || binding.published || binding.owner.isClosed() || binding.source == null
+        if (binding == null) throw new IllegalArgumentException("Emission binding is required");
+        synchronized (binding) {
+        if (binding.published || binding.owner.isClosed() || binding.source == null
                 || binding.origin != origin || retained == null
-                || !retained.boundTo(binding.source, binding.fieldName, binding.budget)
+                || !retained.boundTo(binding) || binding.producing || binding.produced != retained
                 || !retained.profileLocations().equals(binding.input.profileLocations())
                 || retained.profiles().levelZeroProfiles().size() != binding.input.profileLocations().size()
                 || retained.levelZero().reduction() != 1) {
@@ -206,6 +256,7 @@ public final class OptionalEmissionContextFactory {
         binding.published = true;
         binding.source = null;
         return result;
+        }
     }
 
     private static long estimatedHashBytes(EvidenceSnapshot evidence) {

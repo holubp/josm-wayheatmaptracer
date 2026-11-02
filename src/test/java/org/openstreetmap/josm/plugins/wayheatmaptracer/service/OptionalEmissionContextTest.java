@@ -50,7 +50,7 @@ class OptionalEmissionContextTest {
              var binding = OptionalEmissionContextFactory.bindDetached(f.request(), f.evidence(), FIELD, work, owner)) {
             assertNotNull(binding, "The source binding must be established before production");
             var retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(f.evidence(), FIELD,
-                f.input().profileLocations(), 3, 1, 1, work);
+                f.input().profileLocations(), 3, 1, 1, work, binding);
             assertNotNull(retained);
             try (var result = OptionalEmissionContextFactory.fromDetached(binding, retained)) {
                 assertNotNull(result);
@@ -61,13 +61,114 @@ class OptionalEmissionContextTest {
     }
 
     @Test
+    void producerRequiresExactActiveReservationAndEveryNumericSamplingParameter() {
+        Fixture f = fixture(EvidenceResolution.nativeSource(1, 1));
+        var sampler = new RenderedHeatmapSampler();
+        var work = budget();
+        var checks = new ArrayList<org.junit.jupiter.api.function.Executable>();
+        checks.add(() -> assertThrows(IllegalArgumentException.class, () -> sampler.sampleDetachedRetainingL0(
+            f.evidence(), FIELD, f.input().profileLocations(), 3, 1, 1, work, null),
+            "A producer cannot run before any reservation permit exists"));
+        for (double[] parameters : List.of(new double[]{4, 1, 1}, new double[]{3, 0.5, 1},
+                new double[]{3, 1, 2})) {
+            checks.add(() -> {
+            try (var owner = AttemptMemoryLedger.production().rootOwner();
+                 var binding = OptionalEmissionContextFactory.bindDetached(f.request(), f.evidence(), FIELD, work, owner)) {
+                assertThrows(IllegalArgumentException.class, () -> sampler.sampleDetachedRetainingL0(
+                    f.evidence(), FIELD, f.input().profileLocations(), parameters[0], parameters[1], parameters[2],
+                    work, binding), "Width, lateral step and source pitch must equal the reserved request");
+            }
+            });
+        }
+        assertAll(checks);
+    }
+
+    @Test
+    void producerCannotTransferBetweenPermitsOrReuseOneReservation() {
+        Fixture f = fixture(EvidenceResolution.nativeSource(1, 1));
+        var sampler = new RenderedHeatmapSampler();
+        var work = budget();
+        try (var owner = AttemptMemoryLedger.production().rootOwner();
+             var first = OptionalEmissionContextFactory.bindDetached(f.request(), f.evidence(), FIELD, work, owner);
+             var second = OptionalEmissionContextFactory.bindDetached(f.request(), f.evidence(), FIELD, work, owner)) {
+            var retained = sampler.sampleDetachedRetainingL0(f.evidence(), FIELD,
+                f.input().profileLocations(), 3, 1, 1, work, first);
+            assertAll(
+                () -> assertThrows(IllegalArgumentException.class,
+                    () -> OptionalEmissionContextFactory.fromDetached(second, retained)),
+                () -> assertThrows(IllegalArgumentException.class, () -> sampler.sampleDetachedRetainingL0(f.evidence(),
+                    FIELD, f.input().profileLocations(), 3, 1, 1, work, first)));
+
+        }
+    }
+
+    @Test
+    void gaussianInnerWorkHonorsTinySharedBudgetAndCancellationBeforeTheNextRead() {
+        float[] values = new float[64 * 8]; Arrays.fill(values, 0.5f);
+        boolean[] valid = new boolean[values.length]; Arrays.fill(valid, true);
+        var field = new ScalarIntensityField(0, 0, 64, 8, 1, values, valid);
+        var tiny = new EmissionWorkBudget(new TraceBudgets(96, 8, 100, 32, 8), CancellationProbe.NONE);
+        assertThrows(EmissionWorkBudget.LimitExceededException.class, () -> GaussianIntensityPyramid.build(
+            field, 4, () -> { }, () -> tiny.charge(EmissionWorkBudget.Operation.NODE_READ, 1),
+            () -> tiny.charge(EmissionWorkBudget.Operation.CELL_QUERY, 1),
+            units -> tiny.charge(EmissionWorkBudget.Operation.PREPARATION, units)));
+        var ref = new AtomicReference<EmissionWorkBudget>();
+        var cancelled = new EmissionWorkBudget(TraceBudgets.defaults(), () -> ref.get() != null
+            && ref.get().snapshot().operationUnits().get(EmissionWorkBudget.Operation.NODE_READ) >= 10);
+        ref.set(cancelled);
+        assertThrows(CancellationException.class, () -> GaussianIntensityPyramid.build(field, 4, () -> { },
+            () -> cancelled.charge(EmissionWorkBudget.Operation.NODE_READ, 1),
+            () -> cancelled.charge(EmissionWorkBudget.Operation.CELL_QUERY, 1),
+            units -> cancelled.charge(EmissionWorkBudget.Operation.PREPARATION, units)));
+        assertEquals(10, cancelled.snapshot().operationUnits().get(EmissionWorkBudget.Operation.NODE_READ));
+    }
+
+    @Test
+    void retainedProfileMaskPreparationIsCancellableInsideItsActualLoop() {
+        Fixture f = fixture(EvidenceResolution.nativeSource(1, 1));
+        var work = new EmissionWorkBudget(TraceBudgets.defaults(), () -> StackWalker.getInstance().walk(
+            frames -> frames.anyMatch(frame -> frame.getMethodName().equals("supportMask"))));
+        var ledger = AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            assertThrows(CancellationException.class, () -> sample(f, work, owner));
+            assertEquals(0, ledger.currentBytes());
+        }
+    }
+
+    @Test
+    void retainedVariablePolygonPreparationUsesActualCheckedRegionWork() {
+        List<MetricPoint> polygon = new ArrayList<>();
+        for (int index = 0; index < 128; index++) {
+            double angle = 2 * Math.PI * index / 128;
+            polygon.add(new MetricPoint(20 + 18 * Math.cos(angle), 20 + 18 * Math.sin(angle)));
+        }
+        Fixture f = fixture(EvidenceResolution.nativeSource(1, 1), new MetricRegion(List.of(polygon)));
+        var ref = new AtomicReference<EmissionWorkBudget>();
+        var work = new EmissionWorkBudget(TraceBudgets.defaults(), () -> ref.get() != null
+            && ref.get().snapshot().operationUnits().get(EmissionWorkBudget.Operation.REGION_QUERY) >= 10);
+        ref.set(work);
+        var ledger = AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            assertThrows(CancellationException.class, () -> sample(f, work, owner));
+            assertEquals(10, work.snapshot().operationUnits().get(EmissionWorkBudget.Operation.REGION_QUERY));
+            assertEquals(0, ledger.currentBytes());
+        }
+    }
+
+    @Test
     void retainedL0SourceReadsChargeTheExistingAttemptBeforeMaterialization() {
         Fixture f = fixture(EvidenceResolution.nativeSource(1, 1));
         var work = budget();
         try (var owner = AttemptMemoryLedger.production().rootOwner(); var result = sample(f, work, owner)) {
             assertNotNull(result);
-            assertEquals(1600L, work.snapshot().operationUnits().get(EmissionWorkBudget.Operation.NODE_READ));
-            assertEquals(1521L, work.snapshot().operationUnits().get(EmissionWorkBudget.Operation.CELL_QUERY));
+            assertTrue(work.snapshot().operationUnits().get(EmissionWorkBudget.Operation.NODE_READ) > 1600,
+                "Pyramid and profile reads must share the same counter as source reads");
+            assertTrue(work.snapshot().operationUnits().get(EmissionWorkBudget.Operation.CELL_QUERY) > 1521);
+            AtomicInteger nodes = new AtomicInteger(), cells = new AtomicInteger();
+            ScalarIntensityField.fromEvidence(f.evidence().fields().get(FIELD), () -> { },
+                nodes::incrementAndGet, cells::incrementAndGet);
+            assertEquals(1600, nodes.get(), "The original source-copy regression remains exact");
+            assertEquals(1521, cells.get());
         }
     }
 
@@ -108,7 +209,7 @@ class OptionalEmissionContextTest {
         try (var owner = AttemptMemoryLedger.production().rootOwner();
              var binding = OptionalEmissionContextFactory.bindDetached(f.request(), f.evidence(), FIELD, work, owner)) {
             var retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(f.evidence(), FIELD,
-                f.input().profileLocations(), 3, 1, 1, work);
+                f.input().profileLocations(), 3, 1, 1, work, binding);
             for (var level : retained.profiles().levels()) {
                 level.profiles().get(0).normalScreen().x = 0.25;
             }
@@ -262,6 +363,9 @@ class OptionalEmissionContextTest {
     }
     private record Fixture(EvidenceSnapshot evidence, CorridorTraceInput input, TraceRequest request) { }
     private static Fixture fixture(EvidenceResolution resolution) {
+        return fixture(resolution, MetricRegion.rectangle(5, 5, 35, 35));
+    }
+    private static Fixture fixture(EvidenceResolution resolution, MetricRegion decision) {
         int w = 40, h = 40; double[] values = new double[w*h]; Arrays.fill(values, 0.123456789);
         boolean[] valid = new boolean[w*h]; Arrays.fill(valid, true);
         boolean[] cells = new boolean[(w-1)*(h-1)]; Arrays.fill(cells, true); cells[4*(w-1)+4] = false;
@@ -273,7 +377,7 @@ class OptionalEmissionContextTest {
             EvidenceFieldLineage.AcquisitionKind.SYNTHETIC, EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,
             FIELD,EvidenceCorrelationGroup.SYNTHETIC_TRUTH,false));
         var evidence = new EvidenceSnapshot("context-source",frame,transform,resolution,
-            MetricRegion.rectangle(5, 5, 35, 35), MetricRegion.rectangle(-0.5,-0.5,39.5,39.5),
+            decision, MetricRegion.rectangle(-0.5,-0.5,39.5,39.5),
             Map.of(FIELD,field),"declared-test-source");
         var input = new CorridorTraceInput(List.of(at(evidence,new RasterPoint(10,20),0),
             at(evidence,new RasterPoint(20,20),10)),1);

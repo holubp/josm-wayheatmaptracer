@@ -79,6 +79,8 @@ public final class OptionalEmissionContext {
             var tangent = PolylineMath.normalize(next.x() - previous.x(), next.y() - previous.y());
             facts.add(new Observation(index, location, new RasterPoint(-tangent.y, tangent.x)));
             if (resolution.nativePitchMeters().isPresent()) {
+                binding.budget().charge(EmissionWorkBudget.Operation.PREPARATION,
+                    resolution.spatialPitchSamples().size());
                 maximumNativePitch = Math.max(maximumNativePitch, resolution.effectivePitchMetersAt(
                     chainage.sourceOriginGroundMeters() + location.cumulativeGroundDistanceMeters()));
             }
@@ -92,6 +94,8 @@ public final class OptionalEmissionContext {
                 || lineage.correlationGroup() == EvidenceCorrelationGroup.SYNTHETIC_TRUTH
                 ? Eligibility.SYNTHETIC_SOURCE
             : lineage.filtered() ? Eligibility.FILTERED_SOURCE : Eligibility.FACTUAL_DETACHED;
+        binding.budget().charge(EmissionWorkBudget.Operation.PREPARATION,
+            Math.multiplyExact((long) observations.size(), producedProfiles.levels().size()));
         requireProfilesUnchanged(producedProfiles);
     }
 

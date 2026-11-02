@@ -18,6 +18,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMo
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProjectedLateralTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.OptionalEmissionContextFactory.SourceBinding;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
@@ -439,48 +440,49 @@ public final class RenderedHeatmapSampler {
         private final MultiScaleProfileSet profiles;
         private final ScalarIntensityField levelZero;
         private final List<DetachedProfileSamplingLocation> locations;
-        private final EvidenceSnapshot source;
-        private final String fieldName;
-        private final EmissionWorkBudget budget;
+        private final SourceBinding permit;
 
         private RetainedScalarProfiles(MultiScaleProfileSet profiles, ScalarIntensityField levelZero,
-                List<DetachedProfileSamplingLocation> locations, EvidenceSnapshot source, String fieldName,
-                EmissionWorkBudget budget) {
+                List<DetachedProfileSamplingLocation> locations, SourceBinding permit) {
             this.profiles = profiles;
             this.levelZero = levelZero;
             this.locations = locations;
-            this.source = source;
-            this.fieldName = fieldName;
-            this.budget = budget;
+            this.permit = permit;
         }
 
         public MultiScaleProfileSet profiles() { return profiles; }
         public ScalarIntensityField levelZero() { return levelZero; }
         public List<DetachedProfileSamplingLocation> profileLocations() { return locations; }
-        public boolean boundTo(EvidenceSnapshot evidence, String selectedField,
-                EmissionWorkBudget sharedBudget) {
-            return source == evidence && fieldName.equals(selectedField) && budget == sharedBudget;
-        }
+        public boolean boundTo(SourceBinding binding) { return permit == binding; }
     }
 
     RetainedScalarProfiles sampleDetachedRetainingL0(EvidenceSnapshot evidence, String fieldName,
             List<DetachedProfileSamplingLocation> anchors, double halfWidth, double lateralStep,
-            double sourcePitch,
-            EmissionWorkBudget budget) {
-        CancellationProbe cancellation = () -> {
-            budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
-            return false;
-        };
-        cancellation.checkpoint();
-        List<DetachedProfileSamplingLocation> locations = List.copyOf(anchors);
-        ScalarIntensityField levelZero = ScalarIntensityField.fromEvidence(
-            evidence.fields().get(fieldName), cancellation::checkpoint,
-            () -> budget.charge(EmissionWorkBudget.Operation.NODE_READ, 1),
-            () -> budget.charge(EmissionWorkBudget.Operation.CELL_QUERY, 1));
-        MultiScaleProfileSet profiles = sampleMultiScaleProfilesOnDetachedField(levelZero, locations,
-            halfWidth, lateralStep, sourcePitch, evidence, cancellation);
-        cancellation.checkpoint();
-        return new RetainedScalarProfiles(profiles, levelZero, locations, evidence, fieldName, budget);
+            double sourcePitch, EmissionWorkBudget budget, SourceBinding binding) {
+        if (binding == null) throw new IllegalArgumentException("Reserved source permit is required");
+        synchronized (binding) {
+            binding.beginProduction(evidence, fieldName, anchors, halfWidth, lateralStep, sourcePitch, budget);
+            try {
+                CancellationProbe cancellation = () -> {
+                    binding.preparation(1);
+                    return false;
+                };
+                cancellation.checkpoint();
+                List<DetachedProfileSamplingLocation> locations = List.copyOf(anchors);
+                ScalarIntensityField levelZero = ScalarIntensityField.fromEvidence(
+                    evidence.fields().get(fieldName), cancellation::checkpoint,
+                    binding::beforeNodeRead, binding::beforeCellQuery, binding::preparation);
+                MultiScaleProfileSet profiles = sampleMultiScaleProfilesOnDetachedField(levelZero, locations,
+                    halfWidth, lateralStep, sourcePitch, evidence, cancellation, binding);
+                cancellation.checkpoint();
+                var result = new RetainedScalarProfiles(profiles, levelZero, locations, binding);
+                binding.completeProduction(result);
+                return result;
+            } catch (RuntimeException | Error failure) {
+                binding.close();
+                throw failure;
+            }
+        }
     }
 
     MultiScaleProfileSet sampleMultiScaleProfilesOnDetachedField(
@@ -492,11 +494,21 @@ public final class RenderedHeatmapSampler {
         EvidenceSnapshot evidence,
         CancellationProbe cancellation
     ) {
+        return sampleMultiScaleProfilesOnDetachedField(levelZero, anchors, searchHalfWidthRasterPixels,
+            lateralStepRasterPixels, sourcePixelPitchRasterPixels, evidence, cancellation, null);
+    }
+
+    private MultiScaleProfileSet sampleMultiScaleProfilesOnDetachedField(ScalarIntensityField levelZero,
+            List<? extends ProfileSamplingLocation> anchors, double searchHalfWidthRasterPixels,
+            double lateralStepRasterPixels, double sourcePixelPitchRasterPixels, EvidenceSnapshot evidence,
+            CancellationProbe cancellation, SourceBinding binding) {
         cancellation.checkpoint();
         int maximumReduction = Math.max(4, (int) Math.ceil(4.0 * sourcePixelPitchRasterPixels));
         long started = System.nanoTime();
-        GaussianIntensityPyramid pyramid = GaussianIntensityPyramid.build(
-            levelZero, maximumReduction, cancellation::checkpoint);
+        GaussianIntensityPyramid pyramid = binding == null
+            ? GaussianIntensityPyramid.build(levelZero, maximumReduction, cancellation::checkpoint)
+            : GaussianIntensityPyramid.build(levelZero, maximumReduction, cancellation::checkpoint,
+                binding::beforeNodeRead, binding::beforeCellQuery, binding::preparation);
         long buildNanos = System.nanoTime() - started;
         List<MultiScaleProfileSet.ScaleProfileLevel> levels = new ArrayList<>();
         for (IntensityScaleLevel level : selectedAnalysisLevels(pyramid, sourcePixelPitchRasterPixels)) {
@@ -504,7 +516,7 @@ public final class RenderedHeatmapSampler {
             levels.add(new MultiScaleProfileSet.ScaleProfileLevel(level.level(), level.reduction(),
                 level.effectiveSigmaL0(), sampleProfilesFromField(level, anchors,
                     searchHalfWidthRasterPixels, lateralStepRasterPixels, 1.0, null,
-                    evidence, cancellation)));
+                    evidence, cancellation, binding)));
         }
         return new MultiScaleProfileSet(levels, buildNanos, pyramid.estimatedBytes());
     }
@@ -626,6 +638,16 @@ public final class RenderedHeatmapSampler {
         EvidenceSnapshot detachedEvidence,
         CancellationProbe cancellation
     ) {
+        return sampleProfilesFromField(level, anchors, scaledHalfWidth, scaledStep, coordinateScale,
+            projectedCoordinateProjector, detachedEvidence, cancellation, null);
+    }
+
+    private List<CrossSectionProfile> sampleProfilesFromField(IntensityScaleLevel level,
+            List<? extends ProfileSamplingLocation> anchors, double scaledHalfWidth, double scaledStep,
+            double coordinateScale, RasterCoordinateProjector projectedCoordinateProjector,
+            EvidenceSnapshot detachedEvidence, CancellationProbe cancellation, SourceBinding binding) {
+        Runnable beforeNode = binding == null ? () -> { } : binding::beforeNodeRead;
+        Runnable beforeCell = binding == null ? () -> { } : binding::beforeCellQuery;
         List<CrossSectionProfile> profiles = new ArrayList<>(anchors.size());
         double physicalStep = Math.max(scaledStep, coordinateScale * level.reduction());
         int localizationPhases = level.level() == 0 ? FINE_LOCALIZATION_PHASES : 1;
@@ -648,10 +670,10 @@ public final class RenderedHeatmapSampler {
                 double sourceX = (current.x + normal.x * offset) / coordinateScale;
                 double sourceY = (current.y + normal.y * offset) / coordinateScale;
                 boolean positionAuthorized = detachedEvidence == null
-                    || routePositionAuthorized(detachedEvidence, sourceX, sourceY);
+                    || routePositionAuthorized(detachedEvidence, sourceX, sourceY, binding, cancellation);
                 double intensity = detachedEvidence == null
                     ? level.field().sample(sourceX, sourceY)
-                    : level.field().sampleStrict(sourceX, sourceY);
+                    : level.field().sampleStrict(sourceX, sourceY, beforeNode, beforeCell);
                 boolean complete = Double.isFinite(intensity);
                 offsets.add(new OffsetSample(offset, complete ? intensity : 0.0));
                 completeSupport.add(complete);
@@ -665,7 +687,7 @@ public final class RenderedHeatmapSampler {
                     boolean acquisitionSupported = level.field().supportsStrictSegment(
                             sourceXs.get(sample - 1), sourceYs.get(sample - 1),
                             sourceXs.get(sample), sourceYs.get(sample),
-                            cancellation::checkpoint);
+                            cancellation::checkpoint, beforeNode, beforeCell);
                     if (!acquisitionSupported) {
                         completeSupport.set(sample - 1, false);
                         completeSupport.set(sample, false);
@@ -675,7 +697,7 @@ public final class RenderedHeatmapSampler {
                     if (insideRaster.get(sample - 1) && insideRaster.get(sample)
                             && !routeSegmentAuthorized(detachedEvidence,
                             sourceXs.get(sample - 1), sourceYs.get(sample - 1),
-                            sourceXs.get(sample), sourceYs.get(sample))) {
+                            sourceXs.get(sample), sourceYs.get(sample), binding, cancellation)) {
                         insideRaster.set(sample - 1, false);
                         insideRaster.set(sample, false);
                     }
@@ -692,14 +714,14 @@ public final class RenderedHeatmapSampler {
                     cancellation.checkpoint();
                     return !routePositionAuthorized(detachedEvidence,
                         (current.x + normal.x * peak.offsetPx()) / coordinateScale,
-                        (current.y + normal.y * peak.offsetPx()) / coordinateScale)
+                        (current.y + normal.y * peak.offsetPx()) / coordinateScale, binding, cancellation)
                         || !isCompleteOffsetSupported(offsets, filters.completeSupport(),
                             peak.offsetPx());
                 });
             }
             boolean anchorPositionAuthorized = detachedEvidence == null
                 || routePositionAuthorized(detachedEvidence, current.x / coordinateScale,
-                    current.y / coordinateScale);
+                    current.y / coordinateScale, binding, cancellation);
             if (peaks.isEmpty() && (detachedEvidence == null
                     || anchorPositionAuthorized
                         && isCompleteOffsetSupported(offsets, filters.completeSupport(), 0.0))) {
@@ -713,7 +735,8 @@ public final class RenderedHeatmapSampler {
             }
             double anchorIntensity = detachedEvidence == null
                 ? level.field().sample(current.x / coordinateScale, current.y / coordinateScale)
-                : level.field().sampleStrict(current.x / coordinateScale, current.y / coordinateScale);
+                : level.field().sampleStrict(current.x / coordinateScale, current.y / coordinateScale,
+                    beforeNode, beforeCell);
             boolean anchorValid = anchorPositionAuthorized && Double.isFinite(anchorIntensity);
             cancellation.checkpoint();
             profiles.add(new CrossSectionProfile(samplingAnchor, normal,
@@ -721,6 +744,19 @@ public final class RenderedHeatmapSampler {
                 captureProjectedLateralTransform(samplingAnchor, normal, projectedCoordinateProjector)));
         }
         return profiles;
+    }
+
+    private boolean routePositionAuthorized(EvidenceSnapshot evidence, double x, double y,
+            SourceBinding binding, CancellationProbe cancellation) {
+        return binding == null ? routePositionAuthorized(evidence, x, y)
+            : binding.routePositionAuthorized(evidence.transform().pixelCenterToMetric(x, y), cancellation);
+    }
+
+    private boolean routeSegmentAuthorized(EvidenceSnapshot evidence, double ax, double ay, double bx, double by,
+            SourceBinding binding, CancellationProbe cancellation) {
+        return binding == null ? routeSegmentAuthorized(evidence, ax, ay, bx, by)
+            : binding.routeSegmentAuthorized(evidence.transform().pixelCenterToMetric(ax, ay),
+                evidence.transform().pixelCenterToMetric(bx, by), cancellation);
     }
 
     private boolean routePositionAuthorized(
@@ -978,7 +1014,7 @@ public final class RenderedHeatmapSampler {
             return extractBrightBands(offsets, filters, cancellation);
         }
         boolean[] support = filters.completeSupport() == null
-            ? supportMask(completeSupport) : filters.completeSupport();
+            ? supportMask(completeSupport, cancellation) : filters.completeSupport();
         if (support == null) {
             return extractBrightBands(offsets, filters, cancellation);
         }
@@ -1055,8 +1091,13 @@ public final class RenderedHeatmapSampler {
     }
 
     private static boolean[] supportMask(List<Boolean> completeSupport) {
+        return supportMask(completeSupport, CancellationProbe.NONE);
+    }
+
+    private static boolean[] supportMask(List<Boolean> completeSupport, CancellationProbe cancellation) {
         boolean[] support = new boolean[completeSupport.size()];
         for (int i = 0; i < support.length; i++) {
+            cancellation.checkpoint();
             support[i] = completeSupport.get(i);
         }
         return support;
@@ -1234,13 +1275,14 @@ public final class RenderedHeatmapSampler {
                 continue;
             }
             for (int j = i + 1; j < peaks.size(); j++) {
+                cancellation.checkpoint();
                 CrossSectionPeak right = peaks.get(j);
                 if (right.offsetPx() <= 0.0) {
                     continue;
                 }
                 cancellation.checkpoint();
                 int[] crossRange = offsetSupportRange(offsets, left.offsetPx(), right.offsetPx(), completeSupport);
-                if (!hasCompleteSupport(crossRange, completeSupport)) {
+                if (!hasCompleteSupport(crossRange, completeSupport, cancellation)) {
                     continue;
                 }
                 if (!isCompleteOffsetSupported(offsets, completeSupport, left.offsetPx())
@@ -1511,9 +1553,9 @@ public final class RenderedHeatmapSampler {
         double physicalSampleStep = estimateSampleStep(offsets) * stride;
         if (offsets.size() < 3) {
             return new ProfileFilters(offsets, offsets, offsets, stride,
-                physicalSampleStep, completeSupport == null ? null : supportMask(completeSupport));
+                physicalSampleStep, completeSupport == null ? null : supportMask(completeSupport, cancellation));
         }
-        boolean[] support = completeSupport == null ? null : supportMask(completeSupport);
+        boolean[] support = completeSupport == null ? null : supportMask(completeSupport, cancellation);
         boolean[] lightSupport = completeFilterSupport(
             support, offsets.size(), LIGHT_BINOMIAL_KERNEL.length / 2, stride, cancellation);
         List<OffsetSample> light = signalGatedPowerBinomialSmooth(
@@ -1541,6 +1583,7 @@ public final class RenderedHeatmapSampler {
             cancellation.checkpoint();
             boolean complete = true;
             for (int tap = -radius; tap <= radius; tap++) {
+                cancellation.checkpoint();
                 int source = Math.max(0, Math.min(size - 1, index + tap * stride));
                 if (!inputSupport[source]) {
                     complete = false;
@@ -1574,7 +1617,8 @@ public final class RenderedHeatmapSampler {
         boolean[] completeSupport,
         CancellationProbe cancellation
     ) {
-        double max = offsets.stream().mapToDouble(OffsetSample::intensity).max().orElse(0.0);
+        double max = offsets.stream().peek(ignored -> cancellation.checkpoint())
+            .mapToDouble(OffsetSample::intensity).max().orElse(0.0);
         if (max <= 0.0) {
             return offsets;
         }
@@ -1591,6 +1635,7 @@ public final class RenderedHeatmapSampler {
             double weighted = 0.0;
             double total = 0.0;
             for (int k = -radius; k <= radius; k++) {
+                cancellation.checkpoint();
                 int index = Math.max(0, Math.min(offsets.size() - 1, i + k * filterStride));
                 double intensity = offsets.get(index).intensity;
                 double mask = signalMask(intensity, max);

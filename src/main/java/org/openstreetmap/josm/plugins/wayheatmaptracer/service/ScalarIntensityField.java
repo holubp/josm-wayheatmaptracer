@@ -3,6 +3,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 import java.awt.image.BufferedImage;
 import java.util.Map;
 import java.util.OptionalDouble;
+import java.util.function.LongConsumer;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
@@ -69,6 +70,13 @@ public final class ScalarIntensityField {
     /** Identical native copy order with caller-owned admission immediately before each source query. */
     static ScalarIntensityField fromEvidence(ScalarEvidenceField source, Runnable rowCheckpoint,
             Runnable beforeNodeRead, Runnable beforeCellQuery) {
+        return fromEvidence(source, rowCheckpoint, beforeNodeRead, beforeCellQuery, ignored -> { });
+    }
+
+    /** Also admits the exact known slot count before the constructor's three bulk copies. */
+    static ScalarIntensityField fromEvidence(ScalarEvidenceField source, Runnable rowCheckpoint,
+            Runnable beforeNodeRead, Runnable beforeCellQuery, LongConsumer beforeCopies) {
+        if (beforeCopies == null) throw new IllegalArgumentException("Copy admission is required");
         if (source == null || rowCheckpoint == null || beforeNodeRead == null || beforeCellQuery == null) {
             throw new IllegalArgumentException("Modern scalar evidence and cancellation checkpoint are required");
         }
@@ -97,6 +105,7 @@ public final class ScalarIntensityField {
                 interpolationValid[y * (width - 1) + x] = source.supportsInterpolationCell(x, y);
             }
         }
+        beforeCopies.accept(Math.addExact(Math.multiplyExact(2L, values.length), interpolationValid.length));
         return new ScalarIntensityField(0, 0, width, height, 1,
             values, valid, interpolationValid);
     }
@@ -213,6 +222,11 @@ public final class ScalarIntensityField {
      * the legacy nearest-valid fallback.</p>
      */
     double sampleStrict(double baseX, double baseY) {
+        return sampleStrict(baseX, baseY, () -> { }, () -> { });
+    }
+
+    /** Identical strict interpolation with admission immediately before every mask/value access. */
+    double sampleStrict(double baseX, double baseY, Runnable beforeNode, Runnable beforeCell) {
         double localX = (baseX - originX) / reduction;
         double localY = (baseY - originY) / reduction;
         if (!Double.isFinite(localX) || !Double.isFinite(localY) || width < 2 || height < 2
@@ -221,19 +235,30 @@ public final class ScalarIntensityField {
         }
         int x0 = Math.min(width - 2, (int) Math.floor(localX));
         int y0 = Math.min(height - 2, (int) Math.floor(localY));
+        beforeCell.run();
         if (!supportsInterpolationCell(x0, y0)) {
             return Double.NaN;
         }
         int x1 = x0 + 1;
         int y1 = y0 + 1;
-        if (!isValid(x0, y0) || !isValid(x1, y0) || !isValid(x0, y1) || !isValid(x1, y1)) {
+        if (!isValid(x0, y0, beforeNode) || !isValid(x1, y0, beforeNode) || !isValid(x0, y1, beforeNode) || !isValid(x1, y1, beforeNode)) {
             return Double.NaN;
         }
         double fx = localX - x0;
         double fy = localY - y0;
-        double top = value(x0, y0) * (1.0 - fx) + value(x1, y0) * fx;
-        double bottom = value(x0, y1) * (1.0 - fx) + value(x1, y1) * fx;
+        double top = value(x0, y0, beforeNode) * (1.0 - fx) + value(x1, y0, beforeNode) * fx;
+        double bottom = value(x0, y1, beforeNode) * (1.0 - fx) + value(x1, y1, beforeNode) * fx;
         return top * (1.0 - fy) + bottom * fy;
+    }
+
+    private boolean isValid(int x, int y, Runnable beforeNode) {
+        beforeNode.run();
+        return isValid(x, y);
+    }
+
+    private double value(int x, int y, Runnable beforeNode) {
+        beforeNode.run();
+        return value(x, y);
     }
 
     /**
@@ -242,8 +267,15 @@ public final class ScalarIntensityField {
      */
     boolean supportsStrictSegment(double firstBaseX, double firstBaseY,
             double secondBaseX, double secondBaseY, Runnable checkpoint) {
-        if (checkpoint == null) {
-            throw new IllegalArgumentException("Segment support requires a cancellation checkpoint");
+        return supportsStrictSegment(firstBaseX, firstBaseY, secondBaseX, secondBaseY,
+            checkpoint, () -> { }, () -> { });
+    }
+
+    /** Same strict supercover with explicit scalar-query admission for retained production. */
+    boolean supportsStrictSegment(double firstBaseX, double firstBaseY, double secondBaseX,
+            double secondBaseY, Runnable checkpoint, Runnable beforeNode, Runnable beforeCell) {
+        if (checkpoint == null || beforeNode == null || beforeCell == null) {
+            throw new IllegalArgumentException("Segment support requires work controls");
         }
         double firstX = (firstBaseX - originX) / reduction;
         double firstY = (firstBaseY - originY) / reduction;
@@ -255,8 +287,8 @@ public final class ScalarIntensityField {
             || firstX < 0.0 || firstY < 0.0 || secondX < 0.0 || secondY < 0.0
             || firstX > width - 1.0 || secondX > width - 1.0
             || firstY > height - 1.0 || secondY > height - 1.0
-            || !Double.isFinite(sampleStrict(firstBaseX, firstBaseY))
-            || !Double.isFinite(sampleStrict(secondBaseX, secondBaseY))) {
+            || !Double.isFinite(sampleStrict(firstBaseX, firstBaseY, beforeNode, beforeCell))
+            || !Double.isFinite(sampleStrict(secondBaseX, secondBaseY, beforeNode, beforeCell))) {
             return false;
         }
         int minimumY = Math.max(0, (int) Math.floor(Math.min(firstY, secondY)) - 1);
@@ -291,6 +323,7 @@ public final class ScalarIntensityField {
                 checkpoint.run();
                 if (segmentIntersectsCell(firstX, firstY, secondX, secondY, x, y)) {
                     touched = true;
+                    beforeCell.run();
                     if (!supportsInterpolationCell(x, y)) {
                         return false;
                     }

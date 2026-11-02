@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.LongConsumer;
 
 /** Builds an in-memory L0/L1/L2 scalar Gaussian pyramid without network access. */
 public final class GaussianIntensityPyramid {
@@ -44,7 +45,13 @@ public final class GaussianIntensityPyramid {
         int maximumReduction,
         Runnable rowCheckpoint
     ) {
-        if (levelZero == null || rowCheckpoint == null) {
+        return build(levelZero, maximumReduction, rowCheckpoint, () -> { }, () -> { }, ignored -> { });
+    }
+
+    /** Retained-only hooks charge each query and each output iteration before executing it. */
+    static GaussianIntensityPyramid build(ScalarIntensityField levelZero, int maximumReduction,
+            Runnable rowCheckpoint, Runnable beforeNode, Runnable beforeCell, LongConsumer preparation) {
+        if (levelZero == null || rowCheckpoint == null || beforeNode == null || beforeCell == null || preparation == null) {
             throw new IllegalArgumentException("Scalar pyramid input and cancellation checkpoint are required");
         }
         rowCheckpoint.run();
@@ -60,7 +67,7 @@ public final class GaussianIntensityPyramid {
         int requestedReduction = Math.max(1, maximumReduction);
         for (int level = 1; level <= 8 && current.reduction() < requestedReduction; level++) {
             rowCheckpoint.run();
-            ScalarIntensityField next = blurAndDecimate(current, rowCheckpoint);
+            ScalarIntensityField next = blurAndDecimate(current, rowCheckpoint, beforeNode, beforeCell, preparation);
             if (next == null) {
                 break;
             }
@@ -77,7 +84,7 @@ public final class GaussianIntensityPyramid {
 
     private static ScalarIntensityField blurAndDecimate(
         ScalarIntensityField source,
-        Runnable rowCheckpoint
+        Runnable rowCheckpoint, Runnable beforeNode, Runnable beforeCell, LongConsumer preparation
     ) {
         int targetReduction = source.reduction() * 2;
         int phaseX = Math.floorMod(-source.originX(), targetReduction) / source.reduction();
@@ -94,17 +101,20 @@ public final class GaussianIntensityPyramid {
             rowCheckpoint.run();
             int sourceY = phaseY + y * 2;
             for (int x = 0; x < targetWidth; x++) {
+                preparation.accept(1);
                 int sourceX = phaseX + x * 2;
                 double weighted = 0.0;
-                boolean complete = hasCompleteFilterSupport(source, sourceX, sourceY);
+                boolean complete = hasCompleteFilterSupport(source, sourceX, sourceY, beforeNode, beforeCell);
                 for (int ky = -2; ky <= 2 && complete; ky++) {
                     for (int kx = -2; kx <= 2; kx++) {
                         int sx = sourceX + kx;
                         int sy = sourceY + ky;
+                        beforeNode.run();
                         if (!source.isValid(sx, sy)) {
                             complete = false;
                             break;
                         }
+                        beforeNode.run();
                         weighted += source.value(sx, sy) * B5_KERNEL[kx + 2] * B5_KERNEL[ky + 2];
                     }
                 }
@@ -119,12 +129,15 @@ public final class GaussianIntensityPyramid {
         for (int y = 0; y < targetHeight - 1; y++) {
             rowCheckpoint.run();
             for (int x = 0; x < targetWidth - 1; x++) {
+                preparation.accept(1);
                 int upperLeft = y * targetWidth + x;
                 interpolationValid[y * (targetWidth - 1) + x] = valid[upperLeft]
                     && valid[upperLeft + 1] && valid[upperLeft + targetWidth]
                     && valid[upperLeft + targetWidth + 1];
             }
         }
+        // The constructor performs these three native array copies as bulk operations.
+        preparation.accept(Math.addExact(Math.multiplyExact(2L, values.length), interpolationValid.length));
         return new ScalarIntensityField(
             source.originX() + phaseX * source.reduction(),
             source.originY() + phaseY * source.reduction(),
@@ -137,9 +150,11 @@ public final class GaussianIntensityPyramid {
         );
     }
 
-    private static boolean hasCompleteFilterSupport(ScalarIntensityField source, int centerX, int centerY) {
+    private static boolean hasCompleteFilterSupport(ScalarIntensityField source, int centerX, int centerY,
+            Runnable beforeNode, Runnable beforeCell) {
         for (int y = centerY - 2; y <= centerY + 2; y++) {
             for (int x = centerX - 2; x <= centerX + 2; x++) {
+                beforeNode.run();
                 if (!source.isValid(x, y)) {
                     return false;
                 }
@@ -147,6 +162,7 @@ public final class GaussianIntensityPyramid {
         }
         for (int y = centerY - 2; y < centerY + 2; y++) {
             for (int x = centerX - 2; x < centerX + 2; x++) {
+                beforeCell.run();
                 if (!source.supportsInterpolationCell(x, y)) {
                     return false;
                 }
