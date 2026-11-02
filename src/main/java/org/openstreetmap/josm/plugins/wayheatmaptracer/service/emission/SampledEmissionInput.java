@@ -12,6 +12,7 @@ public final class SampledEmissionInput implements AutoCloseable {
     private final OptionalEmissionContext context;
     private final EmissionWorkBudget workBudget;
     private final AttemptMemoryLedger.Owner retainedOwner;
+    private volatile RuntimeException terminalExecutionFailure;
 
     SampledEmissionInput(MultiScaleProfileSet profiles, OptionalEmissionContext context,
             EmissionWorkBudget workBudget, AttemptMemoryLedger.Owner retainedOwner) {
@@ -29,9 +30,21 @@ public final class SampledEmissionInput implements AutoCloseable {
     /** Required at each numerical entry, using the same admitted attempt budget. */
     public void requireOpenAndUnchanged() {
         requireOpen();
+        RuntimeException failure = terminalExecutionFailure;
+        if (failure != null) throw failure;
         workBudget.charge(EmissionWorkBudget.Operation.PREPARATION,
             Math.multiplyExact((long) context.observations().size(), profiles.levels().size()));
         context.requireProfilesUnchanged(profiles);
+    }
+    /** First terminal admission failure belongs to the whole retained attempt, not one phase. */
+    synchronized void recordTerminalExecutionFailure(RuntimeException failure) {
+        if (terminalExecutionFailure == null) terminalExecutionFailure = failure;
+    }
+    /** Shares the retained input's exact attempt/lifetime with a bounded numerical service. */
+    public AttemptMemoryLedger.Owner openExecutionOwner(String phase) {
+        requireOpenAndUnchanged();
+        workBudget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+        return retainedOwner.child(phase);
     }
     @Override public void close() { retainedOwner.close(); }
 }
