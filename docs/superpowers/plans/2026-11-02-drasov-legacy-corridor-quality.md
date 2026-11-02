@@ -982,7 +982,7 @@ this crop-specific receipt. Work108123/108078 concerns only three witness arcs
 per engine, not full graph feasibility. No original decision authority, endpoint
 ownership or continuous branch admission is certified by this screen.
 
-Next dependency is the continuous native branch certificate and practical exact
+Historical checkpoint (superseded by the resumption below): next dependency was the continuous native branch certificate and practical exact
 admission graph. The978word packet is ignored controller-release
 `build/private-drasov-quality/20261102-optional-emission-cost-screen/native-connector-stage4-packet.md`
 SHAfeec8a17882bd2f102eacfe5be2f0487e8c431fb99fd0b1b2e93f040af6b9797.
@@ -1015,3 +1015,37 @@ run actual admission/work feasibility before substantial consumers, implement th
 one exact A kernel and existing Legacy stages against unchanged eb151e3 image
 oracles, then preservation/real Drasov+Omice and every remaining original Task1–6
 gate. User-accepted Drasov visual reference is still pending, never invented.
+
+## Resumption — native admission implementation
+
+User explicitly resumed the ongoing experiments. Repository reconciliation:
+experimental HEAD180701b remains clean; the existing native-connector worktree
+also remains clean at that base, with no unreported implementation to integrate.
+Primary dirty worktree and unrelated private/untracked files are preserved.
+
+Ruling: use the independent Sol scope correction in
+`docs/superpowers/specs/2026-11-02-drasov-native-admission-scope-review.md`.
+The approved contract requires uniquely measured continuation at declared native
+resolution plus exact continuous scalar support and full segment authority; it
+does not require a continuous critical-topology/CAD/disk theorem. The prior
+checkpoint's stronger certificate requirement was implementation-added. Removing
+it retains endpoint ownership, complete modes, competing-mode rejection, mutual
+continuation, strict support and all resource/safety gates. Cost if wrong: a
+sub-probe topological feature is not certified; receipts must explicitly avoid
+claiming that theorem and final geometry safety remains mandatory. No Astra
+consultation is necessary or used for this implementation step.
+
+Public CI41502206347 now reports SUCCESS at exact180701b, including public
+validation and both PROBABILISTIC/LEGACY_THEN_B real-JOSM GUI jobs. Artifact-level
+test counts and host receipts are being independently extracted; private quality
+and repaired inference remain unverified.
+
+Execution: isolated Sol6.1/high worker implements NativeConnectorEvaluator from
+`/data/data/com.termux/files/usr/tmp/drasov-native-connector-brief.md` in
+`/data/data/com.termux/files/usr/tmp/josm-drasov-native-connector` (base180701b).
+One writer/one local Gradle process. A parallel Luna/low lane extracts public CI
+evidence only. No recursive agents, source default changes or release. Native
+state/event domain declarations are prototype inputs, not automatic attestation
+of real-engine authority; later adapters must construct them from actual native
+enumerators and captured protected occurrences. Actual R4 assertion RED/GREEN
+and independent review precede integration. No new user plan approval is needed.
