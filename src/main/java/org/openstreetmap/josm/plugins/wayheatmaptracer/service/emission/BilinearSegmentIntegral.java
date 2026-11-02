@@ -134,10 +134,10 @@ public final class BilinearSegmentIntegral {
             if (!work.validatePoint(x0 + dx * current, y0 + dy * current)) {
                 return unavailable(work.reason, work);
             }
-            if (nearParameter(crossingX, next) && dx != 0.0) {
+            if (crossingX == next && dx != 0.0) {
                 nextXLine += Math.signum(dx);
             }
-            if (nearParameter(crossingY, next) && dy != 0.0) {
+            if (crossingY == next && dy != 0.0) {
                 nextYLine += Math.signum(dy);
             }
         }
@@ -166,10 +166,6 @@ public final class BilinearSegmentIntegral {
 
     private static double parameterAt(double line, double origin, double delta) {
         return delta == 0.0 || !Double.isFinite(line) ? Double.POSITIVE_INFINITY : (line - origin) / delta;
-    }
-
-    private static boolean nearParameter(double first, double second) {
-        return Double.isFinite(first) && Math.abs(first - second) <= Math.max(1e-14, 4.0 * Math.ulp(second));
     }
 
     private static double clamp01(double value) {

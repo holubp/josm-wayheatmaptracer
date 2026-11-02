@@ -78,6 +78,24 @@ class BilinearSegmentIntegralTest {
     }
 
     @Test
+    void preservesDistinctNearCoincidentCrossingsAgainstCheckerboardOracle() {
+        CheckerboardGrid grid = new CheckerboardGrid(1002, 1002);
+        RasterPoint start = new RasterPoint(0.0, 0.0);
+        RasterPoint end = new RasterPoint(1000.0, 1000.000000000009);
+        // Independent 60-digit Decimal oracle split at every integer x/y grid crossing.
+        double oracle = 0.66666666666666816;
+        var result = BilinearSegmentIntegral.evaluate(grid, start, end,
+            CancellationProbe.NONE, () -> { });
+        var reverse = BilinearSegmentIntegral.evaluate(grid, end, start, CancellationProbe.NONE, () -> { });
+        RasterPoint midpoint = new RasterPoint(500.0, 500.0000000000045);
+        var first = BilinearSegmentIntegral.evaluate(grid, start, midpoint, CancellationProbe.NONE, () -> { });
+        var second = BilinearSegmentIntegral.evaluate(grid, midpoint, end, CancellationProbe.NONE, () -> { });
+        assertEquals(oracle, result.mean().orElseThrow(), 2e-13);
+        assertEquals(oracle, reverse.mean().orElseThrow(), 2e-13);
+        assertEquals(oracle, (first.mean().orElseThrow() + second.mean().orElseThrow()) * 0.5, 2e-13);
+    }
+
+    @Test
     void rejectsUnsupportedCellTouchedOnlyAlongAnEdge() {
         Grid grid = Grid.constant(3, 2, 0.5).unsupported(0, 0);
         var result = evaluate(grid, new RasterPoint(1.0, 0.1), new RasterPoint(1.0, 0.9));
@@ -240,5 +258,10 @@ class BilinearSegmentIntegralTest {
             if (readFailure != null) throw readFailure;
             return values[y][x];
         }
+    }
+
+    private record CheckerboardGrid(int width, int height) implements BilinearSegmentIntegral.ReadOnlyScalarGrid {
+        @Override public boolean supportsCell(int x, int y) { return true; }
+        @Override public double nodeValue(int x, int y) { return ((x + y) & 1) == 0 ? 1.0 : 0.0; }
     }
 }
