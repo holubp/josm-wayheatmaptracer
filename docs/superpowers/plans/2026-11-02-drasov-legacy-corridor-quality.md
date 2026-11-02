@@ -126,10 +126,10 @@ Every `GTEST` below means this exact shell command from the isolated worktree:
 | Design requirement | Owning tasks | Current status |
 | --- | --- | --- |
 | Capture attribution, actual raw/final/applied distinction and accepted blue reference |1 | EVIDENCE VERIFIED; user blue reference PENDING |
-| Causal proof and deterministic non-Drasov-only controls |2 | PARTIAL: engine-level RED and analytic proof verified; correspondence amendment pending |
-| Legacy usable geometry, wide search and successful behavior retained |3 | REVIEW BLOCKED: precise repair contract needs the proposed correspondence amendment |
+| Causal proof and deterministic non-Drasov-only controls |2 | PARTIAL: engine-level RED, analytic proof and preservation controls verified; optional-emission amendment APPROVED; exact v2 contract in progress |
+| Legacy usable geometry, wide search and successful behavior retained |3 | PARTIAL: approved bounded experiment; mapping foundation tested; solver and real-data quality not yet verified |
 | Exact final safety, availability, old diagnostic/identity compatibility |4 | PARTIAL: frozen previews, contact guard and measured export integrated; final gates and image-supported foldback work remain |
-| A actual existing objective traced, usable geometry, exact optimizer retained |5 | REVIEW BLOCKED: current correspondence fails the independent image contract; amendment pending |
+| A actual existing objective traced, usable geometry, exact optimizer retained |5 | PARTIAL: approved correspondence experiment; fixed v2 objective witness screen passes; solver optimum and preservation unverified |
 | Both geometry modes, consumers, Hybrid, protected topology and transactions |6 | NOT STARTED |
 | Independent audit, CI, private visual acceptance, bounded performance |6 | NOT STARTED |
 | B performance redesign/new hybrid/stable release scope |None | OUT OF SCOPE |
@@ -703,3 +703,72 @@ remain binding. Parallelize independent work in isolated ownership lanes; no
 recursive delegation. Current useful lanes are Sol/high recurrence/context
 design and Luna/medium observation-to-emission consumer mapping; controller
 integrates and assigns bounded implementation after contract review.
+
+User further clarified the goal amendment and explicitly requested resumption:
+proceed autonomously with approved experiments and, when their results are
+positive, with subsequent designs and implementation plans related to this
+objective. Do not wait for those plan approvals. Carry each justified follow-on
+through independent technical review, implementation and verification. Preserve
+the original full objective, safety/data/resource invariants and separate release
+authorization; positive experimental results do not themselves prove completion.
+This is standing session authorization, not a recurring approval checkpoint.
+
+Optional-emission contract progress: the initially proposed worst-finite-unary
+debit was screened against actual R4 production states before kernel coding.
+It is REJECTED for A: bad adjacent path J15.9896833263 versus usable witness
+J38.2733302032, dominated by37.84878 unary debt. Legacy witness wins, but that
+does not rescue the shared proposal. Receipt and all A state unaries are ignored
+under `20261102-optional-emission-cost-screen/`. No coefficient search or
+production numerical change followed. Sol is defining physical connector
+quadrature over factual source-chainage mass instead; freeze/review it only
+after an actual independent-image objective screen.
+
+Independent mapping foundation packet is frozen now so useful bounded work can
+proceed alongside numerical design. Add `model/EmissionMapping.java` with
+immutable N ObservationOwner entries and M VertexOwner entries; ObservationOwner
+is Emitted(vertexIndex) or Consumed(arcIndex), VertexOwner is
+ObservationVertex(observationIndex) or BoundaryVertex(occurrenceId). Copy all
+collections. Require reciprocal one-to-one emitted ownership, monotonic source
+observation order, emitted first/last observations and all mandatory rows,
+unique nonblank boundary IDs, valid ranges and consumed rows strictly between
+their owning consecutive vertices. Initially reject consumption on arcs touching
+boundary-only vertices; adjacent behavior around boundaries remains available.
+Expose create, emittedVertexForObservation and consumingArcForObservation with
+OptionalInt absence, never fabricated offsets. Native observed/gap/censored
+classification remains in the separate full observation ledger. No geometry,
+coverage or movement authority is certified by this mapping primitive.
+TDD fixtures cover identity and mixed N/M mapping, boundary-only ownership,
+mandatory rows, missing/duplicate/out-of-order/null/out-of-range ownership,
+defensive copies and query bounds. This unused model adds no engine behavior.
+Numerical production entry points remain gated on the complete reviewed contract.
+
+Resumption checkpoint: standing user authorization includes experiment-related
+follow-on designs/plans after positive results, without another plan-approval
+stop. Runtime goal still reports BLOCKED and exposes no resume/amend operation;
+this is a tool-state limitation, not an approval blocker. Authorized work resumes.
+No weekly remainder is surfaced. No Astra, speed/pool change or release added.
+
+Experimental integration branch `codex/drasov-optional-emission-experiment`,
+worktree `/data/data/com.termux/files/usr/tmp/josm-drasov-optional-emission-experiment`,
+now contains mapping commits8efd98a+d76609b (worker958637e+a450dd8).
+Twelve mapping regressions passed; independent Sol review requested. Release
+branch production remains unchanged. Original intentionally RED eb151e3 remains
+isolated; its independent image oracle must not change to fit new output.
+
+The replacement objective screen is `optional-emission-native-integral-v2`:
+J=Q+C+T+K, Q=sum(delta original ground chainage/native pitch * mean(1-I))
+over actual native bilinear connectors, applied uniformly to adjacent and skip
+arcs. Original N observations/native unary tables remain diagnostic; consumed
+rows have no invented chosen offsets or automatic direct coverage. Physical K
+uses unit weight and squared turn divided by max(1, adjacent mean length/pitch).
+Actual existing-state witness beats bad baseline: A0.424549 versus12.954603;
+Legacy2.574143 versus22.078044. This is a witness cost screen, not an inferred
+optimum or proof of Drasov improvement. Sol is consolidating anchors, GAP
+classification, context and actual bounded recurrence before independent review.
+
+Parallel bounded math packet is `/data/data/com.termux/files/usr/tmp/drasov-native-integral-brief.md`:
+strict native bilinear segment integral/minimum, conservative touched-cell
+support, cancellation/work charging and analytic regressions. Luna owns only
+the isolated `codex/drasov-native-segment-integral` worktree. No admission,
+branch/region policy or engine integration is delegated to that primitive.
+Only this worker holds the local Gradle slot. No recursive delegation.
