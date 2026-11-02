@@ -201,3 +201,82 @@ sampler's straight image ridge has a forced reversal under the folded chart and
 preserves order under the regular chart. This validates the representability
 discriminator, not a repair. Do not add a physical cost before exact Drasov state
 audit establishes that safe image-supported alternatives actually exist.
+
+Task2 exact native replay now matches all185archived Legacy projected points
+(max1.07e-8EPSG3857units, within export rounding). DP/anchoring already cross;
+smoothing removes that local crossing but moves profile124 to native intensity0
+from a directly supported retained point. Thus no blanket smoothing removal:
+some other profiles improve native fit during smoothing. Native reconstruction,
+stage rows and12peak combinations stay private in legacy-cause output directory.
+
+Bounded in-contract patch packet for the independently proven smoothing defect:
+modify RidgeTracker.smoothOffsets only, adding a private sampled-native-support
+lookup over immutable IntensitySample rows. Before accepting each smoothing step,
+if current offset has observed valid positive native support, refuse a proposed
+offset whose bracketing observed native samples are both zero or unavailable/
+outside raster. Interpolate only within valid bracketing rows; do not cross
+invalid support or extrapolate. Empty historical sample lists retain historical
+behavior as unavailable, never imply zero. No new intensity threshold, smoothing
+strength, detector ranking, normal/frame, state space or public API change. Add
+RED fixture with a known image-supported thin bend driven into a dark gap by
+smoothing, plus positive supported smoothing and no-sample compatibility controls.
+Require actual private profile124 native-support improvement after GREEN; raw DP
+crossing/representation remains separately unresolved. This patch is a scoped
+contribution to Task3, not completion of Legacy repair or a substitute for the
+safe-path/architecture gate. Final whole-task audit must inspect replay policy
+identity consequences of changing Legacy output, including Hybrid parent output.
+
+Smoothing subrepair assigned to reused Luna/medium in separate tmp worktree
+`josm-drasov-legacy-smoothing`, base604be8c. Owns only RidgeTracker and new
+RidgeTrackerSupportTest; sole Gradle slot transferred to it. Controller retains
+integration and full-scope closure. Other causal lanes perform bounded directJava
+reads only, never Gradle. No new general engine behavior is authorized by this
+packet beyond the observed-support guard.
+
+Focused Sol/high consultation's independent oracle is y=0 with source anchors
+S_j=(j,-9.7+j²/(2R)), j=-8..8, plus padding for central secants. True intersection
+Q_x=j(1-9.7/R)+j³/(2R²). R=12isregular; R=4forces Q_-4=3.7,Q_0=0,Q_4=-3.7.
+Production sampling characterization confirms this. No local score can create
+missing ordered states. A change to correspondence/emission ownership would
+require the explicitly approved design-amendment gate; that choice has not yet
+been made or implemented. Exact private state audit remains the discriminator.
+
+Exact A local audit231..234: all four direct bands COMPLETE,9801core-state
+combinations,4106proper-crossing and5695noncrossing. All81pairs231→232have a small
+source-relative backstep0.155..0.869m (<nativepitch1.556m), which is NOT a valid
+rejection oracle. Therefore no architecture amendment is inferred merely from
+source ordering. The candidate's231..234points match captured raw bitwise; only
+index206differs materially in whole direct replay (0.072344m), two other doubles
+differ atroundoff. A bounded fixed-context physical-turn counterfactual plus
+independent2Dsupport checks is running; a cost-family viability result is not yet
+an approved coefficient or production objective.
+
+Smoothing lane candidate38f4e91 passes28focused tests after intended2-failureRED,
+but is NOT integrated. Controller identified a possible semantic regression:
+local positive pixels do not alone prove a coherent bend; guarding every such
+pixel could retain the isolated noise that smoothing should remove. Worker now
+tests real full-profile thin-strand/noise controls before any production change
+is integrated. No test-pass or unsafe-candidate rejection counts as Legacy repair
+completion. Root tracing code remains RC14; only measurement primitive is added.
+
+Ruling: REJECT38f4e91 native-positive-only guard. A true raster counterexample
+retains an isolated bright stray point10px off a persistent straight trace; the
+unmodified smoother bridges it. Counterexample committed in isolated8e98368;
+candidate never integrated. Root retained independent raster controls for both
+gap/stray suppression and supportedmulti-profilebend; both PASS on root baseline.
+
+Found and TDD-repaired an independent metadata defect in RidgeTracker's peak
+filter: old convenience constructor dropped typed anchor/chainage, native scalar
+samples and projected lateral transform. New canonical constructor retains them.
+Root intendedRED2/2 (lost owner, detachedcoordinateexception), then GREEN for
+profile-integrity plus existing tracker/characterization/measurement suites;
+additional native-raster controls2/2GREEN. Latest combined profile/raster4/4
+XML saved privately under20261102-metadata-green. This preserves data required
+for diagnosis/future evidence-aware decisions; it is not a kink repair.
+
+A's fixed-context231..234experiment found2131noncrossingcombinations/9801when
+including outerneighbors229/230and235/236. A physical-turn-minimal witness retains
+63/63sampled2Dscalar support,mean.21127vsbaseline.21184. Exactdata-costbreakdown
+shows tube-center prior supplies24.4019of24.5796cost on firstnoncrossing envelope
+witness,versusbaseline.08128. No productioncoefficientchosen: next diagnostic
+ablates longitudinalpriors withoutaddingbending, preserving states/directcosts.

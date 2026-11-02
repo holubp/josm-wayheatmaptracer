@@ -142,11 +142,12 @@ public final class RidgeTracker {
                     .orElse(peaks.get(0)));
             }
             filtered.add(new RenderedHeatmapSampler.CrossSectionProfile(
-                profile.anchor(),
-                profile.anchorScreen(),
+                profile.samplingAnchor(),
                 profile.normalScreen(),
                 retained,
-                profile.anchorWithinRaster()
+                profile.anchorWithinRaster(),
+                profile.intensitySamples(),
+                profile.projectedLateralTransform()
             ));
         }
         return filtered;
