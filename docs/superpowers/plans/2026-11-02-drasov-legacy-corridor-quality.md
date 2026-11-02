@@ -655,3 +655,24 @@ must not be substituted for the now independently proved architecture issue.
 No production guide/correspondence change, intentionally RED-test merge, cap
 increase or RC publication may proceed before this approval. The goal remains
 active; no unfinished original-plan requirement is waived.
+
+Blocked audit, occurrence2: automatic goal continuation revalidated HEAD2f15ed2,
+clean tracked production state, proposed/unapproved amendment status and absence
+of saved browser feedback. The preceding goal turn made concrete progress
+(preservation controls, engine-level RED/proof, reviewed amendment and full CI
+receipts); this turn establishes no new implementation progress. CI is terminal
+PASS, not an ongoing wait. The automatic continuation is not user approval of
+the changed correspondence contract. No remaining numerical production action
+is permitted past this gate; avoid repeated model/parameter experiments or
+redundant reviews while awaiting the decision. Goal remains active until the
+three-consecutive-turn blocked audit threshold is met or approval arrives.
+
+Blocked audit, occurrence3: the same mandatory amendment decision remains
+unanswered. Revalidated the proposed status, unchanged production state and no
+saved reference feedback. CI is already complete; no live computation or
+remaining permitted numerical implementation can advance this gate. Mark the
+goal BLOCKED, preserving its full objective. Resume on explicit approval of
+`2026-11-02-drasov-optional-emission-amendment.md`; then finalize/review the exact
+recurrence and provenance packet, implement against isolated RED eb151e3, and
+complete every original requirement and verification gate. No release is ready
+or authorized. Preserve all worktrees, private evidence and unrelated files.
