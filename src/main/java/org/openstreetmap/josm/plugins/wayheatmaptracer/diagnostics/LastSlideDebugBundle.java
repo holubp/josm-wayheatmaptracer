@@ -29,6 +29,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetectorAttempt;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
@@ -53,6 +54,7 @@ public final class LastSlideDebugBundle {
     private final String geometryCleanupCsv;
     private final String geometryCleanupAnchorsCsv;
     private final String geometryCleanupLocalShapeCsv;
+    private final String geometryQualityCsv;
     private final String profilePeaksCsv;
     private final String paletteSamplesCsv;
     private final String profileIntensityCsv;
@@ -90,6 +92,7 @@ public final class LastSlideDebugBundle {
         String geometryCleanupCsv,
         String geometryCleanupAnchorsCsv,
         String geometryCleanupLocalShapeCsv,
+        String geometryQualityCsv,
         String profilePeaksCsv,
         String paletteSamplesCsv,
         String profileIntensityCsv,
@@ -126,6 +129,7 @@ public final class LastSlideDebugBundle {
         this.geometryCleanupCsv = geometryCleanupCsv;
         this.geometryCleanupAnchorsCsv = geometryCleanupAnchorsCsv;
         this.geometryCleanupLocalShapeCsv = geometryCleanupLocalShapeCsv;
+        this.geometryQualityCsv = geometryQualityCsv;
         this.profilePeaksCsv = profilePeaksCsv;
         this.paletteSamplesCsv = paletteSamplesCsv;
         this.profileIntensityCsv = profileIntensityCsv;
@@ -230,6 +234,11 @@ public final class LastSlideDebugBundle {
         String cleanupCsv = geometryCleanupCsv(result);
         String cleanupAnchorsCsv = geometryCleanupAnchorsCsv(result);
         String cleanupLocalShapeCsv = geometryCleanupLocalShapeCsv(result);
+        boolean applied = "applied".equals(status) || "applied-after-review".equals(status);
+        String frozenProjectionCode = samplingProjectionCode(result.diagnostics().samplingJson());
+        String geometryQuality = GeometryQualityCsv.create(result.candidates(), selected == null ? "" : selected.id(),
+            result.previewPolyline(), frozenProjectionCode, applied,
+            applied ? appliedGeographicPath(result) : List.of());
         String highestRankedApplicableBase = highestRankedApplicableBaseId(result);
         CandidateAssessment selectedAssessment = selected == null ? null : AlignmentService.assessCandidate(selected);
         boolean reviewConfirmed = "review-confirmed".equals(status) || "applied-after-review".equals(status)
@@ -237,7 +246,6 @@ public final class LastSlideDebugBundle {
         boolean reviewRequested = reviewConfirmed || "review-confirmation-failed".equals(status);
         String reviewRevalidationResult = reviewConfirmed && !"review-apply-failed".equals(status)
             ? "passed" : reviewRequested ? "failed" : "not-run";
-        boolean applied = "applied".equals(status) || "applied-after-review".equals(status);
         String statusJson = "{"
             + "\"status\":\"" + escape(status) + "\","
             + "\"selectedCandidate\":\"" + escape(selected == null ? "" : selected.id()) + "\","
@@ -260,10 +268,10 @@ public final class LastSlideDebugBundle {
         String version = pluginVersion();
         String build = buildIdentity();
         return new LastSlideDebugBundle(
-            redactSensitiveValues(addGeometryCleanupSummary(
+            redactSensitiveValues(addGeometryQualitySummary(addGeometryCleanupSummary(
                 addCandidateSelectionSummary(addBuildIdentity(result.diagnostics().toJson(), version, build),
                     highestRankedApplicableBase, initialPreviewCandidate),
-                cleanupCsv, cleanupAnchorsCsv, cleanupLocalShapeCsv)),
+                cleanupCsv, cleanupAnchorsCsv, cleanupLocalShapeCsv), geometryQuality)),
             "Plugin-Version: " + version + '\n' + "Plugin-Build: " + build + '\n'
                 + redactSensitiveValues(verboseLog),
             originalOsm(result),
@@ -280,6 +288,7 @@ public final class LastSlideDebugBundle {
             cleanupCsv,
             cleanupAnchorsCsv,
             cleanupLocalShapeCsv,
+            geometryQuality,
             result.diagnostics().profilePeaksCsv(),
             result.diagnostics().paletteSamplesCsv(),
             result.diagnostics().profileIntensityCsv(),
@@ -328,6 +337,7 @@ public final class LastSlideDebugBundle {
             writeText(zip, "geometry-cleanup.csv", geometryCleanupCsv);
             writeText(zip, "geometry-cleanup-anchors.csv", geometryCleanupAnchorsCsv);
             writeText(zip, "geometry-cleanup-local-shape.csv", geometryCleanupLocalShapeCsv);
+            writeText(zip, "geometry-quality.csv", geometryQualityCsv);
             writeText(zip, "profile-peaks.csv", profilePeaksCsv);
             writeText(zip, "palette-samples.csv", paletteSamplesCsv);
             writeText(zip, "profile-intensity.csv", profileIntensityCsv);
@@ -362,7 +372,8 @@ public final class LastSlideDebugBundle {
             + "\"pluginVersion\":\"" + escape(pluginVersion()) + "\","
             + "\"buildIdentity\":\"" + escape(buildIdentity()) + "\","
             + "\"containsSecrets\":false,"
-            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"applied-segment.osm\",\"candidate-ridges.osm\",\"candidate-previews.osm\",\"junction-safety.csv\",\"proposed-node-positions.csv\",\"junction-context.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"geometry-cleanup.csv\",\"geometry-cleanup-anchors.csv\",\"geometry-cleanup-local-shape.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"corridor-bundles.csv\",\"bundle-points.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"corridor-tube.csv\",\"association-decisions.csv\",\"endpoint-approaches.csv\",\"detector-performance.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"tile-acquisition.json\",\"aggregate-intensity/metadata.json\"]"
+            + "\"geometryQualitySchemaVersion\":1,"
+            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"applied-segment.osm\",\"candidate-ridges.osm\",\"candidate-previews.osm\",\"junction-safety.csv\",\"proposed-node-positions.csv\",\"junction-context.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"geometry-cleanup.csv\",\"geometry-cleanup-anchors.csv\",\"geometry-cleanup-local-shape.csv\",\"geometry-quality.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"corridor-bundles.csv\",\"bundle-points.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"corridor-tube.csv\",\"association-decisions.csv\",\"endpoint-approaches.csv\",\"detector-performance.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"tile-acquisition.json\",\"aggregate-intensity/metadata.json\"]"
             + "}";
     }
 
@@ -577,6 +588,53 @@ public final class LastSlideDebugBundle {
             + artifactJson("geometry-cleanup-anchors.csv", anchorsCsv) + ','
             + artifactJson("geometry-cleanup-local-shape.csv", localShapeCsv) + "]}";
         return addJsonField(diagnosticsJson, "geometryCleanup", summary);
+    }
+
+    private static String addGeometryQualitySummary(String diagnosticsJson, String geometryQualityCsv) {
+        String summary = "{\"schemaVersion\":1,\"artifacts\":["
+            + artifactJson("geometry-quality.csv", geometryQualityCsv) + "]}";
+        return addJsonField(diagnosticsJson, "geometryQuality", summary);
+    }
+
+    private static String samplingProjectionCode(String samplingJson) {
+        if (samplingJson == null) {
+            return "";
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+            .compile("\\\"projectionCode\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"")
+            .matcher(samplingJson);
+        return matcher.find() ? matcher.group(1) : "";
+    }
+
+    private static List<GeographicPoint> appliedGeographicPath(AlignmentResult result) {
+        List<Node> original = result.selection().segmentNodes();
+        if (original.isEmpty()) {
+            return List.of();
+        }
+        List<Node> wayNodes = result.selection().way().getNodes();
+        int first = wayNodes.indexOf(original.get(0));
+        int last = wayNodes.indexOf(original.get(original.size() - 1));
+        if (first < 0 || last < 0) {
+            return List.of();
+        }
+        List<Node> applied = new java.util.ArrayList<>(
+            wayNodes.subList(Math.min(first, last), Math.max(first, last) + 1));
+        if (first > last) {
+            java.util.Collections.reverse(applied);
+        }
+        List<GeographicPoint> points = new java.util.ArrayList<>(applied.size());
+        try {
+            for (Node node : applied) {
+                LatLon coordinate = node.getCoor();
+                if (coordinate == null) {
+                    return List.of();
+                }
+                points.add(new GeographicPoint(coordinate.lat(), coordinate.lon()));
+            }
+            return List.copyOf(points);
+        } catch (RuntimeException ex) {
+            return List.of();
+        }
     }
 
     /** Returns the first applicable non-cleaned candidate in stable result order. */

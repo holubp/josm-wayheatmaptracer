@@ -3283,6 +3283,7 @@ public final class AlignmentService {
         SamplingScale scale = effectiveSampling.samplingScale();
         return "{"
             + "\"samplingScaleVersion\":1,"
+            + "\"projectionCode\":\"" + jsonEscape(ProjectionRegistry.getProjection().toCode()) + "\","
             + "\"type\":\"managed-source-tiles\","
             + "\"algorithm\":\"fixed-scale source tiles\","
             + "\"imageSampleConvention\":\"decoded-index-is-pixel-center\","
@@ -3353,6 +3354,7 @@ public final class AlignmentService {
         Bounds realBounds = projectionBoundsToRealBounds(projectionBounds);
         return "{"
             + "\"samplingScaleVersion\":1,"
+            + "\"projectionCode\":\"" + jsonEscape(ProjectionRegistry.getProjection().toCode()) + "\","
             + "\"type\":\"rendered-visible-layer\","
             + "\"algorithm\":\"v0.2-compatible\","
             + "\"imageSampleConvention\":\"rendered-capture-coordinate\","

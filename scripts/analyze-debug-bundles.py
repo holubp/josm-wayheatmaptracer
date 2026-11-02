@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import io
 import json
 import math
@@ -72,6 +73,7 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
         read_zip_csv(bundle, "geometry-cleanup-anchors.csv"))
     cleanup_shape = cleanup_shape_summaries(
         read_zip_csv(bundle, "geometry-cleanup-local-shape.csv"))
+    geometry_quality_state, geometry_quality = geometry_quality_rows(bundle, diagnostics)
     boundaries = boundary_summaries(read_zip_csv(bundle, "corridor-bands.csv"))
     proposed_counts: dict[str, int] = defaultdict(int)
     for position in proposed_positions:
@@ -216,8 +218,63 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
                 cleanup_anchors.get(candidate_id, []),
             ),
             **cleanup_shape.get(candidate_id, unavailable_cleanup_shape()),
+            **geometry_quality_fields(geometry_quality_state, geometry_quality.get(candidate_id)),
         })
     return rows
+
+
+def geometry_quality_rows(
+    bundle: BundleSource, diagnostics: dict[str, object]
+) -> tuple[str, dict[str, dict[str, str]]]:
+    """Read the optional schema-1 geometry artifact only when its checksum is verified."""
+    content = read_zip_bytes(bundle, "geometry-quality.csv")
+    if content is None:
+        return "unavailable", {}
+    summary = diagnostics.get("geometryQuality")
+    artifacts = summary.get("artifacts", []) if isinstance(summary, dict) else []
+    artifact = next((item for item in artifacts if isinstance(item, dict)
+                     and item.get("file") == "geometry-quality.csv"), None)
+    if not isinstance(artifact, dict):
+        return "integrity-failed", {}
+    digest = hashlib.sha256(content).hexdigest()
+    if digest != artifact.get("sha256") or len(content) != artifact.get("bytes"):
+        return "integrity-failed", {}
+    try:
+        text = content.decode("utf-8")
+        rows = list(csv.DictReader(io.StringIO(text)))
+    except (UnicodeDecodeError, csv.Error):
+        return "integrity-failed", {}
+    if len(rows) != artifact.get("rows"):
+        return "integrity-failed", {}
+    result = {row.get("candidate_id", ""): row for row in rows
+              if row.get("stage") == "final-preview"}
+    return "available", result
+
+
+def geometry_quality_fields(
+    artifact_state: str, row: dict[str, str] | None
+) -> dict[str, object]:
+    """Return explicit final-preview measurement availability without zero defaults."""
+    state = artifact_state if artifact_state != "available" else (
+        row.get("availability", "unavailable") if row else "unavailable")
+    return {
+        "geometry_quality_state": state,
+        "geometry_quality_reason": row.get("reason", "") if row else (
+            "candidate-stage-row-missing" if artifact_state == "available" else artifact_state),
+        "geometry_quality_length_meters": float_or_none(row.get("length_meters")) if row else None,
+        "geometry_quality_defined_turn_count": int_or_none(row.get("defined_turn_count")) if row else None,
+        "geometry_quality_max_turn_degrees": float_or_none(row.get("max_turn_degrees")) if row else None,
+        "geometry_quality_zero_length_segments": int_or_none(row.get("zero_length_segments")) if row else None,
+    }
+
+
+def read_zip_bytes(bundle: BundleSource, name: str) -> bytes | None:
+    """Return an exact archive member payload or ``None`` when absent."""
+    with zipfile.ZipFile(io.BytesIO(bundle.data)) as archive:
+        try:
+            return archive.read(name)
+        except KeyError:
+            return None
 
 
 def execution_work_summary(document: dict[str, object]) -> dict[str, object]:

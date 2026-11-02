@@ -150,6 +150,41 @@ class LastSlideDebugBundleTest {
     }
 
     @Test
+    void geometryQualityKeepsRawFinalAndAppliedStagesOnFrozenProjection(@TempDir Path temporaryDirectory)
+        throws Exception {
+        Node first = node(new EastNorth(0, 0));
+        Node last = node(new EastNorth(100, 0));
+        Way way = new Way();
+        way.setNodes(List.of(first, last));
+        SelectionContext selection = new SelectionContext(way, 0, 1, List.of(first, last), Set.of(first, last));
+        List<EastNorth> raw = List.of(new EastNorth(0, 0), new EastNorth(100, 0));
+        List<EastNorth> finalPath = List.of(new EastNorth(0, 0), new EastNorth(100, 0), new EastNorth(100, 100));
+        CenterlineCandidate candidate = new CenterlineCandidate("hot/test", 1.0,
+            List.of(new Point2D.Double(0, 0), new Point2D.Double(100, 0)), List.of(0.0, 0.0))
+            .withEastNorthPoints(raw).withFinalPreviewGeometry(finalPath, Map.of());
+        AlignmentDiagnostics diagnostics = new AlignmentDiagnostics("Strava", 0, 0, 0, 0, 0,
+            "{}", "{}", "{\"projectionCode\":\"EPSG:3857\"}", "[]", "[]", "[]");
+        AlignmentResult result = new AlignmentResult(selection, null, List.of(candidate), raw, finalPath,
+            List.of(), diagnostics, null);
+        LastSlideDebugBundle bundle = LastSlideDebugBundle.fromResult(result, candidate, "applied", "log");
+        ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:4326"));
+        Path path = temporaryDirectory.resolve("geometry-quality.zip");
+        bundle.writeTo(path.toFile());
+
+        try (ZipFile zip = new ZipFile(path.toFile())) {
+            String csv = text(zip, "geometry-quality.csv");
+            assertTrue(csv.contains("\"hot/test\",raw,available,"));
+            assertTrue(csv.contains("\"hot/test\",final-preview,available,"));
+            assertTrue(csv.contains("\"hot/test\",applied,available,"));
+            String artifactSummary = text(zip, "diagnostics.json");
+            assertTrue(artifactSummary.contains("geometryQuality"));
+            assertTrue(artifactSummary.contains("\"sha256\":\"" + sha256(csv) + "\""));
+            assertTrue(text(zip, "manifest.json").contains("geometryQualitySchemaVersion\":1"));
+            assertTrue(text(zip, "manifest.json").contains("formatVersion\":14"));
+        }
+    }
+
+    @Test
     void exportsChecksummedCleanupArtifactsWithEscapingAndRedaction(@TempDir Path temporaryDirectory)
         throws Exception {
         Node first = node(new EastNorth(0, 0));
@@ -197,6 +232,7 @@ class LastSlideDebugBundleTest {
             assertNotNull(zip.getEntry("geometry-cleanup.csv"));
             assertNotNull(zip.getEntry("geometry-cleanup-anchors.csv"));
             assertNotNull(zip.getEntry("geometry-cleanup-local-shape.csv"));
+            assertNotNull(zip.getEntry("geometry-quality.csv"));
             assertTrue(cleanup.contains("CLEANED_ALTERNATIVE_AVAILABLE"));
             assertTrue(cleanup.contains("CLEANED"));
             assertTrue(cleanup.contains("eligible_interval_count,changed_interval_count,frozen_interval_count"));

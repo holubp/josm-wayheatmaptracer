@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import subprocess
@@ -161,6 +162,21 @@ class DebugAnalyzerCompatibilityTest(unittest.TestCase):
         self.assertEqual("", rows[0]["cleanup_fit_after"])
         self.assertEqual("unavailable", undulations[0]["cleanup_state"])
         self.assertEqual("", undulations[0]["cleanup_maximum_removed_deviation_meters"])
+
+    def test_missing_geometry_quality_is_unavailable_not_zero(self) -> None:
+        rows, _ = run_analyzers(debug_bundle(14, "0.21.5", "preview-open"))
+        self.assertEqual("unavailable", rows[0]["geometry_quality_state"])
+        self.assertEqual("", rows[0]["geometry_quality_length_meters"])
+        self.assertEqual("", rows[0]["geometry_quality_max_turn_degrees"])
+
+    def test_geometry_quality_requires_matching_checksum(self) -> None:
+        rows, _ = run_analyzers(geometry_quality_bundle(tamper=False))
+        self.assertEqual("available", rows[0]["geometry_quality_state"])
+        self.assertEqual("12.5", rows[0]["geometry_quality_length_meters"])
+        self.assertEqual("45.0", rows[0]["geometry_quality_max_turn_degrees"])
+        rows, _ = run_analyzers(geometry_quality_bundle(tamper=True))
+        self.assertEqual("integrity-failed", rows[0]["geometry_quality_state"])
+        self.assertEqual("", rows[0]["geometry_quality_length_meters"])
 
     def test_format_ten_exposes_residual_authorization_and_absolute_turn_cost(self) -> None:
         """Format 10 optimizer additions remain separate and readable."""
@@ -426,6 +442,34 @@ def debug_bundle(
                 "hot,1,band-1,CORE_CENSORED,RIGHT,false\n"
                 "hot,2,band-2,SHOULDER_CENSORED,LEFT,true\n",
             )
+    return result.getvalue()
+
+
+def geometry_quality_bundle(tamper: bool) -> bytes:
+    """Add a schema-1 checksummed geometry row to a minimal format-14 bundle."""
+    source = debug_bundle(14, "0.21.5", "preview-open")
+    payload = (
+        "candidate_id,stage,availability,reason,conversion_identity,length_meters,"
+        "defined_turn_count,max_turn_degrees,zero_length_segments\n"
+        "hot/bundle-1,final-preview,available,,EPSG:3857+local-wgs84-tangent-v2,12.5,1,45.0,0\n"
+    ).encode("utf-8")
+    result = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(source)) as source_zip, zipfile.ZipFile(result, "w") as output:
+        for info in source_zip.infolist():
+            data = source_zip.read(info.filename)
+            if info.filename == "diagnostics.json":
+                document = json.loads(data)
+                document["geometryQuality"] = {"schemaVersion": 1, "artifacts": [{
+                    "file": "geometry-quality.csv", "rows": 1, "bytes": len(payload),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                }]}
+                data = json.dumps(document).encode("utf-8")
+            elif info.filename == "manifest.json":
+                document = json.loads(data)
+                document["geometryQualitySchemaVersion"] = 1
+                data = json.dumps(document).encode("utf-8")
+            output.writestr(info.filename, data)
+        output.writestr("geometry-quality.csv", payload + (b"\n" if tamper else b""))
     return result.getvalue()
 
 
