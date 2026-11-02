@@ -22,6 +22,24 @@ class V022MetricRegionConservativeEventsTest {
     }
 
     @Test
+    void originalOneNanometreSinglePolygonNotchIsRejectedAtConstruction() {
+        assertThrows(IllegalArgumentException.class, () -> new MetricRegion(List.of(List.of(
+            p(0, 0), p(63, 0), p(63, 63), p(20 + .5e-9, 63),
+            p(20 + .5e-9, 31.99), p(20 - .5e-9, 31.99),
+            p(20 - .5e-9, 63), p(0, 63)))));
+    }
+
+    @Test
+    void validSinglePolygonNotchRefusesBothDirections() {
+        MetricRegion region = new MetricRegion(List.of(List.of(
+            p(0, 0), p(63, 0), p(63, 63), p(20.01, 63),
+            p(20.01, 31.99), p(19.99, 31.99),
+            p(19.99, 63), p(0, 63))));
+        assertFalse(conservative(region, p(10, 32), p(30, 32)));
+        assertFalse(conservative(region, p(30, 32), p(10, 32)));
+    }
+
+    @Test
     void pointJustOutsideOldBoundaryToleranceIsNotAuthority() {
         MetricRegion region = MetricRegion.rectangle(0, 0, 30, 30);
         MetricPoint outside = p(-.5e-9, 15);
