@@ -1049,3 +1049,30 @@ state/event domain declarations are prototype inputs, not automatic attestation
 of real-engine authority; later adapters must construct them from actual native
 enumerators and captured protected occurrences. Actual R4 assertion RED/GREEN
 and independent review precede integration. No new user plan approval is needed.
+
+CI artifacts independently verified:228JUnit XMLs,2494executions/2449distinct
+class-name cases, zero failures/errors/skips. Both GUI summaries PASS, official
+JOSM19555host SHA d2e2310e24fdf8f4b2d18094997446e443d5894e86f6eeac27a4241bad40338e.
+Public validation explicitly records private_inputs=false and private fixtures
+not executed. Downloaded artifacts/report live only in ignored experimental
+`build/private-drasov-quality/ci-41502206347` and
+`/data/data/com.termux/files/usr/tmp/drasov-ci-41502206347-report.md`.
+
+Useful parallel preparation: the Luna lane now owns isolated
+`/data/data/com.termux/files/usr/tmp/josm-drasov-a-native-domain` at180701b,
+brief `/data/data/com.termux/files/usr/tmp/drasov-a-native-domain-brief.md`.
+It exposes exact existing A allowedOffsets/base weights as immutable row facts,
+without alternate enumeration, metric authority, default engine or solver change.
+Source ownership is nonoverlapping with connector work. Native-connector worker
+owns local Gradle first; domain tests queue for that slot. Both require retained
+behavioral tests and independent review before experimental integration.
+
+Connector TDD reached intended RED:1test/1assertion failure, A witness0->1
+expected ADMITTED but scaffold returned UNAVAILABLE/NOT_IMPLEMENTED. XML preserved
+at `/data/data/com.termux/files/usr/tmp/drasov-native-connector-evidence/red/`.
+The Sol6.1/high worker then hit service model capacity after writing a first
+implementation (not a weekly-quota measurement). No commit/green/review claimed.
+Controller took over its isolated worktree inline; Luna retains the Gradle slot
+for domain RED/GREEN. A briefly overlapping connector run was terminated by the
+controller; its incomplete results are not evidence. No retry/model escalation
+or Astra use. Current connector/source-input edits remain experimental/unreviewed.
