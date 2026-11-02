@@ -871,3 +871,51 @@ shares one attempt's stricter8Mpair/128Mtotal counters, atomic admission, typed
 terminal refusal and sticky cancellation. It does NOT replace AttemptMemoryLedger
 or certify engine integration. Worker may prepare code while waiting for Gradle.
 No recursive agents, Astra, source acquisitions, cap increase or release added.
+
+Work-budget primitive completed a529775 (experimental integration bcb5c21):
+10focused tests GREEN after9intended scaffold assertion failures; independent
+Sol source/test review clean. Worker used default Java21 and incorrectly reported
+Java17 unavailable; controller verified explicit Termux17.0.20 binary and the
+worker corrected its report. Required17verification remains PENDING until the
+context integration run includes these10tests; do not relabel the21receipt.
+No source change was needed for that environment correction. Context Sol now
+holds Gradle; unused budget worker will not run duplicate verification.
+
+Phase3 exact API/test packet:
+`/data/data/com.termux/files/usr/tmp/drasov-emission-context-packet.md`.
+Opaque producer/source binding admits shared-owner memory BEFORE the existing
+single L0 producer, returns a closeable input lifetime, and keeps immutable
+context facts separate from the existing mutable normalScreen profile accessor.
+Eventual engine entry must revalidate profile coordinates/normals against those
+facts. Do not broaden this into a global legacy-profile refactor. Shared budget
+is caller-owned; no fresh phase allowance. Production visible/managed factories,
+protected-event integration, connector admission, solver and consumers remain
+explicit remaining work. Full Drasov quality is not yet demonstrated.
+
+Phase3 committed04c4735 in `codex/drasov-emission-context`, following shared-budget
+dependencyd76310d. Final Java17.0.20 run:51tests (13context/12detached/8grid/
+8continuity/10budget), zero failures/errors/skips. New REDs cover prepublication
+normal mutation and exact source-read accounting; canceled after10reads reports10,
+not the full1600node count. Backward-compatible ScalarIntensityField callback
+overload is a specifically authorized necessary allowlist extension; old arithmetic
+is unchanged. Phase3 Sol/high independent source/ownership audit is now running;
+do not integrate as approved until findings close. Visible/managed contexts,
+protected-event integration, admission, kernel and consumers remain pending.
+
+Useful parallel phase4 metadata lane: Luna owns isolated
+`codex/drasov-mode-threshold-receipts`, basebcb5c21, brief
+`/data/data/com.termux/files/usr/tmp/drasov-mode-threshold-brief.md`.
+Ruling: preserve old DetailedResult/base collector layouts and default native work/
+allocation identities. The initial proposed sixth component was superseded BEFORE
+behavioral RED or implementation. Corrected component packet SHA
+d886b8793e65186f2add14b09436c3e40a9156ea32c0b4ce0df83da3b7e53a27
+uses explicit extractDetailedWithAcceptedThresholds and separate immutable wrapper.
+No threshold formula, extractor acceptance or default numerical change is allowed.
+Worker holds Gradle for focused RED/GREEN and baseline parity checks.
+
+Sol is preparing bounded NativeConnectorEvaluator packet and a cheap actual-R4
+production-extractor screen while its phase3 source remains frozen for audit.
+Scalar shoulder-slab minima and finite probes alone do not prove continuous branch
+identity; that obligation remains explicit. No proxy acceptance, extra tracing,
+source-forward/Jacobian gate or cap increase is authorized. Standing autonomous
+experiment/follow-on authorization remains; no user plan-approval stop added.
