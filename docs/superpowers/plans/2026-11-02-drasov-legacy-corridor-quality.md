@@ -126,8 +126,8 @@ Every `GTEST` below means this exact shell command from the isolated worktree:
 | Design requirement | Owning tasks | Current status |
 | --- | --- | --- |
 | Capture attribution, actual raw/final/applied distinction and accepted blue reference |1 | EVIDENCE VERIFIED; user blue reference PENDING |
-| Causal proof and deterministic non-Drasov-only controls |2 | PARTIAL: engine-level RED, analytic proof and preservation controls verified; optional-emission amendment APPROVED; exact v2 contract in progress |
-| Legacy usable geometry, wide search and successful behavior retained |3 | PARTIAL: approved bounded experiment; mapping foundation tested; solver and real-data quality not yet verified |
+| Causal proof and deterministic non-Drasov-only controls |2 | PARTIAL: RED/proof/controls verified; approved v2 contract reviewed; concrete connector certificate/kernel packet pending |
+| Legacy usable geometry, wide search and successful behavior retained |3 | PARTIAL: mapping, integral, factual input and resource foundations tested/reviewed; Legacy inference repair and real-data quality remain |
 | Exact final safety, availability, old diagnostic/identity compatibility |4 | PARTIAL: frozen previews, contact guard and measured export integrated; final gates and image-supported foldback work remain |
 | A actual existing objective traced, usable geometry, exact optimizer retained |5 | PARTIAL: approved correspondence experiment; fixed v2 objective witness screen passes; solver optimum and preservation unverified |
 | Both geometry modes, consumers, Hybrid, protected topology and transactions |6 | NOT STARTED |
@@ -919,3 +919,30 @@ Scalar shoulder-slab minima and finite probes alone do not prove continuous bran
 identity; that obligation remains explicit. No proxy acceptance, extra tracing,
 source-forward/Jacobian gate or cap increase is authorized. Standing autonomous
 experiment/follow-on authorization remains; no user plan-approval stop added.
+
+Context fix round1 COMPLETE: independent Sol re-review marks both producer-permit
+and preparation-accounting findings ADDRESSED, no new blocker. Workerbf6ec8a
+tests59focused plus8MetricRegion neighbors onJava17, all67pass withzero errors/
+skips. Exact active pre-admitted permit binds width/step/pitch and source identity;
+Gaussian/profile/region variable work now charges the shared bound. Authorized
+necessary callback overloads preserve old scalar/filter arithmetic and traversal.
+Integrated experimental as2374934+6dc9683; release worktree production unchanged.
+
+Threshold metadata fix round1 COMPLETE: workerdf65328+caf2f14 integrated only
+experimentally as09849d0+b70bc35;38focused Java17 tests GREEN and independent Sol
+re-review all findings ADDRESSED. Fixed explicit IdentityHashMap capacity sizing,
+before-new collector reservation and separate receipt-copy work. One-mode map
+oracle544versusold416 and nonpower3/6 cases retain true RED evidence. Corrected
+fixture plateau is explicitly atindices64/65=1.0; frozen prechange/current class
+receipts use the SAME fixture and bound cleanbcb5source/dependency identities/JDK17:
+detailed work3148/peak18840/retained864, plain3137/14232/456, veto3150/18840/896.
+All default receipts match exactly; no inferred parity from new output alone.
+Durable component: `docs/superpowers/specs/2026-11-02-drasov-native-threshold-receipts.md`.
+
+Next coherent batch gate: push only public source/tests/docs on experimental
+branch for existing public CI and both real-JOSM GUI smoke engines. Workflow
+triggers all branches and has NO release publication job. No private capture,
+fixture or local screenshot will be added. Full CI remains pending, not passing.
+Stage4 Sol remains read-only, preparing actual production-extractor R4 screen and
+bounded connector/continuous-branch packet; kernel and usable-geometry gates are
+still open. No RC or numerical default change is authorized by this checkpoint.
