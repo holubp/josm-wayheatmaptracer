@@ -54,18 +54,18 @@ Every `GTEST` below means this exact shell command from the isolated worktree:
 **Files:** Create ignored `build/private-drasov-quality/<run-id>/{inventory.json,measurements.json,comparison.html,receipt.json}` and a bounded helper under `.superpowers/sdd/drasov-quality/`; modify this plan's ledger only. No production edits.
 **Interfaces:** Consumes Drasov.zip SHA256d8580ef870e8e0a91ec447519c487ac176469cce3833b6939b11b9559b78b3cb and RC14 frozen/original geometry. Produces locally bound raw/final/applied candidate records and user annotations, never inferred authority.
 
-- [ ] Verify archive SHA/checksums; inventory six captures by engine/mode/mapping/source/settings, selection and output kind. Record recorded runtime separately from newly measured runtime.
-- [ ] Recompute turn angles/intersections independently on raw, reconstructed preview and actual applied coordinates. Assert applied bluered maximum164.3896degrees and applied aggregate124.5794degrees within0.01degrees; do not use these angles as universal rejection thresholds.
-- [ ] Generate a local browser comparison on actual z15 imagery with candidate IDs, stage labels and per-candidate feedback saved locally. Label missing final geometry unavailable; B's no-route run has no drawable inferred path.
+- [x] Verify archive SHA/checksums; inventory six captures by engine/mode/mapping/source/settings, selection and output kind. Record recorded runtime separately from newly measured runtime.
+- [x] Recompute turn angles/intersections independently on raw, reconstructed preview and actual applied coordinates. Assert applied bluered maximum164.3896degrees and applied aggregate124.5794degrees within0.01degrees; do not use these angles as universal rejection thresholds.
+- [x] Generate a local browser comparison on actual z15 imagery with candidate IDs, stage labels and per-candidate feedback saved locally. Label missing final geometry unavailable; B's no-route run has no drawable inferred path.
 - [ ] Bind user's accepted blue result/marked defect intervals if available. Keep reference status PENDING if not; continue causal analysis rather than inventing a good ID.
-- [ ] Save immutable inputs/output hashes and commands. Commit only nonprivate test/reporting instructions and ledger changes; no private artifacts.
+- [x] Save immutable inputs/output hashes and commands. Commit only nonprivate test/reporting instructions and ledger changes; no private artifacts.
 
 ### Task2: Isolate the first defect and freeze the patch contract
 
 **Files:** Create `PhysicalGeometryFixture.java`, `PhysicalPathContinuityTest.java`; inspect existing sampler, RidgeTracker and A optimizer without speculative production changes. Store bounded private diagnostic rows locally.
 **Interfaces:** Fixture helper exposes `static List<RenderedHeatmapSampler.CrossSectionProfile> rotatingFrameProfiles()` and `parallelFrameProfiles()`, using existing public constructors and synthetic scalar data. Production interfaces remain unchanged at this stage.
 
-- [ ] Reconstruct profiles119–124 around the main Legacy bend from factual source sampling. Export anchor, normal, offset, physical point, chosen peak/evidence, source chainage and anchor ownership. Attribute where raw/final geometry first departs; do not substitute screen units for metres.
+- [x] Reconstruct profiles119–124 around the main Legacy bend from factual source sampling. Export anchor, normal, offset, physical point, chosen peak/evidence, source chainage and anchor ownership. Attribute where raw/final geometry first departs; do not substitute screen units for metres.
 - [ ] Construct a tiny synthetic equivalent of the demonstrated defect. Add `rotatingFramesDoNotCreateUnsupportedFoldback()` using a known non-self-crossing synthetic ridge with direct two-sided support; assert the path remains within one source pitch of that ridge and does not introduce a self-crossing. Pin exact coordinates/pitch/expected physical envelope in the fixture, independently of output from the tested tracker.
 - [ ] Add negative/positive controls: `supportedSwitchbackRetainsApex()`, `parallelStrandsDoNotGainDarkConnector()`, `collinearInsertionPreservesSupportedShape()`. Derive expected apex and corridor tubes from raster-generation geometry; use one native source pitch as the positional tolerance, not a tuned Drasov tolerance. Check weak thin strands and invalid support separately.
 - [ ] Run GTEST `--tests '*PhysicalPathContinuityTest' --tests '*RidgeTrackerTest'`. Retain an intended RED on the new defect and passing independent controls; fixture errors are not RED.
@@ -128,8 +128,8 @@ Every `GTEST` below means this exact shell command from the isolated worktree:
 | Capture attribution, actual raw/final/applied distinction and accepted blue reference |1 | EVIDENCE VERIFIED; user blue reference PENDING |
 | Causal proof and deterministic non-Drasov-only controls |2 | ACTIVE |
 | Legacy usable geometry, wide search and successful behavior retained |3 | NOT STARTED |
-| Exact final safety, availability, old diagnostic/identity compatibility |4 | NOT STARTED |
-| A actual existing objective traced, usable geometry, exact optimizer retained |5 | NOT STARTED |
+| Exact final safety, availability, old diagnostic/identity compatibility |4 | PARTIAL: measurement primitive tested; caller/export integration pending |
+| A actual existing objective traced, usable geometry, exact optimizer retained |5 | ACTIVE: frozen-state experiments; default unchanged |
 | Both geometry modes, consumers, Hybrid, protected topology and transactions |6 | NOT STARTED |
 | Independent audit, CI, private visual acceptance, bounded performance |6 | NOT STARTED |
 | B performance redesign/new hybrid/stable release scope |None | OUT OF SCOPE |
@@ -280,3 +280,53 @@ including outerneighbors229/230and235/236. A physical-turn-minimal witness retai
 shows tube-center prior supplies24.4019of24.5796cost on firstnoncrossing envelope
 witness,versusbaseline.08128. No productioncoefficientchosen: next diagnostic
 ablates longitudinalpriors withoutaddingbending, preserving states/directcosts.
+
+Native replay after metadata fix db6ff8b preserves185/185offsets and projected
+points exactly versus pre-fix runtime; all185filtered profiles retain factual
+owner/chainage/native samples/transforms, including54replacementrecords. No
+quality improvement is claimed for this data-preservation fix.
+
+A prior-ablation experiment FAILED to remove the local crossing: tube-only,
+tube+relative-curvature, and also equivalent-peak center-prior removal all select
+crossing paths. Do not ship confidence attenuation on that evidence. Negative
+chart Jacobian is not itself distrust evidence: an opposite150degree circular
+arc is a valid image-supported counterexample (source radius8p,target opposite
+radius4p,offset12p; p=1.556means offset18.67m inside25m).
+
+Next Task5 experiment packet (isolated, NOT a production/default change): add an
+explicit immutable package-private optimizer constructor parameter for diagnostic
+physical-turn weight, default0. Add three-point K=theta²/max(1,(Lprev+Lnext)/(2p))
+inside the existing pair-state recurrence, with actual candidate edge lengths,
+cached headings and factual pitchp. Weight0 must preserve all old arithmetic,
+state/tie/work behavior and existing exact tests. Nonzero experiment gets separate
+CostRow decomposition; zero-length edge gets explicit finite worst-turn diagnostic
+penaltypi², not a fabricated heading. Do not reuse cleanup-only absolute turn cost
+or change its Off semantics. Test analytic angle/scale/zero-weight cases RED→GREEN
+before integration. Isolated prototype only, no source UI/policy/default toggle.
+Then use existing production tracker/optimizer on frozen A and independently
+painted strong/opposite-arc controls to determine a common feasible weight range;
+do not select a production coefficient from Drasov alone. If no common range,
+reject this family. This bounded instrumented experiment is a plan-approved
+diagnostic numerical test, not release qualification or a claim of finished A.
+
+Prototype owner is reused Luna/medium in tmp `josm-drasov-a-physical-turn-experiment`,
+branchcodex/drasov-a-physical-turn-experiment, basedb6ff8b. Owns only optimizer and
+new CorridorPhysicalTurnExperimentTest. Sole Gradle slot belongs to that lane.
+Controller has prepared opposite-arc fixtures/tests in root but has NOT run them
+while prototype owns Gradle. Root uncommitted tests must be baselined before any
+weight-preservation claim. Default0prototype is not an integration candidate yet.
+
+Legacy component ablation skipping only peak suppression does NOT improve the
+main119..124bend: same offsets/geometry/native support, despite changed scores
+and different167..177offsets. All candidate native peaks in that capture have
+syntheticCenter=false, including the secondary peaks. Do not call them inferred
+midpoints merely from their numerical offsets. Suppression is not the inspected
+bend's cause; no replacement predicate or selector tweak follows from this run.
+
+Verification paths: root typed-profileRED log drasov-profile-integrity-red.log;
+root GREEN log drasov-profile-integrity-green.log; image controls GREEN log
+drasov-native-support-controls.log (all underTermux tmp). Active root HEADdb6ff8b.
+Guard's rejected branch `codex/drasov-legacy-smoothing` ends8e98368; do not cherry-
+pick either guard commit into root. New measurement primitive is integrated and
+tested; its final-preview/export caller integration remains NOT STARTED. No full
+CI, RC publication, new engine-default coefficient or stable-release claim.

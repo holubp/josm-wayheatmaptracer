@@ -8,6 +8,32 @@ import org.junit.jupiter.api.Test;
 /** Representability controls: these characterize sampling, not a claimed tracing repair. */
 class PhysicalPathContinuityTest {
     @Test
+    void legacyRetainsSupportedBendOppositeToSourceDirection() {
+        var candidates = new RidgeTracker().track(PhysicalGeometryFixture.supportedOppositeArcProfiles(),
+                PhysicalGeometryFixture.NATIVE_PITCH);
+        assertTrue(!candidates.isEmpty());
+        assertOppositeArc(candidates.get(0).screenPoints());
+    }
+
+    @Test
+    void corridorARetainsSupportedBendOppositeToSourceDirection() {
+        var candidates = new CorridorAwareTracker().track(PhysicalGeometryFixture.supportedOppositeArcProfiles(),
+                PhysicalGeometryFixture.NATIVE_PITCH);
+        assertTrue(!candidates.isEmpty());
+        assertOppositeArc(candidates.get(0).screenPoints());
+    }
+
+    private static void assertOppositeArc(java.util.List<java.awt.geom.Point2D.Double> points) {
+        double radius = 4 * PhysicalGeometryFixture.NATIVE_PITCH;
+        for (var point : points) {
+            assertEquals(radius, Math.hypot(point.x - 64, point.y - 64), PhysicalGeometryFixture.NATIVE_PITCH,
+                    "The path must stay on the independently painted arc, not its dark shortcut");
+        }
+        assertTrue(points.stream().anyMatch(p -> p.x < 64 - radius + PhysicalGeometryFixture.NATIVE_PITCH),
+                "A valid 150-degree bend must retain its apex even with a reversed source-normal chart");
+    }
+
+    @Test
     void regularNormalChartCanTraverseIndependentStraightRidgeOnce() {
         var profiles = PhysicalGeometryFixture.straightRidgeThroughParabola(12.0);
         double previous = Double.NEGATIVE_INFINITY;

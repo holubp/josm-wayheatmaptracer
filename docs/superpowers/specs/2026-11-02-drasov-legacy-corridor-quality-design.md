@@ -5,7 +5,9 @@ Design only; no implementation or release authority
 is added by this document. Baseline: RC14 source6f98691, release worktree50e1e35.
 Independent Sol6.1/medium builder check2026-11-02: no material planning gaps;
 causal fixtures, reference annotation and architecture-amendment gates retained.
-User design approval received; execution planning authorized, implementation not started.
+User design approval received; subsequent plan approval authorized goal execution
+and useful parallel Luna work. Current implementation/evidence is tracked in the
+matching execution plan. No automatic RC publication is authorized.
 
 ## Intent and scope
 
