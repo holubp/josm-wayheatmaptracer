@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans for tightly coupled controller work; use superpowers:subagent-driven-development only for explicitly delegated isolated tasks. Track steps below. Do not turn an investigation hypothesis into an assumed production fix.
 
-**Goal:** Produce usable Legacy and Corridor A geometry on Drasov without unsupported kinks, retaining successful strong traces, sparse strands and supported switchbacks.
+**Goal:** Produce usable Legacy and Corridor A geometry on Drasov without unsupported kinks, retaining successful strong traces, sparse strands and supported switchbacks. Execute the approved optional-emission experiments and, on positive results, related follow-on designs, implementation plans and verified implementation autonomously, using useful parallelism.
 
 **Architecture:** Reconstruct the first faulty physical-geometry decision, repair Legacy narrowly, then remeasure and repair Corridor A independently. Assess exact final previews and preserve versioned diagnostics, existing transaction authority and A's one exact second-order DP. Diagnosis determines the repair mechanism before its numerical patch is specified.
 
@@ -772,3 +772,102 @@ support, cancellation/work charging and analytic regressions. Luna owns only
 the isolated `codex/drasov-native-segment-integral` worktree. No admission,
 branch/region policy or engine integration is delegated to that primitive.
 Only this worker holds the local Gradle slot. No recursive delegation.
+
+Mapping task review: independent Sol inspected408f98c..d76609b and returned
+clean spec/correctness verdict. Both reciprocal ownership and overflow checks
+are verified; this does not certify route geometry or image evidence.
+
+Native integral worker4d9f135:18focused tests GREEN, actual scaffold assertion
+RED retained. Full suite was started unnecessarily and canceled without a result;
+it is NOT passing evidence. Independent Sol review found a concrete per-cell
+quadrature defect: nearParameter coalesces distinct crossings within1e-14.
+On a procedural1002-square checkerboard and segment(0,0)->(1000,1000.000000000009),
+mean0.6666666666659217 differs from independent per-boundary high-precision
+oracle0.66666666666666816354. Fix round1 returns to Luna for a genuine RED,
+strict distinct crossing traversal and focused GREEN, then scoped Sol re-review.
+Do not integrate this unreviewed numerical service into release or call it exact.
+
+Full v2 contract artifact is frozen for review at ignored
+`20261102-optional-emission-cost-screen/contract-v2.md`, SHA256
+e3ba710fedadef4d3b71f7c82930d2214d80abc956a0203201c9f59dcc81851a.
+Independent Sol found three prerequisite fixes: preserve incoming heading through
+zero-length occurrences/anchor phases rather than inventing a pi-squared turn;
+charge every DP predecessor/triple visit against existing8M pair AND128M total
+limits; explicitly represent Legacy unsupported-row carried-offset states and
+anchored-interval target states with non-direct provenance. Directional endpoint
+port caches require ordered exact endpoint/tangent/context identity. Author Sol
+is resolving these internally; no new user approval gate. The16-interior-row
+convention (index gap<=17) is consistent with the current graph screen.
+
+Measured potential graph bounds: R4 exact16-interior/20m gates26,098pairs and
+1,878,294triples; Drasov16-interior gate alone1,533,820pairs/441,927,213triples
+before image admission (20m factual sequence not yet bound, never fabricated).
+Admission and exact caches must establish practical work below BOTH actual caps;
+a typed resource refusal is safe but fails the quality-success criterion.
+
+Read-only consumer map saved beside that contract identifies candidate geometry/
+offset equal-size APIs, same-index modern adapter pairing, Legacy sequential
+offset metrics, cleanup geometry/evidence coupling and Hybrid provenance. Both
+engine contracts change; consumed rows have no selected offset. Original N-row
+observation/unary tables remain; M geometry and later K final-preview vertices
+retain distinct indexing. No interpolated/zero/NaN selected-row padding.
+
+Native integral fix round1:5c2d2ea preserves strictly distinct crossing events;
+checkerboard oracle reproduces RED at4d9f135 and GREEN with reverse/subdivision
+controls.19focused tests pass; independent Sol re-review marks ADDRESSED, no new
+blocker. Boxed cell/node caches remain O(crossed cells) and require caller memory
+admission; scalar math alone grants no connector authority. Integrated only into
+experimental branch as28d54fb+759343f, alongside reviewed mapping8efd98a+d76609b.
+Controller is running their combined31focused regressions on that exact snapshot.
+
+Next independent packet is frozen at
+`/data/data/com.termux/files/usr/tmp/drasov-scalar-grid-view-brief.md`:
+`service/ScalarFieldGridView` wraps actual immutable ScalarIntensityField or
+ScalarEvidenceField with no array copies, retains complete-cell masks separately
+from node validity and maps crop/reduction grid coordinates exactly. Add only
+package-private ScalarIntensityField grid read accessors; preserve existing
+sampling behavior. This readonly producer adapter grants no metre, source-pitch,
+branch or region authority. Luna owns isolated `codex/drasov-scalar-grid-view`,
+base759343f. Controller retains Gradle slot until combined run completes.
+
+Combined foundation run on759343f completed:31tests in2XML suites, zero failures,
+errors or skips (Java17/offline/no-daemon/max-workers1). git diff --check passed.
+Scalar view then completed as c6b53cc, integrated experimental as23ee630:
+8view tests RED on scaffold,30focused GREEN including3pyramid+19integral;
+independent Sol review clean. Existing ScalarIntensityField already exposes
+package-private read access, so NO existing-field production edit was needed.
+Requested ScalarIntensityFieldTest did not exist; GaussianIntensityPyramidTest
+is the factual neighboring suite, not a skipped check. Release production is
+unchanged; these primitives remain experimental and unused by native engines.
+
+Contract re-review round1: all3P1 and directional-cache clarification ADDRESSED.
+Canonical zero-occurrence physical/reference/scalar memory, actual Legacy carry/
+interval-target families and stricter work accounting now have concrete tests
+required. Persisted reviewed packet:
+`docs/superpowers/specs/2026-11-02-drasov-optional-emission-native-integral-v2.md`.
+Reviewed ignored revision SHAe559bd39eed685c724d39d3d5ab72f2050d7bcb344cb22e677116486f921967e.
+Original e3ba review snapshot was overwritten before it could be archived;
+do not claim that original file survives. Revised source and scoped review notes
+are retained. No contradiction remains requiring user approval.
+
+Factual20m graph binding is now complete: frozen Drasov309chainages bit-identical
+to all309CorridorTraceInput distances, bound by row IDs/hash to5334allowed states.
+The original unbounded graph count reproduces exactly. BOTH16interior/20m gates
+give3630row arcs,1,091,848state pairs,227,563,996triple-state extensions before
+image admission/transport (28.45times8M). See ignored chainage-binding.json and
+bounded-graph-receipt.json. These are potential bounds, not actual admitted work.
+
+Active bounded phase3: Sol owns `codex/drasov-emission-context`, base23ee630,
+brief `/data/data/com.termux/files/usr/tmp/drasov-emission-context-brief.md`.
+Implement exact retained L0 plus immutable detached/explicit synthetic factual
+context and tests. Visible/managed contexts and whole consumers remain required
+later scope. Sol holds the single Gradle slot. No kernel/admission bypass.
+
+Parallel required work-budget primitive: Luna/medium owns isolated
+`codex/drasov-emission-budget`, base23ee630, exact packet
+`/data/data/com.termux/files/usr/tmp/drasov-work-budget-brief.md`.
+EmissionWorkBudget(TraceBudgets,CancellationProbe), charge(Operation,long), snapshot
+shares one attempt's stricter8Mpair/128Mtotal counters, atomic admission, typed
+terminal refusal and sticky cancellation. It does NOT replace AttemptMemoryLedger
+or certify engine integration. Worker may prepare code while waiting for Gradle.
+No recursive agents, Astra, source acquisitions, cap increase or release added.
