@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.geom.Point2D;
+import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -52,7 +53,7 @@ class NativeCorridorStateDomainTest {
     }
 
     @Test
-    void preservesGapOwnershipEndpointBoundsAndOffsetStateCap() {
+    void preservesGapOwnershipEndpointBoundsAndOffsetStateCap() throws Exception {
         var band = new CorridorBand("band", 0.0, -20.0, 20.0, -2.0, 2.0,
             List.of(-1.0, 0.0, 1.0), 1.0, 0.0, 0.2, 0.8, 0.9, 1.0,
             0.95, 0.9, 0.25, false, List.of());
@@ -95,14 +96,58 @@ class NativeCorridorStateDomainTest {
         assertTrue(movableRow.states().stream().allMatch(state -> Math.abs(state.offsetPx()) <= 1.0 + 1e-9));
 
         var capped = new CorridorCenterlineOptimizer(new CorridorOptimizationParameters(21, 0.55, 4.0, 0.55, 4.0));
-        var cappedApproaches = new EndpointApproachBuilder().build(track, profiles, tube, JunctionContext.empty(), scale);
-        var cappedRow = capped.nativeStateDomain(
-            track, profiles, 1.0, JunctionContext.empty(), scale, tube, cappedApproaches).rows().get(0);
-        assertTrue(cappedRow.states().size() <= 21);
-        assertEquals(List.of(-20.0, -2.0, 0.0, 2.0, 20.0), cappedRow.states().stream()
-            .limit(5).map(CorridorCenterlineOptimizer.NativeState::offsetPx).toList());
-        assertEquals(java.util.stream.IntStream.range(0, cappedRow.states().size()).boxed().toList(),
-            cappedRow.states().stream().map(CorridorCenterlineOptimizer.NativeState::stateId).toList());
+        long eligibleDistinctSamples = profiles.get(0).source().intensitySamples().stream()
+            .filter(IntensitySample::insideRaster)
+            .filter(sample -> sample.offsetPx() >= band.shoulderMinPx()
+                && sample.offsetPx() <= band.shoulderMaxPx())
+            .map(IntensitySample::offsetPx).distinct().count();
+        assertTrue(eligibleDistinctSamples > 21,
+            "fixture must offer more than the native state cap: " + eligibleDistinctSamples);
+
+        double nonUnitSourcePixel = 0.5;
+        var nonUnitTube = new CorridorTubeBuilder().build(track, profiles, nonUnitSourcePixel, scale);
+        var nonUnitApproaches = new EndpointApproachBuilder().build(
+            track, profiles, nonUnitTube, JunctionContext.empty(), scale);
+        var nonUnitRow = capped.nativeStateDomain(track, profiles, nonUnitSourcePixel,
+            JunctionContext.empty(), scale, nonUnitTube, nonUnitApproaches).rows().get(0);
+        List<Double> nonUnitCanonical = canonicalAllowedOffsets(capped, track, profiles, 0,
+            nonUnitSourcePixel, JunctionContext.empty(), scale, nonUnitTube, nonUnitApproaches);
+        assertEquals(nonUnitCanonical,
+            nonUnitRow.states().stream().map(CorridorCenterlineOptimizer.NativeState::offsetPx).toList());
+        assertEquals(19, nonUnitRow.states().size());
+        assertEquals(java.util.stream.IntStream.range(0, 19).boxed().toList(),
+            nonUnitRow.states().stream().map(CorridorCenterlineOptimizer.NativeState::stateId).toList());
+
+        double invalidSourcePixel = Double.NaN;
+        var invalidTube = new CorridorTubeBuilder().build(track, profiles, 1.0, scale);
+        var invalidApproaches = new EndpointApproachBuilder().build(
+            track, profiles, invalidTube, JunctionContext.empty(), scale);
+        var invalidRow = capped.nativeStateDomain(track, profiles, invalidSourcePixel,
+            JunctionContext.empty(), scale, invalidTube, invalidApproaches).rows().get(0);
+        List<Double> invalidCanonical = canonicalAllowedOffsets(capped, track, profiles, 0,
+            1.0, JunctionContext.empty(), scale, invalidTube, invalidApproaches);
+        assertEquals(invalidCanonical,
+            invalidRow.states().stream().map(CorridorCenterlineOptimizer.NativeState::offsetPx).toList());
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Double> canonicalAllowedOffsets(
+        CorridorCenterlineOptimizer optimizer,
+        CorridorTrack track,
+        List<CorridorProfile> profiles,
+        int row,
+        double normalizedSourcePixel,
+        JunctionContext junctions,
+        Map<String, BandScaleEvidence> scale,
+        LongitudinalCorridorTube tube,
+        EndpointApproachModel approaches
+    ) throws Exception {
+        Method method = CorridorCenterlineOptimizer.class.getDeclaredMethod("allowedOffsets",
+            CorridorTrack.class, List.class, int.class, double.class, JunctionContext.class,
+            Map.class, CorridorTubeSlice.class, EndpointApproachModel.class);
+        method.setAccessible(true);
+        return (List<Double>) method.invoke(optimizer, track, profiles, row, normalizedSourcePixel,
+            junctions, scale, tube.at(row), approaches);
     }
 
     private CorridorProfile profile(int index, CorridorBand band) {
