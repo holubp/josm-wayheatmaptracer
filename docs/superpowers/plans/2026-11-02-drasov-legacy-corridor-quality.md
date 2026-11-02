@@ -946,3 +946,72 @@ fixture or local screenshot will be added. Full CI remains pending, not passing.
 Stage4 Sol remains read-only, preparing actual production-extractor R4 screen and
 bounded connector/continuous-branch packet; kernel and usable-geometry gates are
 still open. No RC or numerical default change is authorized by this checkpoint.
+
+## Current resumption checkpoint — coherent experimental batch
+
+Standing user authorization is recorded in the Goal above: execute approved
+experiments and related positive-result follow-on designs/plans autonomously.
+No further implementation-plan approval is needed. All original requirements
+remain. No Astra use, cap increase or RC publication has been authorized here.
+
+Experimental source branch `codex/drasov-optional-emission-experiment` is now
+pushed at180701b92218440592231289ec43b77b575ef4c6. Its integrated source passed
+136distinct focused tests across12XML suites onJava17, zero failures/errors/skips;
+full task diff against12e4522 passes git diff --check and the worktree is clean.
+Every consequential component/fix above has independent Sol review. This remains
+input/evidence infrastructure, not a repaired Legacy/A inference result.
+
+Public full CI is running unattended:
+https://github.com/holubp/josm-wayheatmaptracer/actions/runs/41502206347
+Exact head180701b verified by gh run list. Full public validation and both existing
+real-JOSM GUI engines are required. Status last observed IN_PROGRESS; do not call
+it green. Watch session86554 writes only ignored experimental-worktree
+`build/private-drasov-quality/ci-41502206347/watch.log`. Next use gh run view,
+then download final evidence into that ignored directory and verify actual head,
+suite counts, both GUI summaries and public host receipt. No private data uploaded
+and no public release was created.
+
+The scalar discriminator is POSITIVE but PARTIAL: the exact committed R4 paint
+loop was repainted, production fromRaster crop[18,17,110,102] reproduced and all
+native fixture profiles match bit-exactly. Final float-L0 SHA
+d4b9ead3e6b15afb1b9818b715d7ef197c3ba9e150e0759b47756c08629830a6.
+Both engines' known witness probes have33/33 uniquely compatible complete native
+modes and measured flanks/core receipts; minimum actual arc intensities are
+A0.9997175/Legacy0.9614827. Preliminary full-image hash27c008... is superseded for
+this crop-specific receipt. Work108123/108078 concerns only three witness arcs
+per engine, not full graph feasibility. No original decision authority, endpoint
+ownership or continuous branch admission is certified by this screen.
+
+Next dependency is the continuous native branch certificate and practical exact
+admission graph. The978word packet is ignored controller-release
+`build/private-drasov-quality/20261102-optional-emission-cost-screen/native-connector-stage4-packet.md`
+SHAfeec8a17882bd2f102eacfe5be2f0487e8c431fb99fd0b1b2e93f040af6b9797.
+Current APIs do not mint the needed between-probe critical-component/plateau
+certificate. Do not relabel finite probes/scalar minima as full branch proof,
+enable an ADMITTED fallback, or code the full kernel against a made-up receipt.
+Input-owned execution session/child-memory-owner access also needs its precise
+bounded API. The actual67test context revision is bf6ec8a, not superseded04c4735.
+
+One focused Astra consultation was requested asynchronously, because the user's
+model policy requires explicit approval. NO approval received and NO Astra used.
+The question is model-use permission for this difficult continuous-corridor/work-
+bound decision, not approval of another implementation plan. The user may choose
+Sol-only instead. Unreviewed consultation hypotheses are at
+`/data/data/com.termux/files/usr/tmp/drasov-continuous-certificate-hypotheses.md`;
+they are NOT an admission rule. In particular source-cross-section overlap as
+extra-edge eligibility would change the v2 graph and requires technical review
+and a declared policy, not a hidden performance-only pruning change.
+
+All child source writers/reviewers are currently completed; source worktrees are
+preserved clean, including both fixes and original intentionally RED eb151e3.
+No default engine, palette, source width, transaction or published JAR changed.
+The existing goal service still reports stale BLOCKED from the former approval
+gate and exposes no resume/objective-update operation. Do not falsely complete
+or recreate it to change the flag. This does not revoke the user's authorization.
+Weekly remainder is unknown; no speed/pool or budget-limit change was made.
+
+After the model consultation decision, freeze/review the exact branch certificate,
+run actual admission/work feasibility before substantial consumers, implement the
+one exact A kernel and existing Legacy stages against unchanged eb151e3 image
+oracles, then preservation/real Drasov+Omice and every remaining original Task1–6
+gate. User-accepted Drasov visual reference is still pending, never invented.
