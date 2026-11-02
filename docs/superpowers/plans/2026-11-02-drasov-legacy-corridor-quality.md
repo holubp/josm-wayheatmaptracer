@@ -330,3 +330,92 @@ Guard's rejected branch `codex/drasov-legacy-smoothing` ends8e98368; do not cher
 pick either guard commit into root. New measurement primitive is integrated and
 tested; its final-preview/export caller integration remains NOT STARTED. No full
 CI, RC publication, new engine-default coefficient or stable-release claim.
+
+Opposite-arc baseline now PASS: Legacy and A both retain independently painted
+150degree opposite arc within native-pitch tolerance; root PhysicalContinuity4
+plus RasterSupport2 pass with0failures/errors/skips. RootHEADdd57e41 includes
+those preservation controls and current documentation. Prototype A remains in
+its tmp branch, not integrated.
+
+Prototype A correction: reject2be524c's globalProjectionRegistry/unavailable→zero
+approach. Follow-upa5ea082 uses each DetachedProfileSamplingLocation's frozen
+metric/raster transform, validates a shared frame, and removes all global map
+projection access. Controller added trueRED for zero computed metric pitch that
+could silently disable nonzero cost;22focused tests GREEN after explicit guards.
+Prototype code must be frozen before private runs; no default or UI changes.
+
+Legacy coordinate-gauge attempt6/12/24 is INVALID for unit-causality: the higher
+level sampler fixes reference raster/half-width scaling, so editing only mosaic
+virtualscale expands actual physical support despite unchanged declared25m.
+Out-of-window peaks confirm the inconsistency. No sampler/unit patch follows.
+
+Bounded Legacy physical-turn prototype packet (isolated, no default integration):
+package-private RidgeTracker(double diagnosticTurnWeight, boolean suppressNoise),
+public default delegates0,true. Existing DP/anchored/smoother order unchanged;
+nonzero3-point turn cost uses actual reconstructed raster coordinates normalized
+by factual native sourcePixelSizePx; do not label raster lengths as metres or
+query globalProjectionRegistry. Keep current State and read previous two offsets
+from existing path history with explicit current profile index at each append;
+no added state-space/history/pruning. Apply identical term in existing anchored
+interval solving; no new tracing pass. Default0 preserves arithmetic exactly.
+The suppressNoise=false option is diagnostic component ablation only, not a
+selected production policy. Scalar smoothing stays unchanged for this experiment.
+TDD analytic turn/normalization/invalid weight and default compatibility first,
+then native frozen Drasov at weights0,.1,.3,1,3,10 with suppression on/off; report
+raw/anchored/smoothed geometry and independent2Dsupport, not just scores. No
+coefficient chosen until preservation controls/common viable range are shown;
+reject family if none. Owned tmp branchcodex/drasov-legacy-physical-turn-experiment
+basedd57e41. This controlled experiment tests the same physical-continuity family
+as A, not another speculative production repair.
+
+A physical-turn family receipt is now available at ignored
+`build/private-drasov-quality/20261102-a-physical-family/receipt.txt` using frozen
+prototype42a92eb. All seven declared weights retain the same complete state space
+and1615031transitions; cost rows reconcile. Lambda0 exactly reproduces the prior
+direct replay. No tested weight removes all proper crossings: lambda30 removes
+the second crossing but retains200/207. No production coefficient is justified.
+Synthetic regular-straight and opposite150degree-arc screens preserve their
+ground-truth envelopes, but were run onJava21; they are exploratory evidence,
+not pinnedJava17 qualification. Do not launch more coefficient searches.
+
+Gap diagnostic: row202 has one forced allowed offset; the selected201→203
+connector never intersects its cross-section within the finite segment. However,
+replacing all three truly unobserved internal rows51/202/304 by bounded factual-
+chainage metric interpolation leaves full crossing sets unchanged for both
+lambda0and30. Each replacement has positive valid2Dscalar support and certified
+decision-region authority, but this is a counterfactual only. Forced gap vertices
+alone do not explain the defect; do not ship post-hoc interpolation as its repair.
+Receipt `20261102-a-physical-family/gap-interpolation-receipt.txt` records exact
+geometry, ownership and support. Focused Sol/high architectural consultation
+requested before another A repair family: establish supported noncrossing local
+lattice feasibility, separating objective failure from correspondence failure.
+
+Legacy prototype d918e6f remains isolated in tmp. Its cached edge heading/length
+belongs to the existing selected State path; no added state-space dimensions.
+34focused tests passed, but the reported missing-API compilation failure is NOT
+behavioral RED. Default compatibility and the fixed native family now run with
+explicitJava17binaries; no new weights or source changes authorized by that run.
+Task4 read-only integration mapping proceeds independently; final geometry and
+export remain unimplemented. No new RC or push has been performed.
+
+Task4 first vertical slice: Legacy candidates now freeze the existing final
+reconstruction before assessment/export, in both geometry modes, preserving raw
+geometry and intentionally empty Legacy node-assignment maps. Intended RED:
+`legacyCandidatesFreezeBothModesBeforeAssessmentWithoutInventingNodeAssignments`
+expected the four-point precise preview but received an empty list. Minimal
+Legacy-only branch then passes42AlignmentService tests and all command tests;
+saved XML/logs `20261102-legacy-preview-{red,green}` and Termux
+`drasov-legacy-freeze-{red,green}.log`. This freezes existing reconstruction, not
+a kink repair or completed safety/metrics integration. Root owns this slice;
+isolated Luna diagnostics lane owns optional checksummed geometry-quality.csv,
+analyzer compatibility and frozen slide-time projection-code capture. Export
+must never interpret projected coordinates through the later global projection.
+
+A synthetic controls rerun is now pinnedJava17.0.20: all14fixed runs pass and
+every non-runtime output field equals theJava21screen, including full geometry,
+costs and work. `20261102-a-physical-controls/qualification-java17.md` records
+identities; it does not resolve the full private route crossing. Sol narrowed the
+next discriminator to one capped offline finite-state feasibility search around
+198..212, preserving all exterior points, original allowed states/singleton gaps
+and existing contact policy. A cutoff is UNKNOWN; no source-forward rule or
+production topology-history change is authorized by this diagnostic.

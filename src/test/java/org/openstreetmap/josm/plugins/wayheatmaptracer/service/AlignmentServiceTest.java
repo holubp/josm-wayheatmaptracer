@@ -115,6 +115,38 @@ class AlignmentServiceTest {
     }
 
     @Test
+    void legacyCandidatesFreezeBothModesBeforeAssessmentWithoutInventingNodeAssignments() {
+        Node start = nodeAt(0, 0);
+        Node middle = nodeAt(10, 0);
+        Node end = nodeAt(20, 0);
+        Way way = new Way();
+        way.setNodes(List.of(start, middle, end));
+        List<EastNorth> originalNodeCoordinates = way.getNodes().stream().map(Node::getEastNorth).toList();
+        SelectionContext selected = new SelectionContext(way, 0, 2,
+            List.of(start, middle, end), Set.of(start, end));
+        List<EastNorth> source = List.of(new EastNorth(0, 0), new EastNorth(10, 0), new EastNorth(20, 0));
+        List<EastNorth> ridge = List.of(new EastNorth(0, 0), new EastNorth(5, 5),
+            new EastNorth(15, 5), new EastNorth(20, 0));
+        CenterlineCandidate raw = new CenterlineCandidate("hot/ridge-1", 1.0, List.of(), List.of())
+            .withEastNorthPoints(ridge);
+        AlignmentService service = new AlignmentService();
+
+        CenterlineCandidate precise = service.attachFinalPreviewGeometry(List.of(raw), selected, source,
+            config(AlignmentMode.PRECISE_SHAPE), GeometryCleanupConfig.disabled(), null).get(0);
+        CenterlineCandidate moved = service.attachFinalPreviewGeometry(List.of(raw), selected, source,
+            config(AlignmentMode.MOVE_EXISTING_NODES), GeometryCleanupConfig.disabled(), null).get(0);
+
+        assertEquals(ridge, precise.finalPreviewPoints());
+        assertEquals(List.of(new EastNorth(0, 0), new EastNorth(10, 5), new EastNorth(20, 0)),
+            moved.finalPreviewPoints());
+        assertEquals(ridge, precise.eastNorthPoints(), "Raw and reconstructed stages remain distinct");
+        assertTrue(precise.proposedNodePositions().isEmpty(), "Legacy replacement keeps its existing assignment contract");
+        assertTrue(moved.proposedNodePositions().isEmpty());
+        assertEquals(originalNodeCoordinates, way.getNodes().stream().map(Node::getEastNorth).toList(),
+            "Freezing a preview must not mutate OSM nodes");
+    }
+
+    @Test
     void groupsRawAndCleanedSiblingsAtTheirBestRankWithoutAnImplicitCleanupBonus() {
         CandidateGeometryCleanup rawReport = cleanupReport(
             "hot/ridge-raw", CandidateGeometryCleanup.Outcome.CLEANED_ALTERNATIVE_AVAILABLE);

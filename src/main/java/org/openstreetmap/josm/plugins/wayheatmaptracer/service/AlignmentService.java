@@ -2061,6 +2061,12 @@ public final class AlignmentService {
         MapView mapView
     ) {
         TrackerMode mode = config.trackerMode();
+        if (mode == TrackerMode.LEGACY_V02) {
+            // Freeze the existing Legacy reconstruction before assessment/export. Legacy
+            // replacement intentionally does not carry Corridor A node assignments.
+            return candidates.stream().map(candidate -> candidate.withFinalPreviewPoints(
+                optimize(selection, sourcePolyline, candidate, config, mapView))).toList();
+        }
         if (mode != TrackerMode.CORRIDOR_AWARE) {
             return candidates;
         }
