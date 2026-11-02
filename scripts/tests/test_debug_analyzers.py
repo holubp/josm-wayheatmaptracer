@@ -178,6 +178,29 @@ class DebugAnalyzerCompatibilityTest(unittest.TestCase):
         self.assertEqual("integrity-failed", rows[0]["geometry_quality_state"])
         self.assertEqual("", rows[0]["geometry_quality_length_meters"])
 
+    def test_geometry_quality_rejects_unsupported_schema(self) -> None:
+        rows, _ = run_analyzers(geometry_quality_bundle(tamper=False, schema_version=2))
+        self.assertEqual("unsupported-schema", rows[0]["geometry_quality_state"])
+        self.assertEqual("", rows[0]["geometry_quality_length_meters"])
+
+    def test_geometry_quality_rejects_duplicate_or_invalid_measurement_rows(self) -> None:
+        header = (
+            "candidate_id,stage,availability,reason,conversion_identity,length_meters,"
+            "defined_turn_count,max_turn_degrees,zero_length_segments\n"
+        )
+        valid = "hot/bundle-1,final-preview,available,,EPSG:3857+local-wgs84-tangent-v2,12.5,1,45.0,0\n"
+        invalid_cases = (
+            ("duplicate final stage", valid + valid),
+            ("nan length", valid.replace(",12.5,", ",nan,")),
+            ("negative edge count", valid.replace(",45.0,0\n", ",45.0,-1\n")),
+            ("unavailable numeric value", valid.replace(",available,", ",unavailable,")),
+        )
+        for label, payload in invalid_cases:
+            with self.subTest(label=label):
+                rows, _ = run_analyzers(geometry_quality_bundle(tamper=False, payload_override=header + payload))
+                self.assertEqual("integrity-failed", rows[0]["geometry_quality_state"])
+                self.assertEqual("", rows[0]["geometry_quality_length_meters"])
+
     def test_format_ten_exposes_residual_authorization_and_absolute_turn_cost(self) -> None:
         """Format 10 optimizer additions remain separate and readable."""
         rows, _ = run_analyzers(debug_bundle(10, "0.19.3", "preview-open"))
@@ -445,28 +468,30 @@ def debug_bundle(
     return result.getvalue()
 
 
-def geometry_quality_bundle(tamper: bool) -> bytes:
+def geometry_quality_bundle(
+    tamper: bool, schema_version: int = 1, payload_override: str | None = None
+) -> bytes:
     """Add a schema-1 checksummed geometry row to a minimal format-14 bundle."""
     source = debug_bundle(14, "0.21.5", "preview-open")
-    payload = (
+    payload = (payload_override or (
         "candidate_id,stage,availability,reason,conversion_identity,length_meters,"
         "defined_turn_count,max_turn_degrees,zero_length_segments\n"
         "hot/bundle-1,final-preview,available,,EPSG:3857+local-wgs84-tangent-v2,12.5,1,45.0,0\n"
-    ).encode("utf-8")
+    )).encode("utf-8")
     result = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(source)) as source_zip, zipfile.ZipFile(result, "w") as output:
         for info in source_zip.infolist():
             data = source_zip.read(info.filename)
             if info.filename == "diagnostics.json":
                 document = json.loads(data)
-                document["geometryQuality"] = {"schemaVersion": 1, "artifacts": [{
-                    "file": "geometry-quality.csv", "rows": 1, "bytes": len(payload),
+                document["geometryQuality"] = {"schemaVersion": schema_version, "artifacts": [{
+                    "file": "geometry-quality.csv", "rows": payload.count(b"\n") - 1, "bytes": len(payload),
                     "sha256": hashlib.sha256(payload).hexdigest(),
                 }]}
                 data = json.dumps(document).encode("utf-8")
             elif info.filename == "manifest.json":
                 document = json.loads(data)
-                document["geometryQualitySchemaVersion"] = 1
+                document["geometryQualitySchemaVersion"] = schema_version
                 data = json.dumps(document).encode("utf-8")
             output.writestr(info.filename, data)
         output.writestr("geometry-quality.csv", payload + (b"\n" if tamper else b""))

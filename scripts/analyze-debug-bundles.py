@@ -231,24 +231,74 @@ def geometry_quality_rows(
     if content is None:
         return "unavailable", {}
     summary = diagnostics.get("geometryQuality")
+    manifest = json_object(read_zip_text(bundle, "manifest.json"))
     artifacts = summary.get("artifacts", []) if isinstance(summary, dict) else []
     artifact = next((item for item in artifacts if isinstance(item, dict)
                      and item.get("file") == "geometry-quality.csv"), None)
     if not isinstance(artifact, dict):
         return "integrity-failed", {}
+    if (type(summary.get("schemaVersion")) is not int or summary.get("schemaVersion") != 1
+            or type(manifest.get("geometryQualitySchemaVersion")) is not int
+            or manifest.get("geometryQualitySchemaVersion") != 1):
+        return "unsupported-schema", {}
     digest = hashlib.sha256(content).hexdigest()
     if digest != artifact.get("sha256") or len(content) != artifact.get("bytes"):
         return "integrity-failed", {}
     try:
         text = content.decode("utf-8")
-        rows = list(csv.DictReader(io.StringIO(text)))
+        reader = csv.DictReader(io.StringIO(text))
+        required = {
+            "candidate_id", "stage", "availability", "reason", "conversion_identity",
+            "length_meters", "defined_turn_count", "max_turn_degrees", "zero_length_segments",
+        }
+        if (reader.fieldnames is None or len(reader.fieldnames) != len(set(reader.fieldnames))
+                or not required.issubset(reader.fieldnames)):
+            return "integrity-failed", {}
+        rows = list(reader)
     except (UnicodeDecodeError, csv.Error):
         return "integrity-failed", {}
     if len(rows) != artifact.get("rows"):
         return "integrity-failed", {}
-    result = {row.get("candidate_id", ""): row for row in rows
-              if row.get("stage") == "final-preview"}
+    seen: set[tuple[str, str]] = set()
+    result: dict[str, dict[str, str]] = {}
+    for row in rows:
+        if None in row or any(value is None for value in row.values()):
+            return "integrity-failed", {}
+        candidate_id = row.get("candidate_id", "")
+        stage = row.get("stage", "")
+        identity = (candidate_id, stage)
+        if not candidate_id or stage not in {"raw", "final-preview", "applied"} or identity in seen:
+            return "integrity-failed", {}
+        seen.add(identity)
+        if not geometry_quality_row_valid(row):
+            return "integrity-failed", {}
+        if stage == "final-preview":
+            result[candidate_id] = row
     return "available", result
+
+
+def geometry_quality_row_valid(row: dict[str, str]) -> bool:
+    """Validate the small numeric contract for one geometry quality stage row."""
+    numeric_fields = ("length_meters", "defined_turn_count", "max_turn_degrees", "zero_length_segments")
+    availability = row.get("availability", "")
+    if availability == "unavailable":
+        return bool(row.get("reason", "")) and not row.get("conversion_identity", "") and all(
+            not row.get(field, "") for field in numeric_fields)
+    if availability != "available" or not row.get("conversion_identity", ""):
+        return False
+    try:
+        length = float(row["length_meters"])
+        turns = int(row["defined_turn_count"])
+        zero_segments = int(row["zero_length_segments"])
+        if not math.isfinite(length) or length < 0.0 or turns < 0 or zero_segments < 0:
+            return False
+        maximum = row.get("max_turn_degrees", "")
+        if turns == 0:
+            return maximum == ""
+        max_turn = float(maximum)
+        return math.isfinite(max_turn) and 0.0 <= max_turn <= 180.0
+    except (ValueError, KeyError):
+        return False
 
 
 def geometry_quality_fields(

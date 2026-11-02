@@ -36,13 +36,21 @@ final class GeometryQualityCsv {
                 projection == null ? missingProjectionReason(projectionCode) : "invalid-or-uncertified-geographic-path"));
             List<EastNorth> finalGeometry = candidate.finalPreviewPoints();
             if (!finalGeometry.isEmpty()) {
-                if (Objects.equals(candidate.id(), selectedCandidateId) && selectedPreview != null
-                    && selectedPreview.equals(finalGeometry)) {
-                    finalGeometry = selectedPreview;
+                String mismatchReason = "";
+                if (Objects.equals(candidate.id(), selectedCandidateId)) {
+                    if (selectedPreview == null) {
+                        mismatchReason = "review-preview-unavailable";
+                    } else if (!selectedPreview.equals(finalGeometry)) {
+                        mismatchReason = "review-preview-mismatch";
+                    } else {
+                        finalGeometry = selectedPreview;
+                    }
                 }
-                append(csv, candidate.id(), "final-preview", measure(project(finalGeometry, projection), projectionCode,
-                    projection == null ? missingProjectionReason(projectionCode)
-                        : "invalid-or-uncertified-geographic-path"));
+                append(csv, candidate.id(), "final-preview", mismatchReason.isEmpty()
+                    ? measure(project(finalGeometry, projection), projectionCode,
+                        projection == null ? missingProjectionReason(projectionCode)
+                            : "invalid-or-uncertified-geographic-path")
+                    : Measurement.unavailable(mismatchReason));
             } else {
                 append(csv, candidate.id(), "final-preview", Measurement.unavailable("no-stored-final-preview"));
             }
