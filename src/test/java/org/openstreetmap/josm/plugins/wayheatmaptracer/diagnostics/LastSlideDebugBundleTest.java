@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -9,6 +10,7 @@ import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
 import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HexFormat;
 import java.util.List;
@@ -16,6 +18,7 @@ import java.util.Map;
 import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.zip.ZipFile;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -167,22 +170,152 @@ class LastSlideDebugBundleTest {
         AlignmentResult result = new AlignmentResult(selection, null, List.of(candidate), raw, finalPath,
             List.of(), diagnostics, null);
         LastSlideDebugBundle bundle = LastSlideDebugBundle.fromResult(result, candidate, "applied", "log");
-        ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:4326"));
         Path path = temporaryDirectory.resolve("geometry-quality.zip");
-        bundle.writeTo(path.toFile());
+        var priorProjection = ProjectionRegistry.getProjection();
+        try {
+            ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:4326"));
+            bundle.writeTo(path.toFile());
+            try (ZipFile zip = new ZipFile(path.toFile())) {
+                String csv = text(zip, "geometry-quality.csv");
+                assertTrue(csv.contains("\"hot/test\",raw,available,"));
+                assertTrue(csv.contains("\"hot/test\",final-preview,available,"));
+                assertTrue(csv.contains("\"hot/test\",applied,available,"));
+                String artifactSummary = text(zip, "diagnostics.json");
+                assertTrue(artifactSummary.contains("geometryQuality"));
+                assertTrue(artifactSummary.contains("\"sha256\":\"" + sha256(csv) + "\""));
+                assertTrue(text(zip, "manifest.json").contains("geometryQualitySchemaVersion\":1"));
+                assertTrue(text(zip, "manifest.json").contains("formatVersion\":14"));
+            }
+        } finally {
+            ProjectionRegistry.setProjection(priorProjection);
+        }
+    }
+
+    @Test
+    void geometryQualityStagesMeasureRawFinalAndAdversarialAppliedGeometryIndependently(
+        @TempDir Path temporaryDirectory) throws Exception {
+        QualityFixture fixture = qualityFixtureWithAdversarialAppliedReversal();
+        Path path = temporaryDirectory.resolve("geometry-quality-stages.zip");
+        LastSlideDebugBundle.fromResult(fixture.result(), fixture.candidate(), "applied", "test")
+            .writeTo(path.toFile());
 
         try (ZipFile zip = new ZipFile(path.toFile())) {
             String csv = text(zip, "geometry-quality.csv");
-            assertTrue(csv.contains("\"hot/test\",raw,available,"));
-            assertTrue(csv.contains("\"hot/test\",final-preview,available,"));
-            assertTrue(csv.contains("\"hot/test\",applied,available,"));
-            String artifactSummary = text(zip, "diagnostics.json");
-            assertTrue(artifactSummary.contains("geometryQuality"));
-            assertTrue(artifactSummary.contains("\"sha256\":\"" + sha256(csv) + "\""));
-            assertTrue(text(zip, "manifest.json").contains("geometryQualitySchemaVersion\":1"));
-            assertTrue(text(zip, "manifest.json").contains("formatVersion\":14"));
+            double north100 = 99.33056;
+            assertQualityRow(csv, "hot/quality", "raw", 2.0 * Math.hypot(100.0, north100),
+                1, Math.toDegrees(Math.atan2(200.0 * north100, 10_000.0 - north100 * north100)));
+            assertQualityRow(csv, "hot/quality", "final-preview", 199.33056, 1, 90.0);
+            assertQualityRow(csv, "hot/quality", "applied", 200.0, 1, 180.0);
+            String original = text(zip, "original-segment.osm");
+            double originalLastLongitude = ProjectionRegistry.getProjection()
+                .eastNorth2latlon(new EastNorth(200, 0)).lon();
+            assertTrue(original.contains("lon=\"" + originalLastLongitude + "\""));
+            assertTrue(text(zip, "applied-segment.osm").contains("node"));
         }
     }
+
+    @Test
+    void actualBundleGeometryQualityRoundTripsThroughAnalyzerWithVerifiedValues(
+        @TempDir Path temporaryDirectory) throws Exception {
+        QualityFixture fixture = qualityFixtureWithAdversarialAppliedReversal();
+        Path bundlePath = temporaryDirectory.resolve("quality-roundtrip.zip");
+        Path csvPath = temporaryDirectory.resolve("quality-roundtrip.csv");
+        LastSlideDebugBundle.fromResult(fixture.result(), fixture.candidate(), "preview-open", "test")
+            .writeTo(bundlePath.toFile());
+        Path analyzer = Path.of("scripts", "analyze-debug-bundles.py").toAbsolutePath();
+        Process process = new ProcessBuilder("python3", analyzer.toString(), bundlePath.toString(),
+            "--raw-csv", csvPath.toString()).redirectErrorStream(true).start();
+        boolean exited = process.waitFor(30, TimeUnit.SECONDS);
+        if (!exited) {
+            process.destroyForcibly();
+            fail("debug analyzer timed out");
+        }
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(0, process.exitValue(), output);
+        String[] lines = Files.readString(csvPath, StandardCharsets.UTF_8).lines().toArray(String[]::new);
+        List<String> columns = parseCsvLine(lines[0]);
+        int candidateIdColumn = columns.indexOf("candidate_id");
+        String row = java.util.Arrays.stream(lines).skip(1)
+            .filter(line -> parseCsvLine(line).size() > candidateIdColumn
+                && "hot/quality".equals(parseCsvLine(line).get(candidateIdColumn)))
+            .findFirst().orElseThrow(() -> new AssertionError(String.join("\n", lines)));
+        List<String> values = parseCsvLine(row);
+        Map<String, String> analyzed = new java.util.HashMap<>();
+        for (int index = 0; index < columns.size(); index++) {
+            analyzed.put(columns.get(index), values.get(index));
+        }
+        assertEquals("available", analyzed.get("geometry_quality_state"));
+        assertEquals(199.33056, Double.parseDouble(analyzed.get("geometry_quality_length_meters")), 0.02);
+        assertEquals(90.0, Double.parseDouble(analyzed.get("geometry_quality_max_turn_degrees")), 1e-7);
+        try (ZipFile zip = new ZipFile(bundlePath.toFile())) {
+            String artifact = text(zip, "geometry-quality.csv");
+            assertTrue(text(zip, "diagnostics.json").contains("\"sha256\":\"" + sha256(artifact) + "\""));
+        }
+    }
+
+    private static QualityFixture qualityFixtureWithAdversarialAppliedReversal() {
+        Node first = node(new EastNorth(0, 0));
+        Node middle = node(new EastNorth(100, 0));
+        Node last = node(new EastNorth(200, 0));
+        Way way = new Way();
+        way.setNodes(List.of(first, middle, last));
+        SelectionContext selection = new SelectionContext(way, 0, 2, List.of(first, middle, last),
+            Set.of(first, middle, last));
+        List<EastNorth> source = List.of(new EastNorth(0, 0), new EastNorth(100, 0), new EastNorth(200, 0));
+        List<EastNorth> raw = List.of(new EastNorth(0, 0), new EastNorth(100, 100), new EastNorth(200, 0));
+        List<EastNorth> finalPreview = List.of(new EastNorth(0, 0), new EastNorth(100, 0), new EastNorth(100, 100));
+        CenterlineCandidate candidate = new CenterlineCandidate("hot/quality", 1.0,
+            List.of(new Point2D.Double(0, 0), new Point2D.Double(100, 100), new Point2D.Double(200, 0)),
+            List.of(0.0, 0.0, 0.0)).withEastNorthPoints(raw).withFinalPreviewGeometry(finalPreview, Map.of());
+        AlignmentDiagnostics diagnostics = new AlignmentDiagnostics("Strava", 0, 0, 0, 0, 0,
+            "{}", "{}", "{\"projectionCode\":\"EPSG:3857\"}", "[]", "[]", "[]",
+            "candidate_id,detector,calibrated_score,raw_score,support_ratio,mean_intensity,"
+                + "mean_gradient_strength,signal_to_noise\n"
+                + "hot/quality,hot,1,1,1,1,1,1\n",
+            "", "", "", "", "", "", "{}");
+        AlignmentResult result = new AlignmentResult(selection, null, List.of(candidate), source, finalPreview,
+            List.of(), diagnostics, null);
+        // Adversarial export fixture: mutable applied nodes deliberately form a reversal, unlike the stored preview.
+        last.setCoor(ProjectionRegistry.getProjection().eastNorth2latlon(new EastNorth(0, 0)));
+        return new QualityFixture(result, candidate);
+    }
+
+    private static void assertQualityRow(String csv, String candidateId, String stage,
+        double expectedLength, int expectedTurns, double expectedMaximumTurn) {
+        String row = csv.lines().filter(line -> line.startsWith("\"" + candidateId + "\"," + stage + ","))
+            .findFirst().orElseThrow();
+        String[] fields = row.split(",", -1);
+        assertEquals("available", fields[2]);
+        assertEquals(expectedLength, Double.parseDouble(fields[5]), 0.02);
+        assertEquals(expectedTurns, Integer.parseInt(fields[6]));
+        assertEquals(expectedMaximumTurn, Double.parseDouble(fields[7]), 0.02);
+    }
+
+    private static List<String> parseCsvLine(String line) {
+        List<String> fields = new java.util.ArrayList<>();
+        StringBuilder field = new StringBuilder();
+        boolean quoted = false;
+        for (int index = 0; index < line.length(); index++) {
+            char current = line.charAt(index);
+            if (current == '"') {
+                if (quoted && index + 1 < line.length() && line.charAt(index + 1) == '"') {
+                    field.append('"');
+                    index++;
+                } else {
+                    quoted = !quoted;
+                }
+            } else if (current == ',' && !quoted) {
+                fields.add(field.toString());
+                field.setLength(0);
+            } else {
+                field.append(current);
+            }
+        }
+        fields.add(field.toString());
+        return fields;
+    }
+
+    private record QualityFixture(AlignmentResult result, CenterlineCandidate candidate) { }
 
     @Test
     void exportsChecksummedCleanupArtifactsWithEscapingAndRedaction(@TempDir Path temporaryDirectory)
