@@ -2,7 +2,9 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.LongConsumer;
 import java.util.function.Supplier;
 
@@ -199,6 +201,54 @@ public final class LocalScalarProfileExtractor {
         }
     }
 
+    /** Actual winner and intensity threshold from one raw nested-center calculation. */
+    public record RawCoreThreshold(int winnerSampleIndex, double winnerValue, double threshold) {
+        /** Validates captured numeric provenance without deriving another threshold. */
+        public RawCoreThreshold {
+            if (winnerSampleIndex < 0 || !unitScalar(winnerValue) || !unitScalar(threshold)) {
+                throw new IllegalArgumentException("Raw scalar core threshold is invalid");
+            }
+        }
+    }
+
+    /** Actual accepted-mode thresholds tied to exact baseline identities. */
+    public record AcceptedModeThresholdReceipt(Mode mode, RawPeak originPeak,
+            double localBackground, double shoulderThreshold, Optional<RawCoreThreshold> rawCore) {
+        /** Validates captured references and normalized scalars without recomputing them. */
+        public AcceptedModeThresholdReceipt {
+            if (mode == null || originPeak == null || rawCore == null
+                    || !unitScalar(localBackground) || !unitScalar(shoulderThreshold)) {
+                throw new IllegalArgumentException("Accepted-mode threshold receipt is invalid");
+            }
+        }
+    }
+
+    /** Optional threshold receipts kept separate from the legacy detailed-result layout. */
+    public record AcceptedThresholdExtraction(DetailedResult result,
+            List<AcceptedModeThresholdReceipt> acceptedReceipts) {
+        /** Freezes receipts and verifies their exact accepted-mode/raw-peak identities. */
+        public AcceptedThresholdExtraction {
+            if (result == null || acceptedReceipts == null) {
+                throw new IllegalArgumentException("Accepted threshold extraction is incomplete");
+            }
+            acceptedReceipts = List.copyOf(acceptedReceipts);
+            IdentityHashMap<Mode, Boolean> modes = new IdentityHashMap<>();
+            for (Mode mode : result.baseline().modes()) modes.put(mode, Boolean.TRUE);
+            IdentityHashMap<RawPeak, Boolean> peaks = new IdentityHashMap<>();
+            for (RawPeak peak : result.rawPeaks()) peaks.put(peak, Boolean.TRUE);
+            IdentityHashMap<Mode, Boolean> seenModes = new IdentityHashMap<>();
+            IdentityHashMap<RawPeak, Boolean> seenPeaks = new IdentityHashMap<>();
+            for (AcceptedModeThresholdReceipt receipt : acceptedReceipts) {
+                if (receipt == null || !modes.containsKey(receipt.mode())
+                        || !peaks.containsKey(receipt.originPeak())
+                        || seenModes.put(receipt.mode(), Boolean.TRUE) != null
+                        || seenPeaks.put(receipt.originPeak(), Boolean.TRUE) != null) {
+                    throw new IllegalArgumentException("Accepted threshold receipt identity is mismatched");
+                }
+            }
+        }
+    }
+
     /** Baseline extraction plus optional, non-authoritative peak/core diagnostics. */
     public record DetailedResult(Result baseline, List<SuppressedMode> suppressedModes,
             List<RawPeak> rawPeaks, List<FlankReceipt> flankReceipts,
@@ -293,6 +343,76 @@ public final class LocalScalarProfileExtractor {
         }
     }
 
+    /** Separately charged opt-in receipt collection; default detailed extraction has no instance. */
+    private static final class AcceptedThresholdCollector implements AutoCloseable {
+        private final AttemptMemoryLedger.Owner resultOwner;
+        private final AttemptMemoryLedger.Owner scratchOwner;
+        private final List<AcceptedModeThresholdReceipt> receipts;
+        private WorkProbe work;
+
+        AcceptedThresholdCollector(AttemptMemoryLedger.Owner parent, int capacity) {
+            this.resultOwner = parent == null ? null : parent.child("accepted-threshold-extraction");
+            this.scratchOwner = resultOwner == null ? null : resultOwner.child("accepted-threshold-scratch");
+            try {
+                this.receipts = allocated(scratchOwner, listBytes(capacity),
+                        () -> new ArrayList<>(capacity));
+            } catch (RuntimeException | Error failure) {
+                close();
+                throw failure;
+            }
+        }
+
+        void accepted(Mode mode, RawPeak peak, double localBackground, double shoulderThreshold,
+                double[] rawCoreProbe) {
+            if (mode == null || peak == null || rawCoreProbe == null || work == null) {
+                throw new IllegalStateException("Accepted threshold capture is incomplete");
+            }
+            work.bulk(1L);
+            Optional<RawCoreThreshold> rawCore = Optional.empty();
+            if (rawCoreProbe[0] >= 0.0) {
+                work.bulk(1L);
+                RawCoreThreshold value = allocated(resultOwner, AttemptMemoryLedger.objectBytes(24),
+                        () -> new RawCoreThreshold((int) rawCoreProbe[0], rawCoreProbe[1], rawCoreProbe[2]));
+                rawCore = allocated(resultOwner, AttemptMemoryLedger.objectBytes(16),
+                        () -> Optional.of(value));
+            }
+            Optional<RawCoreThreshold> capturedCore = rawCore;
+            AcceptedModeThresholdReceipt receipt = allocated(resultOwner, AttemptMemoryLedger.objectBytes(48),
+                    () -> new AcceptedModeThresholdReceipt(mode, peak, localBackground,
+                            shoulderThreshold, capturedCore));
+            receipts.add(receipt);
+        }
+
+        AcceptedThresholdExtraction freeze(DetailedResult result) {
+            long validationWork = Math.addExact(result.baseline().modes().size(),
+                    Math.addExact(result.rawPeaks().size(), receipts.size()));
+            work.bulk(validationWork);
+            long identityMapBytes = Math.multiplyExact(4L,
+                    AttemptMemoryLedger.objectBytes(40)
+                        + AttemptMemoryLedger.referenceArrayBytes(Math.multiplyExact(4L,
+                            Math.max(1L, Math.max(result.baseline().modes().size(), result.rawPeaks().size())))));
+            AttemptMemoryLedger.Owner validationOwner = resultOwner == null ? null
+                    : resultOwner.child("accepted-threshold-validation");
+            try {
+                allocated(validationOwner, identityMapBytes, Object::new);
+                return allocated(resultOwner, AttemptMemoryLedger.objectBytes(32) + listBytes(receipts.size()),
+                        () -> new AcceptedThresholdExtraction(result, receipts));
+            } finally {
+                if (validationOwner != null) validationOwner.close();
+            }
+        }
+
+        void transferTo(AttemptMemoryLedger.Owner parent) {
+            if (scratchOwner != null) scratchOwner.close();
+            if (resultOwner != null) resultOwner.transferTo(parent);
+        }
+
+        @Override public void close() {
+            if (scratchOwner != null) scratchOwner.close();
+            if (resultOwner != null) resultOwner.close();
+        }
+    }
+
     /** Extracts baseline and detailed evidence without changing the baseline decision. */
     public DetailedResult extractDetailed(List<Sample> samples, double sourcePitchMeters,
             EvidenceModelParameters.Localization parameters) {
@@ -305,6 +425,27 @@ public final class LocalScalarProfileExtractor {
             EvidenceModelParameters.Localization parameters, AttemptMemoryLedger.Owner owner) {
         return extractDetailed(samples, sourcePitchMeters, parameters, owner,
                 CancellationProbe.NONE, ignored -> { });
+    }
+
+    /** Opt-in extraction retaining exact accepted RAW thresholds in a separate wrapper. */
+    public AcceptedThresholdExtraction extractDetailedWithAcceptedThresholds(List<Sample> samples,
+            double sourcePitchMeters, EvidenceModelParameters.Localization parameters,
+            AttemptMemoryLedger.Owner owner, CancellationProbe cancellation, LongConsumer charge) {
+        if (samples == null || samples.isEmpty() || !positive(sourcePitchMeters) || parameters == null
+                || cancellation == null || charge == null) {
+            throw new IllegalArgumentException("Accepted threshold extraction inputs are incomplete");
+        }
+        AcceptedThresholdCollector accepted = new AcceptedThresholdCollector(owner,
+                samples == null ? 0 : samples.size());
+        try {
+            DetailedResult result = extractDetailedScoped(samples, sourcePitchMeters, parameters,
+                    accepted.resultOwner, cancellation, charge, null, accepted);
+            AcceptedThresholdExtraction extraction = accepted.freeze(result);
+            accepted.transferTo(owner);
+            return extraction;
+        } finally {
+            accepted.close();
+        }
     }
 
     /** Extracts detailed evidence with bounded cancellation, memory ownership, and work charging. */
@@ -343,6 +484,14 @@ public final class LocalScalarProfileExtractor {
     private DetailedResult extractDetailedScoped(List<Sample> samples, double sourcePitchMeters,
             EvidenceModelParameters.Localization parameters, AttemptMemoryLedger.Owner owner,
             CancellationProbe cancellation, LongConsumer charge, RawPeak contextTarget) {
+        return extractDetailedScoped(samples, sourcePitchMeters, parameters, owner, cancellation,
+                charge, contextTarget, null);
+    }
+
+    private DetailedResult extractDetailedScoped(List<Sample> samples, double sourcePitchMeters,
+            EvidenceModelParameters.Localization parameters, AttemptMemoryLedger.Owner owner,
+            CancellationProbe cancellation, LongConsumer charge, RawPeak contextTarget,
+            AcceptedThresholdCollector acceptedThresholds) {
         if (samples == null || samples.isEmpty() || !positive(sourcePitchMeters) || parameters == null
                 || cancellation == null || charge == null) {
             throw new IllegalArgumentException("Scalar profile extraction inputs are incomplete");
@@ -355,7 +504,7 @@ public final class LocalScalarProfileExtractor {
             DetailedCollector collector = allocated(detailScratch, AttemptMemoryLedger.objectBytes(48),
                     () -> new DetailedCollector(detailScratch, detailedOwner, samples.size()));
             Result baseline = extractInternal(samples, sourcePitchMeters, parameters,
-                    detailedOwner, cancellation, charge, collector, contextTarget);
+                    detailedOwner, cancellation, charge, collector, contextTarget, acceptedThresholds);
             DetailedResult result = collector.freeze(baseline);
             if (detailScratch != null) detailScratch.close();
             if (detailedOwner != null) detailedOwner.transferTo(owner);
@@ -404,6 +553,14 @@ public final class LocalScalarProfileExtractor {
             EvidenceModelParameters.Localization parameters, AttemptMemoryLedger.Owner owner,
             CancellationProbe cancellation, LongConsumer charge, DetailedCollector detailed,
             RawPeak contextTarget) {
+        return extractInternal(samples, sourcePitchMeters, parameters, owner, cancellation, charge,
+                detailed, contextTarget, null);
+    }
+
+    private Result extractInternal(List<Sample> samples, double sourcePitchMeters,
+            EvidenceModelParameters.Localization parameters, AttemptMemoryLedger.Owner owner,
+            CancellationProbe cancellation, LongConsumer charge, DetailedCollector detailed,
+            RawPeak contextTarget, AcceptedThresholdCollector acceptedThresholds) {
         if (samples == null || samples.isEmpty() || !positive(sourcePitchMeters) || parameters == null
                 || cancellation == null || charge == null) {
             throw new IllegalArgumentException("Scalar profile extraction inputs are incomplete");
@@ -414,6 +571,7 @@ public final class LocalScalarProfileExtractor {
         WorkProbe work = allocated(scratch, AttemptMemoryLedger.objectBytes(16),
                 () -> new WorkProbe(cancellation, charge));
         if (detailed != null) detailed.work = work;
+        if (acceptedThresholds != null) acceptedThresholds.work = work;
         work.checkpoint();
         double noiseFloor = robustNoiseFloor(samples, scratch, work);
         double[] raw = allocated(scratch,
@@ -455,6 +613,12 @@ public final class LocalScalarProfileExtractor {
                     AttemptMemoryLedger.arrayBytes(9, Integer.BYTES), () -> {
                         int[] probe = new int[9];
                         probe[0] = -1;
+                        return probe;
+                    });
+            double[] acceptedRawCoreProbe = acceptedThresholds == null ? null
+                    : allocated(peakScratch, AttemptMemoryLedger.arrayBytes(3, Double.BYTES), () -> {
+                        double[] probe = new double[3];
+                        probe[0] = -1.0;
                         return probe;
                     });
             double localBackground = Math.max(noiseFloor,
@@ -514,11 +678,11 @@ public final class LocalScalarProfileExtractor {
                     listBytes(3) + 3L * AttemptMemoryLedger.objectBytes(8),
                     () -> new ArrayList<>(3));
             addNestedCenter(centers, raw, samples, interval, localBackground,
-                    parameters.localModeCoreFraction(), true, work, rawCoreProbe);
+                    parameters.localModeCoreFraction(), true, work, rawCoreProbe, acceptedRawCoreProbe);
             addNestedCenter(centers, b3, samples, interval, localBackground,
-                    parameters.localModeCoreFraction(), false, work, null);
+                    parameters.localModeCoreFraction(), false, work, null, null);
             addNestedCenter(centers, b5, samples, interval, localBackground,
-                    parameters.localModeCoreFraction(), false, work, null);
+                    parameters.localModeCoreFraction(), false, work, null, null);
             if (centers.size() < 2) {
                 continue;
             }
@@ -567,6 +731,10 @@ public final class LocalScalarProfileExtractor {
                 retainFlankReceipt(measured, interval, raw, threshold, detailed, work);
             } else {
                 modes.add(measured);
+                if (acceptedThresholds != null) {
+                    acceptedThresholds.accepted(measured, detailedPeak, localBackground,
+                            threshold, acceptedRawCoreProbe);
+                }
                 if (detailed != null) retainFlankReceipt(measured, interval, raw, threshold, detailed, work);
             }
             } finally {
@@ -671,13 +839,18 @@ public final class LocalScalarProfileExtractor {
 
     private static void addNestedCenter(List<Double> centers, double[] values, List<Sample> samples,
             IndexInterval search, double localBackground, double coreFraction, boolean requiredFine,
-            WorkProbe work, int[] rawCoreProbe) {
+            WorkProbe work, int[] rawCoreProbe, double[] acceptedRawCoreProbe) {
         int peakIndex = peak(values, search, work);
         if (!Double.isFinite(values[peakIndex])) {
             return;
         }
         double localMaximum = values[peakIndex];
         double threshold = localBackground + coreFraction * Math.max(0.0, localMaximum - localBackground);
+        if (acceptedRawCoreProbe != null) {
+            acceptedRawCoreProbe[0] = peakIndex;
+            acceptedRawCoreProbe[1] = localMaximum;
+            acceptedRawCoreProbe[2] = threshold;
+        }
         int left = peakIndex;
         int right = peakIndex;
         while (left > search.first() && Double.isFinite(values[left - 1])
@@ -876,6 +1049,10 @@ public final class LocalScalarProfileExtractor {
 
     private static boolean positive(double value) {
         return Double.isFinite(value) && value > 0.0;
+    }
+
+    private static boolean unitScalar(double value) {
+        return Double.isFinite(value) && value >= 0.0 && value <= 1.0;
     }
 
     private record WorkProbe(CancellationProbe cancellation, LongConsumer charge) {

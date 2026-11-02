@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.DoubleUnaryOperator;
@@ -18,6 +20,183 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
 
 /** Detailed diagnostics retain conditional RMS-only shapes without changing baseline extraction. */
 class V022DetailedScalarProfileExtractorTest {
+    @Test
+    void acceptedThresholdReceiptCapturesActualNonzeroBackgroundShoulderAndRawWinner() {
+        List<LocalScalarProfileExtractor.Sample> input = acceptedThresholdProfile();
+        var extractor = new LocalScalarProfileExtractor();
+        var extraction = extractor.extractDetailedWithAcceptedThresholds(input, 0.125,
+                EvidenceModelParameters.Localization.defaults(), null, CancellationProbe.NONE, ignored -> { });
+        var detailed = extraction.result();
+
+        assertEquals(1, detailed.baseline().modes().size());
+        assertEquals(1, extraction.acceptedReceipts().size());
+        var receipt = extraction.acceptedReceipts().get(0);
+        assertSame(detailed.baseline().modes().get(0), receipt.mode());
+        assertSame(detailed.rawPeaks().get(0), receipt.originPeak());
+        assertEquals(0.2, receipt.localBackground(), 0.0);
+        assertEquals(0.2 + 0.72 * 0.8, receipt.shoulderThreshold(), 0.0);
+        var rawCore = receipt.rawCore().orElseThrow();
+        assertEquals(64, rawCore.winnerSampleIndex());
+        assertEquals(1.0, rawCore.winnerValue(), 0.0);
+        assertEquals(0.2 + 0.92 * 0.8, rawCore.threshold(), 0.0);
+        assertEquals(64, receipt.originPeak().firstSampleIndex());
+        assertEquals(65, receipt.originPeak().lastSampleIndex());
+        assertEquals(0.0, input.get(rawCore.winnerSampleIndex()).offsetMeters(), 0.0);
+        assertEquals(0.0625, receipt.originPeak().offsetMeters(), 0.0);
+        assertTrue(detailed.rawCoreReceipts().stream().anyMatch(core ->
+                core.mode() == receipt.mode() && core.rawPeak() == receipt.originPeak()));
+        assertEquals(extractor.extract(input, 0.125,
+                EvidenceModelParameters.Localization.defaults()), detailed.baseline());
+        assertThrows(UnsupportedOperationException.class,
+                () -> extraction.acceptedReceipts().clear());
+    }
+
+    @Test
+    void optInMetadataLeavesDetailedResultBitExactWithLegacyExtraction() {
+        var extractor = new LocalScalarProfileExtractor();
+        var input = acceptedThresholdProfile();
+        var parameters = EvidenceModelParameters.Localization.defaults();
+        var legacy = extractor.extractDetailed(input, 0.125, parameters);
+        var optedIn = extractor.extractDetailedWithAcceptedThresholds(input, 0.125, parameters,
+                null, CancellationProbe.NONE, ignored -> { });
+        assertEquals(legacy, optedIn.result());
+        assertEquals(extractor.extract(input, 0.125, parameters), optedIn.result().baseline());
+    }
+
+    @Test
+    void optInChargesItsOwnWorkAndMemoryAndReleasesOnRefusalOrCancellation() {
+        var extractor = new LocalScalarProfileExtractor();
+        var input = acceptedThresholdProfile();
+        var parameters = EvidenceModelParameters.Localization.defaults();
+        var legacyLedger = new AttemptMemoryLedger(AttemptMemoryLedger.MAX_BYTES);
+        var legacyOwner = legacyLedger.rootOwner();
+        AtomicLong legacyWork = new AtomicLong();
+        var legacy = extractor.extractDetailed(input, 0.125, parameters, legacyOwner,
+                CancellationProbe.NONE, legacyWork::addAndGet);
+        long legacyPeakBytes = legacyLedger.peakBytes();
+        legacyOwner.close();
+
+        var optInLedger = new AttemptMemoryLedger(AttemptMemoryLedger.MAX_BYTES);
+        var optInOwner = optInLedger.rootOwner();
+        AtomicLong optInWork = new AtomicLong();
+        var optIn = extractor.extractDetailedWithAcceptedThresholds(input, 0.125, parameters,
+                optInOwner, CancellationProbe.NONE, optInWork::addAndGet);
+        assertEquals(legacy, optIn.result());
+        assertEquals(1, optIn.acceptedReceipts().size());
+        assertTrue(optInWork.get() > legacyWork.get());
+        assertTrue(optInLedger.peakBytes() > legacyPeakBytes);
+        assertTrue(optInLedger.currentBytes() > 0L);
+        optInOwner.close();
+        assertEquals(0L, optInLedger.currentBytes());
+
+        var refusalLedger = new AttemptMemoryLedger(1L);
+        var refusalOwner = refusalLedger.rootOwner();
+        assertThrows(LocalScalarProfileExtractor.ResourceLimitException.class, () ->
+                extractor.extractDetailedWithAcceptedThresholds(input, 0.125, parameters,
+                        refusalOwner, CancellationProbe.NONE, ignored -> { }));
+        assertEquals(0L, refusalLedger.currentBytes());
+        refusalOwner.close();
+
+        var cancelledLedger = new AttemptMemoryLedger(AttemptMemoryLedger.MAX_BYTES);
+        var cancelledOwner = cancelledLedger.rootOwner();
+        AtomicLong checkpoints = new AtomicLong();
+        assertThrows(CancellationException.class, () -> extractor.extractDetailedWithAcceptedThresholds(
+                input, 0.125, parameters, cancelledOwner,
+                () -> checkpoints.incrementAndGet() > 10, ignored -> { }));
+        assertEquals(0L, cancelledLedger.currentBytes());
+        cancelledOwner.close();
+    }
+
+    @Test
+    void legacyDetailedAndContextVetoRetainCleanBaseWorkAndByteReceipts() {
+        var extractor = new LocalScalarProfileExtractor();
+        var input = acceptedThresholdProfile();
+        var parameters = EvidenceModelParameters.Localization.defaults();
+
+        var detailedLedger = new AttemptMemoryLedger(AttemptMemoryLedger.MAX_BYTES);
+        var detailedOwner = detailedLedger.rootOwner();
+        AtomicLong detailedWork = new AtomicLong();
+        var detailed = extractor.extractDetailed(input, 0.125, parameters, detailedOwner,
+                CancellationProbe.NONE, detailedWork::addAndGet);
+        assertEquals(3148L, detailedWork.get());
+        assertEquals(18840L, detailedLedger.peakBytes());
+        assertEquals(864L, detailedLedger.currentBytes());
+        detailedOwner.close();
+
+        var plainLedger = new AttemptMemoryLedger(AttemptMemoryLedger.MAX_BYTES);
+        var plainOwner = plainLedger.rootOwner();
+        AtomicLong plainWork = new AtomicLong();
+        var plain = extractor.extract(input, 0.125, parameters, plainOwner,
+                CancellationProbe.NONE, plainWork::addAndGet);
+        assertEquals(3137L, plainWork.get());
+        assertEquals(14232L, plainLedger.peakBytes());
+        assertEquals(456L, plainLedger.currentBytes());
+        assertEquals(plain, detailed.baseline());
+        plainOwner.close();
+
+        var contextLedger = new AttemptMemoryLedger(AttemptMemoryLedger.MAX_BYTES);
+        var contextOwner = contextLedger.rootOwner();
+        AtomicLong contextWork = new AtomicLong();
+        var context = extractor.projectContextVeto(input, 0.125, parameters, contextOwner,
+                CancellationProbe.NONE, contextWork::addAndGet, detailed.rawPeaks().get(0));
+        assertEquals(3150L, contextWork.get());
+        assertEquals(18840L, contextLedger.peakBytes());
+        assertEquals(896L, contextLedger.currentBytes());
+        assertEquals(detailed.baseline().modes().get(0),
+                context.detailsForVetoOnly().baseline().modes().get(0));
+        contextOwner.close();
+    }
+
+    @Test
+    void thresholdReceiptsRejectForeignModeOrPeakIdentityAndInvalidValues() {
+        var detailed = new LocalScalarProfileExtractor().extractDetailed(acceptedThresholdProfile(), 0.125,
+                EvidenceModelParameters.Localization.defaults());
+        var acceptedMode = detailed.baseline().modes().get(0);
+        var acceptedPeak = detailed.rawPeaks().get(0);
+        var receipt = new LocalScalarProfileExtractor.AcceptedModeThresholdReceipt(acceptedMode,
+                acceptedPeak, 0.2, 0.2 + 0.72 * 0.8,
+                Optional.of(new LocalScalarProfileExtractor.RawCoreThreshold(64, 1.0,
+                        0.2 + 0.92 * 0.8)));
+        var extraction = new LocalScalarProfileExtractor.AcceptedThresholdExtraction(
+                detailed, List.of(receipt));
+        assertEquals(List.of(receipt), extraction.acceptedReceipts());
+        assertThrows(IllegalArgumentException.class, () -> new LocalScalarProfileExtractor.AcceptedThresholdExtraction(
+                detailed, List.of(receipt, receipt)));
+        assertThrows(IllegalArgumentException.class, () -> new LocalScalarProfileExtractor.AcceptedThresholdExtraction(
+                detailed, null));
+        var foreignMode = new LocalScalarProfileExtractor.Mode(receipt.mode().coreMinimumMeters(),
+                receipt.mode().coreMaximumMeters(), receipt.mode().localizationSigmaMeters(),
+                receipt.mode().existenceConfidence(), receipt.mode().localizationConfidence(),
+                receipt.mode().peakOffsetsMeters(), receipt.mode().nestedCenterOffsetsMeters(),
+                receipt.mode().scalarAmplitudeReliability());
+        var foreignPeak = new LocalScalarProfileExtractor.RawPeak(receipt.originPeak().firstSampleIndex(),
+                receipt.originPeak().lastSampleIndex(), receipt.originPeak().offsetMeters(),
+                receipt.originPeak().value());
+        assertThrows(IllegalArgumentException.class, () -> new LocalScalarProfileExtractor.AcceptedThresholdExtraction(
+                detailed, List.of(new LocalScalarProfileExtractor.AcceptedModeThresholdReceipt(foreignMode,
+                        receipt.originPeak(), receipt.localBackground(), receipt.shoulderThreshold(),
+                        receipt.rawCore()))));
+        assertThrows(IllegalArgumentException.class, () -> new LocalScalarProfileExtractor.AcceptedThresholdExtraction(
+                detailed, List.of(new LocalScalarProfileExtractor.AcceptedModeThresholdReceipt(receipt.mode(),
+                        foreignPeak, receipt.localBackground(), receipt.shoulderThreshold(), receipt.rawCore()))));
+        assertThrows(IllegalArgumentException.class, () -> new LocalScalarProfileExtractor.AcceptedThresholdExtraction(
+                detailed, List.of(receipt, receipt)));
+        assertThrows(IllegalArgumentException.class, () -> new LocalScalarProfileExtractor.RawCoreThreshold(
+                -1, 1.0, 0.5));
+        assertThrows(IllegalArgumentException.class, () -> new LocalScalarProfileExtractor.RawCoreThreshold(
+                0, Double.NaN, 0.5));
+        assertThrows(IllegalArgumentException.class, () -> new LocalScalarProfileExtractor.RawCoreThreshold(
+                0, 1.01, 0.5));
+        assertThrows(IllegalArgumentException.class, () -> new LocalScalarProfileExtractor.RawCoreThreshold(
+                0, 0.5, Double.POSITIVE_INFINITY));
+        assertThrows(IllegalArgumentException.class, () -> new LocalScalarProfileExtractor.AcceptedModeThresholdReceipt(
+                receipt.mode(), receipt.originPeak(), -0.1, 0.5, Optional.empty()));
+        assertThrows(IllegalArgumentException.class, () -> new LocalScalarProfileExtractor.AcceptedModeThresholdReceipt(
+                receipt.mode(), receipt.originPeak(), 0.2, Double.NaN, Optional.empty()));
+        assertThrows(IllegalArgumentException.class, () -> new LocalScalarProfileExtractor.AcceptedModeThresholdReceipt(
+                receipt.mode(), receipt.originPeak(), 0.2, 0.8, null));
+    }
+
     @Test
     void detailedExtractionExposesRawCoreProvenanceForActualNestedCalculation() {
         var extractor = new LocalScalarProfileExtractor();
@@ -83,9 +262,11 @@ class V022DetailedScalarProfileExtractorTest {
             edge.add(new LocalScalarProfileExtractor.Sample(-7.01 + index * 14.02 / 30.0,
                     index == 0 ? 0.95 : 0.02, true));
         }
-        var censored = extractor.extractDetailed(edge, 1.0, EvidenceModelParameters.Localization.defaults());
-        assertFalse(censored.baseline().censoredModes().isEmpty());
-        assertTrue(censored.rawCoreReceipts().isEmpty());
+        var censored = extractor.extractDetailedWithAcceptedThresholds(edge, 1.0,
+                EvidenceModelParameters.Localization.defaults(), null, CancellationProbe.NONE, ignored -> { });
+        assertFalse(censored.result().baseline().censoredModes().isEmpty());
+        assertTrue(censored.result().rawCoreReceipts().isEmpty());
+        assertTrue(censored.acceptedReceipts().isEmpty());
     }
 
     @Test
@@ -123,12 +304,16 @@ class V022DetailedScalarProfileExtractorTest {
 
     @Test
     void detailedExtractionReportsTheRejectedImpulseWithItsActualProvisionalCore() {
-        var detailed = new LocalScalarProfileExtractor().extractDetailed(impulse(60), 1.0,
-                EvidenceModelParameters.Localization.defaults());
+        var extraction = new LocalScalarProfileExtractor().extractDetailedWithAcceptedThresholds(
+                impulse(60), 1.0, EvidenceModelParameters.Localization.defaults(),
+                null, CancellationProbe.NONE, ignored -> { });
+        var detailed = extraction.result();
         assertTrue(detailed.baseline().modes().stream().noneMatch(mode ->
                 mode.peakOffsetsMeters().stream().anyMatch(offset -> Math.abs(offset) < 0.5)));
         var suppressed = detailed.suppressedModes().stream().filter(mode ->
                 Math.abs(mode.rawPeakOffsetMeters()) < 0.5).findFirst().orElseThrow();
+        assertTrue(extraction.acceptedReceipts().stream().noneMatch(receipt ->
+                Math.abs(receipt.originPeak().offsetMeters()) < 0.5));
         assertEquals("RMS_ONLY", suppressed.reason().name());
         assertEquals(0.0, suppressed.mode().centerMeters(), 1e-12);
         assertEquals(-0.25, suppressed.mode().coreMinimumMeters(), 1e-12);
@@ -435,6 +620,17 @@ class V022DetailedScalarProfileExtractorTest {
             double upperValue = contextNativeValue(upperNative, exteriorLevel);
             double value = lowerValue + fraction * (upperValue - lowerValue);
             result.add(new LocalScalarProfileExtractor.Sample(offset, value, true));
+        }
+        return List.copyOf(result);
+    }
+
+    private static List<LocalScalarProfileExtractor.Sample> acceptedThresholdProfile() {
+        List<LocalScalarProfileExtractor.Sample> result = new ArrayList<>();
+        for (int index = 0; index <= 128; index++) {
+            double offset = -8.0 + index * 0.125;
+            double distance = offset < 0.0 ? -offset : offset > 0.125 ? offset - 0.125 : 0.0;
+            double intensity = 0.2 + 0.8 * Math.max(0.0, 1.0 - distance / 0.75);
+            result.add(new LocalScalarProfileExtractor.Sample(offset, intensity, true));
         }
         return List.copyOf(result);
     }
