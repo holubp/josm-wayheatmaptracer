@@ -125,8 +125,8 @@ Every `GTEST` below means this exact shell command from the isolated worktree:
 
 | Design requirement | Owning tasks | Current status |
 | --- | --- | --- |
-| Capture attribution, actual raw/final/applied distinction and accepted blue reference |1 | NOT STARTED |
-| Causal proof and deterministic non-Drasov-only controls |2 | NOT STARTED |
+| Capture attribution, actual raw/final/applied distinction and accepted blue reference |1 | EVIDENCE VERIFIED; user blue reference PENDING |
+| Causal proof and deterministic non-Drasov-only controls |2 | ACTIVE |
 | Legacy usable geometry, wide search and successful behavior retained |3 | NOT STARTED |
 | Exact final safety, availability, old diagnostic/identity compatibility |4 | NOT STARTED |
 | A actual existing objective traced, usable geometry, exact optimizer retained |5 | NOT STARTED |
@@ -139,3 +139,65 @@ formula is deliberately not claimed known: Task2's executable causal/patch gate
 must close before Task3 production work; Task5 repeats it only if A still needs a
 distinct correction. This is a staged executable plan, not a promise that the
 unproven normal-rotation hypothesis already supplies the final algorithm.
+
+## Execution ledger — 2026-11-02
+
+Goal ACTIVE following user approval. Base411a3c9; existing isolated release
+worktree reused, primary tree preserved. Ruling: user's explicit permission for
+up to20Luna threads supersedes the usual task delegation ceiling; start only
+three independent read/evidence lanes because geometry implementation remains
+coupled. Evidence lane owns ignored Task1 artifacts, Legacy lane owns ignored
+causal reconstruction, A lane owns ignored independent crossing diagnosis. None
+may edit production, run Gradle or delegate recursively. Controller owns tests,
+integration, task-status decisions and final Sol audit. No runtime weekly quota
+telemetry available, no speed tier/pool changes or release authorization added.
+
+Task1 artifact receipt independently inspected: six captures,76/76listed F15
+checksums valid; applied bluered164.389608degrees/aggregate124.579485degrees
+match required measurements. Forty-two raw candidate browser views use real z15
+mosaics; only actual selected candidates carry preview/applied overlays. Corrected
+an inventory bug that confused activity=all with visible palette; fresh inventory
+now binds selected-visible bluered. Local outputs:
+`build/private-drasov-quality/20261102-evidence/`; helper under ignored
+`.superpowers/sdd/drasov-quality/build-evidence.py`. Blue reference still pending;
+asynchronous user clarification requested, no independent work paused.
+
+Read-only A diagnosis: the two final self-crossings already exist in raw selected
+candidate (raw201/208and231/233); final anchor insertion is not their origin.
+Existing geometricCurvatureCost is tube-relative; cleanup-only absolute short-wave
+term is inactive at captured NONE setting. Next bounded A reconstruction traces
+track/tube/allowed/chosen states using existing compiled released code, no B run.
+
+Fourth Luna lane owns only PhysicalPathMeasurements and analytic unit tests in
+isolated tmp worktree codex/drasov-physical-measurements; sole local Gradle slot
+assigned to it. This independent measurement primitive does not preselect a
+Legacy/A fix or change source/ranking. Runtime session metadata confirms the
+three original evidence/cause lanes actually use Luna medium/high/high as routed.
+
+Integrated independent measurement primitive as e5b9576/aaa8cd9 after source
+inspection;5analytic tests GREEN in worker, including a genuine numerical RED
+for1e-200/1e200scale invariance. It is not yet connected to preview/diagnostics;
+Task4 remains partial. Public surface has only measure and immutable Result.
+
+Legacy approximate reconstruction confirms frame rotation can create physical
+reversals with constant offsets; it does not prove that a safe state sequence is
+available. Rejected a proposed fixture whose ground-truth ridge was generated
+from the folded frames themselves, because its oracle would be contradictory.
+Focused Sol/high consultation supplied independent straight-ridge/parabolic-source
+regular/folded controls. Exact original-input Legacy reconstruction and A local
+state representability audit now run with existing compiled classes only.
+
+Controller added test-only PhysicalGeometryFixture and PhysicalPathContinuityTest
+for production sampler on independent horizontal Gaussian ridge. R=12regular
+source chart should preserve order; R=4folded chart should force a>6m reversal
+even while all peaks lie on the straight image ridge. These are characterization
+controls, not RED or a claimed tracing fix. Sole root Gradle session88806/log
+`/data/data/com.termux/files/usr/tmp/drasov-representability-controls.log` runs those
+plus measurement tests. No Legacy/A production behavior changed yet.
+
+Root characterization run88806 PASS exit0 in47s: PhysicalPathContinuity2 and
+PhysicalPathMeasurements5, zero failures/errors/skips. The actual production
+sampler's straight image ridge has a forced reversal under the folded chart and
+preserves order under the regular chart. This validates the representability
+discriminator, not a repair. Do not add a physical cost before exact Drasov state
+audit establishes that safe image-supported alternatives actually exist.
