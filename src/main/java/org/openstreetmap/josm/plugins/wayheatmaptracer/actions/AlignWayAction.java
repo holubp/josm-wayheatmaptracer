@@ -89,6 +89,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyFinalPreviewSafety;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionIntegrity;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
@@ -3386,11 +3387,8 @@ public class AlignWayAction extends JosmAction {
                 if (answer != JOptionPane.YES_OPTION) {
                     return;
                 }
-                SelectionIntegrity.requirePreviewSourceUnchanged(
-                    dataSet, selection, current[0].result().sourcePolyline());
-                requireCandidateAssignmentPlan(selection, current[0].result(),
-                    current[0].candidate(), config);
-                alignmentService.requireCurrentTopologySafe(current[0].candidate(), selection);
+                requirePreviewSourceAndTopologySafe(alignmentService, dataSet, selection,
+                    current[0].result(), current[0].candidate(), config);
                 if (!config.allowUndownloadedAlignment()) {
                     requirePreviewWithinDownloadedArea(current[0].result().previewPolyline(), dataSet);
                 }
@@ -3507,6 +3505,20 @@ public class AlignWayAction extends JosmAction {
         return new PreviewSelection(initialCandidate, candidate, candidateResult);
     }
 
+
+    /** Checks freshness before revalidating the exact candidate geometry at review and Apply. */
+    static void requirePreviewSourceAndTopologySafe(AlignmentService service, DataSet dataSet,
+            SelectionContext selection, AlignmentResult preview, CenterlineCandidate candidate,
+            ManagedHeatmapConfig config) {
+        SelectionIntegrity.requirePreviewSourceUnchanged(dataSet, selection, preview.sourcePolyline());
+        requireCandidateAssignmentPlan(selection, preview, candidate, config);
+        if (config.trackerMode() == TrackerMode.LEGACY_V02) {
+            LegacyFinalPreviewSafety.requireSafe(preview.sourcePolyline(), candidate.finalPreviewPoints(),
+                preview.previewPolyline());
+        } else if (config.trackerMode() == TrackerMode.CORRIDOR_AWARE) {
+            service.requireCurrentTopologySafe(candidate, selection);
+        }
+    }
 
     /**
      * Validates the complete candidate-owned assignment plan before review or Apply.
@@ -3945,11 +3957,7 @@ public class AlignWayAction extends JosmAction {
             throw new IllegalStateException(tr("Review and confirm this exact candidate preview before applying it."));
         }
 
-        SelectionIntegrity.requirePreviewSourceUnchanged(dataSet, selection, chosenResult.sourcePolyline());
-        requireCandidateAssignmentPlan(selection, chosenResult, chosen, config);
-        if (config.trackerMode() == TrackerMode.CORRIDOR_AWARE) {
-            alignmentService.requireCurrentTopologySafe(chosen, selection);
-        }
+        requirePreviewSourceAndTopologySafe(alignmentService, dataSet, selection, chosenResult, chosen, config);
         if (!config.allowUndownloadedAlignment()) {
             requirePreviewWithinDownloadedArea(chosenResult.previewPolyline(), dataSet);
         }

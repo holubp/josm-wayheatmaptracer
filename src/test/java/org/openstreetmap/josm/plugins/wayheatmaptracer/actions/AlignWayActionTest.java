@@ -21,6 +21,7 @@ import javax.swing.JTextArea;
 import javax.swing.JScrollPane;
 
 import org.openstreetmap.josm.data.coor.LatLon;
+import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.osm.Node;
 import org.openstreetmap.josm.data.osm.Relation;
@@ -32,6 +33,7 @@ import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
@@ -1705,6 +1707,84 @@ class AlignWayActionTest {
             ? report.withIntervalSummary(2, 1, 1) : report;
     }
 
+
+    @Test
+    void legacyPreflightAcceptsExactSharedAnchorWithoutCorridorAssignmentMap() {
+        var fixture = legacySafetyFixture();
+        assertTrue(fixture.candidate().proposedNodePositions().isEmpty());
+        requireSafety(fixture, fixture.result(), fixture.candidate(), TrackerMode.LEGACY_V02);
+    }
+
+    @Test
+    void legacyPreflightRejectsSafeButDifferentDisplayedPreview() {
+        var fixture = legacySafetyFixture();
+        var source = fixture.result().sourcePolyline();
+        var different = List.of(source.get(0), new EastNorth(10, 2), source.get(2));
+        var result = new AlignmentResult(fixture.selection(), null, List.of(fixture.candidate()),
+            source, different, List.of(), null, null);
+        assertThrows(IllegalStateException.class,
+            () -> requireSafety(fixture, result, fixture.candidate(), TrackerMode.LEGACY_V02));
+    }
+
+    @Test
+    void legacyPreflightRejectsStaleSourceBeforeCommandPreparation() {
+        var fixture = legacySafetyFixture();
+        fixture.selection().segmentNodes().get(1).setEastNorth(new EastNorth(10, 2));
+        assertThrows(IllegalStateException.class,
+            () -> requireSafety(fixture, fixture.result(), fixture.candidate(), TrackerMode.LEGACY_V02));
+    }
+
+    @Test
+    void legacyPreflightRechecksUnannotatedUnsafeStoredGeometry() {
+        var fixture = legacySafetyFixture();
+        var unsafe = List.of(new EastNorth(0,0), new EastNorth(20,20),
+            new EastNorth(0,20), new EastNorth(20,0));
+        var candidate = fixture.candidate().withFinalPreviewPoints(unsafe);
+        var result = new AlignmentResult(fixture.selection(), null, List.of(candidate),
+            fixture.result().sourcePolyline(), unsafe, List.of(), null, null);
+        assertThrows(IllegalStateException.class,
+            () -> requireSafety(fixture, result, candidate, TrackerMode.LEGACY_V02));
+    }
+
+    @Test
+    void corridorPreflightStillRequiresItsSharedNodeAssignmentMap() {
+        var fixture = legacySafetyFixture();
+        assertThrows(IllegalStateException.class,
+            () -> requireSafety(fixture, fixture.result(), fixture.candidate(), TrackerMode.CORRIDOR_AWARE));
+    }
+
+    private static void requireSafety(LegacySafetyFixture fixture, AlignmentResult result,
+            CenterlineCandidate candidate, TrackerMode mode) {
+        AlignWayAction.requirePreviewSourceAndTopologySafe(new AlignmentService(), fixture.dataSet(),
+            fixture.selection(), result, candidate, configuredCorridor().withTrackerMode(mode)
+                .withAlignmentMode(AlignmentMode.PRECISE_SHAPE));
+    }
+
+    private static LegacySafetyFixture legacySafetyFixture() {
+        DataSet dataSet = new DataSet();
+        var coordinates = List.of(new EastNorth(0,0), new EastNorth(10,0), new EastNorth(20,0));
+        var nodes = coordinates.stream().map(point -> new Node(
+            ProjectionRegistry.getProjection().eastNorth2latlon(point))).toList();
+        nodes.forEach(dataSet::addPrimitive);
+        Way way = new Way();
+        way.setNodes(nodes);
+        dataSet.addPrimitive(way);
+        Node branchEnd = new Node(ProjectionRegistry.getProjection().eastNorth2latlon(new EastNorth(10,10)));
+        dataSet.addPrimitive(branchEnd);
+        Way branch = new Way();
+        branch.setNodes(List.of(nodes.get(1), branchEnd));
+        dataSet.addPrimitive(branch);
+        var selection = new SelectionContext(way, 0, 2, nodes, Set.copyOf(nodes));
+        var source = nodes.stream().map(Node::getEastNorth).toList();
+        var candidate = new CenterlineCandidate("legacy-safe", 1.0, List.of(), List.of())
+            .withEastNorthPoints(source).withFinalPreviewPoints(source);
+        var result = new AlignmentResult(selection, null, List.of(candidate), source, source,
+            List.of(), null, null);
+        return new LegacySafetyFixture(dataSet, selection, result, candidate);
+    }
+
+    private record LegacySafetyFixture(DataSet dataSet, SelectionContext selection,
+            AlignmentResult result, CenterlineCandidate candidate) { }
 
     private static CorridorCoverage coverage(boolean measured, boolean complete, int bridges, String reason) {
         return new CorridorCoverage(measured, complete, 4, 4, 1.0, 0, 3,

@@ -2064,8 +2064,13 @@ public final class AlignmentService {
         if (mode == TrackerMode.LEGACY_V02) {
             // Freeze the existing Legacy reconstruction before assessment/export. Legacy
             // replacement intentionally does not carry Corridor A node assignments.
-            return candidates.stream().map(candidate -> candidate.withFinalPreviewPoints(
-                optimize(selection, sourcePolyline, candidate, config, mapView))).toList();
+            return candidates.stream().map(candidate -> {
+                CenterlineCandidate frozen = candidate.withFinalPreviewPoints(
+                    optimize(selection, sourcePolyline, candidate, config, mapView));
+                List<String> warnings = new ArrayList<>(frozen.safetyWarnings());
+                warnings.addAll(LegacyFinalPreviewSafety.warnings(sourcePolyline, frozen.finalPreviewPoints()));
+                return frozen.withSafetyWarnings(warnings);
+            }).toList();
         }
         if (mode != TrackerMode.CORRIDOR_AWARE) {
             return candidates;
@@ -2155,7 +2160,8 @@ public final class AlignmentService {
         ManagedHeatmapConfig config
     ) {
         CandidateMetrics metrics = candidateMetrics(candidate, effectiveSampling);
-        List<String> warnings = new ArrayList<>();
+        List<String> warnings = new ArrayList<>(config.trackerMode() == TrackerMode.LEGACY_V02
+            ? candidate.safetyWarnings() : List.of());
         double unsafeAccelerationMeters = Math.max(8.0, effectiveSampling.decisionHalfWidthUnits() * 0.18);
         double unsafeDeltaMeters = Math.max(12.0, effectiveSampling.decisionHalfWidthUnits() * 0.40);
         if (metrics.highFrequencyP95SourcePx() > 1.65 && metrics.subSourceWiggleRatio() > 0.28) {

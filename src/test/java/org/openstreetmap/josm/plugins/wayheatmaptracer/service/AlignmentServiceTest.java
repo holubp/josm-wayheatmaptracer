@@ -549,6 +549,41 @@ class AlignmentServiceTest {
     }
 
     @Test
+    void unsafeFrozenLegacyFinalPreviewIsBlockedByCandidateAssessment() throws Exception {
+        List<EastNorth> source = List.of(new EastNorth(0, 0), new EastNorth(20, 0));
+        Node start = nodeAt(0, 0);
+        Node end = nodeAt(20, 0);
+        Way way = new Way();
+        way.setNodes(List.of(start, end));
+        SelectionContext selected = new SelectionContext(way, 0, 1, way.getNodes(), Set.of(start, end));
+        List<EastNorth> unsafeFinal = List.of(new EastNorth(0, 0), new EastNorth(20, 20),
+            new EastNorth(0, 20), new EastNorth(20, 0));
+        CenterlineCandidate raw = candidate("legacy/final-crossing", signalEvidence())
+            .withEastNorthPoints(unsafeFinal);
+        AlignmentService service = new AlignmentService();
+        ManagedHeatmapConfig config = config(AlignmentMode.PRECISE_SHAPE);
+        CenterlineCandidate frozen = service.attachFinalPreviewGeometry(List.of(raw),
+            selected, source, config, GeometryCleanupConfig.disabled(), null).get(0);
+
+        assertEquals(unsafeFinal, frozen.finalPreviewPoints(), "Exercise the actual stored final preview");
+        assertEquals(CandidateAssessment.Disposition.HARD_BLOCKED,
+            AlignmentService.assessCandidate(frozen).disposition(),
+            "Freezing the final preview must cache the new self-contact finding");
+        // Exercise the real later annotation stage without exposing sampling internals as a test API.
+        var samplingMethod = AlignmentService.class.getDeclaredMethod("effectiveSampling",
+            ManagedHeatmapConfig.class, double.class);
+        samplingMethod.setAccessible(true);
+        Object sampling = samplingMethod.invoke(service, config, 1.0);
+        var annotationMethod = AlignmentService.class.getDeclaredMethod("annotateCandidateSafety",
+            List.class, sampling.getClass(), SelectionContext.class, ManagedHeatmapConfig.class);
+        annotationMethod.setAccessible(true);
+        List<?> annotated = (List<?>) annotationMethod.invoke(service, List.of(frozen), sampling, selected, config);
+        assertEquals(CandidateAssessment.Disposition.HARD_BLOCKED,
+            AlignmentService.assessCandidate((CenterlineCandidate) annotated.get(0)).disposition(),
+            "Later sampling annotation must retain the cached final contact finding");
+    }
+
+    @Test
     void reviewPreviewUsesExactStoredFinalGeometryWithoutMakingCandidateAutomaticallyApplicable() {
         CorridorCoverage incompleteCoverage = new CorridorCoverage(true, false, 3, 10, 0.3,
             2, 4, 5.0, 12.0, 0, 0.0, 0, true, "unsupported-trailing-corridor");
