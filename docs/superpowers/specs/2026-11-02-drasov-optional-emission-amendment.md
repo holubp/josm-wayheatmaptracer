@@ -1,6 +1,11 @@
 # Proposed amendment: optional emission of sampling rows
 
-Status: **PROPOSED — user approval required before production implementation.**
+Status: **USER APPROVED — 2026-11-02**, following explicit clarification that
+the mechanism has not yet demonstrated a Drasov improvement. Approval covers
+the precise specification, independent review and bounded implementation experiment below.
+The user subsequently amended the existing goal to include these experiments
+and explicitly authorized autonomous execution without further implementation-
+plan approvals. Technical review and all safety/resource/verification gates remain.
 Parent: `2026-11-02-drasov-legacy-corridor-quality-design.md` and its execution plan.
 This changes one correspondence constraint; it does not change the goal or approve a release.
 Independent Sol/high review found no blocking inconsistency; the clarifications
@@ -25,7 +30,7 @@ The desired-behavior regressions are retained on isolated branch
 `codex/drasov-chart-engine-red`; they must not be merged as passing tests.
 The execution ledger records their revision and evidence.
 
-## One proposed change
+## Approved change
 
 Allow inference to consume a bounded run of **sampling rows** without requiring
 each row to emit a successive geometry vertex. Select those transitions inside

@@ -676,3 +676,30 @@ goal BLOCKED, preserving its full objective. Resume on explicit approval of
 recurrence and provenance packet, implement against isolated RED eb151e3, and
 complete every original requirement and verification gate. No release is ready
 or authorized. Preserve all worktrees, private evidence and unrelated files.
+
+User approved the optional-emission amendment after clarification that it is
+not yet demonstrated to improve Drasov. This satisfies the architecture gate
+and authorizes precise specification, independent review and the bounded
+experiment; it does not qualify a release or waive any original requirement.
+Begin a fresh blocked audit if another genuine blocker arises. Previous
+approval-block occurrences do not carry forward. Goal runtime still reports
+BLOCKED and exposes no resume operation; do not manufacture a new goal or
+claim runtime ACTIVE. Continue the explicitly authorized work in this turn.
+Next: freeze exact recurrence, admission/cost/provenance and factual raster
+context interfaces before production changes, then review and execute without
+further general milestone approvals. Keep intentionally RED eb151e3 isolated
+until the approved repair makes its unchanged image oracle pass.
+
+Goal amendment explicitly requested by user: include the approved optional-
+emission experiments in this existing goal and proceed autonomously without
+waiting for implementation-plan approvals. The original full objective and
+all unfinished requirements remain. Complete the precise contract, independent
+technical review, bounded implementation and original-data comparisons, then
+adopt only if practical quality/resource and regression gates pass. Resolve
+routine design/plan details internally; do not impose another general plan
+approval milestone. Safety invariants, factual evidence, existing resource
+ceilings, private visual acceptance and separate RC publication authorization
+remain binding. Parallelize independent work in isolated ownership lanes; no
+recursive delegation. Current useful lanes are Sol/high recurrence/context
+design and Luna/medium observation-to-emission consumer mapping; controller
+integrates and assigns bounded implementation after contract review.
