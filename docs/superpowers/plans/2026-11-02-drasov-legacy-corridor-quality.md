@@ -419,3 +419,76 @@ next discriminator to one capped offline finite-state feasibility search around
 198..212, preserving all exterior points, original allowed states/singleton gaps
 and existing contact policy. A cutoff is UNKNOWN; no source-forward rule or
 production topology-history change is authorized by this diagnostic.
+
+Legacy native family onJava17 is complete and REJECTED as a repair: weights
+0,.1,.3,1,3,10 with suppression on/off leave each setting's185-point geometry
+exactly unchanged across weights, at all three recorded stages and all three
+seeds. Weight0,true exactly matchesdb6ff8b offsets/projectedpoints. Raw/anchored
+have4proper crossings and maximum166.071degrees; unchanged smoothing removes
+crossings but retains maximum164.390degrees. Suppression-off changes other
+geometry, not119..124. `20261102-legacy-physical-family/family-findings.md` and
+checksummed receipt/CSVs retain the results. No coefficient or default change
+follows; no more retries of this family. Prototype remains isolatedd918e6f.
+
+Task4 freeze slice committedf90def7; GREEN54tests (42AlignmentService,
+12ReplaceWaySegmentCommand; zero failures/errors/skips). Final source-wide audit,
+generic Legacy safety integration, certified measurements/export and full suite
+remain pending. Tests at this checkpoint establish reconstruction/transaction
+compatibility only, not repaired Drasov fitting geometry.
+
+A finite feasibility discriminator now finds CHECKED_SAT in198..212 after81619
+extensions/76684contact prunes,275ms. It changes only205..209, leaves all309
+offsets in actual productionstate sets and preserves gap202singleton plus exact
+protected/exterior geometry. First crossing disappears; untouched231/233remains.
+Native affected-segment means.22376baseline/.20664witness and minima.15079/.13703
+are measurements, not accepted shape/ownership truth. Existing lattice can
+represent a locally simple route under these boundaries; neither normal-chart
+impossibility nor a production topology-history redesign follows. Receipt and
+full allowed-state/witness CSVs: `20261102-a-feasibility/`. Parameter search stops.
+
+Task4 safety packet reviewed by Sol/high: preserve inherited self-contacts only
+with a conservative occurrence certificate—both directed final segments must
+uniquely/exactly equal their original source segments, and contact types match.
+Changed/ambiguous ownership is inheritance-unproven, never inferred from equal
+counts or crossing coordinates. Cache final-preview findings once before ranking;
+no repeated geometry scan in static assessCandidate. Legacy Apply rechecks
+immutable source/final geometry after SelectionIntegrity and requires displayed
+preview==stored final preview; it must NOT demand A's assignment map or adopt
+A's connected-way policy. Ordinary common closure endpoint is allowed; an overlap
+beyond that endpoint is not. Supported sharp noncrossing bends stay allowed.
+This conservative certificate can block changed/subdivided contact segments whose
+inheritance cannot be established; do not mislabel them new contacts. Existing
+modern external-contact/disconnection policy remains unchanged. Luna owns only
+the named safety/service/action hunks in tmpcodex/drasov-legacy-final-safety,
+basef90def7, with behavioral RED→GREEN and explicit Gradle-slot handoff. Diagnostics
+lane owns separate tmpcodex/drasov-final-geometry-diagnostics. Neither lane may
+change tracker defaults, numerical coefficients or private reference acceptance.
+
+Model routing correction: the Legacy safety lane's initial Luna implementation
+was discarded because it preceded an observed behavioral RED; its replacement
+test also targeted static assessment without the source context needed for the
+inheritance certificate. Controller stopped that lane and reassigned the same
+isolated worktree to Sol/high. Sol reproduced the actual existing freeze→cached
+assessment failure before implementation, retained O(1) static assessment, and
+has57focused tests green; action-boundary regressions are still in progress.
+This is an implementation-process correction, not evidence of completed safety.
+Diagnostics lane independently supplied a valid existing-bundle artifact RED;
+its first packet bc622de is not integrated pending stronger numeric assertions,
+selected-preview mismatch handling and schema/content validation regressions.
+
+Numerical next-step ruling after Sol consultation: coefficient trials stop.
+The finite local witness still visibly bends back at201..204, so being simple
+does not establish usable image fitting. A source-free comparison now renders
+the exact frozen scalar grid, without additional blur or interpolation, with
+baseline/witness toggles and downloadable feedback. Native PNG identity
+a66e9bea50eb1a72d72fe3f55ac21f2a0fb20b4dd9a51dd4b848c908ef98bca3;
+`20261102-a-feasibility/comparison.html` is served only on127.0.0.1:8770.
+It explicitly is not the original color image or a corrected optimizer output.
+User annotation requested asynchronously; unrelated Task4 work continues.
+Before a new A scoring mechanism is specified, compare actual image-owned axial
+orientation/turn evidence on an accepted reference and offending transitions,
+retaining the independent opposite arc/supported switchback controls. Reject that
+mechanism if the image cannot discriminate. Nonlocal topology history requires
+an explicit prefix-equivalence counterexample and architecture amendment, not
+an inference from failed coefficient trials. Legacy's mechanism is still separate
+and unresolved. No sampler guide, state expansion or hidden refinement approved.
