@@ -34,18 +34,26 @@ class PhysicalPathMeasurementsTest {
     }
 
     @Test
+    void turnMeasurementIsStableAcrossVerySmallAndLargeMetricScales() {
+        assertEquals(List.of(90.0), PhysicalPathMeasurements.measure(
+                List.of(p(0, 0), p(1e-200, 0), p(1e-200, 1e-200))).vertexTurnsDegrees());
+        assertEquals(List.of(90.0), PhysicalPathMeasurements.measure(
+                List.of(p(0, 0), p(1e200, 0), p(1e200, 1e200))).vertexTurnsDegrees());
+    }
+
+    @Test
     void resultDefensivelyCopiesAndValidatesValues() {
         var turns = new ArrayList<>(List.of(0.0, 90.0));
-        var result = PhysicalPathMeasurements.immutableResult(turns, 3.0, 1);
+        var result = new PhysicalPathMeasurements.Result(turns, 3.0, 1);
         turns.add(45.0);
         assertEquals(List.of(0.0, 90.0), result.vertexTurnsDegrees());
         assertThrows(UnsupportedOperationException.class, () -> result.vertexTurnsDegrees().add(1.0));
         assertThrows(IllegalArgumentException.class,
-                () -> PhysicalPathMeasurements.immutableResult(List.of(Double.NaN), 0.0, 0));
+                () -> new PhysicalPathMeasurements.Result(List.of(Double.NaN), 0.0, 0));
         assertThrows(IllegalArgumentException.class,
-                () -> PhysicalPathMeasurements.immutableResult(List.of(), -1.0, 0));
+                () -> new PhysicalPathMeasurements.Result(List.of(), -1.0, 0));
         assertThrows(IllegalArgumentException.class,
-                () -> PhysicalPathMeasurements.immutableResult(List.of(), 0.0, -1));
+                () -> new PhysicalPathMeasurements.Result(List.of(), 0.0, -1));
     }
 
     @Test

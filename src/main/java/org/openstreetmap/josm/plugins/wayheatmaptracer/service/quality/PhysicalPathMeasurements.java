@@ -1,14 +1,20 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality;
 
-import java.util.List;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 
-/** Physical measurements for a final metric-coordinate path. */
+/** Physical length and defined interior turns for a path in metric coordinates. */
 public final class PhysicalPathMeasurements {
     private PhysicalPathMeasurements() { }
 
+    /**
+     * Measures length and turns, omitting vertices adjacent to zero-length segments.
+     * @param finalPoints ordered path points in metres
+     * @return immutable physical measurements
+     * @throws IllegalArgumentException if the path is null, too short, or contains invalid geometry
+     */
     public static Result measure(List<MetricPoint> finalPoints) {
         if (finalPoints == null || finalPoints.size() < 2) {
             throw new IllegalArgumentException("A path requires at least two metric points");
@@ -24,14 +30,30 @@ public final class PhysicalPathMeasurements {
         double length = 0.0;
         int zeroLengthSegments = 0;
         double[] segmentLengths = new double[points.size() - 1];
+        double[] unitX = new double[segmentLengths.length];
+        double[] unitY = new double[segmentLengths.length];
         for (int i = 0; i < segmentLengths.length; i++) {
             MetricPoint start = points.get(i);
             MetricPoint end = points.get(i + 1);
-            double segmentLength = StrictMath.hypot(end.xMeters() - start.xMeters(), end.yMeters() - start.yMeters());
+            double dx = end.xMeters() - start.xMeters();
+            double dy = end.yMeters() - start.yMeters();
+            if (!Double.isFinite(dx) || !Double.isFinite(dy)) {
+                throw new IllegalArgumentException("Metric segment differences must be finite");
+            }
+            double segmentLength = StrictMath.hypot(dx, dy);
+            if (!Double.isFinite(segmentLength)) {
+                throw new IllegalArgumentException("Metric segment length must be finite");
+            }
             segmentLengths[i] = segmentLength;
             length += segmentLength;
+            if (!Double.isFinite(length)) {
+                throw new IllegalArgumentException("Total metric path length must be finite");
+            }
             if (segmentLength == 0.0) {
                 zeroLengthSegments++;
+            } else {
+                unitX[i] = dx / segmentLength;
+                unitY[i] = dy / segmentLength;
             }
         }
 
@@ -40,26 +62,18 @@ public final class PhysicalPathMeasurements {
             if (segmentLengths[i - 1] == 0.0 || segmentLengths[i] == 0.0) {
                 continue;
             }
-            MetricPoint previous = points.get(i - 1);
-            MetricPoint current = points.get(i);
-            MetricPoint next = points.get(i + 1);
-            double incomingX = current.xMeters() - previous.xMeters();
-            double incomingY = current.yMeters() - previous.yMeters();
-            double outgoingX = next.xMeters() - current.xMeters();
-            double outgoingY = next.yMeters() - current.yMeters();
-            double cosine = (incomingX * outgoingX + incomingY * outgoingY)
-                    / (segmentLengths[i - 1] * segmentLengths[i]);
-            double boundedCosine = Math.max(-1.0, Math.min(1.0, cosine));
-            turns.add(StrictMath.toDegrees(StrictMath.acos(boundedCosine)));
+            double incomingX = unitX[i - 1];
+            double incomingY = unitY[i - 1];
+            double outgoingX = unitX[i];
+            double outgoingY = unitY[i];
+            double cross = incomingX * outgoingY - incomingY * outgoingX;
+            double dot = incomingX * outgoingX + incomingY * outgoingY;
+            turns.add(StrictMath.toDegrees(StrictMath.atan2(StrictMath.abs(cross), dot)));
         }
-        return immutableResult(turns, length, zeroLengthSegments);
+        return new Result(turns, length, zeroLengthSegments);
     }
 
-    public static Result immutableResult(List<Double> vertexTurnsDegrees, double lengthMeters,
-            int zeroLengthSegmentCount) {
-        return new Result(vertexTurnsDegrees, lengthMeters, zeroLengthSegmentCount);
-    }
-
+    /** Immutable measured values for a physical path. */
     public record Result(List<Double> vertexTurnsDegrees, double lengthMeters, int zeroLengthSegmentCount) {
         public Result {
             Objects.requireNonNull(vertexTurnsDegrees, "vertexTurnsDegrees");
