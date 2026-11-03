@@ -140,6 +140,22 @@ must close before Task3 production work; Task5 repeats it only if A still needs 
 distinct correction. This is a staged executable plan, not a promise that the
 unproven normal-rotation hypothesis already supplies the final algorithm.
 
+## Latest checkpoint — 2026-11-03 exact rejection execution
+
+The final-mode-failure experiment is implemented/tested/independently reviewed
+at53b2ef8;229tests/14suites pass. The single frozen-build R4 screen completes
+1937/26098pairs under the unchanged128Mcap versus579eager. All579shared completed
+outcomes/reasons and scalar values match;201shared admitted Q values are preserved
+by identical scalar mean/source mass/pitch. Additional1358completed pairs have
+unknown eager outcomes. Full admission feasibility remains NEGATIVE, with24161
+unmeasured keys; no engine/default/kernel activation or release is justified.
+The detailed experiment plan records work/query/ownership evidence and next action.
+
+Public CI41580122880 succeeds at507269e:2601test executions/231XML suites,
+0failure/error/skip, public validation plus both GUI smoke engines. Private inputs
+were not executed. This CI covers the prior zero-local batch, not53b2ef8 or actual
+repaired Drasov geometry. Original Tasks3–6 and whole-goal review remain open.
+
 ## Execution ledger — 2026-11-02
 
 Goal ACTIVE following user approval. Base411a3c9; existing isolated release
