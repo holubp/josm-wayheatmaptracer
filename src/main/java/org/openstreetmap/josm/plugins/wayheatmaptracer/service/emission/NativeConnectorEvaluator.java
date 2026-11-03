@@ -265,7 +265,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                 evaluation.transferTo(owner); return remember(result);
             }
         } catch (EmissionWorkBudget.LimitExceededException | AttemptMemoryLedger.ResourceLimitException
-                | CancellationException failure) {
+                | LocalScalarProfileExtractor.ResourceLimitException | CancellationException failure) {
             terminalFailure=failure;
             input.recordTerminalExecutionFailure(failure);
             throw failure;

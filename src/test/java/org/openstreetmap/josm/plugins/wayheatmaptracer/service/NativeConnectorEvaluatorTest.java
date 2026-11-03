@@ -9,6 +9,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 
 class NativeConnectorEvaluatorTest {
@@ -509,6 +510,26 @@ class NativeConnectorEvaluatorTest {
                     // Releasing scratch must not turn a failed attempt into a new numerical run.
                 }
             }));
+        }
+    }
+
+    @Test void extractorMemoryRefusalIsTerminalAcrossSessionsAfterScratchIsReleased() {
+        try (var f = straight(false, SourceClass.OBSERVED)) {
+            long retainedBytes = f.ledger().currentBytes();
+            LocalScalarProfileExtractor.ResourceLimitException failure;
+            // Leave enough room for connector setup and transverse samples, but force a real
+            // allocation refusal inside detailed extraction rather than at evaluator setup.
+            try (var held = f.owner().reserve(f.ledger().limitBytes() - retainedBytes - 90 * 1024L);
+                 var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()))) {
+                failure = assertThrows(LocalScalarProfileExtractor.ResourceLimitException.class,
+                    () -> evaluator.evaluate(f.states().get(0), f.states().get(1)));
+                assertInstanceOf(AttemptMemoryLedger.ResourceLimitException.class, failure.getCause());
+            }
+            assertEquals(retainedBytes, f.ledger().currentBytes(), "failed extractor scratch and pressure must be released");
+            var retry = assertThrows(LocalScalarProfileExtractor.ResourceLimitException.class,
+                () -> new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of())));
+            assertSame(failure, retry, "the retained input must preserve the first terminal failure identity");
+            assertEquals(retainedBytes, f.ledger().currentBytes());
         }
     }
 
