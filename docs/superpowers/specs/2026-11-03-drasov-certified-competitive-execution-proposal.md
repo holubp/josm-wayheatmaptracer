@@ -26,19 +26,26 @@ second trace or partial best-so-far output is authorized.
    source/row/state/occurrence identities and a deterministic order. This census is charged before
    use; potential counts are complete, while image admission status is initially `UNMEASURED`.
    Ordinary edges remain governed by existing native admission, including its unsupported-field loss
-   1. A path used as upper bound must have every edge genuinely admitted under its applicable rule
-   and every Q/C/T/K term evaluated; an already available full ordinary path is eligible. If none is
-   established, U=+∞ and the attempt may reach its typed cap with no output.
-2. **Frontier.** Seed every allowed initial canonical A key. Each reached exact canonical prefix
-   (cursor occurrence, effective positive arc/reference or none, last numeric row, phase/boundary
-   context and tie metadata) creates a pending transition for every eligible successor. A positive
+   of `1`. Native ordinary admission alone does not certify a costed prefix: its actual Q must be
+   measured on complete field support or assigned the explicit unavailable loss 1, and its C/T/K must be
+   evaluated in the unchanged order. A path used as upper bound must have every edge genuinely
+   admitted under its applicable rule and every Q/C/T/K term evaluated; an already available full
+   ordinary path is eligible only after that complete check. If none is established, U=+∞ and the
+   attempt may reach its typed cap with no output.
+2. **Frontier.** Seed every allowed initial canonical A key. A certified prefix has every prior
+   ordinary or optional edge genuinely admitted and its actual Q/C/T/K evaluated in the original
+   arithmetic order. An ordinary edge whose scalar support or cost is unresolved remains the first
+   unmeasured transition even if its native graph admission is known. Every reached exact canonical
+   prefix (cursor occurrence, effective positive arc/reference or none, last numeric row,
+   phase/boundary context and tie metadata) creates a pending transition for every eligible successor. A positive
    optional edge's mode admission is endpoint/context dependent; a zero edge's directional receipt
    is additionally keyed by its actual incoming origin. An admitted transition may create a cheaper
    version of a prior key; regenerate its outgoing pending transitions. Do not discard an old
    version unless dominance is proved for the original arithmetic and final tie order. A path
    containing an as-yet-unmeasured edge has a **first** such edge after a certified prefix, so it is
    represented in this frontier. Certified admission is cached only by exact owned key and frozen
-   source/parameters.
+   source/parameters. Complete relaxation and queue insertion for every newly reached prefix and
+   zero-direction variant before testing closure.
 3. **Bound and order.** Priority is a conservative lower bound `LB(prefix,edge)` on the cost of
    **any complete path extending that transition**, with stable native-ID tie order in the queue. It
    includes an enclosure of the prefix's already evaluated cost and any safe lower bounds on the
@@ -46,11 +53,14 @@ second trace or partial best-so-far output is authorized.
    prefix and candidate geometry/reference before global mode proof where defined; include their
    downward enclosures only after proving coefficients and terms nonnegative, otherwise use a safe
    lower bound or `-∞`. For scalar Q, an exact same-arithmetic bilinear preflight result may be
-   reused on later admission; otherwise use a downward enclosure from a certified global upper bound
-   on native scalar intensity over the retained source. If the source can exceed 1, Q can be
-   negative: the bound must include that negative possibility over **all remaining source mass**. If
-   a finite safe intensity, geometry, coefficient or arithmetic enclosure cannot be established, use
-   `LB=-∞` and certify the transition. No assumption that native mean ≤1 or all increments are
+   reused on later admission. For every remaining source-chainage mass `S` not covered by an exact
+   Q, fixed positive factual pitch `p`, and a certified global native-intensity upper bound `Imax`,
+   use an outward lower enclosure of `(S/p) * min(1, 1-Imax)`. The `1` covers an ordinary edge with
+   unavailable field support and its explicit loss 1; `1-Imax` covers every measured ordinary or optional edge.
+   The source binding must certify `S≥0` and `p>0`; otherwise this bound is unavailable.
+   If `Imax>1`, this bound is negative over **all remaining source mass**. If a finite safe intensity,
+   geometry, coefficient or arithmetic enclosure cannot be established, use `LB=-∞` and certify the
+   transition. No assumption that native mean ≤1 or all increments are
    nonnegative is permitted. A relaxed suffix can ignore admission and constraints only when doing
    so cannot raise its lower bound. Numeric bounds enclose IEEE operations, interpolation and final
    accumulation in the unchanged order; ambiguous near ties remain open.
