@@ -17,7 +17,7 @@ Original full-state/search/ownership/mandatory-event/cap/objective contracts rem
 No default/engine/UI/release change. Local quantile/domain semantics are NEW;
 never label them exact full-window equivalence. Focus: unseen near competitors,
 filter/uncertainty halo, invalid zero guards, fallback terminal/cancellation
-ownership, and truthful partial receipts after an early slab refusal.
+ownership, and stale adjacent proofs after a middle probe changes.
 
 ### Task1: Review and freeze the bounded contract
 
@@ -42,18 +42,32 @@ if the reviewed interface cannot be implemented without it; record the reason.
 - [ ] Capture BASE and establish assertion RED for explicit policy identity and
   actual LOCAL/DENSE_FALLBACK/window evidence. Existing185test evidence is retained;
   do not fabricate a behavior RED from a compilation/setup failure.
-- [ ] First reproduce a memory refusal inside the actual extractor, then fix the
+- [x] First reproduce a memory refusal inside the actual extractor, then fix the
   evaluator's wrapper terminal propagation. A same-input new session must throw
   the SAME first exception even after scratch releases; run neighboring lifetime
   controls. Keep this prerequisite separately reviewable from numerical changes.
+
+Prerequisite completed24bef0d in isolated `josm-drasov-zero-guarded-local`:
+actual wrapper/cause and same-input retry RED saved; one-line terminal catch fix;
+14XML/186tests0failures/errors/skips, Java17 offline. Root inspected actual
+two-file22+/1-diff and final XML. Fixture close asserts final tracked memory0.
+Independent wrapper-finding closure requested; no local numerical code yet.
+Independent closure now confirms24bef0d. A further actual adaptive-order defect
+was resolved BEFORE implementation: defer early slab optimization, settle both
+neighbors to fixed evidence first. Later expansion/fallback can change a middle
+mode/threshold and invalidate its earlier left proof. Add a discriminating
+three-probe regression; no claimed early-slab benefit in this first screen.
 - [ ] Implement the spec's lattice/guards/expansion, existing extractor with
   measured noiseFloor0, candidate/competitor halo and resolution checks, dense
   fallback, and explicit immutable receipt metadata. All old policies unchanged.
 - [ ] Add independent synthetic controls listed in the spec; verify intended
   RED/GREEN per representable behavior. In particular, a competitor beyond the
   first local window must trigger expansion/fallback, not false uniqueness.
-- [ ] Implement early slab refusal only for the new policy; assert actual prefix
-  evidence/partial continuation and unchanged admitted scalar/Q on a positive case.
+- [ ] Settle neighboring proofs with monotone window expansion/at-most-once dense
+  fallback before freezing final mode/threshold/backend evidence and running the
+  existing slab loop. A three-probe test must actually change the middle evidence
+  and prove the left pair uses final values. Do not implement early-slab refusal
+  without a separately reviewed stability proof.
 - [ ] Run Java17 offline NativeConnectorEvaluatorTest, BilinearSegmentIntegralTest,
   OptionalEmissionContextTest, V022DetailedScalarProfileExtractorTest,
   V022RawCoreContextVetoTest, V022MetricRegion*Test, EmissionWorkBudgetTest and
@@ -68,7 +82,7 @@ if the reviewed interface cannot be implemented without it; record the reason.
   must be established before comparisons across source revisions.
 - [ ] Execute unchanged239state/26098pair graph once at normal128M/8M/256MiB caps.
   Record every key as completed or explicitly unmeasured, actual backend/window/
-  expansions/fallbacks, early slab, work categories, elapsed and peak/final memory.
+  expansions/fallbacks, failing slab, work categories, elapsed and peak/final memory.
 - [ ] Adjudicate changed admissions with actual native samples/thresholds/slabs;
   retain dense-unmeasured UNKNOWN comparisons and rejected/fallback evidence.
 - [ ] If complete, assess actual remaining budget/graph size for exact-kernel work;

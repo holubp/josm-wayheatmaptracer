@@ -52,7 +52,7 @@ Missing taps, censored support, unresolved ownership or incomplete near competit
 cannot authorize a local positive/negative result. Keep all measured alternatives
 in the receipt; do not silently remove a competing mode to obtain uniqueness.
 
-Before mutual continuation or an early slab check, certify BOTH cross-probe
+Before mutual continuation or a slab check, certify BOTH cross-probe
 directions. On the current probe, use the other probe's actual selected center,
 radius1.5*min(pCurrent,pOther), and current raw-to-center displacement bound p/2
 to enclose every potentially matching raw peak, then require all its +/-2/+/-6
@@ -83,11 +83,21 @@ and attempt another backend or reset ledgers. This includes the exact
 LocalScalarProfileExtractor.ResourceLimitException wrapper around ledger refusal;
 retain that first exception identity on the input across evaluator sessions.
 
-Only for this new policy, check the exact adjacent slab immediately after each
-new probe and mutual-continuation proof. Reject if its bilinear minimum is below
-the larger accepted endpoint shoulder threshold. This preserves that policy's
-admitted set/Q, but changes refusal priority and produces partial continuation;
-never mark the unmeasured suffix complete. Existing policy receipt order is intact.
+DEFER early-slab optimization in this first screen. Acquire the scheduled probes,
+then settle both-neighbor competitor obligations with monotone expansion and at
+most one transition to dense fallback per probe. A changed middle probe invalidates
+both adjacent proofs; revisit affected neighbors until backend/window/mode/threshold
+evidence is stable. Expansion never shrinks a window; dense fallback never returns
+to local. Charge every remeasurement and bound this finite process. Freeze the
+settled evidence before final mutual/slab decisions. Do not decide a left slab
+using provisional middle evidence that a later right neighbor may replace.
+
+Then use the existing exact adjacent-slab loop: reject if its bilinear minimum is
+below the larger FINAL accepted endpoint shoulder threshold. This first policy
+does not claim an early-prefix speedup. A future early check needs a separate
+stability proof and retained regression. Planned/actual probe count, first failing
+slab and continuation flags must describe the actual settled or partial evidence.
+Existing policy receipt order remains intact.
 
 Charge actual sample reads, each expansion/extraction, fallback, allocation,
 integrals and retained diagnostics before work. Bound growing storage; retain
@@ -100,7 +110,9 @@ genuine R4 three-arc A/Legacy witness; shifted thin-ridge phases; strong/faint a
 broad/uniform images; nearby parallel strands/split; remote bright strand with
 and without zero separation; valid/invalid zero guards; one-sided/corner mask;
 authority gaps; original/GAP endpoint ownership; zero transport; supported turn
-versus dark cross-strand jump; variable-pitch cross-probe competitor in both
+versus dark cross-strand jump; a three-probe case where right-neighbor demand
+changes the middle evidence and the left check must use that FINAL middle mode/
+threshold; variable-pitch cross-probe competitor in both
 directions; cancellation/work/memory terminal behavior, including allocation
 refusal INSIDE extraction followed by same-input retry.
 

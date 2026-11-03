@@ -126,12 +126,12 @@ Every `GTEST` below means this exact shell command from the isolated worktree:
 | Design requirement | Owning tasks | Current status |
 | --- | --- | --- |
 | Capture attribution, actual raw/final/applied distinction and accepted blue reference |1 | EVIDENCE VERIFIED; user blue reference PENDING |
-| Causal proof and deterministic non-Drasov-only controls |2 | PARTIAL: RED/proof/controls verified; approved v2 contract reviewed; concrete connector certificate/kernel packet pending |
+| Causal proof and deterministic non-Drasov-only controls |2 | PARTIAL: R4 RED/objective witness and reviewed connector prototype verified; all full-window policies hit128M; reviewed local-certificate screen active; exact kernel remains pending |
 | Legacy usable geometry, wide search and successful behavior retained |3 | PARTIAL: mapping, integral, factual input and resource foundations tested/reviewed; Legacy inference repair and real-data quality remain |
 | Exact final safety, availability, old diagnostic/identity compatibility |4 | PARTIAL: frozen previews, contact guard and measured export integrated; final gates and image-supported foldback work remain |
 | A actual existing objective traced, usable geometry, exact optimizer retained |5 | PARTIAL: approved correspondence experiment; fixed v2 objective witness screen passes; solver optimum and preservation unverified |
 | Both geometry modes, consumers, Hybrid, protected topology and transactions |6 | NOT STARTED |
-| Independent audit, CI, private visual acceptance, bounded performance |6 | NOT STARTED |
+| Independent audit, CI, private visual acceptance, bounded performance |6 | PARTIAL: foundations independently reviewed and full public CI41560731847 passes; admission feasibility negative; repaired real-data quality and final whole-goal audit remain unverified |
 | B performance redesign/new hybrid/stable release scope |None | OUT OF SCOPE |
 
 Planning self-review: all approved design workstreams map above. The exact repair
@@ -1358,3 +1358,20 @@ RED/same-input retry identity, then focused GREEN/scoped commit. Do not start
 local-policy numerical implementation until this prerequisite is inspected and
 the next bounded packet is issued. Allowed evaluator/test only, no source shell
 edits, recursive agents, defaults/engine/API-pool/release changes or cap raises.
+
+Task2a COMPLETE24bef0d (experimental integration a60d5fa): one-line catch plus
+21line actual in-extraction regression. RED proves same-input retry wrongly
+succeeded after scratch release; final14XML/186tests0fail/error/skip. Root inspected
+actual diff/XML and independent finding owner CLOSED. Saved RED XML/log and
+hashes are in the worker report; Fixture.close asserts final tracked memory0.
+
+ACTIVE Task2b: same isolated writer/worktree, BASE24bef0d. Numerical policy packet
+issued after a fourth pre-code review correction: DEFER early slab optimization.
+Cross-probe expansion/fallback can change a middle mode/threshold and stale its
+earlier left proof. Settle both-neighbor obligations with monotone expansion and
+at-most-once dense fallback, then freeze evidence before mutual/slab decisions.
+Three-probe regression must actually distinguish provisional/final middle values.
+This removes an unsafe proposed mechanism, not the original performance gate;
+no early speedup is claimed. Existing three policies and full search/state/caps
+remain unchanged. New policy is internal only; full capped screen follows tests
+and independent source review, not worker implementation alone.
