@@ -172,6 +172,18 @@ changed numerical contract, full existing state/arc inventories and caps, amorti
 cost targets, quality/adversarial controls, and a feasibility-first discriminator.
 This preserves scope; it does not mark any original engine task complete.
 
+First cheap-certificate proposal is frozen at
+`/data/data/com.termux/files/usr/tmp/drasov-cheap-certificate-design.md` and is
+**REVIEW BLOCKED**: independent audit rejects full-census implementation because
+the fixed1/8contrast and2p-core bounds analytically refuse required positive
+broad/low-contrast controls. Same-corridor thin recordings versus separate parallel
+paths also need an explicit ownership contract. Review:
+`/data/data/com.termux/files/usr/tmp/drasov-cheap-certificate-design-review.md`.
+Do not build a helper merely to rediscover these known failures. Active next action
+is one focused corrective Sol design pass, saved separately as
+`/data/data/com.termux/files/usr/tmp/drasov-cheap-certificate-design-v2.md`, including
+any actual objective/ownership conflict rather than silently narrowing scope.
+
 Public CI41580122880 succeeds at507269e:2601test executions/231XML suites,
 0failure/error/skip, public validation plus both GUI smoke engines. Private inputs
 were not executed. This CI covers the prior zero-local batch, not53b2ef8 or actual
