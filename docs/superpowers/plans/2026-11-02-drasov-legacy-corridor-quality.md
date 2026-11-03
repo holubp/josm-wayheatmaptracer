@@ -200,6 +200,16 @@ RED/GREEN, then charged representative cost prefix only. Full census is gated on
 independent actual-helper review and plausible80M admission/48Msolver headroom.
 No production source/Gradle/default/release changes in this helper assignment.
 
+Current refinement: continuous primitives pass external analytic/grid controls;
+all-mode/unresolved evidence is required, blanket second-peak refusal was rejected.
+Local3p evidence cannot claim unchanged full25m uniqueness. Independent review
+allows a pure feature/Q **component-cost** prefix with no ADMITTED arcs while the
+specific section4 proof-domain amendment remains open. Luna's separate prefix
+runner selected1200Akeys across133groups plus3separate Legacy witnesses; no offset
+substitution across colliding IDs. One-key API smoke then root gate precedes that
+screen. All arc statuses remain provisional; no global proof/engine improvement
+is claimed. Details and ownership in the active feasibility plan.
+
 Public CI41580122880 succeeds at507269e:2601test executions/231XML suites,
 0failure/error/skip, public validation plus both GUI smoke engines. Private inputs
 were not executed. This CI covers the prior zero-local batch, not53b2ef8 or actual
