@@ -443,10 +443,16 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         double pitch=context.resolution().effectivePitchMetersAt(source);
         double delta=Math.min(context.lateralStepMeters(),Math.min(minimumPitch()/2,
             context.resolution().outputRasterPitchMeters()));
-        double half=delta*Math.ceil(Math.max(pitch+6*delta,2.5*pitch+2*delta)/delta);
+        if (!(delta>0) || !Double.isFinite(delta))
+            return denseFallback(t,point,normal,from,span,evaluation,FallbackCause.INITIAL_WINDOW_TOO_WIDE);
+        int initialHalfIntervals=checkedCount(Math.ceil(Math.max(pitch+6*delta,2.5*pitch+2*delta)/delta));
+        double initialHalfWidth=initialHalfIntervals*delta;
+        if (!Double.isFinite(initialHalfWidth) || initialHalfWidth>context.searchHalfWidthMeters())
+            return denseFallback(t,point,normal,from,span,evaluation,FallbackCause.INITIAL_WINDOW_TOO_WIDE);
+        int maximumHalfIntervals=checkedCount(Math.floor(context.searchHalfWidthMeters()/delta));
         var evidenceOwner=evaluation.child("connector-profile-evidence");
         try {
-        if (!(delta>0) || !Double.isFinite(half) || half>context.searchHalfWidthMeters()) {
+        if (initialHalfIntervals>maximumHalfIntervals) {
             Probe fallback=denseFallback(t,point,normal,from,span,evidenceOwner,FallbackCause.INITIAL_WINDOW_TOO_WIDE);
             profileOwners.put(fallback,evidenceOwner);
             return fallback;
@@ -454,13 +460,15 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         FallbackCause fallback=FallbackCause.LOCAL_MODE_UNRESOLVED;
         int expansions=0;
         int totalSampleQueries=0;
-        for(double window=half; window<=context.searchHalfWidthMeters(); window+=delta) {
+        for(int halfIntervals=initialHalfIntervals;halfIntervals<=maximumHalfIntervals;halfIntervals++) {
             work(EmissionWorkBudget.Operation.PREPARATION,1);
+            double window=halfIntervals*delta;
             if(window>context.searchHalfWidthMeters())break;
+            expansions=halfIntervals-initialHalfIntervals;
             var local=evidenceOwner.child("connector-local-probe");
             try {
                 Probe probe=measureWindow(t,point,normal,from,span,local,window,delta,ProfileBackend.LOCAL,
-                    expansions,FallbackCause.NONE,false,totalSampleQueries);
+                    expansions,FallbackCause.NONE,false,totalSampleQueries,halfIntervals);
                 totalSampleQueries=Math.addExact(totalSampleQueries,probe.samples().size());
                 boolean allZero=true;
                 for(var sample:probe.samples()) {
@@ -484,9 +492,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             } finally {
                 local.close();
             }
-            if(fallback==FallbackCause.NOISE_FLOOR_NONZERO
-                    || window+delta>context.searchHalfWidthMeters())break;
-            expansions++;
+            if(fallback==FallbackCause.NOISE_FLOOR_NONZERO)break;
         }
         Probe dense=denseFallback(t,point,normal,from,span,evidenceOwner,fallback,expansions,totalSampleQueries);
         profileOwners.put(dense,evidenceOwner);
@@ -547,7 +553,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         int intervals=checkedCount(Math.ceil(2*context.searchHalfWidthMeters()/step));
         double actualStep=2*context.searchHalfWidthMeters()/intervals;
         return measureWindow(t,point,normal,from,span,evaluation,context.searchHalfWidthMeters(),actualStep,
-            ProfileBackend.DENSE_FALLBACK,expansions,cause,false,previousQueries);
+            ProfileBackend.DENSE_FALLBACK,expansions,cause,false,previousQueries,-1);
     }
 
     private Probe denseFallback(Probe old,RowState from,double span,AttemptMemoryLedger.Owner evaluation,
@@ -558,17 +564,19 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     private Probe measureWindow(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
             AttemptMemoryLedger.Owner evaluation,double halfWidth,double step,ProfileBackend backend,
-            int expansions,FallbackCause cause,boolean localNoMode,int previousQueries) {
+            int expansions,FallbackCause cause,boolean localNoMode,int previousQueries,int centeredHalfIntervals) {
         double source=chainage(from.row())+span*t+context.profileChainage().sourceOriginGroundMeters();
         double pitch=context.resolution().effectivePitchMetersAt(source);
-        int intervals=checkedCount(Math.ceil(2*halfWidth/step));
+        int intervals=centeredHalfIntervals>=0?Math.multiplyExact(2,centeredHalfIntervals)
+            :checkedCount(Math.ceil(2*halfWidth/step));
         int count=Math.addExact(intervals,1);
         reserve(evaluation,Math.addExact(512,Math.multiplyExact((long)count,88)));
         var samples=new ArrayList<Sample>(count);
         MetricPoint center=metric(point);
         for(int i=0;i<count;i++) {
             work(EmissionWorkBudget.Operation.PREPARATION,1);
-            double u=i==intervals?halfWidth:-halfWidth+2*halfWidth*i/intervals;
+            double u=centeredHalfIntervals>=0?centeredLatticeOffset(i,centeredHalfIntervals,step)
+                :i==intervals?halfWidth:-halfWidth+2*halfWidth*i/intervals;
             var actual=new MetricPoint(center.xMeters()+u*normal.xMeters(),center.yMeters()+u*normal.yMeters());
             boolean authorized=context.decisionRegion().containsConservatively(actual,CancellationProbe.NONE,
                 n->work(EmissionWorkBudget.Operation.REGION_QUERY,n))
@@ -596,12 +604,17 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         return new Probe(t,point,center,normal,pitch,samples,extraction,selected,threshold,evidence);
     }
 
+    private static double centeredLatticeOffset(int sampleIndex,int halfIntervals,double step) {
+        int centeredIndex=Math.subtractExact(sampleIndex,halfIntervals);
+        return centeredIndex==0?0.0:centeredIndex*step;
+    }
+
     private boolean localProof(Probe probe) {
         double pitch=probe.nativePitchMeters();
         if(probe.extraction().result().baseline().noiseFloor()!=0.0 || probe.selectedMode()==null || probe.threshold()==null
                 || probe.selectedMode().localizationSigmaMeters()>pitch/2
                 || Math.abs(probe.threshold().originPeak().offsetMeters())>pitch
-                || probe.selectedMode().distanceToCenterSet(probe.threshold().originPeak().offsetMeters())>pitch/2) return false;
+                || Math.abs(probe.threshold().originPeak().offsetMeters()-probe.selectedMode().centerMeters())>pitch/2) return false;
         boolean left=false,right=false;
         for(var sample:probe.samples()) {
             work(EmissionWorkBudget.Operation.PREPARATION,1);
@@ -613,6 +626,13 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         for(var peak:probe.extraction().result().rawPeaks()) {
             work(EmissionWorkBudget.Operation.PREPARATION,1);
             if(Math.abs(peak.offsetMeters())>3*pitch)continue;
+            AcceptedModeThresholdReceipt accepted=null;
+            for(var candidate:probe.extraction().acceptedReceipts()) {
+                work(EmissionWorkBudget.Operation.PREPARATION,1);
+                if(candidate.originPeak()==peak) { accepted=candidate; break; }
+            }
+            if(accepted==null || accepted.mode().localizationSigmaMeters()>pitch/2
+                    || Math.abs(peak.offsetMeters()-accepted.mode().centerMeters())>pitch/2)return false;
             if(peak.firstSampleIndex()<6 || peak.lastSampleIndex()+6>=probe.samples().size())return false;
             for(int i=peak.firstSampleIndex()-6;i<=peak.lastSampleIndex()+6;i++) {
                 work(EmissionWorkBudget.Operation.PREPARATION,1);
@@ -655,6 +675,13 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         for(var peak:target.extraction().result().rawPeaks()) {
             work(EmissionWorkBudget.Operation.PREPARATION,1);
             if(peak.offsetMeters()<lo || peak.offsetMeters()>hi)continue;
+            AcceptedModeThresholdReceipt accepted=null;
+            for(var candidate:target.extraction().acceptedReceipts()) {
+                work(EmissionWorkBudget.Operation.PREPARATION,1);
+                if(candidate.originPeak()==peak) { accepted=candidate; break; }
+            }
+            if(accepted==null || accepted.mode().localizationSigmaMeters()>p/2
+                    || Math.abs(peak.offsetMeters()-accepted.mode().centerMeters())>p/2)return false;
             if(peak.firstSampleIndex()<6 || peak.lastSampleIndex()+6>=target.samples().size())return false;
             for(int i=peak.firstSampleIndex()-6;i<=peak.lastSampleIndex()+6;i++) {
                 work(EmissionWorkBudget.Operation.PREPARATION,1);
