@@ -51,6 +51,51 @@ edits, Gradle, private upload, release or recursive delegation. Shared unchanged
 
 ## Existing local-policy research
 
+## Inventory and first exact screen evidence
+
+Inventory-20261103b proves17genuine original post-suppression Legacy peaks, all
+supported, actual seeds12/8/4px, no reliable anchors, no BaseCarry/IntervalTarget,
+133positive-length geometric keys and399seed references. Original offsets bit-match
+the unique factual retained image owner at each active row. This is R4-only.
+
+Single old DENSE screen completes133/133ADMITTED including3witnesses at30374173
+shared work units,1599planned/actual profiles and641199samples. No cap refusal.
+Raw list-form serialized receipts are preserved; `receipts-normalized.csv` and
+`reconciliation.md` document parsing all133rows/30fields without reevaluation.
+Output `/data/data/com.termux/files/usr/tmp/drasov-legacy-global-screen/dense-20261103/`.
+
+**Resource gate still blocked:** controller source audit found that
+NativeConnectorEvaluator reserves returned samples/probe storage on evaluation
+owners, while Owner.transferTo moves adopted leases only. Evaluation close releases
+raw reservations even though issued receipts retain their payloads. Thus the
+reported4.46MBledger peak is not a verified bound for641199retained sample records.
+Do not declare this screen fully resource-qualified or open kernel implementation.
+
+### Required retained-payload correction
+
+New isolated worktree `/data/data/com.termux/files/usr/tmp/josm-drasov-retained-receipts`,
+branch `codex/drasov-retained-receipts`, BASE53b2ef8. One Sol writer, only
+NativeConnectorEvaluator.java and NativeConnectorEvaluatorTest.java.
+
+- [ ] Reproduce intended RED: a live issued receipt with many distinct Sample
+  records must keep at least their two-double/boolean payload bytes charged until
+  evaluator disposal; measure delta from retained input baseline. Current raw
+  reservation transfer loses that live charge. Also cover multiple receipts.
+- [ ] Use adopted real payload identities/leases to retain samples and dynamic
+  receipt/probe references through owner transfer. Do not change global ledger
+  transfer semantics or keep discarded local scratch as a permanent live payload.
+  Cover dense/half/pixel/local paths, early-failure prefix, repeated/cross-probe
+  fallback, resource/cancel terminals and close-to-input-baseline/then0.
+- [ ] Preserve scalar values, states, branch predicates, Q and all caps. Correct
+  resource identity if needed; old low memory receipts are historical, not new
+  qualification. No blanket reservation-based cap inflation or uncharged data.
+- [ ] Focused RED/GREEN then exact14-suite batch, saved XML/log, diff-check and
+  scoped commit. Independent actual-delta/resource-lifetime audit before rerun.
+- [ ] Freeze corrected source/classes/JOSM and rerun the complete Legacy dense
+  screen once; code/resource correction invalidates old memory evidence and
+  justifies this single repeat. Reconcile133keys/status/Q/work and actual live
+  memory before proceeding to the approved Legacy kernel/stage packet.
+
 Continuous bilinear local research is deferred, not adopted or discarded. External
 snapshot `helper-sources-plateau-guard.sha256` binds seven files; compilation and
 standalone controls pass. Non-dyadic R4 over-refusals, branch-binding/global scope,
