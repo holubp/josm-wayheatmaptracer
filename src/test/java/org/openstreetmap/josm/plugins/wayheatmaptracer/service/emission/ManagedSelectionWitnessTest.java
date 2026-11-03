@@ -206,6 +206,23 @@ class ManagedSelectionWitnessTest {
         }
     }
 
+    @Test
+    void recheckRejectsASeparateMemoryAttempt() {
+        Fixture fixture = fixture();
+        SelectionContext selection = SelectionResolver.resolve(fixture.dataSet, false);
+        var otherLedger = AttemptMemoryLedger.production();
+        try (var owner = AttemptMemoryLedger.production().rootOwner();
+                var foreign = otherLedger.rootOwner()) {
+            ManagedSelectionWitness witness = ManagedSelectionWitness.capture(fixture.dataSet,
+                    selection, ProjectionRegistry.getProjection(), source(selection),
+                    budget(), owner);
+            assertThrows(IllegalArgumentException.class,
+                    () -> witness.requireCurrent(budget(), foreign));
+            assertEquals(0L, otherLedger.currentBytes());
+            witness.requireCurrent(budget(), owner);
+        }
+    }
+
     private static Fixture fixture() {
         DataSet dataSet = new DataSet();
         Node before = node(0.0), middle = node(0.001), after = node(0.002);

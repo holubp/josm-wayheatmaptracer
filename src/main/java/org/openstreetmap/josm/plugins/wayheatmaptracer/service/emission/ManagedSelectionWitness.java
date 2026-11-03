@@ -118,6 +118,7 @@ public final class ManagedSelectionWitness implements AutoCloseable {
         if (!isLive()) throw new IllegalStateException("Managed selection witness is closed");
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
         try (var scratch = scratchParent.child("managed-selection-recheck")) {
+            scratch.retain(this); // A recheck belongs to the same charged attempt as its source witness.
             long bytes = Math.addExact(16384L, Math.addExact(
                     Math.multiplyExact((long) frozen.fullWay().size(), 256L),
                     Math.addExact(MAX_RELEVANT_PRIMITIVES * 512L,
