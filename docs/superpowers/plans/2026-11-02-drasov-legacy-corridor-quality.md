@@ -1331,3 +1331,30 @@ expand/fallback on unknown bounds, then face original strong/sparse/switchback a
 capped graph gates. No code for this new policy is authorized by a false exactness
 claim. Standing autonomous experiment authority covers design and testing; original
 completion/engine/replay/release requirements are not narrowed.
+
+CI41560731847 is now SUCCESS at exactf7f11d46225f2cd2d9b7321ba0d9ae172522583e:
+231XML suites,2566executions/2482distinct(class,name)identities,0failures/errors/
+skips. Public validation and both JOSM19555 GUI engines pass. Official host SHA
+d2e2310e24fdf8f4b2d18094997446e443d5894e86f6eeac27a4241bad40338e;
+private_inputs=false/private_fixture_scope=not-executed. Report and bounded ignored
+artifact download preserved; no JAR/release publication. Local experiment50947e2
+adds only the later evidence checkpoint beyond that passing source revision.
+
+New bounded spec/plan:
+`docs/superpowers/specs/2026-11-03-drasov-zero-guarded-local-certificate.md` and
+`docs/superpowers/plans/2026-11-03-drasov-zero-guarded-local-screen.md`.
+Separate Sol/high design and independent review permit a numerical screen after
+3corrections, now incorporated: BOTH-direction variable-pitch competitor/tap
+support; extractor-wrapped memory refusal terminal across input sessions; exact
+absence/partial-prefix/backend evidence. Existing actual extractor is reused;
+computed local noiseFloor must be0 rather than injecting/overriding observations.
+No local numerical code implemented yet.
+
+ACTIVE prerequisite Task2a: sole writer Luna/medium `/root/query_policy`, new
+`/data/data/com.termux/files/usr/tmp/josm-drasov-zero-guarded-local`, branch
+`codex/drasov-zero-guarded-local`, BASE7e6c64f. It owns local Gradle. Fix only the
+review-proven extractor-memory-wrapper terminal hole with actual in-extraction
+RED/same-input retry identity, then focused GREEN/scoped commit. Do not start
+local-policy numerical implementation until this prerequisite is inspected and
+the next bounded packet is issued. Allowed evaluator/test only, no source shell
+edits, recursive agents, defaults/engine/API-pool/release changes or cap raises.
