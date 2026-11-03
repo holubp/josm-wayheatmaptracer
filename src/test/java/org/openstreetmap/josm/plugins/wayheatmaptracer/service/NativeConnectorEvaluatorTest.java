@@ -457,6 +457,7 @@ class NativeConnectorEvaluatorTest {
                 RasterMetricTransform.metricGrid(new MetricPoint(0,0),0.5,0,0,0.5),budget(),1,resolution,25);
              var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
                  QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+            long evaluatorSetup=f.ledger().currentBytes();
             var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
             assertEquals(3,receipt.plannedProbeCount(),receipt::toString);
             assertEquals(3,receipt.probes().size(),receipt::toString);
@@ -476,6 +477,9 @@ class NativeConnectorEvaluatorTest {
             assertEquals(0,receipt.firstFailingSlabIndex());
             assertTrue(receipt.measuredNativeContinuationComplete());
             assertTrue(right.selectedMode().distanceToCenterSet(0)<=right.selectedMode().localizationSigmaMeters());
+            long issuedSamples=receipt.probes().stream().mapToLong(p->p.samples().size()).sum();
+            assertTrue(f.ledger().currentBytes()-evaluatorSetup>=17L*issuedSamples,
+                "settled cross-probe fallback must retain every final sample payload");
         }
     }
 
@@ -1295,6 +1299,89 @@ class NativeConnectorEvaluatorTest {
                     // Releasing scratch must not turn a failed attempt into a new numerical run.
                 }
             }));
+        }
+    }
+
+    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    void issuedReceiptsKeepDistinctSamplePayloadChargedUntilEvaluatorClose(QueryPolicy policy) {
+        try(var f=scene((x,y)->Math.exp(-.5*Math.pow(y-32,2)),(x,y)->true,
+                MetricRegion.rectangle(0,0,63,63),SourceClass.OBSERVED,2,20,
+                RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),
+                budget(),.5,null,25)) {
+            long inputBaseline=f.ledger().currentBytes();
+            var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),policy);
+            try {
+                long setup=f.ledger().currentBytes();
+                var receipts=new ArrayList<Receipt>();
+                var distinctSamples=new IdentityHashMap<Object,Boolean>();
+                for(int repetition=0;repetition<2;repetition++) {
+                    var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
+                    assertEquals(Status.ADMITTED,receipt.status(),receipt::toString);
+                    receipts.add(receipt);
+                    for(var probe:receipt.probes())for(var sample:probe.samples())
+                        assertNull(distinctSamples.put(sample,Boolean.TRUE),
+                            "each query sample must have its own retained identity");
+                    long minimumPayload=Math.multiplyExact(17L,distinctSamples.size());
+                    assertTrue(f.ledger().currentBytes()-setup>=minimumPayload,
+                        ()->"issued samples remain live: charged="+(f.ledger().currentBytes()-setup)
+                            +" minimum payload="+minimumPayload+" count="+distinctSamples.size());
+                }
+                assertEquals(2,receipts.size());
+            } finally {
+                evaluator.close();
+            }
+            assertEquals(inputBaseline,f.ledger().currentBytes(),
+                "evaluator disposal must release all issued-receipt payloads but keep input");
+        }
+    }
+
+    @Test void localPrefixAndDenseFallbackRetainOnlyTheirIssuedSamples() {
+        for(boolean allZero:List.of(true,false)) {
+            try(var f=scene((x,y)->allZero?0.0:1.0,(x,y)->true,
+                    MetricRegion.rectangle(0,0,63,63),SourceClass.GAP)) {
+                long inputBaseline=f.ledger().currentBytes();
+                var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                    QueryPolicy.ZERO_GUARDED_LOCAL_V1,
+                    allZero?ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1
+                        :ExecutionPolicy.EAGER_ALL_PROBES_V1);
+                try {
+                    long setup=f.ledger().currentBytes();
+                    var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
+                    assertEquals(Status.REJECTED,receipt.status());
+                    if(allZero)assertEquals(1,receipt.probes().size(),
+                        "stop policy retains its one final failed local probe");
+                    else assertFalse(receipt.probes().isEmpty());
+                    assertTrue(receipt.probes().stream().allMatch(probe->
+                        probe.profileQuery().backend()==(allZero?ProfileBackend.LOCAL:ProfileBackend.DENSE_FALLBACK)));
+                    long liveSamples=receipt.probes().stream().mapToLong(probe->probe.samples().size()).sum();
+                    assertTrue(f.ledger().currentBytes()-setup>=17L*liveSamples,
+                        "issued prefix/fallback sample fields must stay charged");
+                } finally {evaluator.close();}
+                assertEquals(inputBaseline,f.ledger().currentBytes(),
+                    "discarded local attempts and issued payload close with evaluator");
+            }
+        }
+    }
+
+    @Test void retainedSamplePayloadMemoryRefusalIsStickyAndReleasesUnissuedSamples() {
+        try(var f=scene((x,y)->Math.exp(-.5*Math.pow(y-32,2)),(x,y)->true,
+                MetricRegion.rectangle(0,0,63,63),SourceClass.OBSERVED,2,20,
+                RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),
+                budget(),.05,null,25);
+            var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                QueryPolicy.DENSE_EIGHTH_NATIVE_V1)) {
+            long baseline=f.ledger().currentBytes();
+            AttemptMemoryLedger.ResourceLimitException failure;
+            try(var pressure=f.owner().reserve(f.ledger().limitBytes()-baseline-110*1024L)) {
+                failure=assertThrows(AttemptMemoryLedger.ResourceLimitException.class,
+                    ()->evaluator.evaluate(f.states().get(0),f.states().get(1)));
+                assertEquals(AttemptMemoryLedger.objectBytes(17),failure.requestedBytes(),
+                    "the actual Sample identity reservation must encounter the cap");
+                assertSame(failure,assertThrows(AttemptMemoryLedger.ResourceLimitException.class,
+                    ()->evaluator.evaluate(f.states().get(0),f.states().get(1))));
+            }
+            assertTrue(f.ledger().currentBytes()-baseline<=384,
+                "failed unissued receipt samples must release; only the evaluator's fixed result shell may remain");
         }
     }
 

@@ -303,7 +303,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                                     transferProfileOwners(profileOwners,evaluation);
                                     var result=receipt(Status.REJECTED,failure,from,to,span,length,pitch,scalar,false,false,
                                         probes,transport,ts.length,-1);
-                                    evaluation.transferTo(owner);return remember(result);
+                                    return publish(result,evaluation);
                                 }
                             }
                         }
@@ -338,12 +338,12 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                         if(reason!=Reason.NONE) {
                             var result=receipt(Status.REJECTED,reason,from,to,span,length,pitch,scalar,false,false,
                                 probes,transport,ts.length,-1);
-                            evaluation.transferTo(owner); return remember(result);
+                            return publish(result,evaluation);
                         }
                         if(probes.size()>1 && !mutual(probes.get(probes.size()-2),probe)) {
                             var result=receipt(Status.REJECTED,Reason.NONUNIQUE_CONTINUATION,from,to,span,length,
                                 pitch,scalar,false,false,probes,transport,ts.length,-1);
-                            evaluation.transferTo(owner); return remember(result);
+                            return publish(result,evaluation);
                         }
                     }
                 }
@@ -353,19 +353,19 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                         if(reason!=Reason.NONE) {
                             var result=receipt(Status.REJECTED,reason,from,to,span,length,pitch,scalar,false,false,
                                 probes,transport,ts.length,-1);
-                            evaluation.transferTo(owner); return remember(result);
+                            return publish(result,evaluation);
                         }
                     }
                     for(int i=1;i<probes.size();i++)if(!mutual(probes.get(i-1),probes.get(i))) {
                         var result=receipt(Status.REJECTED,Reason.NONUNIQUE_CONTINUATION,from,to,span,length,
                             pitch,scalar,false,false,probes,transport,ts.length,-1);
-                        evaluation.transferTo(owner); return remember(result);
+                        return publish(result,evaluation);
                     }
                 }
                 if (from.sourceClass() != SourceClass.OBSERVED && to.sourceClass() != SourceClass.OBSERVED
                         || !endpointOwned(from, probes.get(0)) || !endpointOwned(to, probes.get(probes.size()-1))) {
                     var result=receipt(Status.UNAVAILABLE,Reason.ENDPOINT_OWNERSHIP,from,to,span,length,pitch,scalar,false,true,probes,transport,ts.length,-1);
-                    evaluation.transferTo(owner); return remember(result);
+                    return publish(result,evaluation);
                 }
                 // Fresh GAP/censored endpoint ports are bound by the unique endpoint mode and its
                 // direct mutually unique neighboring probe. Source provenance is left untouched.
@@ -376,11 +376,11 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                     double threshold=Math.max(left.threshold().shoulderThreshold(),right.threshold().shoulderThreshold());
                     if (slab.status()!=BilinearSegmentIntegral.Status.COMPLETE || slab.minimum().orElseThrow()<threshold) {
                         var result=receipt(Status.REJECTED,Reason.SCALAR_BELOW_ENVELOPE,from,to,span,length,pitch,scalar,false,true,probes,transport,ts.length,k);
-                        evaluation.transferTo(owner); return remember(result);
+                        return publish(result,evaluation);
                     }
                 }
                 var result=receipt(Status.ADMITTED,Reason.NONE,from,to,span,length,pitch,scalar,true,true,probes,transport,ts.length,-1);
-                evaluation.transferTo(owner); return remember(result);
+                return publish(result,evaluation);
             }
         } catch (EmissionWorkBudget.LimitExceededException | AttemptMemoryLedger.ResourceLimitException
                 | LocalScalarProfileExtractor.ResourceLimitException | CancellationException failure) {
@@ -392,6 +392,26 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     // Issued receipt identity is necessary for zero-edge orientation. No scalar/probe result cache.
     private final IdentityHashMap<Receipt, Boolean> issued = new IdentityHashMap<>(0);
+    /** Converts the precharged live evaluation payload into identities owned by issued receipts. */
+    private Receipt publish(Receipt receipt,AttemptMemoryLedger.Owner evaluation) {
+        for(Probe probe:receipt.probes()) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            retainPayload(evaluation,AttemptMemoryLedger.objectBytes(80),probe);
+            retainPayload(evaluation,AttemptMemoryLedger.objectBytes(48),probe.profileQuery());
+            retainPayload(evaluation,Math.addExact(AttemptMemoryLedger.objectBytes(24),
+                AttemptMemoryLedger.referenceArrayBytes(probe.samples().size())),probe.samples());
+        }
+        if(!receipt.probes().isEmpty())
+            retainPayload(evaluation,Math.addExact(AttemptMemoryLedger.objectBytes(24),
+                AttemptMemoryLedger.referenceArrayBytes(receipt.probes().size())),receipt.probes());
+        retainPayload(evaluation,AttemptMemoryLedger.objectBytes(160),receipt);
+        evaluation.transferTo(owner);
+        return remember(receipt);
+    }
+    private void retainPayload(AttemptMemoryLedger.Owner scope,long bytes,Object identity) {
+        work(EmissionWorkBudget.Operation.ALLOCATION,1);
+        scope.reserve(bytes).adopt(identity);
+    }
     private Receipt remember(Receipt receipt) {
         reserve(owner, 256); work(EmissionWorkBudget.Operation.PREPARATION,1);
         issued.put(receipt,Boolean.TRUE); return receipt;
@@ -450,7 +470,10 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             boolean authorized=context.decisionRegion().containsConservatively(actual,CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.REGION_QUERY,n))
                 && context.evidenceRegion().containsConservatively(actual,CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.REGION_QUERY,n));
             double value=authorized?strictValue(context.rasterTransform().metricToPixelCenter(actual)):Double.NaN;
-            samples.add(new Sample(u,value,Double.isFinite(value)));
+            var sampleReservation=retainedSampleReservation(evaluation);
+            var sample=new Sample(u,value,Double.isFinite(value));
+            sampleReservation.adopt(sample);
+            samples.add(sample);
         }
         var extraction=extractor.extractDetailedWithAcceptedThresholds(samples,pitch,parameters.localization(),evaluation,
             CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.MODE_EXTRACTION,n));
@@ -540,14 +563,17 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private Probe replaceWithDenseFallback(Probe old,RowState from,double span,
             AttemptMemoryLedger.Owner evaluation,IdentityHashMap<Probe,AttemptMemoryLedger.Owner> profileOwners,
             FallbackCause cause) {
-        var oldOwner=profileOwners.remove(old);
+        var oldOwner=profileOwners.get(old);
         if(oldOwner==null)throw new IllegalStateException("Settled local profile has no evidence owner");
-        oldOwner.close();
         var replacementOwner=evaluation.child("connector-profile-fallback");
         try {
             Probe replacement=denseFallback(old.parameter(),old.rasterPosition(),old.metricNormal(),from,span,
                 replacementOwner,cause,old.profileQuery().expansionCount(),old.profileQuery().totalSampleQueries());
             profileOwners.put(replacement,replacementOwner);
+            profileOwners.remove(old);
+            // The caller still references old until probes.set returns. Nothing allocates
+            // payload between this close and that replacement of the list element.
+            oldOwner.close();
             return replacement;
         } catch(RuntimeException failure) {
             replacementOwner.close();
@@ -617,7 +643,10 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                 && context.evidenceRegion().containsConservatively(actual,CancellationProbe.NONE,
                     n->work(EmissionWorkBudget.Operation.REGION_QUERY,n));
             double value=authorized?strictValue(context.rasterTransform().metricToPixelCenter(actual)):Double.NaN;
-            samples.add(new Sample(u,value,Double.isFinite(value)));
+            var sampleReservation=retainedSampleReservation(evaluation);
+            var sample=new Sample(u,value,Double.isFinite(value));
+            sampleReservation.adopt(sample);
+            samples.add(sample);
         }
         var extraction=extractor.extractDetailedWithAcceptedThresholds(samples,pitch,parameters.localization(),evaluation,
             CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.MODE_EXTRACTION,n));
@@ -934,6 +963,10 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         return (int)count;
     }
     private void reserve(AttemptMemoryLedger.Owner scope,long bytes){work(EmissionWorkBudget.Operation.ALLOCATION,1);scope.reserve(bytes);}
+    private AttemptMemoryLedger.Reservation retainedSampleReservation(AttemptMemoryLedger.Owner scope) {
+        work(EmissionWorkBudget.Operation.ALLOCATION,1);
+        return scope.reserve(AttemptMemoryLedger.objectBytes(17));
+    }
     private void work(EmissionWorkBudget.Operation operation,long units){budget.charge(operation,units);}
     private void requireLive(){if(terminalFailure!=null)throw terminalFailure;if(owner.isClosed())throw new IllegalStateException("Connector session is closed");}
     @Override public void close(){owner.close();}
