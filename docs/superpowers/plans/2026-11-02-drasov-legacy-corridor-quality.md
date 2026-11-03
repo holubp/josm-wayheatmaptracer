@@ -10,6 +10,23 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-02-drasov-legacy-corridor-quality-design.md` (approved2026-11-02).
 
+## Current execution status — 2026-11-03
+
+Active: fix retained receipt/sample accounting in isolated
+`/data/data/com.termux/files/usr/tmp/josm-drasov-retained-receipts`, BASE53b2ef8;
+bounded Sol writer owns evaluator/test and local Gradle. Then independent audit
+and one corrected Legacy-only dense screen. Original kernels/engine fitting,
+consumers/private Drasov quality and whole-goal gates remain unfinished.
+
+Verified numeric-only Legacy screen:133/133global dense image proofs, all3witnesses,
+30374173/128Mwork. Actual native inventory is17observed states,3seeds,133geometry
+keys/399seed references, no carry/targets/zero variants. Ledger peak is NOT qualified:
+controller found escaped raw reservations released despite live Sample payloads.
+Detailed evidence and correction packet: `2026-11-03-drasov-legacy-first-global-screen.md`.
+Continuous local research is deferred; no1200run or full local census occurred.
+Public experimental9655509 passesCI41582739824 (2610executions/bothGUI); it predates
+this new correction. No new RC or production-default change.
+
 ## Global Constraints
 
 - Preserve explicitly configured ±25m discovery, factual source resolution and measured ground chainage. No cap increases, hidden narrowing or source acquisitions.
