@@ -134,6 +134,66 @@ class LegacyEmissionOracleTest {
         assertEquals(0, ledger.currentBytes());
     }
 
+    @Test
+    void actualGapProfilesResolveEqualCarryPathsByNativeOriginId() throws Exception {
+        Fixture f = darkFixture();
+        var ledger = AttemptMemoryLedger.production();
+        var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+        try (var owner = ledger.rootOwner();
+             var permit = OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(f.evidence(), FIELD,
+                 f.input(), f.chainage(), 25, budget, owner)) {
+            RetainedScalarProfiles retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(
+                f.evidence(), FIELD, f.input().profileLocations(), 25, 1, 1, budget, permit);
+            var binding = OptionalEmissionContextFactory.createLegacyBinding(permit, retained,
+                List.of(0, 1, 2), 24, List.of());
+            try (var input = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit, retained, binding)) {
+                List<CrossSectionProfile> profiles = invokeProfiles(new RidgeTracker(),
+                    binding.observations().stream().map(LegacyEmissionBinding.OriginalObservation::profile).toList());
+                for (var observation : binding.observations()) {
+                    assertEquals(NativeConnectorEvaluator.SourceClass.GAP, observation.sourceClass());
+                    assertTrue(observation.profile().peaks().stream().allMatch(CrossSectionPeak::syntheticCenter));
+                }
+                List<List<Double>> smootherInputs = new ArrayList<>();
+                LegacyEmissionKernel.Smoother smoother = (smoothedProfiles, offsets, intensities) -> {
+                    smootherInputs.add(List.copyOf(offsets));
+                    return offsets;
+                };
+                try (EmissionResult negative = new LegacyEmissionKernel().solve(input, profiles,
+                            List.of(-0.75), List.of(), (p, o, i) -> o, CancellationProbe.NONE);
+                     EmissionResult positive = new LegacyEmissionKernel().solve(input, profiles,
+                            List.of(0.75), List.of(), (p, o, i) -> o, CancellationProbe.NONE)) {
+                    assertEquals(List.of(-0.75, -0.75, -0.75), negative.inferenceVertices().stream()
+                        .map(vertex -> vertex.offsetRasterPixels().orElseThrow()).toList());
+                    assertEquals(List.of(0.75, 0.75, 0.75), positive.inferenceVertices().stream()
+                        .map(vertex -> vertex.offsetRasterPixels().orElseThrow()).toList());
+                    assertEquals(negative.stitched().q(), positive.stitched().q(), 0);
+                    assertEquals(negative.stitched().c(), positive.stitched().c(), 0);
+                    assertEquals(negative.stitched().t(), positive.stitched().t(), 0);
+                    assertEquals(negative.stitched().k(), positive.stitched().k(), 0);
+                    assertEquals(16, negative.stitched().q(), 1e-12);
+                }
+                try (EmissionResult actual = new LegacyEmissionKernel().solve(input, profiles,
+                        List.of(-0.75, 0.75), List.of(), smoother, CancellationProbe.NONE)) {
+                    assertEquals(3, actual.originalObservations().size());
+                    assertEquals(3, actual.inferenceVertices().size());
+                    assertEquals(List.of(1_000_000, 1_000_000, 1_000_000), actual.inferenceVertices().stream()
+                        .map(vertex -> vertex.nativeStateId().orElseThrow()).toList());
+                    assertTrue(actual.inferenceVertices().stream()
+                        .allMatch(vertex -> vertex.kind() == EmissionResult.StateKind.BASE_CARRY));
+                    assertTrue(actual.inferenceArcs().stream()
+                        .allMatch(arc -> arc.kind() == EmissionResult.ArcKind.ORDINARY_MEASURED));
+                    assertEquals(16, actual.stitched().q(), 1e-12);
+                    assertEquals(0, actual.stitched().c(), 0);
+                    assertEquals(0, actual.stitched().t(), 0);
+                    assertEquals(0, actual.stitched().k(), 0);
+                    assertEquals(1, smootherInputs.size());
+                    assertEquals(List.of(-0.75, -0.75, -0.75), smootherInputs.get(0));
+                }
+            }
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
     private static List<CrossSectionProfile> invokeProfiles(RidgeTracker tracker,
             List<CrossSectionProfile> profiles) throws Exception {
         @SuppressWarnings("unchecked")
@@ -292,6 +352,31 @@ class LegacyEmissionOracleTest {
         List<DetachedProfileSamplingLocation> locations = new ArrayList<>();
         for (int i = 0; i < 3; i++) {
             MetricPoint point = new MetricPoint(24 + 8.0 * i, GUIDE_Y);
+            locations.add(DetachedProfileSamplingLocation.at(frame.toGeographic(point), frame, transform, 8.0 * i));
+        }
+        List<Double> distances = locations.stream()
+            .map(DetachedProfileSamplingLocation::cumulativeGroundDistanceMeters).toList();
+        return new Fixture(evidence, new CorridorTraceInput(locations, 1), new ProfileChainage(distances, 16));
+    }
+
+    private static Fixture darkFixture() {
+        double[] values = new double[WIDTH * HEIGHT];
+        boolean[] valid = new boolean[values.length];
+        Arrays.fill(valid, true);
+        var origin = new GeographicPoint(0, 0);
+        var frame = LocalMetricFrame.certifiedEquirectangular(origin,
+            new GeographicPoint(-0.01, -0.01), new GeographicPoint(0.01, 0.01));
+        var transform = RasterMetricTransform.metricGrid(new MetricPoint(0, 0), 1, 0, 0, 1);
+        var field = new ScalarEvidenceField(WIDTH, HEIGHT, values, valid,
+            new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,
+                EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY, FIELD,
+                EvidenceCorrelationGroup.SYNTHETIC_TRUTH, false));
+        var evidence = new EvidenceSnapshot("legacy-oracle-dark", frame, transform,
+            EvidenceResolution.nativeSource(1, 1), MetricRegion.rectangle(0, 0, WIDTH - 1, HEIGHT - 1),
+            MetricRegion.rectangle(-0.5, -0.5, WIDTH - 0.5, HEIGHT - 0.5), Map.of(FIELD, field), "oracle-dark");
+        List<DetachedProfileSamplingLocation> locations = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            MetricPoint point = new MetricPoint(24 + 8.0 * i, 64);
             locations.add(DetachedProfileSamplingLocation.at(frame.toGeographic(point), frame, transform, 8.0 * i));
         }
         List<Double> distances = locations.stream()
