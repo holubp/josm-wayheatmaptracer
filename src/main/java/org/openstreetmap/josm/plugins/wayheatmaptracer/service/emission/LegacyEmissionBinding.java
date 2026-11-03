@@ -132,6 +132,7 @@ public final class LegacyEmissionBinding {
 
     private void validateProtectedOccurrences() {
         String previousId = null;
+        ProtectedOccurrence previous = null;
         double previousChainage = Double.NEGATIVE_INFINITY;
         Set<String> uniqueIds = new HashSet<>();
         for (ProtectedOccurrence occurrence : protectedOccurrences) {
@@ -140,6 +141,11 @@ public final class LegacyEmissionBinding {
                     || occurrence.occurrenceId().equals(previousId)
                     || !uniqueIds.add(occurrence.occurrenceId())) {
                 throw new IllegalArgumentException("Legacy protected occurrences must remain ordered and bracketed");
+            }
+            if (previous != null
+                    && occurrence.sourceChainageMeters() == previous.sourceChainageMeters()
+                    && !occurrence.exactPosition().equals(previous.exactPosition())) {
+                throw new IllegalArgumentException("Equal-chainage protected occurrences conflict in exact position");
             }
             double left = sourceChainageOriginMeters
                 + localChainage(observations.get(occurrence.leftOriginalRow()).profile());
@@ -156,6 +162,7 @@ public final class LegacyEmissionBinding {
             }
             previousId = occurrence.occurrenceId();
             previousChainage = occurrence.sourceChainageMeters();
+            previous = occurrence;
         }
     }
 

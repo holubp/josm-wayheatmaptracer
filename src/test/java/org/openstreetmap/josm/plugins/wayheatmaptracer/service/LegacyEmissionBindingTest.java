@@ -97,6 +97,18 @@ class LegacyEmissionBindingTest {
                         new MetricPoint(0, 0), true),
                     new LegacyEmissionBinding.ProtectedOccurrence("reused", 2, 3, 3.5,
                         new MetricPoint(0, 0), false))));
+            assertThrows(IllegalArgumentException.class, () ->
+                OptionalEmissionContextFactory.createLegacyBinding(permit, retained, validMapping, 24, List.of(
+                    new LegacyEmissionBinding.ProtectedOccurrence("same-chain-a", 0, 1, 1.5,
+                        new MetricPoint(0, 0), false),
+                    new LegacyEmissionBinding.ProtectedOccurrence("same-chain-b", 0, 1, 1.5,
+                        new MetricPoint(0.25, 0), false))));
+            assertDoesNotThrow(() -> OptionalEmissionContextFactory.createLegacyBinding(
+                permit, retained, validMapping, 24, List.of(
+                    new LegacyEmissionBinding.ProtectedOccurrence("coincident-a", 0, 1, 1.5,
+                        new MetricPoint(0, 0), false),
+                    new LegacyEmissionBinding.ProtectedOccurrence("coincident-b", 0, 1, 1.5,
+                        new MetricPoint(0, 0), true))));
             try (var ordinary = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit, retained)) {
                 assertTrue(ordinary.legacyBinding().isEmpty());
             }
@@ -141,10 +153,13 @@ class LegacyEmissionBindingTest {
             List<Integer> mapping = java.util.stream.IntStream.range(1, 18).boxed().toList();
             long remaining = ledger.limitBytes() - ledger.currentBytes();
             assertTrue(remaining > 1);
+            AttemptMemoryLedger.ResourceLimitException first;
             try (var pressure = owner.reserve(remaining - 1)) {
-                assertThrows(AttemptMemoryLedger.ResourceLimitException.class, () ->
+                first = assertThrows(AttemptMemoryLedger.ResourceLimitException.class, () ->
                     OptionalEmissionContextFactory.createLegacyBinding(permit, retained, mapping, 24, List.of()));
             }
+            assertSame(first, assertThrows(AttemptMemoryLedger.ResourceLimitException.class, () ->
+                OptionalEmissionContextFactory.createLegacyBinding(permit, retained, mapping, 24, List.of())));
         }
         assertEquals(0, ledger.currentBytes());
     }

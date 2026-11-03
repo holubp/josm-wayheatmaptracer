@@ -3,6 +3,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission;
 import java.util.Optional;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.concurrent.CancellationException;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.DetachedProfileSamplingLocation;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput;
@@ -43,6 +44,7 @@ public final class OptionalEmissionContextFactory {
         private boolean published;
         private boolean producing;
         private RetainedScalarProfiles produced;
+        private RuntimeException terminalFailure;
         private final double rasterHalfWidth, rasterStep, rasterSourcePitch;
 
         private SourceBinding(EvidenceSnapshot source, String fieldName, CorridorTraceInput input,
@@ -81,10 +83,20 @@ public final class OptionalEmissionContextFactory {
         Optional<TraceBudgets> originalBudgets() { return originalBudgets; }
         OptionalEmissionContext.Origin origin() { return origin; }
         EmissionWorkBudget budget() { return budget; }
+        synchronized void requireNoTerminalFailure() {
+            if (terminalFailure != null) throw terminalFailure;
+        }
+        synchronized void failTerminally(RuntimeException failure) {
+            if (terminalFailure == null) terminalFailure = failure;
+            owner.close();
+            source = null;
+            producing = false;
+        }
         /** Claims the exact pre-admitted native producer once, before its first allocation. */
         public synchronized void beginProduction(EvidenceSnapshot evidence, String selectedField,
                 List<DetachedProfileSamplingLocation> locations, double width, double step, double pitch,
                 EmissionWorkBudget sharedBudget) {
+            requireNoTerminalFailure();
             if (source == null || published || producing || produced != null || owner.isClosed()
                     || source != evidence || !fieldName.equals(selectedField) || budget != sharedBudget
                     || locations != input.profileLocations()
@@ -244,6 +256,7 @@ public final class OptionalEmissionContextFactory {
             RetainedScalarProfiles retained, List<Integer> originalRowToRetainedObservation,
             double trackerNormalizationRasterPx,
             List<LegacyEmissionBinding.ProtectedOccurrence> protectedOccurrences) {
+        if (binding != null) binding.requireNoTerminalFailure();
         if (binding == null || retained == null || originalRowToRetainedObservation == null
                 || originalRowToRetainedObservation.isEmpty() || protectedOccurrences == null
                 || !Double.isFinite(trackerNormalizationRasterPx) || trackerNormalizationRasterPx <= 0.0
@@ -251,6 +264,7 @@ public final class OptionalEmissionContextFactory {
                 || binding.owner.isClosed()) {
             throw new IllegalArgumentException("Legacy binding requires the active retained producer");
         }
+        try {
         List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionProfile> l0
             = retained.profiles().levelZeroProfiles();
         int previous = -1;
@@ -303,6 +317,11 @@ public final class OptionalEmissionContextFactory {
         } finally {
             if (!success) reservation.close();
         }
+        } catch (AttemptMemoryLedger.ResourceLimitException
+                | EmissionWorkBudget.LimitExceededException | CancellationException failure) {
+            binding.failTerminally(failure);
+            throw failure;
+        }
     }
 
     public static SampledEmissionInput fromDetached(SourceBinding binding, RetainedScalarProfiles retained,
@@ -326,6 +345,7 @@ public final class OptionalEmissionContextFactory {
             OptionalEmissionContext.Origin origin, Optional<LegacyEmissionBinding> legacyBinding) {
         if (binding == null) throw new IllegalArgumentException("Emission binding is required");
         synchronized (binding) {
+        binding.requireNoTerminalFailure();
         if (binding.published || binding.owner.isClosed() || binding.source == null
                 || binding.origin != origin || retained == null
                 || !retained.boundTo(binding) || binding.producing || binding.produced != retained
