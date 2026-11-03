@@ -107,6 +107,32 @@ proof classes under `drasov-managed-capture-integration-review.md` rulings; no n
 production attestation until original request authority, locked selection witness,
 wholecurve transform and bounded pitch proofs exist. Actual Legacy/A fitting,
 preview/Apply consumers and whole-goal quality remain unfinished.
+Evaluatorfollowon5dd5414+9b6ad97 independently CLOSED: original ordinals,
+dynamic registration, typed boundary/zero cursors, adjacent-bracket equalchainage
+conflict;254tests/15XML0f/e/s. Integratedexperimental f79e1c3d+d0afb5b7.
+CI41670103404@6ba8dc9 passed2630executions/233XML,bothGUI. CI41673834301@9ca7b53
+also SUCCESS; detailedartifactauditpending. Sourcevirtualscalea68f61a reviewed
+CLOSED20focusedXML, integrated6fc0c06 (notyetpushed). Managedprefetchd9708e0 fixed
+by9c445dd source review CLOSED6capsule/lease/precharge tests; ground8c53be9 notyet
+signedoffforproduction. Managedwriter ownsFactory/Context/managedBinding after
+Luna6d8ddaf handoff; kernelwriter now exclusively ownsInput lifetime changes.
+R4syntheticbinding6d8ddaf independently CLOSED136focusedtests; report
+`drasov-r4-binding-review.md`. Kernel21a3010 has196focused/12XMLgreen,
+R4N17retained19M3consumed14,J2.813508865870495 vsordinaryseedbest22.477839065525945,
+work86087417/128M,pairs8721/8M,peak65201852bytes=62.2MiB (not65.2MiB).
+Its fulltablet suite INTERRUPTED bycontroller; fullchecks goCIexactreviewedsnapshot.
+Kernel independent actualwhole-delta review `drasov-legacy-kernel-review.md`
+finds6materialgaps. Kernel fix round1 ACTIVE against21a3010: complete caller-bound
+familyceilings; finalgeometrycoverage; finalpositiverouteguard; dominated/transient
+reservationrelease; immutable native/stage/seed/anchor provenance; result/input
+receiptlifetimes. No kernel DONE or private Drasov improvement claim yet.
+A all-admitted global graph remains empirically over128M. Docs-only proposed
+executionamendment701b7387 (`2026-11-03-drasov-certified-competitive-execution-proposal.md`)
+gets bounded independent theorem approval in `drasov-a-certified-execution-review.md`
+subject to ordinary-prefix cost certification and Qloss-one lowerbound clarification.
+It is NOT ACTIVE: no Acode/graph until exactmodel/caps/ties/competitiveclosure
+executiongates formalized and independently closed. This is not statepruning,
+budgetraise, fabricated fullE/X or permission to return a best-so-far on cap.
 
 Active: bounded original Legacy kernel/stage implementation packet at
 `/data/data/com.termux/files/usr/tmp/drasov-legacy-kernel-packet.md` (Sol), existing
