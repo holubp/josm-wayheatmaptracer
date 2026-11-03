@@ -348,11 +348,11 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                     Barrier prior = barriers.get(priorIndex);
                     if (prior.occurrenceId().equals(barrier.occurrenceId())
                             || prior.leftRow() > barrier.leftRow()
+                            || prior.sourceChainageMeters() == barrier.sourceChainageMeters()
+                                && !prior.exactPosition().equals(barrier.exactPosition())
                             || prior.leftRow() == barrier.leftRow()
                                 && (prior.rightRow() != barrier.rightRow()
-                                    || prior.sourceChainageMeters() > barrier.sourceChainageMeters()
-                                    || prior.sourceChainageMeters() == barrier.sourceChainageMeters()
-                                        && !prior.exactPosition().equals(barrier.exactPosition())))
+                                    || prior.sourceChainageMeters() > barrier.sourceChainageMeters()))
                         throw new IllegalArgumentException("Protected occurrence order or identity conflicts");
                 }
             }

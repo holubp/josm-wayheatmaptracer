@@ -1921,6 +1921,31 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
+    @Test void equalChainageAcrossAdjacentBracketsRequiresOneExactPosition() {
+        var guide = List.of(new RasterPoint(10, 10), new RasterPoint(20, 10),
+            new RasterPoint(30, 10));
+        try (var f = guided((x, y) -> Math.exp(-0.5 * Math.pow(y - 14, 2)), guide, 1)) {
+            var states = List.of(new RowState(0, 0, 4, SourceClass.GAP, null),
+                new RowState(1, 0, 4, SourceClass.GAP, null),
+                new RowState(2, 0, 4, SourceClass.GAP, null));
+            var left = new Barrier("left-occurrence", 0, 1, 10, new MetricPoint(20, 14));
+            var conflicting = new Barrier("right-occurrence", 1, 2, 10, new MetricPoint(20, 15));
+            assertThrows(IllegalArgumentException.class, () -> new NativeConnectorEvaluator(f.input(),
+                new Domain(states, List.of(0, 1, 2), List.of(left, conflicting))));
+
+            var coincident = new Barrier("right-occurrence", 1, 2, 10, new MetricPoint(20, 14));
+            try (var evaluator = new NativeConnectorEvaluator(f.input(),
+                    new Domain(states, List.of(0, 1, 2), List.of(left, coincident)))) {
+                var positive = evaluator.registerOrdinaryPhysicalLeg(states.get(0), left,
+                    NativeReferenceStatus.UNAVAILABLE);
+                var zero = evaluator.advanceOrdinaryZero(positive, left, states.get(1));
+                var across = evaluator.advanceOrdinaryZero(zero, states.get(1), coincident);
+                assertSame(coincident, across.cursor());
+                assertSame(positive, across.ordinaryOrigin().orElseThrow());
+            }
+        }
+    }
+
     private record Straight(AttemptMemoryLedger ledger,AttemptMemoryLedger.Owner owner,
             SampledEmissionInput input,List<RowState> states) implements AutoCloseable {
         @Override public void close(){ input.close(); owner.close(); assertEquals(0,ledger.currentBytes()); }
