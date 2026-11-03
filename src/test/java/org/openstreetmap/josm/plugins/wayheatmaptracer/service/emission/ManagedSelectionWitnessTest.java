@@ -184,6 +184,28 @@ class ManagedSelectionWitnessTest {
         }
     }
 
+    @Test
+    void frozenOccurrenceValuesDoNotReadMovedOrRetaggedNodesAfterLock() {
+        Fixture fixture = fixture();
+        fixture.middle.put("name", "before");
+        SelectionContext selection = SelectionResolver.resolve(fixture.dataSet, false);
+        try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+            ManagedSelectionWitness witness = ManagedSelectionWitness.capture(fixture.dataSet,
+                    selection, ProjectionRegistry.getProjection(), source(selection),
+                    budget(), owner);
+            var fact = witness.frozenSelectedFacts().get(1);
+            assertTrue(fact.protectedOccurrence());
+            assertEquals("before", fact.tags().get("name"));
+            LatLon original = fact.coordinate();
+            fixture.middle.setCoor(new LatLon(0.0, 0.008));
+            fixture.middle.put("name", "after");
+            assertEquals(original, fact.coordinate());
+            assertEquals("before", witness.frozenSelectedFacts().get(1).tags().get("name"));
+            assertThrows(IllegalStateException.class,
+                    () -> witness.requireCurrent(budget(), owner));
+        }
+    }
+
     private static Fixture fixture() {
         DataSet dataSet = new DataSet();
         Node before = node(0.0), middle = node(0.001), after = node(0.002);

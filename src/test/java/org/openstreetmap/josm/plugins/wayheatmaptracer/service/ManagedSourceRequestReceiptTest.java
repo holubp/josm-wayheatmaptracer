@@ -147,6 +147,7 @@ class ManagedSourceRequestReceiptTest {
             retained.close();
             assertEquals(0L, ledger.currentBytes());
             assertThrows(IllegalStateException.class, () -> witness.requireCurrent(budget, owner));
+            assertThrows(IllegalStateException.class, witness::frozenSelectedFacts);
         } finally {
             owner.close();
         }

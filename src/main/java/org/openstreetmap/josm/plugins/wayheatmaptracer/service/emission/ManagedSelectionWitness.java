@@ -31,11 +31,12 @@ public final class ManagedSelectionWitness implements AutoCloseable {
     private static final int MAX_RELEVANT_MEMBERS = 20_000;
     private static final int MAX_RELEVANT_TAG_ENTRIES = 20_000;
 
-    private record NodeFact(Node node, LatLon coordinate, Map<String, String> tags, boolean fixed) { }
-    private record WayFact(Way way, List<Node> nodes, List<LatLon> coordinates,
+    private record NodeFact(Node node, long uniqueId, LatLon coordinate,
+            Map<String, String> tags, boolean fixed) { }
+    private record WayFact(Way way, long uniqueId, List<Node> nodes, List<LatLon> coordinates,
             Map<String, String> tags) { }
-    private record MemberFact(OsmPrimitive primitive, String role) { }
-    private record RelationFact(Relation relation, List<MemberFact> members,
+    private record MemberFact(OsmPrimitive primitive, long uniqueId, String role) { }
+    private record RelationFact(Relation relation, long uniqueId, List<MemberFact> members,
             Map<String, String> tags) { }
     private record Snapshot(List<NodeFact> fullWay, Map<Way, WayFact> incidentWays,
             Map<Relation, RelationFact> incomingRelations) { }
@@ -45,19 +46,22 @@ public final class ManagedSelectionWitness implements AutoCloseable {
     private final Projection projection;
     private final List<EastNorth> originalSource;
     private final List<Node> selectedOccurrences;
+    private final List<FrozenOccurrence> frozenSelectedFacts;
     private final Snapshot frozen;
     private final AttemptMemoryLedger.Owner owner;
     private final List<AttemptMemoryLedger.Owner> retainedOwners = new ArrayList<>();
 
     private ManagedSelectionWitness(DataSet dataSet, SelectionContext selection,
             Projection projection, List<EastNorth> originalSource,
-            List<Node> selectedOccurrences, Snapshot frozen,
+            List<Node> selectedOccurrences, List<FrozenOccurrence> frozenSelectedFacts,
+            Snapshot frozen,
             AttemptMemoryLedger.Owner owner) {
         this.dataSet = dataSet;
         this.selection = selection;
         this.projection = projection;
         this.originalSource = originalSource;
         this.selectedOccurrences = selectedOccurrences;
+        this.frozenSelectedFacts = frozenSelectedFacts;
         this.frozen = frozen;
         this.owner = owner;
     }
@@ -90,11 +94,17 @@ public final class ManagedSelectionWitness implements AutoCloseable {
             Snapshot frozen = snapshot(dataSet, selection, projection, sourceCopy, budget);
             budget.charge(EmissionWorkBudget.Operation.PREPARATION, sourceCopy.size());
             List<Node> selectedNodes = new ArrayList<>(sourceCopy.size());
+            List<FrozenOccurrence> selectedFacts = new ArrayList<>(sourceCopy.size());
             for (int index = selection.startIndex(); index <= selection.endIndex(); index++) {
-                selectedNodes.add(frozen.fullWay().get(index).node());
+                NodeFact fact = frozen.fullWay().get(index);
+                selectedNodes.add(fact.node());
+                selectedFacts.add(new FrozenOccurrence(index, fact.node(), fact.uniqueId(),
+                        fact.coordinate(), sourceCopy.get(index - selection.startIndex()),
+                        fact.tags(), fact.fixed(), protectedAt(frozen, selection, index)));
             }
             var result = new ManagedSelectionWitness(dataSet, selection, projection,
-                    sourceCopy, List.copyOf(selectedNodes), frozen, owner);
+                    sourceCopy, List.copyOf(selectedNodes), List.copyOf(selectedFacts),
+                    frozen, owner);
             reservation.adopt(result);
             complete = true;
             return result;
@@ -157,7 +167,7 @@ public final class ManagedSelectionWitness implements AutoCloseable {
                     throw new IllegalStateException("Managed relevant tags exceed bound");
                 }
                 budget.charge(EmissionWorkBudget.Operation.PREPARATION, keys.size());
-                fullFacts.add(new NodeFact(node,
+                fullFacts.add(new NodeFact(node, node.getUniqueId(),
                         new LatLon(coordinate.lat(), coordinate.lon()),
                         Map.copyOf(keys), selection.fixedNodes().contains(node)));
                 if (index >= start && index <= end) {
@@ -218,7 +228,8 @@ public final class ManagedSelectionWitness implements AutoCloseable {
                         throw new IllegalStateException("Managed relevant tags exceed bound");
                     }
                     budget.charge(EmissionWorkBudget.Operation.PREPARATION, keys.size());
-                    ways.put(way, new WayFact(way, List.copyOf(wayNodes), List.copyOf(wayCoordinates),
+                    ways.put(way, new WayFact(way, way.getUniqueId(),
+                            List.copyOf(wayNodes), List.copyOf(wayCoordinates),
                             Map.copyOf(keys)));
                 } else if (primitive instanceof Relation relation) {
                     // A loaded route may name a distant unloaded member. Its ID and role are
@@ -234,7 +245,7 @@ public final class ManagedSelectionWitness implements AutoCloseable {
                         if (target == null) {
                             throw new IllegalStateException("Relevant managed relation member is absent");
                         }
-                        members.add(new MemberFact(target, member.getRole()));
+                        members.add(new MemberFact(target, target.getUniqueId(), member.getRole()));
                     }
                     Map<String, String> keys = relation.getKeys();
                     tagEntries = Math.addExact(tagEntries, keys.size());
@@ -242,7 +253,8 @@ public final class ManagedSelectionWitness implements AutoCloseable {
                         throw new IllegalStateException("Managed relevant tags exceed bound");
                     }
                     budget.charge(EmissionWorkBudget.Operation.PREPARATION, keys.size());
-                    relations.put(relation, new RelationFact(relation, List.copyOf(members),
+                    relations.put(relation, new RelationFact(relation, relation.getUniqueId(),
+                            List.copyOf(members),
                             Map.copyOf(keys)));
                 }
                 for (OsmPrimitive referrer : primitive.getReferrers()) {
@@ -288,20 +300,25 @@ public final class ManagedSelectionWitness implements AutoCloseable {
                 || first.incomingRelations().size() != second.incomingRelations().size()) return false;
         for (int index = 0; index < first.fullWay().size(); index++) {
             NodeFact a = first.fullWay().get(index), b = second.fullWay().get(index);
-            if (a.node() != b.node() || !sameCoordinate(a.coordinate(), b.coordinate())
+            if (a.node() != b.node() || a.uniqueId() != b.uniqueId()
+                    || !sameCoordinate(a.coordinate(), b.coordinate())
                     || !a.tags().equals(b.tags()) || a.fixed() != b.fixed()) return false;
         }
         for (var entry : first.incidentWays().entrySet()) {
             WayFact a = entry.getValue(), b = second.incidentWays().get(entry.getKey());
-            if (b == null || !a.tags().equals(b.tags()) || !sameNodes(a.nodes(), b.nodes())
+            if (b == null || a.uniqueId() != b.uniqueId()
+                    || !a.tags().equals(b.tags()) || !sameNodes(a.nodes(), b.nodes())
                     || !sameCoordinates(a.coordinates(), b.coordinates())) return false;
         }
         for (var entry : first.incomingRelations().entrySet()) {
             RelationFact a = entry.getValue(), b = second.incomingRelations().get(entry.getKey());
-            if (b == null || !a.tags().equals(b.tags()) || a.members().size() != b.members().size()) return false;
+            if (b == null || a.uniqueId() != b.uniqueId()
+                    || !a.tags().equals(b.tags()) || a.members().size() != b.members().size()) return false;
             for (int index = 0; index < a.members().size(); index++) {
                 MemberFact left = a.members().get(index), right = b.members().get(index);
-                if (left.primitive() != right.primitive() || !left.role().equals(right.role())) return false;
+                if (left.primitive() != right.primitive()
+                        || left.uniqueId() != right.uniqueId()
+                        || !left.role().equals(right.role())) return false;
             }
         }
         return true;
@@ -339,21 +356,39 @@ public final class ManagedSelectionWitness implements AutoCloseable {
         }
     }
 
+    private void requireLive() {
+        if (!isLive()) throw new IllegalStateException("Managed selection witness is closed");
+    }
+
     @Override public void close() { owner.close(); }
-    public DataSet dataSet() { return dataSet; }
-    public SelectionContext selection() { return selection; }
-    public Projection projection() { return projection; }
-    public List<EastNorth> originalSource() { return originalSource; }
+    public DataSet dataSet() { requireLive(); return dataSet; }
+    public SelectionContext selection() { requireLive(); return selection; }
+    public Projection projection() { requireLive(); return projection; }
+    public List<EastNorth> originalSource() { requireLive(); return originalSource; }
     public List<Node> selectedOccurrences() {
+        requireLive();
         return selectedOccurrences;
     }
+    /** Immutable selected values captured inside the dataset lock, including exact source coordinates. */
+    public record FrozenOccurrence(int fullWayIndex, Node identity, long uniqueId,
+            LatLon coordinate, EastNorth projectedSource, Map<String, String> tags,
+            boolean explicitlyFixed, boolean protectedOccurrence) { }
+    public List<FrozenOccurrence> frozenSelectedFacts() { requireLive(); return frozenSelectedFacts; }
+    public long selectedWayUniqueId() {
+        requireLive();
+        return frozen.incidentWays().get(selection.way()).uniqueId();
+    }
     public boolean isProtected(Node node) {
-        int index = -1;
-        for (int i = selection.startIndex(); i <= selection.endIndex(); i++) {
-            if (frozen.fullWay().get(i).node() == node) { index = i; break; }
+        requireLive();
+        for (FrozenOccurrence occurrence : frozenSelectedFacts) {
+            if (occurrence.identity() == node) return occurrence.protectedOccurrence();
         }
-        if (index < selection.startIndex() || index > selection.endIndex()) return false;
+        return false;
+    }
+
+    private static boolean protectedAt(Snapshot frozen, SelectionContext selection, int index) {
         NodeFact fact = frozen.fullWay().get(index);
+        Node node = fact.node();
         if (index == selection.startIndex() || index == selection.endIndex()
                 || fact.fixed() || !fact.tags().isEmpty()) return true;
         int incidentWays = 0;
