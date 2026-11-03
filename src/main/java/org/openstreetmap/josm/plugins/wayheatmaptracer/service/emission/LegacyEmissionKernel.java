@@ -5,10 +5,12 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EmissionMapping;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EmissionResult;
@@ -43,17 +45,32 @@ public final class LegacyEmissionKernel {
     }
 
     private record PhysicalLeg(MetricPoint from, MetricPoint to,
-            EmissionMapping.VertexOwner fromOwner, EmissionMapping.VertexOwner toOwner,
-            Object nativeReference) {
+            Object fromNativeIdentity, Object toNativeIdentity,
+            ReferenceIdentity nativeReference) {
         double length() { return from.distanceTo(to); }
+    }
+    private static final class ReferenceIdentity {
+        final Object value;
+        ReferenceIdentity(Object value) { this.value = Objects.requireNonNull(value); }
+        @Override public boolean equals(Object other) {
+            return other instanceof ReferenceIdentity reference && reference.value == value;
+        }
+        @Override public int hashCode() { return System.identityHashCode(value); }
     }
     private record ScalarMemory(int previousRow, double previousOffset, int lastRow,
             double lastOffset, double lastSlope, int offsetOriginId) { }
+    private record PhaseContext(int stageOrdinal, String lastBoundaryOccurrenceId) { }
     private record Key(LegacyEmissionDomain.State last, ScalarMemory scalar,
-            PhysicalLeg lastPositive, Object incomingCursor) { }
+            PhysicalLeg lastPositive, ReferenceIdentity incomingCursor,
+            PhaseContext phase) { }
     private record ArcDraft(EmissionResult.ArcKind kind, MetricPoint from, MetricPoint to,
             double sourceSpan, double q, double c, double t, double k,
-            Optional<Double> mean, Optional<NativeConnectorEvaluator.Receipt> receipt) { }
+            Optional<Double> mean, Optional<NativeConnectorEvaluator.Receipt> receipt,
+            Object ordinaryCursor) {
+        ArcDraft withCursor(Object cursor) {
+            return new ArcDraft(kind, from, to, sourceSpan, q, c, t, k, mean, receipt, cursor);
+        }
+    }
     private record PointDraft(EmissionMapping.VertexOwner owner, LegacyEmissionDomain.State state,
             MetricPoint position) { }
     private static final class Node {
@@ -92,22 +109,35 @@ public final class LegacyEmissionKernel {
         double pitch = input.context().nativePitchMeters().orElseThrow(() ->
             new UnavailableException(UnavailableReason.NATIVE_PITCH));
         var budget = input.workBudget();
-        var domain = new LegacyEmissionDomain(binding, suppressed, seeds, budget);
         var owner = input.openExecutionOwner("legacy-emission-kernel");
-        List<NativeConnectorEvaluator> evaluators = new ArrayList<>();
+        NativeConnectorEvaluator bestEvaluator = null;
+        AttemptMemoryLedger.Owner bestSeedOwner = null;
         try {
+            var domain = new LegacyEmissionDomain(binding, suppressed, seeds, budget, owner);
             Node best = null;
             Inventory bestInventory = null;
-            NativeConnectorEvaluator bestEvaluator = null;
             for (var seed : domain.seeds()) {
                 budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
                 cancellation.checkpoint();
-                var inventory = inventory(domain, seed, proposals, budget, owner);
-                var evaluator = evaluator(input, domain, inventory);
-                evaluators.add(evaluator);
-                Node candidate = solveBase(input, domain, seed, inventory, evaluator, owner, cancellation, pitch);
-                if (candidate != null && better(candidate, best, budget, owner)) {
-                    best = candidate; bestInventory = inventory; bestEvaluator = evaluator;
+                var seedOwner = owner.child("seed-" + seed.id());
+                NativeConnectorEvaluator evaluator = null;
+                boolean retained = false;
+                try {
+                    var inventory = inventory(domain, budget, seedOwner);
+                    evaluator = evaluator(input, domain, inventory);
+                    Node candidate = solveBase(input, domain, seed, inventory, evaluator,
+                        seedOwner, cancellation, pitch);
+                    if (candidate != null && better(candidate, best, budget, seedOwner)) {
+                        if (bestEvaluator != null) bestEvaluator.close();
+                        if (bestSeedOwner != null) bestSeedOwner.close();
+                        best = candidate; bestInventory = inventory; bestEvaluator = evaluator;
+                        bestSeedOwner = seedOwner; retained = true;
+                    }
+                } finally {
+                    if (!retained) {
+                        if (evaluator != null) evaluator.close();
+                        seedOwner.close();
+                    }
                 }
             }
             if (best == null) throw new UnavailableException(UnavailableReason.NO_ADMITTED_PATH);
@@ -115,7 +145,8 @@ public final class LegacyEmissionKernel {
                 throw new UnavailableException(UnavailableReason.NO_POSITIVE_PHYSICAL_LEG);
 
             Node firstStage = best;
-            var path = flatten(firstStage, budget);
+            var path = flatten(firstStage, budget, bestSeedOwner);
+            verifyCosts(path.arcs(), firstStage, budget);
             // Anchors are computed on the unchanged original N profiles. A proposal is eligible only
             // when its first-stage emitted state owns the exact proposed native peak object.
             var eligible = new ArrayList<AnchorProposal>();
@@ -141,87 +172,108 @@ public final class LegacyEmissionKernel {
                 if (rightState.peakOwner() != right.peakOwner())
                     throw new IllegalStateException("Anchored endpoint lost its exact native peak");
                 Node interval = solveInterval(input, domain, prefix, rightState, left, right,
-                    bestInventory, bestEvaluator, owner, cancellation, pitch);
+                    index + 1, bestInventory, bestEvaluator, bestSeedOwner, cancellation, pitch);
                 if (interval == null) throw new UnavailableException(UnavailableReason.NO_ADMITTED_PATH);
-                intervalCosts.add(new EmissionResult.Costs(interval.q - prefix.q,
-                    interval.c - prefix.c, interval.t - prefix.t, interval.k - prefix.k));
+                intervalCosts.add(intervalIncrement(prefix, interval, budget));
                 boolean suffix = false;
                 for (Node node : chain) {
                     int row = node.key.last().originalRow();
                     if (row == right.originalRow()) { suffix = true; continue; }
                     if (suffix) {
-                        interval = advance(input, domain, interval, node.key.last(), bestEvaluator, owner, pitch);
+                        interval = advance(input, domain, bestInventory, interval, node.key.last(),
+                            bestEvaluator, bestSeedOwner,
+                            cancellation, index + 1, pitch);
                         if (interval == null)
                             throw new UnavailableException(UnavailableReason.NO_ADMITTED_PATH);
                     }
                 }
                 best = interval;
             }
-            return result(input, domain, flatten(best, budget), firstStage, best, intervalCosts,
-                smoother, owner, evaluators, budget, cancellation);
+            var stitchedPath = flatten(best, budget, bestSeedOwner);
+            verifyCosts(stitchedPath.arcs(), best, budget);
+            return result(input, domain, stitchedPath, firstStage, best, intervalCosts,
+                smoother, bestSeedOwner, owner, bestEvaluator, budget, cancellation);
         } catch (RuntimeException failure) {
-            for (var evaluator : evaluators) evaluator.close();
+            if (bestEvaluator != null) bestEvaluator.close();
             owner.close();
+            if (failure instanceof CancellationException
+                    || failure instanceof EmissionWorkBudget.LimitExceededException
+                    || failure instanceof AttemptMemoryLedger.ResourceLimitException)
+                input.recordTerminalExecutionFailure(failure);
             throw failure;
         }
     }
 
+    private record CarryIdentity(int row, int originId, long offsetBits) { }
+    private record TargetIdentity(int row, int leftAnchorRow, int rightAnchorRow) { }
+    private record ConnectorIdentity(LegacyEmissionDomain.State from,
+            LegacyEmissionDomain.State to) { }
+    private record OrdinaryLegIdentity(NativeConnectorEvaluator.PhysicalEndpoint from,
+            NativeConnectorEvaluator.PhysicalEndpoint to) { }
+    private record DirectionOrigin(ReferenceIdentity optional, ReferenceIdentity ordinary) { }
+    private record ZeroCursorIdentity(DirectionOrigin origin,
+            NativeConnectorEvaluator.PhysicalEndpoint from,
+            NativeConnectorEvaluator.PhysicalEndpoint to) { }
+    private record ZeroConnectorIdentity(ConnectorIdentity endpoints, DirectionOrigin origin) { }
     private record Inventory(List<List<LegacyEmissionDomain.State>> byRow,
-            Map<Integer, LegacyEmissionDomain.State> intervalTargets,
+            Map<CarryIdentity, LegacyEmissionDomain.State> reachedCarries,
+            Map<TargetIdentity, LegacyEmissionDomain.State> intervalTargets,
+            Map<String, NativeConnectorEvaluator.Barrier> barriersById,
+            Map<ConnectorIdentity, NativeConnectorEvaluator.Receipt> positiveReceipts,
+            Map<OrdinaryLegIdentity, NativeConnectorEvaluator.OrdinaryPhysicalLeg> ordinaryLegs,
+            Map<ZeroCursorIdentity, NativeConnectorEvaluator.PhysicalDirectionCursor> zeroCursors,
+            Map<ZeroConnectorIdentity, NativeConnectorEvaluator.Receipt> zeroReceipts,
             List<NativeConnectorEvaluator.RowState> evaluatorStates) { }
 
-    private Inventory inventory(LegacyEmissionDomain domain, LegacyEmissionDomain.Seed seed,
-            List<AnchorProposal> proposals,
+    private Inventory inventory(LegacyEmissionDomain domain,
             EmissionWorkBudget budget, AttemptMemoryLedger.Owner owner) {
         var byRow = new ArrayList<List<LegacyEmissionDomain.State>>(domain.rowCount());
         var all = new ArrayList<NativeConnectorEvaluator.RowState>();
-        var origins = new ArrayList<LegacyEmissionDomain.State>();
-        var targets = new HashMap<Integer, LegacyEmissionDomain.State>();
-        for (int pair = 0; pair + 1 < proposals.size(); pair++) {
-            var left = proposals.get(pair); var right = proposals.get(pair + 1);
-            LegacyEmissionDomain.State a = exactAnchorState(domain, left);
-            LegacyEmissionDomain.State b = exactAnchorState(domain, right);
-            for (int row = left.originalRow() + 1; row < right.originalRow(); row++) {
-                budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
-                if (domain.unsupported(row)) {
-                    var target = domain.intervalTarget(row, left.originalRow(), right.originalRow(), a, b, budget);
-                    if (targets.put(row, target) != null)
-                        throw new IllegalArgumentException("Overlapping Legacy anchor interval targets");
-                }
-            }
-        }
         for (int row = 0; row < domain.rowCount(); row++) {
             budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
-            var states = new ArrayList<LegacyEmissionDomain.State>();
-            if (domain.unsupported(row)) {
-                // The seed and every earlier native origin are candidate family members. DP only
-                // expands the carry matching the actual incoming origin; no fallback center is used.
-                states.add(domain.carry(row, seed.id(), seed.offsetRasterPixels(), budget));
-                for (var origin : origins) {
-                    budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
-                    states.add(domain.carry(row, origin.offsetOriginId(), origin.offsetRasterPixels(), budget));
-                }
-            } else {
-                states.addAll(domain.observedAt(row));
-                origins.addAll(states);
-            }
+            var states = domain.observedAt(row);
             if (states.size() > 96)
                 throw new UnavailableException(UnavailableReason.STATE_FAMILY_LIMIT);
-            var target = targets.get(row);
-            if (target != null) all.add(target.evaluatorState());
             budget.charge(EmissionWorkBudget.Operation.ALLOCATION, states.size() + 1L);
             owner.reserve(Math.addExact(64, Math.multiplyExact(128L, states.size())));
-            byRow.add(List.copyOf(states));
+            byRow.add(states);
             for (var state : states) all.add(state.evaluatorState());
         }
-        return new Inventory(List.copyOf(byRow), Map.copyOf(targets), List.copyOf(all));
+        return new Inventory(List.copyOf(byRow), new HashMap<>(), new HashMap<>(),
+            new HashMap<>(), new HashMap<>(), new HashMap<>(), new HashMap<>(),
+            new HashMap<>(), List.copyOf(all));
     }
 
-    private static LegacyEmissionDomain.State exactAnchorState(LegacyEmissionDomain domain,
-            AnchorProposal proposal) {
-        return domain.observedAt(proposal.originalRow()).stream()
-            .filter(state -> state.peakOwner() == proposal.peakOwner()).findFirst()
-            .orElseThrow(() -> new IllegalArgumentException("Anchor proposal has no exact native state"));
+    private LegacyEmissionDomain.State reachedCarry(LegacyEmissionDomain domain, Inventory inventory,
+            NativeConnectorEvaluator evaluator, int row, int originId, double offset,
+            EmissionWorkBudget budget, AttemptMemoryLedger.Owner owner) {
+        var key = new CarryIdentity(row, originId, Double.doubleToLongBits(offset));
+        budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
+        var reached = inventory.reachedCarries().get(key);
+        if (reached != null) return reached;
+        var state = domain.carry(row, originId, offset, budget);
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+        owner.reserve(160);
+        evaluator.registerState(state.evaluatorState(), row);
+        inventory.reachedCarries().put(key, state);
+        return state;
+    }
+
+    private LegacyEmissionDomain.State intervalTarget(LegacyEmissionDomain domain, Inventory inventory,
+            NativeConnectorEvaluator evaluator, int row, LegacyEmissionDomain.State left,
+            LegacyEmissionDomain.State right, EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner owner) {
+        var key = new TargetIdentity(row, left.originalRow(), right.originalRow());
+        budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
+        var existing = inventory.intervalTargets().get(key);
+        if (existing != null) return existing;
+        var state = domain.intervalTarget(row, left.originalRow(), right.originalRow(), left, right,
+            budget);
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+        owner.reserve(160);
+        evaluator.registerState(state.evaluatorState(), row);
+        inventory.intervalTargets().put(key, state);
+        return state;
     }
 
     private static List<Node> chain(Node terminal, EmissionWorkBudget budget) {
@@ -234,13 +286,52 @@ public final class LegacyEmissionKernel {
         return List.copyOf(reverse);
     }
 
+    private static EmissionResult.Costs intervalIncrement(Node prefix, Node terminal,
+            EmissionWorkBudget budget) {
+        double q = 0, c = 0, t = 0, k = 0;
+        for (Node node = terminal; node != prefix; node = node.previous) {
+            budget.charge(EmissionWorkBudget.Operation.BACKPOINTER_VISIT, 1);
+            if (node == null) throw new IllegalStateException("Anchored prefix is not an ancestor");
+            for (var arc : node.addedArcs) {
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                q += arc.q(); c += arc.c(); t += arc.t(); k += arc.k();
+            }
+        }
+        return new EmissionResult.Costs(q, c, t, k);
+    }
+
+    private static void verifyCosts(List<ArcDraft> arcs, Node terminal,
+            EmissionWorkBudget budget) {
+        double q = 0, c = .16 * Math.abs(terminal.key.scalar().lastOffset()
+            - terminal.key.scalar().previousOffset()), t = 0, k = 0;
+        // Initial prior belongs to the first emitted row, which may differ from the terminal row.
+        Node first = terminal;
+        while (first.previous != null) {
+            budget.charge(EmissionWorkBudget.Operation.BACKPOINTER_VISIT, 1);
+            first = first.previous;
+        }
+        double departure = Math.abs(first.key.scalar().lastOffset() - first.seedOffset);
+        c = .16 * departure; t = .12 * departure;
+        for (var arc : arcs) {
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            q += arc.q(); c += arc.c(); t += arc.t(); k += arc.k();
+        }
+        double tolerance = 1e-8 * Math.max(1, terminal.total());
+        if (Math.abs(q - terminal.q) > tolerance || Math.abs(c - terminal.c) > tolerance
+                || Math.abs(t - terminal.t) > tolerance || Math.abs(k - terminal.k) > tolerance)
+            throw new IllegalStateException("Stitched Legacy objective differs from actual arc costs");
+    }
+
     private Node solveInterval(SampledEmissionInput input, LegacyEmissionDomain domain,
             Node prefix, LegacyEmissionDomain.State rightState, AnchorProposal left,
-            AnchorProposal right, Inventory inventory, NativeConnectorEvaluator evaluator,
+            AnchorProposal right, int stageOrdinal, Inventory inventory,
+            NativeConnectorEvaluator evaluator,
             AttemptMemoryLedger.Owner owner, CancellationProbe cancellation, double pitch) {
         var budget = input.workBudget();
         var layers = new HashMap<Integer, Map<Key, Node>>();
-        layers.put(left.originalRow(), new HashMap<>(Map.of(prefix.key, prefix)));
+        var firstLayer = new LinkedHashMap<Key, Node>();
+        firstLayer.put(prefix.key, prefix);
+        layers.put(left.originalRow(), firstLayer);
         for (int row = left.originalRow(); row < right.originalRow(); row++) {
             var current = layers.get(row);
             if (current == null) continue;
@@ -253,15 +344,15 @@ public final class LegacyEmissionKernel {
                             || crossesMandatory(domain, row, toRow))) continue;
                     List<LegacyEmissionDomain.State> choices;
                     if (toRow == right.originalRow()) choices = List.of(rightState);
-                    else if (domain.unsupported(toRow)) {
-                        var target = inventory.intervalTargets().get(toRow);
-                        if (target == null) throw new IllegalStateException("Anchored interval target absent");
-                        choices = List.of(target);
-                    } else choices = domain.observedAt(toRow);
+                    else if (domain.unsupported(toRow))
+                        choices = List.of(intervalTarget(domain, inventory, evaluator, toRow,
+                            prefix.key.last(), rightState, budget, owner));
+                    else choices = domain.observedAt(toRow);
                     for (var to : choices) {
                         budget.charge(EmissionWorkBudget.Operation.TRANSITION, 1);
-                        Node next = advance(input, domain, from, to, evaluator, owner, pitch);
-                        if (next != null) insert(layers.computeIfAbsent(toRow, ignored -> new HashMap<>()), next,
+                        Node next = advance(input, domain, inventory, from, to, evaluator, owner,
+                            cancellation, stageOrdinal, pitch);
+                        if (next != null) insert(layers.computeIfAbsent(toRow, ignored -> new LinkedHashMap<>()), next,
                             budget, owner);
                     }
                 }
@@ -276,12 +367,10 @@ public final class LegacyEmissionKernel {
     private NativeConnectorEvaluator evaluator(SampledEmissionInput input, LegacyEmissionDomain domain,
             Inventory inventory) {
         var binding = domain.binding();
-        // This source API currently has only retained row indexes. Exact ordinal mapping is a
-        // connector-owner follow-on; refuse truthful nonconsecutive source rows until it lands.
         var mapping = binding.originalRowToRetainedObservation();
-        for (int row = 1; row < mapping.size(); row++)
-            if (mapping.get(row) != mapping.get(0) + row)
-                throw new UnavailableException(UnavailableReason.ORIGINAL_ROW_MAPPING);
+        var ordinals = new HashMap<Integer, Integer>();
+        for (int row = 0; row < mapping.size(); row++)
+            ordinals.put(mapping.get(row), row);
         var mandatory = new ArrayList<Integer>();
         mandatory.add(mapping.get(0)); mandatory.add(mapping.get(mapping.size() - 1));
         var barriers = new ArrayList<NativeConnectorEvaluator.Barrier>();
@@ -290,10 +379,14 @@ public final class LegacyEmissionKernel {
             mandatory.add(mapping.get(event.rightOriginalRow()));
             barriers.add(new NativeConnectorEvaluator.Barrier(event.occurrenceId(),
                 mapping.get(event.leftOriginalRow()), mapping.get(event.rightOriginalRow()),
-                event.sourceChainageMeters(), event.exactPosition()));
+                event.sourceChainageMeters()
+                    - input.context().profileChainage().sourceOriginGroundMeters(),
+                event.exactPosition()));
+            inventory.barriersById().put(event.occurrenceId(), barriers.get(barriers.size() - 1));
         }
         return new NativeConnectorEvaluator(input,
-            new NativeConnectorEvaluator.Domain(inventory.evaluatorStates(), mandatory, barriers));
+            new NativeConnectorEvaluator.Domain(inventory.evaluatorStates(), mandatory, barriers,
+                ordinals));
     }
 
     private Node solveBase(SampledEmissionInput input, LegacyEmissionDomain domain,
@@ -305,16 +398,17 @@ public final class LegacyEmissionKernel {
         for (int row = 0; row < n; row++) {
             budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
             owner.reserve(128);
-            layers.add(new HashMap<>());
+            layers.add(new LinkedHashMap<>());
         }
-        for (var first : inventory.byRow().get(0)) {
+        List<LegacyEmissionDomain.State> firstChoices = domain.unsupported(0)
+            ? List.of(reachedCarry(domain, inventory, evaluator, 0, seed.id(),
+                seed.offsetRasterPixels(), budget, owner)) : inventory.byRow().get(0);
+        for (var first : firstChoices) {
             budget.charge(EmissionWorkBudget.Operation.PAIR_INITIALIZATION, 1);
-            if (first.kind() == LegacyEmissionDomain.Kind.BASE_CARRY && first.offsetOriginId() != seed.id())
-                continue;
             double departure = Math.abs(first.offsetRasterPixels() - seed.offsetRasterPixels());
             var key = new Key(first, new ScalarMemory(-1, seed.offsetRasterPixels(), 0,
                 first.offsetRasterPixels(), first.offsetRasterPixels() - seed.offsetRasterPixels(),
-                first.offsetOriginId()), null, null);
+                first.offsetOriginId()), null, null, new PhaseContext(0, null));
             var point = new PointDraft(new EmissionMapping.ObservationVertex(0), first,
                 domain.metricPoint(first, input.context()));
             var node = allocateNode(owner, budget, null, key, List.of(point), List.of(),
@@ -330,14 +424,19 @@ public final class LegacyEmissionKernel {
                     double span = chainage(domain, toRow) - chainage(domain, row);
                     if (toRow > row + 1 && span > 20) break;
                     if (toRow > row + 1 && crossesMandatory(domain, row, toRow)) continue;
-                    for (var to : inventory.byRow().get(toRow)) {
+                    List<LegacyEmissionDomain.State> choices = domain.unsupported(toRow)
+                        ? List.of(reachedCarry(domain, inventory, evaluator, toRow,
+                            from.key.last().offsetOriginId(), from.key.last().offsetRasterPixels(),
+                            budget, owner)) : inventory.byRow().get(toRow);
+                    for (var to : choices) {
                         budget.charge(EmissionWorkBudget.Operation.TRANSITION, 1);
                         if (to.kind() == LegacyEmissionDomain.Kind.BASE_CARRY
                                 && (to.offsetOriginId() != from.key.last().offsetOriginId()
                                     || Double.doubleToLongBits(to.offsetRasterPixels())
                                         != Double.doubleToLongBits(from.key.last().offsetRasterPixels())))
                             continue;
-                        Node candidate = advance(input, domain, from, to, evaluator, owner, pitch);
+                        Node candidate = advance(input, domain, inventory, from, to, evaluator, owner,
+                            cancellation, 0, pitch);
                         if (candidate != null) insert(layers.get(toRow), candidate, budget, owner);
                     }
                 }
@@ -349,9 +448,11 @@ public final class LegacyEmissionKernel {
         return best;
     }
 
-    private Node advance(SampledEmissionInput input, LegacyEmissionDomain domain, Node from,
+    private Node advance(SampledEmissionInput input, LegacyEmissionDomain domain,
+            Inventory inventory, Node from,
             LegacyEmissionDomain.State to, NativeConnectorEvaluator evaluator,
-            AttemptMemoryLedger.Owner owner, double pitch) {
+            AttemptMemoryLedger.Owner owner, CancellationProbe cancellation,
+            int stageOrdinal, double pitch) {
         var budget = input.workBudget();
         var a = from.key.last(); int rowA = a.originalRow(), rowB = to.originalRow();
         boolean optional = rowB > rowA + 1;
@@ -364,52 +465,89 @@ public final class LegacyEmissionKernel {
         MetricPoint cursor = pa;
         double cursorSource = chainage(domain, rowA);
         PhysicalLeg physical = from.key.lastPositive();
-        Object incoming = from.key.incomingCursor();
+        Object incoming = from.key.incomingCursor() == null ? null : from.key.incomingCursor().value;
+        NativeConnectorEvaluator.PhysicalEndpoint endpoint = a.evaluatorState();
+        String lastBoundaryId = from.key.phase().lastBoundaryOccurrenceId();
         for (var event : events) {
+            var boundary = inventory.barriersById().get(event.occurrenceId());
+            if (boundary == null) throw new IllegalStateException("Protected event has no evaluator identity");
             double eventLocalChainage = event.sourceChainageMeters()
                 - input.context().profileChainage().sourceOriginGroundMeters();
             var arc = ordinary(input, cursor, event.exactPosition(), cursorSource,
-                eventLocalChainage, physical, budget, owner);
-            arcs.add(arc); physical = nextPhysical(physical, arc,
-                points.isEmpty() ? new EmissionMapping.ObservationVertex(rowA) : points.get(points.size() - 1).owner(),
-                new EmissionMapping.BoundaryVertex(event.occurrenceId()), null);
-            incoming = null; // Typed boundary reference adapter is supplied by evaluator owner.
+                eventLocalChainage, physical, budget, owner, cancellation);
+            incoming = ordinaryCursor(evaluator, inventory, endpoint, boundary, cursor,
+                event.exactPosition(), incoming, budget, owner);
+            arc = arc.withCursor(incoming);
+            arcs.add(arc); physical = nextPhysical(physical, arc, endpoint, boundary, incoming);
             points.add(new PointDraft(new EmissionMapping.BoundaryVertex(event.occurrenceId()), null,
                 event.exactPosition()));
             cursor = event.exactPosition(); cursorSource = eventLocalChainage;
+            endpoint = boundary;
+            lastBoundaryId = event.occurrenceId();
         }
         ArcDraft finalArc;
         if (optional) {
             NativeConnectorEvaluator.Receipt receipt;
-            if (cursor.distanceTo(pb) == 0 && incoming == null)
-                throw new UnavailableException(UnavailableReason.NATIVE_REFERENCE_ADAPTER);
-            receipt = evaluator.evaluate(a.evaluatorState(), to.evaluatorState(),
-                incoming instanceof NativeConnectorEvaluator.Receipt r ? r : null);
+            if (cursor.distanceTo(pb) == 0 && incoming == null) return null;
+            if (cursor.distanceTo(pb) == 0) {
+                var origin = directionOrigin(incoming);
+                if (origin == null) return null;
+                budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
+                var edge = new ZeroConnectorIdentity(new ConnectorIdentity(a, to), origin);
+                receipt = inventory.zeroReceipts().get(edge);
+                if (receipt == null) {
+                    if (incoming instanceof NativeConnectorEvaluator.OrdinaryPhysicalLeg leg)
+                        receipt = evaluator.evaluateWithOrdinaryIncoming(a.evaluatorState(),
+                            to.evaluatorState(), leg);
+                    else if (incoming instanceof NativeConnectorEvaluator.PhysicalDirectionCursor direction)
+                        receipt = evaluator.evaluateWithDirectionCursor(a.evaluatorState(),
+                            to.evaluatorState(), direction);
+                    else receipt = evaluator.evaluate(a.evaluatorState(), to.evaluatorState(),
+                        (NativeConnectorEvaluator.Receipt) incoming);
+                    budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+                    owner.reserve(96);
+                    inventory.zeroReceipts().put(edge, receipt);
+                }
+            } else {
+                budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
+                var edge = new ConnectorIdentity(a, to);
+                receipt = inventory.positiveReceipts().get(edge);
+                if (receipt == null) {
+                    receipt = evaluator.evaluate(a.evaluatorState(), to.evaluatorState());
+                    budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+                    owner.reserve(96);
+                    inventory.positiveReceipts().put(edge, receipt);
+                }
+            }
             if (receipt.status() != NativeConnectorEvaluator.Status.ADMITTED) return null;
             double q = receipt.sourceWeightedLoss();
             finalArc = new ArcDraft(EmissionResult.ArcKind.OPTIONAL_ADMITTED, cursor, pb,
                 sourceSpan, q, 0, 0, turn(physical, cursor, pb, pitch),
-                Optional.of(receipt.scalar().orElseThrow().mean().orElseThrow()), Optional.of(receipt));
+                Optional.of(receipt.scalar().orElseThrow().mean().orElseThrow()),
+                Optional.of(receipt), null);
             incoming = receipt;
         } else {
             finalArc = ordinary(input, cursor, pb, cursorSource, chainage(domain, rowB),
-                physical, budget, owner);
-            incoming = null;
+                physical, budget, owner, cancellation);
+            incoming = ordinaryCursor(evaluator, inventory, endpoint, to.evaluatorState(),
+                cursor, pb, incoming, budget, owner);
+            finalArc = finalArc.withCursor(incoming);
         }
         double scalarSlope = (to.offsetRasterPixels() - a.offsetRasterPixels()) / (rowB - rowA);
         double c = .16 * Math.abs(to.offsetRasterPixels() - a.offsetRasterPixels());
         double t = .12 * Math.abs(scalarSlope - from.key.scalar().lastSlope());
         finalArc = new ArcDraft(finalArc.kind(), finalArc.from(), finalArc.to(),
-            finalArc.sourceSpan(), finalArc.q(), c, t, finalArc.k(), finalArc.mean(), finalArc.receipt());
+            finalArc.sourceSpan(), finalArc.q(), c, t, finalArc.k(), finalArc.mean(),
+            finalArc.receipt(), finalArc.ordinaryCursor());
         arcs.add(finalArc);
-        physical = nextPhysical(physical, finalArc,
-            points.isEmpty() ? new EmissionMapping.ObservationVertex(rowA) : points.get(points.size() - 1).owner(),
-            new EmissionMapping.ObservationVertex(rowB), incoming);
+        physical = nextPhysical(physical, finalArc, endpoint, to.evaluatorState(), incoming);
         points.add(new PointDraft(new EmissionMapping.ObservationVertex(rowB), to, pb));
         double qSum = 0, kSum = 0;
         for (var arc : arcs) { qSum += arc.q(); kSum += arc.k(); }
         var key = new Key(to, new ScalarMemory(rowA, a.offsetRasterPixels(), rowB,
-            to.offsetRasterPixels(), scalarSlope, to.offsetOriginId()), physical, incoming);
+            to.offsetRasterPixels(), scalarSlope, to.offsetOriginId()), physical,
+            incoming == null ? null : new ReferenceIdentity(incoming),
+            new PhaseContext(stageOrdinal, lastBoundaryId));
         return allocateNode(owner, budget, from, key, List.copyOf(points), List.copyOf(arcs),
             from.q + qSum, from.c + c, from.t + t, from.k + kSum,
             from.consumed + rowB - rowA - 1);
@@ -417,7 +555,7 @@ public final class LegacyEmissionKernel {
 
     private ArcDraft ordinary(SampledEmissionInput input, MetricPoint from, MetricPoint to,
             double sourceFrom, double sourceTo, PhysicalLeg previous, EmissionWorkBudget budget,
-            AttemptMemoryLedger.Owner owner) {
+            AttemptMemoryLedger.Owner owner, CancellationProbe cancellation) {
         double sourceSpan = sourceTo - sourceFrom;
         var transform = input.context().rasterTransform();
         RasterPoint ra = transform.metricToPixelCenter(from), rb = transform.metricToPixelCenter(to);
@@ -427,8 +565,8 @@ public final class LegacyEmissionKernel {
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
         BilinearSegmentIntegral.Result integral;
         try (var scratch = owner.reserve(Math.addExact(4096, Math.multiplyExact(cells, 2048)))) {
-            integral = BilinearSegmentIntegral.evaluate(grid, ga, gb, CancellationProbe.NONE,
-                () -> budget.charge(EmissionWorkBudget.Operation.CELL_QUERY, 1));
+            integral = BilinearSegmentIntegral.evaluate(grid, ga, gb, cancellation,
+                () -> { cancellation.checkpoint(); budget.charge(EmissionWorkBudget.Operation.CELL_QUERY, 1); });
         }
         double pitch = input.context().nativePitchMeters().orElseThrow();
         boolean measured = integral.status() == BilinearSegmentIntegral.Status.COMPLETE;
@@ -437,14 +575,85 @@ public final class LegacyEmissionKernel {
         return new ArcDraft(measured ? EmissionResult.ArcKind.ORDINARY_MEASURED
                 : EmissionResult.ArcKind.ORDINARY_UNAVAILABLE,
             from, to, sourceSpan, q, 0, 0, turn(previous, from, to, pitch),
-            measured ? Optional.of(mean) : Optional.empty(), Optional.empty());
+            measured ? Optional.of(mean) : Optional.empty(), Optional.empty(), null);
+    }
+
+    /** Native adjacent admission is the unchanged Legacy row/event transition contract. */
+    private static DirectionOrigin directionOrigin(Object incoming) {
+        if (incoming instanceof NativeConnectorEvaluator.OrdinaryPhysicalLeg leg)
+            return new DirectionOrigin(null, new ReferenceIdentity(leg));
+        if (incoming instanceof NativeConnectorEvaluator.PhysicalDirectionCursor cursor)
+            return cursor.optionalOrigin().isEmpty() && cursor.ordinaryOrigin().isEmpty() ? null
+                : new DirectionOrigin(cursor.optionalOrigin().map(ReferenceIdentity::new).orElse(null),
+                    cursor.ordinaryOrigin().map(ReferenceIdentity::new).orElse(null));
+        if (incoming instanceof NativeConnectorEvaluator.Receipt receipt) {
+            if (receipt.status() != NativeConnectorEvaluator.Status.ADMITTED) return null;
+            if (receipt.emittedLengthMeters() > 0)
+                return new DirectionOrigin(new ReferenceIdentity(receipt), null);
+            if (receipt.transportedIncoming().isEmpty() && receipt.transportedOrdinary().isEmpty())
+                return null;
+            return new DirectionOrigin(receipt.transportedIncoming().map(ReferenceIdentity::new).orElse(null),
+                receipt.transportedOrdinary().map(ReferenceIdentity::new).orElse(null));
+        }
+        return null;
+    }
+
+    private static Object ordinaryCursor(NativeConnectorEvaluator evaluator, Inventory inventory,
+            NativeConnectorEvaluator.PhysicalEndpoint from,
+            NativeConnectorEvaluator.PhysicalEndpoint to,
+            MetricPoint fromPosition, MetricPoint toPosition, Object incoming,
+            EmissionWorkBudget budget, AttemptMemoryLedger.Owner owner) {
+        if (fromPosition.distanceTo(toPosition) > 0) {
+            budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
+            var edge = new OrdinaryLegIdentity(from, to);
+            var cached = inventory.ordinaryLegs().get(edge);
+            if (cached != null) return cached;
+            var status = NativeConnectorEvaluator.NativeReferenceStatus.UNAVAILABLE;
+            NativeConnectorEvaluator.OrdinaryPhysicalLeg leg;
+            if (from instanceof NativeConnectorEvaluator.RowState a
+                    && to instanceof NativeConnectorEvaluator.RowState b)
+                leg = evaluator.registerOrdinaryPhysicalLeg(a, b, status);
+            else if (from instanceof NativeConnectorEvaluator.RowState a
+                    && to instanceof NativeConnectorEvaluator.Barrier b)
+                leg = evaluator.registerOrdinaryPhysicalLeg(a, b, status);
+            else if (from instanceof NativeConnectorEvaluator.Barrier a
+                    && to instanceof NativeConnectorEvaluator.RowState b)
+                leg = evaluator.registerOrdinaryPhysicalLeg(a, b, status);
+            else if (from instanceof NativeConnectorEvaluator.Barrier a
+                    && to instanceof NativeConnectorEvaluator.Barrier b)
+                leg = evaluator.registerOrdinaryPhysicalLeg(a, b, status);
+            else throw new IllegalArgumentException("Unknown ordinary physical endpoint type");
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+            owner.reserve(96);
+            inventory.ordinaryLegs().put(edge, leg);
+            return leg;
+        }
+        var origin = directionOrigin(incoming);
+        if (origin == null) return null; // First direction remains unavailable.
+        budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
+        var edge = new ZeroCursorIdentity(origin, from, to);
+        var cached = inventory.zeroCursors().get(edge);
+        if (cached != null) return cached;
+        NativeConnectorEvaluator.PhysicalDirectionCursor cursor;
+        if (incoming instanceof NativeConnectorEvaluator.Receipt receipt)
+            cursor = evaluator.advanceOrdinaryZero(receipt, from, to);
+        else if (incoming instanceof NativeConnectorEvaluator.OrdinaryPhysicalLeg leg)
+            cursor = evaluator.advanceOrdinaryZero(leg, from, to);
+        else if (incoming instanceof NativeConnectorEvaluator.PhysicalDirectionCursor prior)
+            cursor = evaluator.advanceOrdinaryZero(prior, from, to);
+        else throw new IllegalArgumentException("Unknown ordinary incoming cursor type");
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+        owner.reserve(96);
+        inventory.zeroCursors().put(edge, cursor);
+        return cursor;
     }
 
     private static PhysicalLeg nextPhysical(PhysicalLeg previous, ArcDraft arc,
-            EmissionMapping.VertexOwner fromOwner, EmissionMapping.VertexOwner toOwner,
+            Object fromNativeIdentity, Object toNativeIdentity,
             Object nativeReference) {
         return arc.from().distanceTo(arc.to()) > 0
-            ? new PhysicalLeg(arc.from(), arc.to(), fromOwner, toOwner, nativeReference) : previous;
+            ? new PhysicalLeg(arc.from(), arc.to(), fromNativeIdentity, toNativeIdentity,
+                nativeReference == null ? null : new ReferenceIdentity(nativeReference)) : previous;
     }
 
     static double turn(PhysicalLeg previous, MetricPoint from, MetricPoint to, double pitch) {
@@ -532,7 +741,10 @@ public final class LegacyEmissionKernel {
     }
 
     private record Flattened(List<PointDraft> points, List<ArcDraft> arcs) { }
-    private static Flattened flatten(Node terminal, EmissionWorkBudget budget) {
+    private static Flattened flatten(Node terminal, EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner owner) {
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 3);
+        owner.reserve(Math.addExact(256, Math.multiplyExact(32L, terminal.depth)));
         var nodes = new ArrayList<Node>();
         for (Node node = terminal; node != null; node = node.previous) {
             budget.charge(EmissionWorkBudget.Operation.BACKPOINTER_VISIT, 1);
@@ -548,9 +760,13 @@ public final class LegacyEmissionKernel {
     private EmissionResult result(SampledEmissionInput input, LegacyEmissionDomain domain,
             Flattened path, Node firstNode, Node best, List<EmissionResult.Costs> intervals,
             Smoother smoother, AttemptMemoryLedger.Owner owner,
-            List<NativeConnectorEvaluator> evaluators, EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner kernelOwner,
+            NativeConnectorEvaluator evaluator, EmissionWorkBudget budget,
             CancellationProbe cancellation) {
         int n = domain.rowCount();
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 6);
+        owner.reserve(Math.addExact(1024, Math.addExact(Math.multiplyExact(96L, n),
+            Math.multiplyExact(512L, path.points().size()))));
         var vertexOwners = new ArrayList<EmissionMapping.VertexOwner>();
         var observationOwners = new ArrayList<EmissionMapping.ObservationOwner>();
         for (int row = 0; row < n; row++) observationOwners.add(null);
@@ -579,7 +795,8 @@ public final class LegacyEmissionKernel {
         var mapping = EmissionMapping.create(n, vertexOwners, observationOwners, mandatory);
         var arcs = arcResults(path.arcs());
         var smoothed = smooth(path, smoother, domain, input.context(), budget);
-        var smoothedArcs = arcResults(remeasure(input, path, smoothed, best.seedOffset, owner, budget));
+        var smoothedArcs = arcResults(remeasure(input, path, smoothed, best.seedOffset,
+            owner, budget, cancellation));
         var first = new EmissionResult.Costs(firstNode.q, firstNode.c, firstNode.t, firstNode.k);
         var stitched = new EmissionResult.Costs(best.q, best.c, best.t, best.k);
         var post = totals(smoothedArcs, best.seedOffset,
@@ -589,12 +806,23 @@ public final class LegacyEmissionKernel {
             source += arc.sourceSpanMeters(); length += arc.lengthMeters();
             if (arc.meanNativeIntensity().isPresent()) measured += arc.lengthMeters();
         }
-        owner.reserve(Math.addExact(512, Math.addExact(160L * vertices.size(), 192L * arcs.size())));
-        return new EmissionResult(domain.binding().observations(), mapping, vertices, smoothed,
+        var sourceRecords = new ArrayList<EmissionResult.OriginalObservation>(n);
+        for (var observation : domain.binding().observations()) {
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            var raster = observation.measurementProfile().samplingAnchor().rasterPoint();
+            var metric = input.context().rasterTransform().pixelCenterToMetric(raster.x(), raster.y());
+            sourceRecords.add(new EmissionResult.OriginalObservation(observation.originalRow(),
+                observation.retainedObservationIndex(), observation.sourceClass(), raster, metric,
+                input.context().profileChainage().sourceOriginGroundMeters()
+                    + observation.profile().cumulativeGroundDistanceMeters(),
+                observation.producerPeaks().stream().map(LegacyEmissionBinding.PeakOwner::originalPeakId).toList()));
+        }
+        return new EmissionResult(sourceRecords, mapping, vertices, smoothed,
             arcs, smoothedArcs, first, intervals, stitched, post, source, measured, length,
             budget.snapshot(), owner.peakBytes(), () -> {
-                for (var evaluator : evaluators) evaluator.close();
+                evaluator.close();
                 owner.close();
+                kernelOwner.close();
             });
     }
 
@@ -617,7 +845,12 @@ public final class LegacyEmissionKernel {
         for (int i = 0; i < drafts.size(); i++) {
             var arc = drafts.get(i);
             result.add(new EmissionResult.Arc(i, arc.kind(), arc.sourceSpan(),
-                arc.from().distanceTo(arc.to()), arc.q(), arc.c(), arc.t(), arc.k(), arc.mean(), arc.receipt()));
+                arc.from().distanceTo(arc.to()), arc.q(), arc.c(), arc.t(), arc.k(), arc.mean(),
+                arc.receipt(),
+                arc.ordinaryCursor() instanceof NativeConnectorEvaluator.OrdinaryPhysicalLeg leg
+                    ? Optional.of(leg) : Optional.empty(),
+                arc.ordinaryCursor() instanceof NativeConnectorEvaluator.PhysicalDirectionCursor cursor
+                    ? Optional.of(cursor) : Optional.empty()));
         }
         return List.copyOf(result);
     }
@@ -649,7 +882,7 @@ public final class LegacyEmissionKernel {
                     throw new IllegalArgumentException("Legacy smoother changed run length");
                 for (int i = start + 1; i < end; i++) {
                     var state = path.points().get(i).state();
-                    var profile = domain.binding().observations().get(state.originalRow()).profile();
+                    var profile = domain.binding().observations().get(state.originalRow()).measurementProfile();
                     double offset = result.get(i - start);
                     if (!Double.isFinite(offset)) throw new IllegalArgumentException("Legacy smoother produced nonfinite offset");
                     var rp = new RasterPoint(profile.anchorScreen().x + profile.normalScreen().x * offset,
@@ -667,7 +900,7 @@ public final class LegacyEmissionKernel {
 
     private List<ArcDraft> remeasure(SampledEmissionInput input, Flattened path,
             List<EmissionResult.Vertex> smoothed, double seedOffset, AttemptMemoryLedger.Owner owner,
-            EmissionWorkBudget budget) {
+            EmissionWorkBudget budget, CancellationProbe cancellation) {
         var result = new ArrayList<ArcDraft>();
         PhysicalLeg physical = null;
         int numericRow = path.points().get(0).state().originalRow();
@@ -686,7 +919,7 @@ public final class LegacyEmissionKernel {
             } else {
                 double sourceFrom = 0;
                 measured = ordinary(input, a, b, sourceFrom,
-                    sourceFrom + original.sourceSpan(), physical, budget, owner);
+                    sourceFrom + original.sourceSpan(), physical, budget, owner, cancellation);
             }
             double c = 0, t = 0;
             var nextPoint = path.points().get(i + 1);
@@ -700,10 +933,13 @@ public final class LegacyEmissionKernel {
             }
             double k = turn(physical, a, b, pitch);
             var arc = new ArcDraft(measured.kind(), a, b, original.sourceSpan(), measured.q(),
-                c, t, k, measured.mean(), measured.receipt());
+                c, t, k, measured.mean(), measured.receipt(), null);
             result.add(arc);
-            physical = nextPhysical(physical, arc, smoothed.get(i).owner(),
-                smoothed.get(i + 1).owner(), arc.receipt().orElse(null));
+            physical = nextPhysical(physical, arc,
+                path.points().get(i).state() == null ? path.points().get(i).owner()
+                    : path.points().get(i).state(),
+                path.points().get(i + 1).state() == null ? path.points().get(i + 1).owner()
+                    : path.points().get(i + 1).state(), arc.receipt().orElse(null));
         }
         return List.copyOf(result);
     }

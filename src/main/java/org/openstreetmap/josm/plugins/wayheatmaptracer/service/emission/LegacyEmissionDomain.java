@@ -10,10 +10,23 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionPeak;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionProfile;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 
 /** Original Legacy state inventory, independent of retained-context row padding. */
 public final class LegacyEmissionDomain {
     public enum Kind { OBSERVED_PEAK, BASE_CARRY, INTERVAL_TARGET }
+
+    /** Refusal to truncate an original native state family. */
+    public static final class StateFamilyLimitException extends RuntimeException {
+        private final int originalRow;
+        private final int familySize;
+        public StateFamilyLimitException(int originalRow, int familySize) {
+            super("Original Legacy row state family exceeds 96");
+            this.originalRow = originalRow; this.familySize = familySize;
+        }
+        public int originalRow() { return originalRow; }
+        public int familySize() { return familySize; }
+    }
 
     /** Native state identity uses the original row, never the retained context index. */
     public record State(int originalRow, int nativeStateId, Kind kind, int offsetOriginId,
@@ -43,10 +56,19 @@ public final class LegacyEmissionDomain {
     private final int nextOriginId;
 
     public LegacyEmissionDomain(LegacyEmissionBinding binding, List<CrossSectionProfile> suppressedProfiles,
-            List<Double> seedOffsets, EmissionWorkBudget budget) {
+            List<Double> seedOffsets, EmissionWorkBudget budget, AttemptMemoryLedger.Owner owner) {
         this.binding = Objects.requireNonNull(binding);
-        this.suppressedProfiles = List.copyOf(Objects.requireNonNull(suppressedProfiles));
-        Objects.requireNonNull(seedOffsets); Objects.requireNonNull(budget);
+        Objects.requireNonNull(suppressedProfiles); Objects.requireNonNull(seedOffsets);
+        Objects.requireNonNull(budget); Objects.requireNonNull(owner);
+        long peaks = 0;
+        for (var observation : binding.observations()) {
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            peaks = Math.addExact(peaks, observation.producerPeaks().size());
+        }
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+        owner.reserve(Math.addExact(512, Math.addExact(
+            Math.multiplyExact(512L, binding.observations().size()), Math.multiplyExact(256L, peaks))));
+        this.suppressedProfiles = List.copyOf(suppressedProfiles);
         if (this.suppressedProfiles.size() != binding.observations().size() || seedOffsets.isEmpty())
             throw new IllegalArgumentException("Legacy suppression and seed inventory must cover original N rows");
         var seedList = new ArrayList<Seed>(seedOffsets.size());
@@ -65,29 +87,30 @@ public final class LegacyEmissionDomain {
             if (profile.samplingAnchor() != observation.profile().samplingAnchor()
                     || profile.normalScreen() != observation.profile().normalScreen())
                 throw new IllegalArgumentException("Suppressed Legacy shell differs from original producer row");
-            var producerIds = new IdentityHashMap<CrossSectionPeak, Integer>();
-            for (var owner : observation.producerPeaks()) {
+            var producerOwners = new IdentityHashMap<CrossSectionPeak, LegacyEmissionBinding.PeakOwner>();
+            for (var peakOwner : observation.producerPeaks()) {
                 budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
-                producerIds.put(owner.peak(), owner.originalPeakId());
+                producerOwners.put(peakOwner.peak(), peakOwner);
             }
             var states = new ArrayList<State>();
             for (CrossSectionPeak peak : profile.peaks()) {
                 budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
-                Integer nativeId = producerIds.get(peak);
-                if (nativeId == null)
+                var producerOwner = producerOwners.get(peak);
+                if (producerOwner == null)
                     throw new IllegalArgumentException("Suppression created an unowned Legacy peak");
+                int nativeId = producerOwner.originalPeakId();
                 idByPeak.put(peak, nativeId);
                 if (isSamplerFallback(profile))
                     continue; // Sampler fallback peak is not a native chosen state.
                 var evaluatorState = new NativeConnectorEvaluator.RowState(
                     observation.retainedObservationIndex(), nativeId, peak.offsetPx(),
                     observation.sourceClass(), observation.sourceClass() == NativeConnectorEvaluator.SourceClass.OBSERVED
-                        ? peak : null);
+                        ? producerOwner.measurementPeakOwner() : null);
                 states.add(new State(row, nativeId, Kind.OBSERVED_PEAK, origin++, peak.offsetPx(), peak,
                     evaluatorState));
             }
             if (states.size() > 96)
-                throw new IllegalArgumentException("Legacy native state family exceeds 96 states at original row " + row);
+                throw new StateFamilyLimitException(row, states.size());
             rows.add(List.copyOf(states));
         }
         observed = List.copyOf(rows);
@@ -144,7 +167,7 @@ public final class LegacyEmissionDomain {
     }
 
     public RasterPoint rasterPoint(State state) {
-        var profile = binding.observations().get(state.originalRow()).profile();
+        var profile = binding.observations().get(state.originalRow()).measurementProfile();
         var anchor = profile.anchorScreen(); var normal = profile.normalScreen();
         return new RasterPoint(anchor.x + normal.x * state.offsetRasterPixels(),
             anchor.y + normal.y * state.offsetRasterPixels());

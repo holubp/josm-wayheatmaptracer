@@ -11,6 +11,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EmissionResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.LegacyEmissionKernel;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
@@ -38,20 +39,25 @@ public final class RidgeTracker {
         input.requireOpenAndUnchanged();
         var binding = input.legacyBinding().orElseThrow(() ->
             new IllegalArgumentException("Original Legacy emission binding is required"));
+        var budget = input.workBudget();
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION, binding.observations().size());
         List<RenderedHeatmapSampler.CrossSectionProfile> original = binding.observations().stream()
             .map(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.LegacyEmissionBinding.OriginalObservation::profile)
             .toList();
         List<RenderedHeatmapSampler.CrossSectionProfile> suppressed =
             suppressLongitudinalNoise(cancellableProfiles(original, cancellation));
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION, suppressed.size());
         List<Double> seeds = collectSeedOffsets(suppressed);
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION, seeds.size());
         double normalization = binding.trackerNormalizationRasterPx();
         List<LegacyEmissionKernel.AnchorProposal> proposals = reliableAnchors(suppressed, normalization,
                 profileEdgeLimit(suppressed)).stream()
             .map(anchor -> new LegacyEmissionKernel.AnchorProposal(anchor.index(), anchor.peak()))
             .toList();
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION, proposals.size());
         return new LegacyEmissionKernel().solve(input, suppressed, seeds, proposals,
             (runProfiles, offsets, intensities) -> smoothOffsets(runProfiles, offsets, intensities,
-                normalization), cancellation);
+                normalization, cancellation, budget), cancellation);
     }
 
     /**
@@ -597,6 +603,18 @@ public final class RidgeTracker {
         List<Double> intensities,
         double sourcePixelSizePx
     ) {
+        return smoothOffsets(profiles, offsets, intensities, sourcePixelSizePx,
+            CancellationProbe.NONE, null);
+    }
+
+    private List<Double> smoothOffsets(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        List<Double> offsets,
+        List<Double> intensities,
+        double sourcePixelSizePx,
+        CancellationProbe cancellation,
+        EmissionWorkBudget budget
+    ) {
         if (offsets.size() < 3) {
             return offsets;
         }
@@ -606,9 +624,13 @@ public final class RidgeTracker {
         double plateauSupportThreshold = Math.max(36.0, sourcePixel * 1.75);
         List<Double> current = new ArrayList<>(offsets);
         for (int pass = 0; pass < 4; pass++) {
+            cancellation.checkpoint();
+            if (budget != null) budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
             List<Double> baseline = movingAverage(current, 7);
             List<Double> next = new ArrayList<>(current);
             for (int i = 1; i < current.size() - 1; i++) {
+                cancellation.checkpoint();
+                if (budget != null) budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
                 double intensity = intensities.get(i);
                 double leftDelta = current.get(i) - current.get(i - 1);
                 double rightDelta = current.get(i + 1) - current.get(i);
