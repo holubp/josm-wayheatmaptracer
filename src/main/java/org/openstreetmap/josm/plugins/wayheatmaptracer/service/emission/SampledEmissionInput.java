@@ -1,5 +1,6 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission;
 
+import java.util.Optional;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.MultiScaleProfileSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 
@@ -12,18 +13,27 @@ public final class SampledEmissionInput implements AutoCloseable {
     private final OptionalEmissionContext context;
     private final EmissionWorkBudget workBudget;
     private final AttemptMemoryLedger.Owner retainedOwner;
+    private final Optional<LegacyEmissionBinding> legacyBinding;
     private volatile RuntimeException terminalExecutionFailure;
 
     SampledEmissionInput(MultiScaleProfileSet profiles, OptionalEmissionContext context,
             EmissionWorkBudget workBudget, AttemptMemoryLedger.Owner retainedOwner) {
+        this(profiles, context, workBudget, retainedOwner, Optional.empty());
+    }
+    SampledEmissionInput(MultiScaleProfileSet profiles, OptionalEmissionContext context,
+            EmissionWorkBudget workBudget, AttemptMemoryLedger.Owner retainedOwner,
+            Optional<LegacyEmissionBinding> legacyBinding) {
         this.profiles = profiles;
         this.context = context;
         this.workBudget = workBudget;
         this.retainedOwner = retainedOwner;
+        this.legacyBinding = java.util.Objects.requireNonNull(legacyBinding, "legacyBinding");
     }
     public MultiScaleProfileSet profiles() { requireOpen(); return profiles; }
     public OptionalEmissionContext context() { requireOpen(); return context; }
     public EmissionWorkBudget workBudget() { requireOpen(); return workBudget; }
+    /** Original Legacy row ownership, absent for ordinary optional-emission inputs. */
+    public Optional<LegacyEmissionBinding> legacyBinding() { requireOpen(); return legacyBinding; }
     private void requireOpen() {
         if (retainedOwner.isClosed()) throw new IllegalStateException("Retained emission input is closed");
     }

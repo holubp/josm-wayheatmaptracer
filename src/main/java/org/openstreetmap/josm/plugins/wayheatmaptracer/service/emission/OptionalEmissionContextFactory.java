@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission;
 
 import java.util.Optional;
 import java.util.List;
+import java.util.ArrayList;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.DetachedProfileSamplingLocation;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput;
@@ -235,8 +236,94 @@ public final class OptionalEmissionContextFactory {
         return publish(binding, retained, OptionalEmissionContext.Origin.DECLARED_SYNTHETIC_METRIC_GRID);
     }
 
+    /**
+     * Captures a structural original-row view over the actual retained producer output.
+     * This public descriptor path is deliberately non-authoritative for production.
+     */
+    public static LegacyEmissionBinding createLegacyBinding(SourceBinding binding,
+            RetainedScalarProfiles retained, List<Integer> originalRowToRetainedObservation,
+            double trackerNormalizationRasterPx,
+            List<LegacyEmissionBinding.ProtectedOccurrence> protectedOccurrences) {
+        if (binding == null || retained == null || originalRowToRetainedObservation == null
+                || originalRowToRetainedObservation.isEmpty() || protectedOccurrences == null
+                || !Double.isFinite(trackerNormalizationRasterPx) || trackerNormalizationRasterPx <= 0.0
+                || !retained.boundTo(binding) || binding.produced != retained || binding.published
+                || binding.owner.isClosed()) {
+            throw new IllegalArgumentException("Legacy binding requires the active retained producer");
+        }
+        List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionProfile> l0
+            = retained.profiles().levelZeroProfiles();
+        int previous = -1;
+        long referenceCount = 0;
+        for (int row = 0; row < originalRowToRetainedObservation.size(); row++) {
+            int index = originalRowToRetainedObservation.get(row);
+            binding.budget().charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            if (index <= previous || index < 0 || index >= l0.size()) {
+                throw new IllegalArgumentException("Original row mapping must be strictly increasing and in range");
+            }
+            previous = index;
+            referenceCount = Math.addExact(referenceCount, l0.get(index).peaks().size());
+        }
+        long bytes = Math.addExact(256L, Math.addExact(
+            AttemptMemoryLedger.referenceArrayBytes(originalRowToRetainedObservation.size() * 2L),
+            Math.addExact(Math.multiplyExact((long) originalRowToRetainedObservation.size(), 192L),
+                Math.addExact(Math.multiplyExact(referenceCount, 24L),
+                    Math.addExact(AttemptMemoryLedger.referenceArrayBytes(protectedOccurrences.size()),
+                        Math.multiplyExact((long) protectedOccurrences.size(), 24L))))));
+        binding.budget().charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+        var reservation = binding.owner.reserve(bytes);
+        boolean success = false;
+        try {
+            List<Integer> mapping = List.copyOf(originalRowToRetainedObservation);
+            List<LegacyEmissionBinding.OriginalObservation> observations = new ArrayList<>(mapping.size());
+            for (int row = 0; row < mapping.size(); row++) {
+                binding.budget().charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                int retainedIndex = mapping.get(row);
+                var profile = l0.get(retainedIndex);
+                List<LegacyEmissionBinding.PeakOwner> peaks = new ArrayList<>(profile.peaks().size());
+                for (int peak = 0; peak < profile.peaks().size(); peak++) {
+                    binding.budget().charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                    peaks.add(new LegacyEmissionBinding.PeakOwner(peak, profile.peaks().get(peak)));
+                }
+                boolean censored = !profile.anchorWithinRaster()
+                    || profile.intensitySamples().stream().anyMatch(sample -> !sample.insideRaster());
+                boolean unsupported = profile.peaks().isEmpty() || profile.peaks().stream().allMatch(peak ->
+                    peak.syntheticCenter() && peak.supportWidthPx() <= 0.0 && peak.prominence() <= 0.0
+                        && peak.maxProfileIntensity() <= 0.0);
+                var sourceClass = censored ? NativeConnectorEvaluator.SourceClass.CENSORED
+                    : unsupported ? NativeConnectorEvaluator.SourceClass.GAP
+                    : NativeConnectorEvaluator.SourceClass.OBSERVED;
+                observations.add(new LegacyEmissionBinding.OriginalObservation(
+                    row, retainedIndex, profile, sourceClass, peaks));
+            }
+            var result = new LegacyEmissionBinding(binding, retained.profiles(), mapping, observations,
+                trackerNormalizationRasterPx, protectedOccurrences, reservation);
+            success = true;
+            return result;
+        } finally {
+            if (!success) reservation.close();
+        }
+    }
+
+    public static SampledEmissionInput fromDetached(SourceBinding binding, RetainedScalarProfiles retained,
+            LegacyEmissionBinding legacyBinding) {
+        return publish(binding, retained, OptionalEmissionContext.Origin.DETACHED_FROZEN,
+            java.util.Optional.ofNullable(legacyBinding));
+    }
+
+    public static SampledEmissionInput fromDeclaredSyntheticMetricGrid(SourceBinding binding,
+            RetainedScalarProfiles retained, LegacyEmissionBinding legacyBinding) {
+        return publish(binding, retained, OptionalEmissionContext.Origin.DECLARED_SYNTHETIC_METRIC_GRID,
+            java.util.Optional.ofNullable(legacyBinding));
+    }
+
     private static SampledEmissionInput publish(SourceBinding binding, RetainedScalarProfiles retained,
             OptionalEmissionContext.Origin origin) {
+        return publish(binding, retained, origin, Optional.empty());
+    }
+
+    private static SampledEmissionInput publish(SourceBinding binding, RetainedScalarProfiles retained,
+            OptionalEmissionContext.Origin origin, Optional<LegacyEmissionBinding> legacyBinding) {
         if (binding == null) throw new IllegalArgumentException("Emission binding is required");
         synchronized (binding) {
         if (binding.published || binding.owner.isClosed() || binding.source == null
@@ -249,10 +336,13 @@ public final class OptionalEmissionContextFactory {
         }
         binding.budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
         var context = new OptionalEmissionContext(binding, retained);
-        var result = new SampledEmissionInput(retained.profiles(), context, binding.budget, binding.owner);
+        legacyBinding.ifPresent(value -> value.validatePublication(binding, retained, context));
+        var result = new SampledEmissionInput(retained.profiles(), context, binding.budget, binding.owner,
+            legacyBinding);
         binding.budget.charge(EmissionWorkBudget.Operation.PREPARATION, 0);
         binding.materialization.adopt(retained.profiles());
         binding.metadata.adopt(context);
+        legacyBinding.ifPresent(LegacyEmissionBinding::adoptRetainedMetadata);
         binding.published = true;
         binding.source = null;
         return result;
