@@ -31,6 +31,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     public enum QueryPolicy {
         DENSE_EIGHTH_NATIVE_V1, HALF_NATIVE_L0_V1, PIXEL_CAPPED_L0_V1, ZERO_GUARDED_LOCAL_V1
     }
+    public enum ExecutionPolicy { EAGER_ALL_PROBES_V1, STOP_ON_FINAL_MODE_FAILURE_V1 }
     public enum SourceClass { OBSERVED, GAP, CENSORED }
     public enum Status { ADMITTED, REJECTED, UNAVAILABLE }
     public enum Reason {
@@ -160,6 +161,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private final EmissionWorkBudget budget;
     private final AttemptMemoryLedger.Owner owner;
     private final QueryPolicy queryPolicy;
+    private final ExecutionPolicy executionPolicy;
     private final IdentityHashMap<RowState, Boolean> states;
     private final List<Integer> mandatoryRows;
     private final List<Barrier> barriers;
@@ -172,9 +174,18 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     }
 
     public NativeConnectorEvaluator(SampledEmissionInput input, Domain domain, QueryPolicy queryPolicy) {
+        this(input,domain,queryPolicy,ExecutionPolicy.EAGER_ALL_PROBES_V1);
+    }
+
+    public NativeConnectorEvaluator(SampledEmissionInput input, Domain domain, QueryPolicy queryPolicy,
+            ExecutionPolicy executionPolicy) {
         this.input = Objects.requireNonNull(input);
         Objects.requireNonNull(domain);
         this.queryPolicy = Objects.requireNonNull(queryPolicy, "queryPolicy");
+        this.executionPolicy=Objects.requireNonNull(executionPolicy,"executionPolicy");
+        if(executionPolicy==ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1
+                && queryPolicy!=QueryPolicy.ZERO_GUARDED_LOCAL_V1)
+            throw new IllegalArgumentException("Stop-on-final-mode-failure requires the zero-guarded local query policy");
         owner = input.openExecutionOwner("native-connector");
         context = input.context(); budget = input.workBudget();
         try {
@@ -280,8 +291,23 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                 if (queryPolicy == QueryPolicy.ZERO_GUARDED_LOCAL_V1) {
                     reserve(evaluation,Math.multiplyExact((long)ts.length,96));
                     var profileOwners=new IdentityHashMap<Probe,AttemptMemoryLedger.Owner>(ts.length);
-                    for (double t : ts) probes.add(measureLocalOrDense(t, interpolate(a,b,t), normal, from, span,
-                        evaluation,profileOwners));
+                    for (double t : ts) {
+                        Probe probe=measureLocalOrDense(t,interpolate(a,b,t),normal,from,span,evaluation,profileOwners);
+                        probes.add(probe);
+                        if(executionPolicy==ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1) {
+                            boolean immutableFinalCandidate=probe.profileQuery().backend()==ProfileBackend.DENSE_FALLBACK
+                                || probe.profileQuery().localNoModeProven();
+                            if(immutableFinalCandidate) {
+                                Reason failure=probeFailure(probe);
+                                if(failure!=Reason.NONE) {
+                                    transferProfileOwners(profileOwners,evaluation);
+                                    var result=receipt(Status.REJECTED,failure,from,to,span,length,pitch,scalar,false,false,
+                                        probes,transport,ts.length,-1);
+                                    evaluation.transferTo(owner);return remember(result);
+                                }
+                            }
+                        }
+                    }
                     // A changed middle profile invalidates both adjacent competitor proofs.
                     boolean changed;
                     do {
@@ -303,11 +329,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                             }
                         }
                     } while (changed);
-                    for(var probeOwner:profileOwners.values()) {
-                        work(EmissionWorkBudget.Operation.PREPARATION,1);
-                        probeOwner.transferTo(evaluation);
-                        probeOwner.close();
-                    }
+                    transferProfileOwners(profileOwners,evaluation);
                 } else {
                     for (double t : ts) {
                         Probe probe=measure(t,interpolate(a,b,t),normal,from,span,evaluation);
@@ -376,6 +398,16 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     }
     private boolean issuedHere(Receipt receipt) { work(EmissionWorkBudget.Operation.PAIR_LOOKUP,1); return issued.containsKey(receipt); }
 
+    private void transferProfileOwners(IdentityHashMap<Probe,AttemptMemoryLedger.Owner> profileOwners,
+            AttemptMemoryLedger.Owner evaluation) {
+        for(var probeOwner:profileOwners.values()) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            probeOwner.transferTo(evaluation);
+            probeOwner.close();
+        }
+        profileOwners.clear();
+    }
+
     private Receipt receipt(Status status,Reason reason,RowState from,RowState to,double span,double length,
             double pitch,BilinearSegmentIntegral.Result scalar,boolean envelope,boolean continuation,List<Probe> probes,Receipt incoming) {
         return receipt(status,reason,from,to,span,length,pitch,scalar,envelope,continuation,probes,incoming,-1,-1);
@@ -386,7 +418,9 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             Receipt incoming,int plannedProbeCount,int failingSlabIndex) {
         work(EmissionWorkBudget.Operation.ALLOCATION,1);
         work(EmissionWorkBudget.Operation.PREPARATION,probes.size());
-        return new Receipt(status,reason,context,from,to,queryPolicy,parameters.version() + "/" + queryPolicy.name(),span,length,pitch,
+        String version=parameters.version()+"/"+queryPolicy.name();
+        if(executionPolicy!=ExecutionPolicy.EAGER_ALL_PROBES_V1)version+="/"+executionPolicy.name();
+        return new Receipt(status,reason,context,from,to,queryPolicy,version,span,length,pitch,
             Optional.ofNullable(scalar),envelope,continuation,probes,plannedProbeCount,failingSlabIndex,Optional.ofNullable(incoming));
     }
 

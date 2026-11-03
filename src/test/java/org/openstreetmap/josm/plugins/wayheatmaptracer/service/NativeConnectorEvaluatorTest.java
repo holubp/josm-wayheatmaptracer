@@ -57,6 +57,31 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
+    @Test void executionOrderValidationPrecedesOwnerAllocationAndOldConstructorsStayEager() {
+        try(var f=straight(false,SourceClass.GAP,1)) {
+            long retained=f.ledger().currentBytes();
+            assertThrows(NullPointerException.class,()->new NativeConnectorEvaluator(f.input(),
+                new Domain(f.states(),List.of()),QueryPolicy.ZERO_GUARDED_LOCAL_V1,null));
+            assertThrows(IllegalArgumentException.class,()->new NativeConnectorEvaluator(f.input(),
+                new Domain(f.states(),List.of()),QueryPolicy.DENSE_EIGHTH_NATIVE_V1,
+                ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1));
+            assertEquals(retained,f.ledger().currentBytes());
+            try(var legacyConstructor=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                        QueryPolicy.ZERO_GUARDED_LOCAL_V1);
+                var explicitEager=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                        QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.EAGER_ALL_PROBES_V1)) {
+                var legacy=legacyConstructor.evaluate(f.states().get(0),f.states().get(1));
+                var explicit=explicitEager.evaluate(f.states().get(0),f.states().get(1));
+                assertEquals(legacy.status(),explicit.status());
+                assertEquals(legacy.reason(),explicit.reason());
+                assertEquals(41,legacy.probes().size());
+                assertEquals(41,explicit.probes().size());
+                assertEquals(legacy.parameterVersion(),explicit.parameterVersion());
+                assertFalse(legacy.parameterVersion().contains("STOP_ON_FINAL_MODE_FAILURE_V1"));
+            }
+        }
+    }
+
     @Test void oneMeterPolicyControlsRetainOriginalL0GeometryAtOneMeterOutputPitch() {
         try (var original = straight(false, SourceClass.OBSERVED);
              var oneMeter = straight(false, SourceClass.OBSERVED, 1)) {
@@ -196,6 +221,24 @@ class NativeConnectorEvaluatorTest {
         };
     }
 
+    private static Straight settledThresholdFixture() {
+        java.util.function.DoubleUnaryOperator profile=offset->offset==0?1.0:offset<=0.5?0.85:
+            offset<=1?0.55:offset<=1.5?0.2:offset<=4?0.0:0.3;
+        var resolution=new EvidenceResolution(EvidenceResolution.Kind.NATIVE_SOURCE,
+            java.util.OptionalDouble.of(1),0.5,List.of(
+                new EvidenceResolution.PitchSample(0,java.util.OptionalDouble.of(1),0.5),
+                new EvidenceResolution.PitchSample(0.5,java.util.OptionalDouble.of(1),0.5),
+                new EvidenceResolution.PitchSample(1,java.util.OptionalDouble.of(5),0.5)),java.util.OptionalDouble.of(0.5));
+        return scene((x,y)->{
+                    double offset=Math.abs((y-(x==12?35:32))*0.5);
+                    if(x==10)return 0.76*profile.applyAsDouble(offset);
+                    if(x==11)return profile.applyAsDouble(offset);
+                    if(x==12)return y>=32&&y<=38?1.0:0.0;
+                    return 0.0;
+                },(x,y)->true,MetricRegion.rectangle(0,0,31.5,31.5),SourceClass.OBSERVED,2,1,
+                RasterMetricTransform.metricGrid(new MetricPoint(0,0),0.5,0,0,0.5),budget(),1,resolution,25);
+    }
+
     @Test void fullyObservedAllZeroLocalDomainIsTypedNoMode() {
         try (var f=scene((x,y)->0.0,(x,y)->true,MetricRegion.rectangle(0,0,63,63),SourceClass.GAP,
                 2,1,RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),budget(),1);
@@ -206,6 +249,170 @@ class NativeConnectorEvaluatorTest {
             assertEquals(Reason.LOCAL_NO_MODE,receipt.reason());
             assertTrue(receipt.probes().stream().allMatch(p->p.profileQuery().backend()==ProfileBackend.LOCAL
                 && p.profileQuery().localNoModeProven() && p.samples().stream().allMatch(sample->sample.valid())));
+        }
+    }
+
+    @Test void stopOrderReturnsOnlyThePrefixThroughFinalAllZeroLocalFailure() {
+        try(var eagerFixture=scene((x,y)->0.0,(x,y)->true,MetricRegion.rectangle(0,0,63,63),
+                    SourceClass.GAP,2,1,RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),budget(),1);
+            var eager=new NativeConnectorEvaluator(eagerFixture.input(),new Domain(eagerFixture.states(),List.of()),
+                QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+            var eagerReceipt=eager.evaluate(eagerFixture.states().get(0),eagerFixture.states().get(1));
+            long eagerWork=eagerFixture.input().workBudget().snapshot().workUsed();
+            long eagerQueries=totalSampleQueries(eagerReceipt);
+            assertEquals(3,eagerReceipt.plannedProbeCount());
+            assertEquals(3,eagerReceipt.probes().size());
+            try(var stoppedFixture=scene((x,y)->0.0,(x,y)->true,MetricRegion.rectangle(0,0,63,63),
+                        SourceClass.GAP,2,1,RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),budget(),1);
+                var stopped=new NativeConnectorEvaluator(stoppedFixture.input(),
+                    new Domain(stoppedFixture.states(),List.of()),QueryPolicy.ZERO_GUARDED_LOCAL_V1,
+                    ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1)) {
+                var receipt=stopped.evaluate(stoppedFixture.states().get(0),stoppedFixture.states().get(1));
+                long stoppedWork=stoppedFixture.input().workBudget().snapshot().workUsed();
+                assertEquals(Status.REJECTED,receipt.status());
+                assertEquals(Reason.LOCAL_NO_MODE,receipt.reason());
+                assertEquals(3,receipt.plannedProbeCount());
+                assertEquals(1,receipt.probes().size());
+                assertEquals(ProfileBackend.LOCAL,receipt.probes().get(0).profileQuery().backend());
+                assertTrue(receipt.probes().get(0).profileQuery().localNoModeProven());
+                assertFalse(receipt.scalarEnvelopeComplete());
+                assertFalse(receipt.measuredNativeContinuationComplete());
+                assertEquals(eagerReceipt.scalar().orElseThrow().minimum(),receipt.scalar().orElseThrow().minimum());
+                assertEquals(eagerReceipt.scalar().orElseThrow().mean(),receipt.scalar().orElseThrow().mean());
+                assertEquals(eagerReceipt.status(),receipt.status());
+                assertEquals(eagerReceipt.reason(),receipt.reason());
+                assertEquals(51,eagerQueries);
+                assertEquals(17,totalSampleQueries(receipt));
+                assertTrue(stoppedWork<eagerWork,"same-scene charged work: stop="+stoppedWork+" eager="+eagerWork);
+                assertTrue(receipt.parameterVersion().endsWith("/STOP_ON_FINAL_MODE_FAILURE_V1"));
+            }
+        }
+    }
+
+    @Test void stopOrderStopsOnImmutableDenseFallbackFailure() {
+        try(var eagerFixture=straight(true,SourceClass.GAP,1);
+            var eager=new NativeConnectorEvaluator(eagerFixture.input(),new Domain(eagerFixture.states(),List.of()),
+                QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+            var full=eager.evaluate(eagerFixture.states().get(0),eagerFixture.states().get(1));
+            long eagerWork=eagerFixture.input().workBudget().snapshot().workUsed();
+            try(var stoppedFixture=straight(true,SourceClass.GAP,1);
+                var stopped=new NativeConnectorEvaluator(stoppedFixture.input(),new Domain(stoppedFixture.states(),List.of()),
+                    QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1)) {
+                var prefix=stopped.evaluate(stoppedFixture.states().get(0),stoppedFixture.states().get(1));
+                long stoppedWork=stoppedFixture.input().workBudget().snapshot().workUsed();
+                assertEquals(Status.REJECTED,prefix.status());
+                assertEquals(full.status(),prefix.status());
+                assertEquals(full.reason(),prefix.reason());
+                assertEquals(41,prefix.plannedProbeCount());
+                assertEquals(1,prefix.probes().size());
+                assertEquals(ProfileBackend.DENSE_FALLBACK,prefix.probes().get(0).profileQuery().backend());
+                assertFalse(prefix.scalarEnvelopeComplete());
+                assertFalse(prefix.measuredNativeContinuationComplete());
+                assertEquals(full.scalar().orElseThrow().minimum(),prefix.scalar().orElseThrow().minimum());
+                assertEquals(full.scalar().orElseThrow().mean(),prefix.scalar().orElseThrow().mean());
+                assertEquals(full.status(),prefix.status());
+                assertEquals(full.reason(),prefix.reason());
+                assertTrue(totalSampleQueries(prefix)<totalSampleQueries(full));
+                assertTrue(stoppedWork<eagerWork,"same-scene charged work: stop="+stoppedWork+" eager="+eagerWork);
+                assertTrue(prefix.parameterVersion().endsWith("/STOP_ON_FINAL_MODE_FAILURE_V1"));
+            }
+        }
+    }
+
+    @Test void stopOrderAcquiresPositivePrefixBeforeLaterFinalLocalAbsence() {
+        java.util.function.DoubleBinaryOperator intensity=(x,y)->x<20
+            ?Math.exp(-0.5*Math.pow(y-32,2)):0.0;
+        try(var f=scene(intensity,(x,y)->true,MetricRegion.rectangle(0,0,63,63),SourceClass.GAP,
+                2,20,RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),budget(),1);
+            var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1)) {
+            var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
+            assertEquals(Status.REJECTED,receipt.status());
+            assertEquals(Reason.LOCAL_NO_MODE,receipt.reason());
+            assertEquals(41,receipt.plannedProbeCount());
+            assertEquals(21,receipt.probes().size());
+            assertTrue(receipt.probes().subList(0,20).stream().anyMatch(p->p.selectedMode()!=null),
+                receipt.probes().stream().map(p->p.profileQuery().backend()+"/"+
+                    (p.selectedMode()==null?"no-mode":p.selectedMode().centerMeters())).toList().toString());
+            var last=receipt.probes().get(receipt.probes().size()-1);
+            assertEquals(ProfileBackend.LOCAL,last.profileQuery().backend());
+            assertTrue(last.profileQuery().localNoModeProven());
+            assertFalse(receipt.measuredNativeContinuationComplete());
+        }
+    }
+
+    @Test void stopOrderDoesNotUseProvisionalLocalFailureBeforeThreeProbeSettling() {
+        try(var f=settledThresholdFixture();
+            var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1)) {
+            var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
+            assertEquals(Status.REJECTED,receipt.status(),receipt.toString());
+            assertEquals(Reason.SCALAR_BELOW_ENVELOPE,receipt.reason());
+            assertEquals(3,receipt.plannedProbeCount());
+            assertEquals(3,receipt.probes().size());
+            assertEquals(ProfileBackend.DENSE_FALLBACK,receipt.probes().get(1).profileQuery().backend());
+            assertEquals(FallbackCause.CROSS_PROBE_SUPPORT_UNAVAILABLE,
+                receipt.probes().get(1).profileQuery().fallbackCause());
+            assertTrue(receipt.probes().get(1).threshold().shoulderThreshold()>0.76);
+            assertEquals(0.76,receipt.scalar().orElseThrow().minimum().orElseThrow(),1e-6);
+            assertEquals(0,receipt.firstFailingSlabIndex());
+        }
+    }
+
+    @Test void stopOrderPreservesTheAdmittedSetAndQOverEverySmallGraphPair() {
+        java.util.function.DoubleBinaryOperator intensity=(x,y)->x>18.8&&x<22.2?0.0:Math.exp(-0.5*Math.pow(y-32,2));
+        try(var eagerFixture=scene(intensity,(x,y)->true,
+                    MetricRegion.rectangle(0,0,63,63),SourceClass.OBSERVED,4,20);
+            var stoppedFixture=scene(intensity,(x,y)->true,
+                    MetricRegion.rectangle(0,0,63,63),SourceClass.OBSERVED,4,20)) {
+            var eagerDomain=new Domain(eagerFixture.states(),List.of(2));
+            var stoppedDomain=new Domain(stoppedFixture.states(),List.of(2));
+            try(var eager=new NativeConnectorEvaluator(eagerFixture.input(),eagerDomain,
+                        QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.EAGER_ALL_PROBES_V1);
+                var stopped=new NativeConnectorEvaluator(stoppedFixture.input(),stoppedDomain,
+                        QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1)) {
+                int pairs=0,admitted=0,refused=0,numericalRefused=0;
+                for(int from=0;from<eagerFixture.states().size();from++)for(int to=from+1;to<eagerFixture.states().size();to++) {
+                    pairs++;
+                    var eagerReceipt=eager.evaluate(eagerFixture.states().get(from),eagerFixture.states().get(to));
+                    var stoppedReceipt=stopped.evaluate(stoppedFixture.states().get(from),stoppedFixture.states().get(to));
+                    assertEquals(eagerReceipt.status(),stoppedReceipt.status(),from+"->"+to);
+                    if(eagerReceipt.status()==Status.ADMITTED) {
+                        admitted++;
+                        assertEquals(eagerReceipt.sourceWeightedLoss(),stoppedReceipt.sourceWeightedLoss(),0.0);
+                        var expected=eagerReceipt.scalar().orElseThrow();
+                        var actual=stoppedReceipt.scalar().orElseThrow();
+                        assertEquals(expected.mean(),actual.mean());
+                        assertEquals(expected.minimum(),actual.minimum());
+                    } else {
+                        refused++;
+                        if(!eagerReceipt.probes().isEmpty() && eagerReceipt.reason()!=Reason.SPAN
+                                && eagerReceipt.reason()!=Reason.ENDPOINT_OWNERSHIP) numericalRefused++;
+                    }
+                }
+                assertEquals(6,pairs);
+                assertTrue(admitted>0);
+                assertTrue(refused>0);
+                assertTrue(numericalRefused>0,"must compare at least one measured numerical refusal");
+            }
+        }
+    }
+
+    @Test void reusedStopEvaluatorDoesNotRetainPriorPrefixProgress() {
+        try(var f=scene((x,y)->0.0,(x,y)->true,MetricRegion.rectangle(0,0,63,63),SourceClass.GAP,
+                2,1,RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),budget(),1);
+            var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1)) {
+            var failed=evaluator.evaluate(f.states().get(0),f.states().get(1));
+            assertEquals(1,failed.probes().size());
+            assertEquals(3,failed.plannedProbeCount());
+            var outOfOrder=evaluator.evaluate(f.states().get(1),f.states().get(0));
+            assertEquals(Status.REJECTED,outOfOrder.status());
+            assertEquals(Reason.SPAN,outOfOrder.reason());
+            assertTrue(outOfOrder.probes().isEmpty());
+            assertEquals(-1,outOfOrder.plannedProbeCount());
+            assertEquals(-1,outOfOrder.firstFailingSlabIndex());
+            assertFalse(outOfOrder.measuredNativeContinuationComplete());
         }
     }
 
@@ -573,17 +780,23 @@ class NativeConnectorEvaluatorTest {
     }
 
     @Test void cancellationAtFirstExtractionBoundaryKeepsLocalSamplingBoundedAndSticky() {
-        var local=cancelAtFirstExtractionBoundary(QueryPolicy.ZERO_GUARDED_LOCAL_V1);
-        var dense=cancelAtFirstExtractionBoundary(QueryPolicy.DENSE_EIGHTH_NATIVE_V1);
-        assertTrue(local.modeExtractionWork()>0 && dense.modeExtractionWork()>0);
-        assertTrue(local.cellQueries()>0 && local.nodeReads()>0);
-        assertTrue(local.cellQueries()<dense.cellQueries(),local+" vs "+dense);
-        assertTrue(local.nodeReads()<dense.nodeReads(),local+" vs "+dense);
+        var localEager=cancelAtFirstExtractionBoundary(QueryPolicy.ZERO_GUARDED_LOCAL_V1,
+            ExecutionPolicy.EAGER_ALL_PROBES_V1);
+        var localStop=cancelAtFirstExtractionBoundary(QueryPolicy.ZERO_GUARDED_LOCAL_V1,
+            ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1);
+        var dense=cancelAtFirstExtractionBoundary(QueryPolicy.DENSE_EIGHTH_NATIVE_V1,
+            ExecutionPolicy.EAGER_ALL_PROBES_V1);
+        assertEquals(localEager,localStop);
+        assertTrue(localStop.modeExtractionWork()>0 && dense.modeExtractionWork()>0);
+        assertTrue(localStop.cellQueries()>0 && localStop.nodeReads()>0);
+        assertTrue(localStop.cellQueries()<dense.cellQueries(),localStop+" vs "+dense);
+        assertTrue(localStop.nodeReads()<dense.nodeReads(),localStop+" vs "+dense);
     }
 
     private record CancelledSampling(long cellQueries,long nodeReads,long modeExtractionWork) { }
 
-    private static CancelledSampling cancelAtFirstExtractionBoundary(QueryPolicy policy) {
+    private static CancelledSampling cancelAtFirstExtractionBoundary(QueryPolicy policy,
+            ExecutionPolicy executionPolicy) {
         EmissionWorkBudget[] holder=new EmissionWorkBudget[1];
         var armed=new java.util.concurrent.atomic.AtomicBoolean();
         var baselineModeWork=new java.util.concurrent.atomic.AtomicLong();
@@ -594,7 +807,7 @@ class NativeConnectorEvaluatorTest {
         try(var f=scene((x,y)->y==32?1.0:y==31||y==33?0.5:0.0,(x,y)->true,
                 MetricRegion.rectangle(0,0,63,63),SourceClass.OBSERVED,2,20,
                 RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),work,1);
-            var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),policy)) {
+            var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),policy,executionPolicy)) {
             long baselineWork=work.snapshot().workUsed();
             long baselineCells=work.snapshot().operationUnits().get(EmissionWorkBudget.Operation.CELL_QUERY);
             long baselineNodes=work.snapshot().operationUnits().get(EmissionWorkBudget.Operation.NODE_READ);
@@ -605,6 +818,8 @@ class NativeConnectorEvaluatorTest {
             var after=work.snapshot();
             assertSame(failure,assertThrows(java.util.concurrent.CancellationException.class,
                 ()->evaluator.evaluate(f.states().get(0),f.states().get(1))));
+            assertSame(failure,assertThrows(java.util.concurrent.CancellationException.class,
+                ()->new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),policy,executionPolicy)));
             assertEquals(after.workUsed(),work.snapshot().workUsed());
             assertTrue(after.workUsed()>baselineWork);
             return new CancelledSampling(after.operationUnits().get(EmissionWorkBudget.Operation.CELL_QUERY)-baselineCells,
@@ -613,7 +828,8 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @Test void localInEvaluationWorkLimitIsStickyBeforeDenseFallback() {
+    @ParameterizedTest @EnumSource(ExecutionPolicy.class)
+    void localInEvaluationWorkLimitIsStickyBeforeDenseFallback(ExecutionPolicy executionPolicy) {
         EmissionWorkBudget[] holder=new EmissionWorkBudget[1];
         var armed=new java.util.concurrent.atomic.AtomicBoolean();
         var injected=new java.util.concurrent.atomic.AtomicBoolean();
@@ -633,7 +849,7 @@ class NativeConnectorEvaluatorTest {
                 MetricRegion.rectangle(0,0,63,63),SourceClass.OBSERVED,2,20,
                 RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),work,1);
             var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
-                QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+                QueryPolicy.ZERO_GUARDED_LOCAL_V1,executionPolicy)) {
             baselineModeWork.set(work.snapshot().operationUnits().get(EmissionWorkBudget.Operation.MODE_EXTRACTION));
             armed.set(true);
             var failure=assertThrows(EmissionWorkBudget.LimitExceededException.class,
@@ -644,18 +860,22 @@ class NativeConnectorEvaluatorTest {
             long charged=work.snapshot().workUsed();
             assertSame(failure,assertThrows(EmissionWorkBudget.LimitExceededException.class,
                 ()->evaluator.evaluate(f.states().get(0),f.states().get(1))));
+            assertSame(failure,assertThrows(EmissionWorkBudget.LimitExceededException.class,
+                ()->new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                    QueryPolicy.ZERO_GUARDED_LOCAL_V1,executionPolicy)));
             assertEquals(charged,work.snapshot().workUsed());
         }
         assertEquals(work.snapshot().workLimit(),work.snapshot().workUsed());
     }
 
-    @Test void localExtractorMemoryRefusalIsStickyAfterItsScratchIsReleased() {
+    @ParameterizedTest @EnumSource(ExecutionPolicy.class)
+    void localExtractorMemoryRefusalIsStickyAfterItsScratchIsReleased(ExecutionPolicy executionPolicy) {
         try(var f=straight(false,SourceClass.OBSERVED)) {
             long retained=f.ledger().currentBytes();
             LocalScalarProfileExtractor.ResourceLimitException failure;
             try(var held=f.owner().reserve(f.ledger().limitBytes()-retained-90*1024L);
                 var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
-                    QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+                    QueryPolicy.ZERO_GUARDED_LOCAL_V1,executionPolicy)) {
                 failure=assertThrows(LocalScalarProfileExtractor.ResourceLimitException.class,
                     ()->evaluator.evaluate(f.states().get(0),f.states().get(1)));
                 assertInstanceOf(AttemptMemoryLedger.ResourceLimitException.class,failure.getCause());
@@ -665,7 +885,7 @@ class NativeConnectorEvaluatorTest {
             assertEquals(retained,f.ledger().currentBytes());
             assertSame(failure,assertThrows(LocalScalarProfileExtractor.ResourceLimitException.class,
                 ()->new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
-                    QueryPolicy.ZERO_GUARDED_LOCAL_V1)));
+                    QueryPolicy.ZERO_GUARDED_LOCAL_V1,executionPolicy)));
             assertEquals(retained,f.ledger().currentBytes());
         }
     }
@@ -1185,7 +1405,7 @@ class NativeConnectorEvaluatorTest {
                 (x,y)->true,MetricRegion.rectangle(0,0,63,63),SourceClass.OBSERVED,2,20,
                 RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),budget(),0.5);
             var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
-                QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+                QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1)) {
             var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
             assertEquals(Status.ADMITTED,receipt.status(),receipt.toString());
             assertTrue(receipt.probes().stream().allMatch(p->p.selectedMode()!=null
@@ -1290,6 +1510,17 @@ class NativeConnectorEvaluatorTest {
                     incoming.probes(), incoming.transportedIncoming());
                 assertEquals(Reason.INCOMING_DIRECTION_UNAVAILABLE,
                     evaluator.evaluate(states.get(1), states.get(2), forged).reason());
+            }
+            if(policy==QueryPolicy.ZERO_GUARDED_LOCAL_V1) {
+                try(var evaluator=new NativeConnectorEvaluator(sampled,new Domain(states,List.of()),policy,
+                        ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1)) {
+                    var incoming=evaluator.evaluate(states.get(0),states.get(1));
+                    assertEquals(Status.ADMITTED,incoming.status(),incoming.toString());
+                    var zero=evaluator.evaluate(states.get(1),states.get(2),incoming);
+                    assertEquals(Status.ADMITTED,zero.status(),zero.toString());
+                    assertEquals(0.0,zero.emittedLengthMeters());
+                    assertSame(incoming,zero.transportedIncoming().orElseThrow());
+                }
             }
         }
         assertEquals(0, ledger.currentBytes());
@@ -1412,6 +1643,9 @@ class NativeConnectorEvaluatorTest {
         m.setAccessible(true);return m.invoke(object,args);
     }
     private static EmissionWorkBudget budget(){return new EmissionWorkBudget(TraceBudgets.defaults(),CancellationProbe.NONE);}
+    private static long totalSampleQueries(Receipt receipt) {
+        return receipt.probes().stream().mapToLong(probe->probe.profileQuery().totalSampleQueries()).sum();
+    }
     private static EvidenceSnapshot evidence(int w,int h,double[] values,RasterMetricTransform transform,MetricRegion decision) {
         boolean[] valid=new boolean[w*h]; Arrays.fill(valid,true);
         return evidence(w,h,values,valid,transform,decision);
