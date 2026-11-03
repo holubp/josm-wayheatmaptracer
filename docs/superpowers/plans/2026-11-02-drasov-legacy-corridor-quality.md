@@ -56,7 +56,37 @@ binding/factory/evaluator/kernel writers. It is not production authority: manage
 selection/tile/event attestation and nonlinear whole-connector ground authority
 remain integration gates. Packet/review: `drasov-managed-adapter-packet.md` and
 `drasov-managed-adapter-review.md` under the task tmp evidence directory.
-Local Gradle queue is connector→binding follow-up→managed grid, one process only.
+Local Gradle uses one shared OS lock (manual queue superseded after session57043
+completed): every worker wraps Gradle with `flock -x
+/data/data/com.termux/files/usr/tmp/josm-drasov-gradle.lock env
+JAVA_HOME=/data/data/com.termux/files/usr/lib/jvm/java-17-openjdk sh ./gradlew ...`
+in its own worktree. Actual builds serialize automatically; no unlocked runs or
+duplicate handoff polling. Workers notified and acknowledged.
+Binding88e0634 has22focused tests green; independent actual-delta review found
+two required follow-ups: terminal refusal must prevent same-permit retry, and
+equal-chainage protected events with conflicting exact positions must refuse.
+Luna is correcting both without weakening existing guards. Sol legacy_kernel now
+implements domain/result/exact solver+RidgeTracker opt-in entry in its own worktree
+from c1327e1+88e0634; it must consume binding updates, not recreate that interface.
+Evaluator writer additionally owns original-ordinal/context-index adapter and
+typed boundary physical-reference follow-on after its first stable batch, with
+backward-compatible defaults. Missing protected-boundary transport is not a full
+kernel DONE. All whole-goal source-bound Drasov/A/consumer gates stay open.
+Managed exact-grid prototype has meaningful numerical RED: compilable float
+baseline fails bitwise native scalar parity and per-node work/cancellation checks
+(15tests,2failures). This is new-producer prototype RED, not a claim that the old
+native Legacy path used floats; it does not.
+Binding review now CLOSED at0762b9b:22focusedgreen, bothfindingsfixed, no new
+blocker. Integrated source into experimental branch as293bded+f4bf4ff (not pushed
+yet); descriptor production eligibility remains false. Managed exact-double source
+has initial15testGREEN; expanded suite/private Drasov profile parity pending.
+New kernel worker has actual domain/result/recurrence source in
+`josm-drasov-legacy-kernel`, old publictracker unchanged. Explicit scalar memory
+and native physical endpoint identity now replace geometry-only merging; charged
+backpointer comparisons replace copied whole-path tie strings. Compile, oracle,
+evaluator ordinal/boundary follow-on and wholekernelreview remain pending.
+Luna `query_policy` prepares independent tiny exhaustive kernel oracle in separate
+`josm-drasov-legacy-oracle`; tests must call production entry, not a test-only solver.
 
 Active: bounded original Legacy kernel/stage implementation packet at
 `/data/data/com.termux/files/usr/tmp/drasov-legacy-kernel-packet.md` (Sol), existing
