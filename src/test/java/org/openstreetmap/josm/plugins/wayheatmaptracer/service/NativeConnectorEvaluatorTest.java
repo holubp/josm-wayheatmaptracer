@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.*;
 import java.lang.reflect.Method;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.*;
@@ -46,6 +48,20 @@ class NativeConnectorEvaluatorTest {
             assertEquals(retainedBytes, f.ledger().currentBytes());
             try (var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()))) {
                 assertEquals(Status.ADMITTED, evaluator.evaluate(f.states().get(0), f.states().get(1)).status());
+            }
+        }
+    }
+
+    @Test void oneMeterPolicyControlsRetainOriginalL0GeometryAtOneMeterOutputPitch() {
+        try (var original = straight(false, SourceClass.OBSERVED);
+             var oneMeter = straight(false, SourceClass.OBSERVED, 1)) {
+            assertEquals(.5, original.input().context().lateralStepMeters());
+            assertEquals(1, oneMeter.input().context().lateralStepMeters());
+            for (int row = 0; row < 2; row++) {
+                var originalProfile = original.input().profiles().levelZeroProfiles().get(row);
+                var oneMeterProfile = oneMeter.input().profiles().levelZeroProfiles().get(row);
+                assertEquals(originalProfile.intensitySamples(), oneMeterProfile.intensitySamples());
+                assertEquals(originalProfile.peaks(), oneMeterProfile.peaks());
             }
         }
     }
@@ -124,17 +140,73 @@ class NativeConnectorEvaluatorTest {
         }
         assertEquals(0,ledger.currentBytes());
     }
-    @Test void rejectsUniformBrightFieldWithoutNativeRidge() {
-        try(var f=straight(true,SourceClass.GAP)) {
-            try(var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()))) {
+    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    void rejectsUniformBrightFieldWithoutNativeRidge(QueryPolicy policy) {
+        try(var f=straight(true,SourceClass.GAP,1)) {
+            try(var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),policy)) {
                 assertEquals(Status.REJECTED,evaluator.evaluate(f.states().get(0),f.states().get(1)).status());
             }
         }
     }
 
-    @Test void admitsMeasuredStraightRidgeWithOriginalPeakOwnership() {
-        try (var f = straight(false, SourceClass.OBSERVED);
-             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()))) {
+    @Test void halfSampleGaussianWithTinyIntegerSupportCannotBorrowMissingOldProducerOwnership() {
+        try (var f = scene((x, y) -> Math.exp(-0.5 * Math.pow((y - 32.5) / 0.12, 2)),
+                (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.GAP,
+                2, 20, RasterMetricTransform.metricGrid(new MetricPoint(0, 0), 1, 0, 0, 1), budget(), 1)) {
+            assertTrue(f.states().stream().allMatch(state -> state.sourceClass() == SourceClass.GAP
+                && state.peakOwner() == null));
+            assertTrue(f.input().profiles().levelZeroProfiles().stream()
+                .allMatch(profile -> profile.peaks().get(0).syntheticCenter()));
+            assertEquals(1.698566775303334e-4,
+                f.input().profiles().levelZeroProfiles().get(0).peaks().get(0).maxProfileIntensity(), 1e-15);
+            for (var policy : QueryPolicy.values()) {
+                try (var evaluator = new NativeConnectorEvaluator(f.input(),
+                        new Domain(f.states(), List.of()), policy)) {
+                    var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
+                    assertNotEquals(Status.ADMITTED, receipt.status(), policy.name() + " " + receipt);
+                    assertEquals(Reason.ENDPOINT_OWNERSHIP, receipt.reason(), policy.name());
+                    assertFalse(receipt.probes().isEmpty(), policy.name());
+                    assertTrue(receipt.probes().stream().allMatch(probe -> probe.selectedMode() != null),
+                        "Retain the faint measured modes rather than calling the pixels no-signal");
+                    assertTrue(receipt.measuredNativeContinuationComplete(), policy.name());
+                    assertTrue(receipt.scalar().isPresent(), policy.name());
+                }
+            }
+        }
+    }
+
+    @Test void areaRasterizedHalfSampleStrokeHasGenuineOwnedCenterForEveryPolicy() {
+        try (var f = scene((x, y) -> y == 32 || y == 33 ? 0.5 : 0.0,
+                (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED,
+                2, 20, RasterMetricTransform.metricGrid(new MetricPoint(0, 0), 1, 0, 0, 1), budget(), 1)) {
+            var ownedStates = new ArrayList<RowState>();
+            assertEquals(1.0, f.input().context().lateralStepMeters());
+            for (var state : f.states()) {
+                var peak = state.peakOwner();
+                assertNotNull(peak);
+                assertFalse(peak.syntheticCenter());
+                assertTrue(peak.offsetPx() > 0.4 && peak.offsetPx() < 0.6,
+                    "Equal area coverage at rows 32/33 should center the measured peak at 32.5");
+                ownedStates.add(new RowState(state.row(), state.nativeStateId(), peak.offsetPx(),
+                    SourceClass.OBSERVED, peak));
+            }
+            var expectedSampleCounts = Map.of(QueryPolicy.DENSE_EIGHTH_NATIVE_V1, 129,
+                QueryPolicy.HALF_NATIVE_L0_V1, 33, QueryPolicy.PIXEL_CAPPED_L0_V1, 17);
+            for (var policy : QueryPolicy.values()) {
+                try (var evaluator = new NativeConnectorEvaluator(f.input(),
+                        new Domain(ownedStates, List.of()), policy)) {
+                    var receipt = evaluator.evaluate(ownedStates.get(0), ownedStates.get(1));
+                    assertEquals(Status.ADMITTED, receipt.status(), policy.name() + " " + receipt);
+                    assertEquals(expectedSampleCounts.get(policy), receipt.probes().get(0).samples().size(), policy.name());
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    void admitsMeasuredStraightRidgeWithOriginalPeakOwnership(QueryPolicy policy) {
+        try (var f = straight(false, SourceClass.OBSERVED,1);
+             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()), policy)) {
             var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
             assertEquals(Status.ADMITTED, receipt.status(), receipt::toString);
             assertTrue(receipt.scalarEnvelopeComplete());
@@ -144,9 +216,10 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @Test void freshUnownedPortsCannotBindEachOtherWithoutAnOriginalBranchOwner() {
-        try (var f = straight(false, SourceClass.GAP);
-             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()))) {
+    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    void freshUnownedPortsCannotBindEachOtherWithoutAnOriginalBranchOwner(QueryPolicy policy) {
+        try (var f = straight(false, SourceClass.GAP,1);
+             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()), policy)) {
             var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
             assertEquals(Status.UNAVAILABLE, receipt.status());
             assertEquals(Reason.ENDPOINT_OWNERSHIP, receipt.reason());
@@ -198,46 +271,50 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @Test void brightEndpointsDoNotAuthorizeAnInteriorDarkGap() {
+    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    void brightEndpointsDoNotAuthorizeAnInteriorDarkGap(QueryPolicy policy) {
         try (var f = scene((x, y) -> Math.abs(x - 20) <= 1 ? 0
                     : Math.exp(-0.5 * Math.pow(y - 32, 2)),
-                (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED);
-             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()))) {
+                (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED, 1);
+             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()), policy)) {
             var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
             assertNotEquals(Status.ADMITTED, receipt.status());
             assertEquals(0.0, receipt.scalar().orElseThrow().minimum().orElseThrow());
         }
     }
 
-    @Test void invalidInteriorCellIsNotInterpolatedAcross() {
+    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    void invalidInteriorCellIsNotInterpolatedAcross(QueryPolicy policy) {
         try (var f = scene((x, y) -> Math.exp(-0.5 * Math.pow(y - 32, 2)),
-                (x, y) -> x != 20 || y != 32, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED);
-             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()))) {
+                (x, y) -> x != 20 || y != 32, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED, 1);
+             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()), policy)) {
             var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
             assertEquals(Status.UNAVAILABLE, receipt.status());
             assertEquals(Reason.SCALAR_SUPPORT, receipt.reason());
         }
     }
 
-    @Test void decisionAuthorityMustCoverWholeConnectorIncludingNarrowNotch() {
+    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    void decisionAuthorityMustCoverWholeConnectorIncludingNarrowNotch(QueryPolicy policy) {
         var authority = new MetricRegion(List.of(List.of(new MetricPoint(0, 0),
             new MetricPoint(63, 0), new MetricPoint(63, 63), new MetricPoint(20.01, 63),
             new MetricPoint(20.01, 31.99), new MetricPoint(19.99, 31.99),
             new MetricPoint(19.99, 63), new MetricPoint(0, 63))));
         try (var f = scene((x, y) -> Math.exp(-0.5 * Math.pow(y - 32, 2)),
-                (x, y) -> true, authority, SourceClass.OBSERVED);
-             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()))) {
+                (x, y) -> true, authority, SourceClass.OBSERVED, 1);
+             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()), policy)) {
             var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
             assertEquals(Status.REJECTED, receipt.status());
             assertEquals(Reason.DECISION_AUTHORITY, receipt.reason());
         }
     }
 
-    @Test void oneFreshGapPortCanBindThroughDirectEvidenceToAnOwnedPort() {
-        try (var f = straight(false, SourceClass.OBSERVED)) {
+    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    void oneFreshGapPortCanBindThroughDirectEvidenceToAnOwnedPort(QueryPolicy policy) {
+        try (var f = straight(false, SourceClass.OBSERVED,1)) {
             var gap = new RowState(0, 0, 0, SourceClass.GAP, null);
             try (var evaluator = new NativeConnectorEvaluator(f.input(),
-                    new Domain(List.of(gap, f.states().get(1)), List.of()))) {
+                    new Domain(List.of(gap, f.states().get(1)), List.of()), policy)) {
                 var receipt = evaluator.evaluate(gap, f.states().get(1));
                 assertEquals(Status.ADMITTED, receipt.status(), receipt::toString);
                 assertEquals(SourceClass.GAP, receipt.from().sourceClass());
@@ -307,14 +384,15 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @Test void representableSubEventToleranceNotchCannotBeSkipped() {
+    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    void representableSubEventToleranceNotchCannotBeSkipped(QueryPolicy policy) {
         double left = 20 - 0.5e-9, right = 20 + 0.5e-9;
         var authority = new MetricRegion(List.of(
             MetricRegion.rectangle(0, 0, left, 63).polygons().get(0),
             MetricRegion.rectangle(right, 0, 63, 63).polygons().get(0)));
         try (var f = scene((x, y) -> Math.exp(-0.5 * Math.pow(y - 32, 2)),
-                (x, y) -> true, authority, SourceClass.OBSERVED);
-             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()))) {
+                (x, y) -> true, authority, SourceClass.OBSERVED, 1);
+             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()), policy)) {
             var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
             assertNotEquals(Status.ADMITTED, receipt.status(), "A representable authority hole is not permission");
             assertEquals(Reason.DECISION_AUTHORITY, receipt.reason());
@@ -373,26 +451,28 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @Test void completeBroadPlateauRemainsAdmissible() {
+    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    void completeBroadPlateauRemainsAdmissible(QueryPolicy policy) {
             try (var f = scene((x, y) -> Math.exp(-0.5 * Math.pow(Math.max(0, Math.abs(y - 32) - 2), 2)),
                     (x, y) -> true,
-                    MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED);
-                 var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()))) {
+                    MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED, 1);
+                 var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()), policy)) {
                 var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
                 assertEquals(Status.ADMITTED, receipt.status(), receipt::toString);
             }
     }
 
-    @Test void faintConcentratedEndpointCanBindWithoutRelabellingSyntheticSourceAsObserved() {
+    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    void faintConcentratedEndpointCanBindWithoutRelabellingSyntheticSourceAsObserved(QueryPolicy policy) {
         try (var f = scene((x, y) -> (0.1 + 0.6 * Math.max(0, Math.min(1, (30 - x) / 20)))
                     * Math.exp(-0.5 * Math.pow(y - 32, 2)),
-                (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED)) {
+                (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED, 1)) {
             assertFalse(f.states().get(0).peakOwner().syntheticCenter());
             assertTrue(f.states().get(1).peakOwner().syntheticCenter(),
                 "Original sampler supplies a fallback at intensity0.1, not an observed peak");
             var gap = new RowState(1, 0, 0, SourceClass.GAP, null);
             try (var evaluator = new NativeConnectorEvaluator(f.input(),
-                    new Domain(List.of(f.states().get(0), gap), List.of()))) {
+                    new Domain(List.of(f.states().get(0), gap), List.of()), policy)) {
                 var receipt = evaluator.evaluate(f.states().get(0), gap);
                 assertEquals(Status.ADMITTED, receipt.status(), receipt::toString);
                 assertEquals(SourceClass.GAP, receipt.to().sourceClass());
@@ -410,19 +490,21 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @Test void measuredForkCannotAuthorizeTheStraightDarkMiddle() {
+    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    void measuredForkCannotAuthorizeTheStraightDarkMiddle(QueryPolicy policy) {
         try (var f = scene((x, y) -> x < 19 ? Math.exp(-0.5 * Math.pow(y - 32, 2))
                     : Math.max(Math.exp(-0.5 * Math.pow(y - 29, 2)),
                         Math.exp(-0.5 * Math.pow(y - 35, 2))),
-                (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED);
-             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()))) {
+                (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED, 1);
+             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()), policy)) {
             var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
             assertNotEquals(Status.ADMITTED, receipt.status());
             assertFalse(receipt.measuredNativeContinuationComplete());
         }
     }
 
-    @Test void zeroLengthEdgeRequiresAndTransportsAnActualIssuedIncomingArc() {
+    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    void zeroLengthEdgeRequiresAndTransportsAnActualIssuedIncomingArc(QueryPolicy policy) {
         int w = 64, h = 64;
         double[] values = new double[w * h];
         for (int y = 0; y < h; y++) for (int x = 0; x < w; x++)
@@ -450,7 +532,7 @@ class NativeConnectorEvaluatorTest {
             double[] offsets = {-5 * Math.sqrt(2), 5, -5, 5 * Math.sqrt(2)};
             for (int row = 0; row < 4; row++) states.add(new RowState(row, 0, offsets[row],
                 SourceClass.OBSERVED, sampled.profiles().levelZeroProfiles().get(row).peaks().get(0)));
-            try (var evaluator = new NativeConnectorEvaluator(sampled, new Domain(states, List.of()))) {
+            try (var evaluator = new NativeConnectorEvaluator(sampled, new Domain(states, List.of()), policy)) {
                 assertEquals(Reason.INCOMING_DIRECTION_UNAVAILABLE,
                     evaluator.evaluate(states.get(1), states.get(2)).reason());
                 var incoming = evaluator.evaluate(states.get(0), states.get(1));
@@ -480,9 +562,20 @@ class NativeConnectorEvaluatorTest {
         return scene((x, y) -> uniform ? 1 : Math.exp(-.5 * Math.pow(y - 32, 2)),
             (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63), sourceClass);
     }
+    private static Straight straight(boolean uniform,SourceClass sourceClass,double requestedStep) {
+        return scene((x, y) -> uniform ? 1 : Math.exp(-.5 * Math.pow(y - 32, 2)),
+            (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63), sourceClass,
+            2, 20, RasterMetricTransform.metricGrid(new MetricPoint(0, 0), 1, 0, 0, 1), budget(), requestedStep);
+    }
     private static Straight scene(java.util.function.DoubleBinaryOperator intensity,
             java.util.function.BiPredicate<Integer, Integer> validity, MetricRegion decision, SourceClass sourceClass) {
         return scene(intensity, validity, decision, sourceClass, 2, 20);
+    }
+    private static Straight scene(java.util.function.DoubleBinaryOperator intensity,
+            java.util.function.BiPredicate<Integer, Integer> validity, MetricRegion decision,
+            SourceClass sourceClass, double requestedStep) {
+        return scene(intensity, validity, decision, sourceClass, 2, 20,
+            RasterMetricTransform.metricGrid(new MetricPoint(0, 0), 1, 0, 0, 1), budget(), requestedStep);
     }
     private static Straight scene(java.util.function.DoubleBinaryOperator intensity,
             java.util.function.BiPredicate<Integer, Integer> validity, MetricRegion decision,
@@ -499,6 +592,12 @@ class NativeConnectorEvaluatorTest {
             java.util.function.BiPredicate<Integer, Integer> validity, MetricRegion decision,
             SourceClass sourceClass, int rows, double span, RasterMetricTransform transform,
             EmissionWorkBudget work) {
+        return scene(intensity, validity, decision, sourceClass, rows, span, transform, work, .5);
+    }
+    private static Straight scene(java.util.function.DoubleBinaryOperator intensity,
+            java.util.function.BiPredicate<Integer, Integer> validity, MetricRegion decision,
+            SourceClass sourceClass, int rows, double span, RasterMetricTransform transform,
+            EmissionWorkBudget work, double requestedStep) {
         int w=64,h=64; double[] values=new double[w*h];
         boolean[] valid = new boolean[w * h];
         for(int y=0;y<h;y++)for(int x=0;x<w;x++) {
@@ -511,7 +610,7 @@ class NativeConnectorEvaluatorTest {
             double chainage = span * row / (rows - 1);
             locations.add(at(evidence, new RasterPoint(10 + chainage / evidence.resolution().outputRasterPitchMeters(), 32), chainage));
         }
-        var input=new CorridorTraceInput(locations,.5);
+        var input=new CorridorTraceInput(locations,requestedStep);
         var ledger=AttemptMemoryLedger.production();var owner=ledger.rootOwner();
         SampledEmissionInput sampled;
         try {
