@@ -51,6 +51,29 @@ class LegacyEmissionGeometryTest {
         });
     }
 
+    @Test
+    void callerStateCeilingRefusesTwoObservedNativePeaksBeforeExpansion() {
+        var fixture = fixture(true);
+        var ledger = AttemptMemoryLedger.production();
+        var limits = new TraceBudgets(1, 8_000_000, 128_000_000, 32, 8);
+        var budget = new EmissionWorkBudget(limits, CancellationProbe.NONE);
+        try (var root = ledger.rootOwner();
+             var permit = OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(
+                 fixture.evidence(), FIELD, fixture.input(), fixture.chainage(), 12, budget, root)) {
+            var retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(
+                fixture.evidence(), FIELD, fixture.input().profileLocations(), 12, 1, 1, budget, permit);
+            var binding = OptionalEmissionContextFactory.createLegacyBinding(permit, retained,
+                List.of(0, 1, 2, 3, 4, 5, 6, 7, 8), 1, List.of());
+            assertTrue(binding.observations().get(0).producerPeaks().size() > 1);
+            try (var input = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit,
+                    retained, binding)) {
+                assertThrows(LegacyEmissionDomain.StateFamilyLimitException.class,
+                    () -> new RidgeTracker().trackEmission(input, CancellationProbe.NONE));
+            }
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
     private static void solve(Fixture fixture, java.util.function.Consumer<EmissionResult> assertion) {
         var ledger = AttemptMemoryLedger.production();
         var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);

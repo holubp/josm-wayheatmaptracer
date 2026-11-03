@@ -39,6 +39,35 @@ class LegacyEmissionR4Test {
                     retained, binding);
                  var result = new RidgeTracker().trackEmission(input, CancellationProbe.NONE)) {
                 assertEquals(17, result.originalObservations().size());
+                assertEquals(input.context().sourceIdentity(), result.sourceReference().sourceIdentity());
+                assertEquals(input.context().policyId(), result.sourceReference().policyId());
+                assertEquals(1.0, result.sourceReference().trackerNormalizationRasterPixels(), 0);
+                assertEquals(1.0, result.sourceReference().nativePitchMeters(), 0);
+                assertFalse(result.sourceReference().productionEligible());
+                assertEquals(List.of(12.0, 8.0, 4.0), result.seedReferences().stream()
+                    .map(EmissionResult.SeedReference::offsetRasterPixels).toList());
+                assertEquals(2, result.chosenSeed().id());
+                assertEquals(4.0, result.chosenSeed().offsetRasterPixels(), 0);
+                assertEquals(17, result.nativeStateTables().size());
+                for (int row = 0; row < 17; row++) {
+                    var table = result.nativeStateTables().get(row);
+                    assertEquals(row, table.originalRow());
+                    assertEquals(1, table.peaks().size());
+                    var reference = table.peaks().get(0);
+                    assertEquals(0, reference.originalPeakId());
+                    assertTrue(reference.eligibleAfterSuppression());
+                    assertEquals(nativeRows.get(row).peaks().get(0).offsetPx(),
+                        reference.offsetRasterPixels(), 0);
+                    assertEquals(reference.nativeEvidenceReward().orElseThrow()
+                        - reference.nativeLocalPenalty().orElseThrow(),
+                        reference.nativeReferenceScore().orElseThrow(), 1e-12);
+                }
+                assertEquals(result.firstStageVertices(), result.inferenceVertices());
+                assertEquals(result.firstStageArcs(), result.inferenceArcs());
+                assertTrue(result.eligibleAnchors().isEmpty());
+                assertTrue(result.selectedAnchors().isEmpty());
+                assertTrue(result.intervalStageReferences().isEmpty());
+                assertTrue(result.generatedStateReferences().isEmpty());
                 assertEquals(map, result.originalObservations().stream()
                     .map(EmissionResult.OriginalObservation::retainedContextIndex).toList());
                 assertTrue(result.intervalStages().isEmpty(),
@@ -119,6 +148,34 @@ class LegacyEmissionR4Test {
                     + " arcs=" + result.inferenceArcs().stream()
                         .map(arc -> arc.kind() + ":" + arc.sourceSpanMeters() + "m")
                         .toList());
+            }
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
+    @Test
+    void dominatedCandidateChurnDoesNotConsumeRetainedMemoryCap() {
+        var source = PhysicalGeometryFixture.r4SyntheticFrame(4.0);
+        var crop = crop(source);
+        // The same R4 input peaked at 65,201,852 charged bytes before dominated
+        // tentative nodes were released. One byte less must still admit the live graph.
+        var ledger = new AttemptMemoryLedger(65_201_851);
+        var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+        try (var root = ledger.rootOwner();
+             var permit = OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(crop.evidence(),
+                 FIELD, crop.input(), crop.chainage(), 25, budget, root)) {
+            var retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(crop.evidence(),
+                FIELD, crop.input().profileLocations(), 25, 1, 1, budget, permit);
+            var truth = new OptionalEmissionContextFactory.DeclaredSyntheticRasterTruth(
+                source.fullScalarGrid(), 18, 17, 1.0, 0.0, List.of());
+            var binding = OptionalEmissionContextFactory.createDeclaredSyntheticR4Binding(permit,
+                retained, source.profiles().subList(1, 18),
+                IntStream.range(1, 18).boxed().toList(), 1.0, truth);
+            try (var input = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit,
+                    retained, binding);
+                 var result = new RidgeTracker().trackEmission(input, CancellationProbe.NONE)) {
+                assertEquals(17, result.originalObservations().size());
+                assertTrue(result.peakRetainedBytes() < ledger.limitBytes());
             }
         }
         assertEquals(0, ledger.currentBytes());

@@ -109,7 +109,7 @@ public final class LegacyEmissionDomain {
                 states.add(new State(row, nativeId, Kind.OBSERVED_PEAK, origin++, peak.offsetPx(), peak,
                     evaluatorState));
             }
-            if (states.size() > 96)
+            if (states.size() > budget.stateFamilyLimit())
                 throw new StateFamilyLimitException(row, states.size());
             rows.add(List.copyOf(states));
         }

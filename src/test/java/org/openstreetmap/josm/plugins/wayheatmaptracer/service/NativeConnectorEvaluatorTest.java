@@ -1812,6 +1812,38 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
+    @Test void lowerCallerFamilyLimitAppliesToDeclaredAndReachableStates() {
+        var caller = new TraceBudgets(1, 8_000_000L, 128_000_000L, 32, 8);
+        var work = new EmissionWorkBudget(caller, CancellationProbe.NONE);
+        try (var f = scene((x, y) -> Math.exp(-.5 * Math.pow(y - 32, 2)),
+                (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63),
+                SourceClass.GAP, 2, 20,
+                RasterMetricTransform.metricGrid(new MetricPoint(0, 0), 1, 0, 0, 1), work)) {
+            var first = new RowState(0, 100, 0, SourceClass.GAP, null);
+            var second = new RowState(0, 101, .5, SourceClass.GAP, null);
+            var declared = assertThrows(StateFamilyLimitException.class, () ->
+                new NativeConnectorEvaluator(f.input(), new Domain(List.of(first, second), List.of())));
+            assertEquals(1, declared.limit());
+            assertSame(declared, assertThrows(StateFamilyLimitException.class, () ->
+                new NativeConnectorEvaluator(f.input(), new Domain(List.of(), List.of()))));
+        }
+        // A separate attempt is needed because declaration refusal is terminal for its input.
+        var dynamicWork = new EmissionWorkBudget(caller, CancellationProbe.NONE);
+        try (var f = scene((x, y) -> Math.exp(-.5 * Math.pow(y - 32, 2)),
+                (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63),
+                SourceClass.GAP, 2, 20,
+                RasterMetricTransform.metricGrid(new MetricPoint(0, 0), 1, 0, 0, 1), dynamicWork);
+             var evaluator = new NativeConnectorEvaluator(f.input(),
+                 new Domain(List.of(), List.of(), List.of(), Map.of(0, 0)))) {
+            evaluator.registerState(new RowState(0, 100, 0, SourceClass.GAP, null), 0);
+            var failure = assertThrows(StateFamilyLimitException.class, () ->
+                evaluator.registerState(new RowState(0, 101, .5, SourceClass.GAP, null), 0));
+            assertEquals(1, failure.limit());
+            assertSame(failure, assertThrows(StateFamilyLimitException.class, () ->
+                evaluator.registerState(new RowState(0, 102, 1, SourceClass.GAP, null), 0)));
+        }
+    }
+
     @Test void declaredNativeFamilyAlsoRefusesNinetySeventhState() {
         try (var f = straight(false, SourceClass.GAP)) {
             var declared = new ArrayList<RowState>();

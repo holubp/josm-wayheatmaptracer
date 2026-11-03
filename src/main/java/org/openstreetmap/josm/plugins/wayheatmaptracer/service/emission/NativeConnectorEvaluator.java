@@ -246,6 +246,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private final SampledEmissionInput input;
     private final OptionalEmissionContext context;
     private final EmissionWorkBudget budget;
+    private final int stateFamilyLimit;
     private final AttemptMemoryLedger.Owner owner;
     private final QueryPolicy queryPolicy;
     private final ExecutionPolicy executionPolicy;
@@ -276,6 +277,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             throw new IllegalArgumentException("Stop-on-final-mode-failure requires the zero-guarded local query policy");
         owner = input.openExecutionOwner("native-connector");
         context = input.context(); budget = input.workBudget();
+        stateFamilyLimit = budget.stateFamilyLimit();
         originalOrdinalByContextRow = domain.originalOrdinalByContextRow();
         try {
             // IdentityHashMap explicit sizing: at most 8 references per declaration is conservative.
@@ -321,8 +323,8 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                 if (nativeIds[index] == nativeIds[index - 1])
                     throw new IllegalArgumentException("Duplicate native row/state identity");
                 family = nativeIds[index] >>> 32 == nativeIds[index - 1] >>> 32 ? family + 1 : 1;
-                if (family > 96) throw new StateFamilyLimitException(
-                    originalOrdinal((int) (nativeIds[index] >>> 32)), 96);
+                if (family > stateFamilyLimit) throw new StateFamilyLimitException(
+                    originalOrdinal((int) (nativeIds[index] >>> 32)), stateFamilyLimit);
             }
             mandatoryRows = List.copyOf(domain.mandatoryRows()); barriers = List.copyOf(domain.barriers());
             for (int row : mandatoryRows) {
@@ -388,7 +390,8 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                     throw new IllegalArgumentException("Duplicate native row/state identity");
                 if (originalOrdinal(existing.row()) == originalOrdinal) family++;
             }
-            if (family >= 96) throw new StateFamilyLimitException(originalOrdinal, 96);
+            if (family >= stateFamilyLimit) throw new StateFamilyLimitException(originalOrdinal,
+                stateFamilyLimit);
             work(EmissionWorkBudget.Operation.ALLOCATION, 1);
             try (var allocation = owner.child("reachable-native-state")) {
                 work(EmissionWorkBudget.Operation.ALLOCATION, 1);

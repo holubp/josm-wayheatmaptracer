@@ -80,16 +80,26 @@ public final class LegacyEmissionKernel {
         final List<ArcDraft> addedArcs;
         final double q, c, t, k;
         final double seedOffset;
+        final int seedId;
         final int consumed;
         final int depth;
+        final AttemptMemoryLedger.Reservation memory;
+        int retainedChildren;
+        boolean inLayer;
+        boolean pinned;
+        boolean released;
         Node(Node previous, Key key, List<PointDraft> addedPoints, List<ArcDraft> addedArcs,
-                double q, double c, double t, double k, int consumed) {
+                double q, double c, double t, double k, int consumed,
+                AttemptMemoryLedger.Reservation memory, int initialSeedId) {
             this.previous = previous; this.key = key;
             this.addedPoints = addedPoints; this.addedArcs = addedArcs;
             this.q = q; this.c = c; this.t = t; this.k = k;
             this.seedOffset = previous == null ? key.scalar().previousOffset()
                 : previous.seedOffset;
+            this.seedId = previous == null ? initialSeedId : previous.seedId;
             this.consumed = consumed; this.depth = previous == null ? 1 : previous.depth + 1;
+            this.memory = memory;
+            if (previous != null) previous.retainedChildren++;
         }
         double total() { return q + c + t + k; }
     }
@@ -109,7 +119,14 @@ public final class LegacyEmissionKernel {
         double pitch = input.context().nativePitchMeters().orElseThrow(() ->
             new UnavailableException(UnavailableReason.NATIVE_PITCH));
         var budget = input.workBudget();
-        var owner = input.openExecutionOwner("legacy-emission-kernel");
+        var resultLease = input.retainResultLifetime();
+        AttemptMemoryLedger.Owner owner;
+        try {
+            owner = input.openExecutionOwner("legacy-emission-kernel");
+        } catch (RuntimeException failure) {
+            resultLease.close();
+            throw failure;
+        }
         NativeConnectorEvaluator bestEvaluator = null;
         AttemptMemoryLedger.Owner bestSeedOwner = null;
         try {
@@ -145,7 +162,7 @@ public final class LegacyEmissionKernel {
                 throw new UnavailableException(UnavailableReason.NO_POSITIVE_PHYSICAL_LEG);
 
             Node firstStage = best;
-            var path = flatten(firstStage, budget, bestSeedOwner);
+            try (var path = flatten(firstStage, budget, bestSeedOwner)) {
             verifyCosts(path.arcs(), firstStage, budget);
             // Anchors are computed on the unchanged original N profiles. A proposal is eligible only
             // when its first-stage emitted state owns the exact proposed native peak object.
@@ -161,6 +178,7 @@ public final class LegacyEmissionKernel {
                 }
             }
             var intervalCosts = new ArrayList<EmissionResult.Costs>();
+            var intervalReferences = new ArrayList<EmissionResult.IntervalStageReference>();
             for (int index = 0; index + 1 < eligible.size(); index++) {
                 cancellation.checkpoint();
                 var left = eligible.get(index); var right = eligible.get(index + 1);
@@ -174,7 +192,10 @@ public final class LegacyEmissionKernel {
                 Node interval = solveInterval(input, domain, prefix, rightState, left, right,
                     index + 1, bestInventory, bestEvaluator, bestSeedOwner, cancellation, pitch);
                 if (interval == null) throw new UnavailableException(UnavailableReason.NO_ADMITTED_PATH);
-                intervalCosts.add(intervalIncrement(prefix, interval, budget));
+                var intervalCost = intervalIncrement(prefix, interval, budget);
+                intervalCosts.add(intervalCost);
+                intervalReferences.add(intervalStage(prefix, interval, left, right,
+                    index + 1, intervalCost, domain, input, budget));
                 boolean suffix = false;
                 for (Node node : chain) {
                     int row = node.key.last().originalRow();
@@ -187,15 +208,22 @@ public final class LegacyEmissionKernel {
                             throw new UnavailableException(UnavailableReason.NO_ADMITTED_PATH);
                     }
                 }
+                pinChain(interval, budget);
                 best = interval;
             }
-            var stitchedPath = flatten(best, budget, bestSeedOwner);
+            try (var stitchedPath = flatten(best, budget, bestSeedOwner)) {
             verifyCosts(stitchedPath.arcs(), best, budget);
-            return result(input, domain, stitchedPath, firstStage, best, intervalCosts,
-                smoother, bestSeedOwner, owner, bestEvaluator, budget, cancellation);
+            if (best.key.lastPositive() == null)
+                throw new UnavailableException(UnavailableReason.NO_POSITIVE_PHYSICAL_LEG);
+            return result(input, domain, stitchedPath, path, firstStage, best, intervalCosts,
+                intervalReferences, eligible, bestInventory,
+                smoother, bestSeedOwner, owner, bestEvaluator, budget, cancellation, resultLease);
+            }
+            }
         } catch (RuntimeException failure) {
             if (bestEvaluator != null) bestEvaluator.close();
             owner.close();
+            resultLease.close();
             if (failure instanceof CancellationException
                     || failure instanceof EmissionWorkBudget.LimitExceededException
                     || failure instanceof AttemptMemoryLedger.ResourceLimitException)
@@ -215,7 +243,7 @@ public final class LegacyEmissionKernel {
             NativeConnectorEvaluator.PhysicalEndpoint from,
             NativeConnectorEvaluator.PhysicalEndpoint to) { }
     private record ZeroConnectorIdentity(ConnectorIdentity endpoints, DirectionOrigin origin) { }
-    private record Inventory(List<List<LegacyEmissionDomain.State>> byRow,
+    private record Inventory(List<List<LegacyEmissionDomain.State>> byRow, int[] familySizes,
             Map<CarryIdentity, LegacyEmissionDomain.State> reachedCarries,
             Map<TargetIdentity, LegacyEmissionDomain.State> intervalTargets,
             Map<String, NativeConnectorEvaluator.Barrier> barriersById,
@@ -228,18 +256,20 @@ public final class LegacyEmissionKernel {
     private Inventory inventory(LegacyEmissionDomain domain,
             EmissionWorkBudget budget, AttemptMemoryLedger.Owner owner) {
         var byRow = new ArrayList<List<LegacyEmissionDomain.State>>(domain.rowCount());
+        var familySizes = new int[domain.rowCount()];
         var all = new ArrayList<NativeConnectorEvaluator.RowState>();
         for (int row = 0; row < domain.rowCount(); row++) {
             budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
             var states = domain.observedAt(row);
-            if (states.size() > 96)
+            if (states.size() > budget.stateFamilyLimit())
                 throw new UnavailableException(UnavailableReason.STATE_FAMILY_LIMIT);
+            familySizes[row] = states.size();
             budget.charge(EmissionWorkBudget.Operation.ALLOCATION, states.size() + 1L);
             owner.reserve(Math.addExact(64, Math.multiplyExact(128L, states.size())));
             byRow.add(states);
             for (var state : states) all.add(state.evaluatorState());
         }
-        return new Inventory(List.copyOf(byRow), new HashMap<>(), new HashMap<>(),
+        return new Inventory(List.copyOf(byRow), familySizes, new HashMap<>(), new HashMap<>(),
             new HashMap<>(), new HashMap<>(), new HashMap<>(), new HashMap<>(),
             new HashMap<>(), List.copyOf(all));
     }
@@ -251,11 +281,13 @@ public final class LegacyEmissionKernel {
         budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
         var reached = inventory.reachedCarries().get(key);
         if (reached != null) return reached;
-        var state = domain.carry(row, originId, offset, budget);
+        requireFamilyCapacity(row, inventory.familySizes()[row], budget);
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
         owner.reserve(160);
+        var state = domain.carry(row, originId, offset, budget);
         evaluator.registerState(state.evaluatorState(), row);
         inventory.reachedCarries().put(key, state);
+        inventory.familySizes()[row]++;
         return state;
     }
 
@@ -267,13 +299,24 @@ public final class LegacyEmissionKernel {
         budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
         var existing = inventory.intervalTargets().get(key);
         if (existing != null) return existing;
-        var state = domain.intervalTarget(row, left.originalRow(), right.originalRow(), left, right,
-            budget);
+        requireFamilyCapacity(row, inventory.familySizes()[row], budget);
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
         owner.reserve(160);
+        var state = domain.intervalTarget(row, left.originalRow(), right.originalRow(), left, right,
+            budget);
         evaluator.registerState(state.evaluatorState(), row);
         inventory.intervalTargets().put(key, state);
+        inventory.familySizes()[row]++;
         return state;
+    }
+
+    /** Shared precreation gate for both genuine generated-state families. */
+    static void requireFamilyCapacity(int originalRow, int existingMembers,
+            EmissionWorkBudget budget) {
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+        if (existingMembers >= budget.stateFamilyLimit())
+            throw new LegacyEmissionDomain.StateFamilyLimitException(originalRow,
+                Math.addExact(existingMembers, 1));
     }
 
     private static List<Node> chain(Node terminal, EmissionWorkBudget budget) {
@@ -298,6 +341,32 @@ public final class LegacyEmissionKernel {
             }
         }
         return new EmissionResult.Costs(q, c, t, k);
+    }
+
+    private static EmissionResult.IntervalStageReference intervalStage(Node prefix, Node terminal,
+            AnchorProposal left, AnchorProposal right, int ordinal,
+            EmissionResult.Costs costs, LegacyEmissionDomain domain, SampledEmissionInput input,
+            EmissionWorkBudget budget) {
+        var reverse = new ArrayList<Node>();
+        for (Node node = terminal; node != prefix; node = node.previous) {
+            budget.charge(EmissionWorkBudget.Operation.BACKPOINTER_VISIT, 1);
+            if (node == null) throw new IllegalStateException("Interval prefix is not an ancestor");
+            reverse.add(node);
+        }
+        java.util.Collections.reverse(reverse);
+        var vertices = new ArrayList<EmissionResult.Vertex>();
+        vertices.add(vertex(new PointDraft(new EmissionMapping.ObservationVertex(left.originalRow()),
+            prefix.key.last(), domain.metricPoint(prefix.key.last(), input.context()))));
+        var arcs = new ArrayList<ArcDraft>();
+        for (Node node : reverse) {
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            for (var point : node.addedPoints) vertices.add(vertex(point));
+            arcs.addAll(node.addedArcs);
+        }
+        return new EmissionResult.IntervalStageReference(ordinal,
+            new EmissionResult.AnchorReference(left.originalRow(), domain.originalPeakId(left.peakOwner())),
+            new EmissionResult.AnchorReference(right.originalRow(), domain.originalPeakId(right.peakOwner())),
+            vertices, arcResults(arcs), costs);
     }
 
     private static void verifyCosts(List<ArcDraft> arcs, Node terminal,
@@ -328,6 +397,10 @@ public final class LegacyEmissionKernel {
             NativeConnectorEvaluator evaluator,
             AttemptMemoryLedger.Owner owner, CancellationProbe cancellation, double pitch) {
         var budget = input.workBudget();
+        int intervalRows = right.originalRow() - left.originalRow() + 1;
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION, intervalRows + 1L);
+        var layerMemory = owner.reserve(Math.multiplyExact(128L, intervalRows));
+        try {
         var layers = new HashMap<Integer, Map<Key, Node>>();
         var firstLayer = new LinkedHashMap<Key, Node>();
         firstLayer.put(prefix.key, prefix);
@@ -361,7 +434,19 @@ public final class LegacyEmissionKernel {
         Node best = null;
         for (var candidate : layers.getOrDefault(right.originalRow(), Map.of()).values())
             if (better(candidate, best, budget, owner)) best = candidate;
+        if (best != null) pinChain(best, budget);
+        for (var layer : layers.values())
+            for (Node node : layer.values()) {
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                node.inLayer = false;
+            }
+        for (var layer : layers.values())
+            for (Node node : layer.values())
+                releaseUnretained(node, budget);
         return best;
+        } finally {
+            layerMemory.close();
+        }
     }
 
     private NativeConnectorEvaluator evaluator(SampledEmissionInput input, LegacyEmissionDomain domain,
@@ -394,10 +479,11 @@ public final class LegacyEmissionKernel {
             AttemptMemoryLedger.Owner owner, CancellationProbe cancellation, double pitch) {
         var budget = input.workBudget();
         int n = domain.rowCount();
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION, n + 1L);
+        var layerMemory = owner.reserve(Math.multiplyExact(128L, n));
+        try {
         var layers = new ArrayList<Map<Key, Node>>(n);
         for (int row = 0; row < n; row++) {
-            budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
-            owner.reserve(128);
             layers.add(new LinkedHashMap<>());
         }
         List<LegacyEmissionDomain.State> firstChoices = domain.unsupported(0)
@@ -412,7 +498,7 @@ public final class LegacyEmissionKernel {
             var point = new PointDraft(new EmissionMapping.ObservationVertex(0), first,
                 domain.metricPoint(first, input.context()));
             var node = allocateNode(owner, budget, null, key, List.of(point), List.of(),
-                0, .16 * departure, .12 * departure, 0, 0);
+                0, .16 * departure, .12 * departure, 0, 0, seed.id());
             insert(layers.get(0), node, budget, owner);
         }
         for (int row = 0; row < n - 1; row++) {
@@ -445,7 +531,19 @@ public final class LegacyEmissionKernel {
         Node best = null;
         for (Node candidate : layers.get(n - 1).values())
             if (better(candidate, best, budget, owner)) best = candidate;
+        if (best != null) pinChain(best, budget);
+        for (int row = n - 1; row >= 0; row--)
+            for (Node node : layers.get(row).values()) {
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                node.inLayer = false;
+            }
+        for (int row = n - 1; row >= 0; row--)
+            for (Node node : layers.get(row).values())
+                releaseUnretained(node, budget);
         return best;
+        } finally {
+            layerMemory.close();
+        }
     }
 
     private Node advance(SampledEmissionInput input, LegacyEmissionDomain domain,
@@ -689,16 +787,51 @@ public final class LegacyEmissionKernel {
     private static Node allocateNode(AttemptMemoryLedger.Owner owner, EmissionWorkBudget budget,
             Node previous, Key key, List<PointDraft> points, List<ArcDraft> arcs,
             double q, double c, double t, double k, int consumed) {
+        return allocateNode(owner, budget, previous, key, points, arcs, q, c, t, k,
+            consumed, previous == null ? -1 : previous.seedId);
+    }
+
+    private static Node allocateNode(AttemptMemoryLedger.Owner owner, EmissionWorkBudget budget,
+            Node previous, Key key, List<PointDraft> points, List<ArcDraft> arcs,
+            double q, double c, double t, double k, int consumed, int initialSeedId) {
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
-        owner.reserve(Math.addExact(256, Math.addExact(128L * points.size(), 192L * arcs.size())));
-        return new Node(previous, key, points, arcs, q, c, t, k, consumed);
+        var reservation = owner.reserve(Math.addExact(256,
+            Math.addExact(128L * points.size(), 192L * arcs.size())));
+        return new Node(previous, key, points, arcs, q, c, t, k, consumed, reservation,
+            initialSeedId);
     }
 
     private static void insert(Map<Key, Node> layer, Node candidate, EmissionWorkBudget budget,
             AttemptMemoryLedger.Owner owner) {
         budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
         Node old = layer.get(candidate.key);
-        if (better(candidate, old, budget, owner)) layer.put(candidate.key, candidate);
+        if (better(candidate, old, budget, owner)) {
+            candidate.inLayer = true;
+            layer.put(candidate.key, candidate);
+            if (old != null) {
+                old.inLayer = false;
+                releaseUnretained(old, budget);
+            }
+        } else releaseUnretained(candidate, budget);
+    }
+
+    private static void releaseUnretained(Node node, EmissionWorkBudget budget) {
+        while (node != null && !node.inLayer && !node.pinned
+                && node.retainedChildren == 0 && !node.released) {
+            budget.charge(EmissionWorkBudget.Operation.BACKPOINTER_VISIT, 1);
+            node.released = true;
+            node.memory.close();
+            Node parent = node.previous;
+            if (parent != null) parent.retainedChildren--;
+            node = parent;
+        }
+    }
+
+    private static void pinChain(Node terminal, EmissionWorkBudget budget) {
+        for (Node node = terminal; node != null; node = node.previous) {
+            budget.charge(EmissionWorkBudget.Operation.BACKPOINTER_VISIT, 1);
+            node.pinned = true;
+        }
     }
 
     private static boolean better(Node left, Node right, EmissionWorkBudget budget,
@@ -740,29 +873,40 @@ public final class LegacyEmissionKernel {
         }
     }
 
-    private record Flattened(List<PointDraft> points, List<ArcDraft> arcs) { }
+    private record Flattened(List<PointDraft> points, List<ArcDraft> arcs,
+            AttemptMemoryLedger.Reservation memory) implements AutoCloseable {
+        @Override public void close() { memory.close(); }
+    }
     private static Flattened flatten(Node terminal, EmissionWorkBudget budget,
             AttemptMemoryLedger.Owner owner) {
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 3);
-        owner.reserve(Math.addExact(256, Math.multiplyExact(32L, terminal.depth)));
-        var nodes = new ArrayList<Node>();
-        for (Node node = terminal; node != null; node = node.previous) {
-            budget.charge(EmissionWorkBudget.Operation.BACKPOINTER_VISIT, 1);
-            nodes.add(node);
+        var memory = owner.reserve(Math.addExact(256, Math.multiplyExact(32L, terminal.depth)));
+        try {
+            var nodes = new ArrayList<Node>();
+            for (Node node = terminal; node != null; node = node.previous) {
+                budget.charge(EmissionWorkBudget.Operation.BACKPOINTER_VISIT, 1);
+                nodes.add(node);
+            }
+            var points = new ArrayList<PointDraft>(); var arcs = new ArrayList<ArcDraft>();
+            for (int i = nodes.size() - 1; i >= 0; i--) {
+                points.addAll(nodes.get(i).addedPoints); arcs.addAll(nodes.get(i).addedArcs);
+            }
+            return new Flattened(List.copyOf(points), List.copyOf(arcs), memory);
+        } catch (RuntimeException failure) {
+            memory.close();
+            throw failure;
         }
-        var points = new ArrayList<PointDraft>(); var arcs = new ArrayList<ArcDraft>();
-        for (int i = nodes.size() - 1; i >= 0; i--) {
-            points.addAll(nodes.get(i).addedPoints); arcs.addAll(nodes.get(i).addedArcs);
-        }
-        return new Flattened(List.copyOf(points), List.copyOf(arcs));
     }
 
     private EmissionResult result(SampledEmissionInput input, LegacyEmissionDomain domain,
-            Flattened path, Node firstNode, Node best, List<EmissionResult.Costs> intervals,
+            Flattened path, Flattened firstPath, Node firstNode, Node best,
+            List<EmissionResult.Costs> intervals,
+            List<EmissionResult.IntervalStageReference> intervalReferences,
+            List<AnchorProposal> eligible, Inventory inventory,
             Smoother smoother, AttemptMemoryLedger.Owner owner,
             AttemptMemoryLedger.Owner kernelOwner,
             NativeConnectorEvaluator evaluator, EmissionWorkBudget budget,
-            CancellationProbe cancellation) {
+            CancellationProbe cancellation, SampledEmissionInput.ResultLease resultLease) {
         int n = domain.rowCount();
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 6);
         owner.reserve(Math.addExact(1024, Math.addExact(Math.multiplyExact(96L, n),
@@ -797,13 +941,16 @@ public final class LegacyEmissionKernel {
         var smoothed = smooth(path, smoother, domain, input.context(), budget);
         var smoothedArcs = arcResults(remeasure(input, path, smoothed, best.seedOffset,
             owner, budget, cancellation));
+        if (smoothedArcs.stream().noneMatch(arc -> arc.lengthMeters() > 0))
+            throw new UnavailableException(UnavailableReason.NO_POSITIVE_PHYSICAL_LEG);
         var first = new EmissionResult.Costs(firstNode.q, firstNode.c, firstNode.t, firstNode.k);
         var stitched = new EmissionResult.Costs(best.q, best.c, best.t, best.k);
         var post = totals(smoothedArcs, best.seedOffset,
             path.points().get(0).state().offsetRasterPixels());
         double source = 0, measured = 0, length = 0;
-        for (var arc : arcs) {
-            source += arc.sourceSpanMeters(); length += arc.lengthMeters();
+        for (var arc : arcs) source += arc.sourceSpanMeters();
+        for (var arc : smoothedArcs) {
+            length += arc.lengthMeters();
             if (arc.meanNativeIntensity().isPresent()) measured += arc.lengthMeters();
         }
         var sourceRecords = new ArrayList<EmissionResult.OriginalObservation>(n);
@@ -817,13 +964,162 @@ public final class LegacyEmissionKernel {
                     + observation.profile().cumulativeGroundDistanceMeters(),
                 observation.producerPeaks().stream().map(LegacyEmissionBinding.PeakOwner::originalPeakId).toList()));
         }
+        var provenance = provenance(input, domain, firstPath, firstNode, best,
+            intervalReferences, eligible, inventory, owner, budget);
         return new EmissionResult(sourceRecords, mapping, vertices, smoothed,
             arcs, smoothedArcs, first, intervals, stitched, post, source, measured, length,
-            budget.snapshot(), owner.peakBytes(), () -> {
-                evaluator.close();
-                owner.close();
-                kernelOwner.close();
+            budget.snapshot(), owner.peakBytes(), provenance, () -> {
+                try {
+                    evaluator.close();
+                } finally {
+                    try {
+                        owner.close();
+                    } finally {
+                        try {
+                            kernelOwner.close();
+                        } finally {
+                            resultLease.close();
+                        }
+                    }
+                }
             });
+    }
+
+    private static EmissionResult.Provenance provenance(SampledEmissionInput input,
+            LegacyEmissionDomain domain, Flattened firstPath, Node firstNode, Node best,
+            List<EmissionResult.IntervalStageReference> intervalReferences,
+            List<AnchorProposal> eligible, Inventory inventory,
+            AttemptMemoryLedger.Owner owner, EmissionWorkBudget budget) {
+        var binding = domain.binding();
+        long peakCount = binding.observations().stream()
+            .mapToLong(observation -> observation.producerPeaks().size()).sum();
+        long generatedCount = inventory.reachedCarries().size() + (long) inventory.intervalTargets().size();
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+        owner.reserve(Math.addExact(1024, Math.addExact(Math.multiplyExact(160, peakCount),
+            Math.addExact(Math.multiplyExact(160, generatedCount),
+                Math.multiplyExact(192L, intervalReferences.size())))));
+        var context = input.context();
+        var source = new EmissionResult.SourceReference(context.sourceIdentity(),
+            context.evidenceContentHash(), context.requestIdentity(), context.policyId(),
+            "LEGACY_OPTIONAL_NATIVE_INTEGRAL_V2", binding.trackerNormalizationRasterPx(),
+            context.nativePitchMeters().orElseThrow(), binding.productionEligible());
+        var seeds = domain.seeds().stream().map(seed ->
+            new EmissionResult.SeedReference(seed.id(), seed.offsetRasterPixels())).toList();
+        var chosen = seeds.stream().filter(seed -> seed.id() == best.seedId)
+            .findFirst().orElseThrow();
+        if (Double.doubleToLongBits(chosen.offsetRasterPixels())
+                != Double.doubleToLongBits(best.seedOffset))
+            throw new IllegalStateException("Chosen Legacy seed identity changed");
+        double edgeLimit = Double.NaN;
+        for (int row = 0; row < domain.rowCount(); row++)
+            for (var peak : domain.suppressedProfile(row).peaks())
+                edgeLimit = Double.isNaN(edgeLimit) ? Math.abs(peak.offsetPx())
+                    : Math.max(edgeLimit, Math.abs(peak.offsetPx()));
+        var tables = new ArrayList<EmissionResult.NativeStateTable>();
+        var origins = new ArrayList<EmissionResult.OriginReference>();
+        for (var seed : seeds)
+            origins.add(new EmissionResult.OriginReference(seed.id(), Optional.of(seed), Optional.empty()));
+        for (int row = 0; row < domain.rowCount(); row++) {
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            var observation = binding.observations().get(row);
+            var profile = domain.suppressedProfile(row);
+            var references = new ArrayList<EmissionResult.NativePeakReference>();
+            for (var peakOwner : observation.producerPeaks()) {
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                var peak = peakOwner.peak();
+                boolean eligibleState = domain.observedAt(row).stream()
+                    .anyMatch(state -> state.nativeStateId() == peakOwner.originalPeakId()
+                        && state.peakOwner() == peak);
+                if (eligibleState) {
+                    double reward = nativeEvidenceReward(peak);
+                    double penalty = nativeLocalPenalty(profile, peak,
+                        binding.trackerNormalizationRasterPx(), edgeLimit);
+                    references.add(new EmissionResult.NativePeakReference(peakOwner.originalPeakId(),
+                        peak.offsetPx(), peak.intensity(), true, java.util.OptionalDouble.of(reward),
+                        java.util.OptionalDouble.of(penalty), java.util.OptionalDouble.of(reward - penalty)));
+                } else references.add(new EmissionResult.NativePeakReference(peakOwner.originalPeakId(),
+                    peak.offsetPx(), peak.intensity(), false, java.util.OptionalDouble.empty(),
+                    java.util.OptionalDouble.empty(), java.util.OptionalDouble.empty()));
+            }
+            var nativeProfile = observation.profile();
+            var normal = nativeProfile.normalScreen();
+            tables.add(new EmissionResult.NativeStateTable(row, observation.sourceClass(),
+                nativeProfile.samplingAnchor().rasterPoint(), new RasterPoint(normal.x, normal.y),
+                references));
+            for (var state : domain.observedAt(row)) {
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                origins.add(new EmissionResult.OriginReference(state.offsetOriginId(),
+                    Optional.empty(), Optional.of(new EmissionResult.AnchorReference(row,
+                        state.nativeStateId()))));
+            }
+        }
+        origins.sort(Comparator.comparingInt(EmissionResult.OriginReference::originId));
+        var generated = new ArrayList<EmissionResult.GeneratedStateReference>();
+        for (var entry : inventory.reachedCarries().entrySet()) {
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            var state = entry.getValue();
+            generated.add(new EmissionResult.GeneratedStateReference(state.originalRow(),
+                state.nativeStateId(), EmissionResult.StateKind.BASE_CARRY,
+                state.offsetRasterPixels(), entry.getKey().originId(), Optional.empty(),
+                Optional.empty()));
+        }
+        for (var entry : inventory.intervalTargets().entrySet()) {
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            var state = entry.getValue();
+            var left = eligible.stream().filter(anchor -> anchor.originalRow() == entry.getKey().leftAnchorRow())
+                .findFirst().orElseThrow();
+            var right = eligible.stream().filter(anchor -> anchor.originalRow() == entry.getKey().rightAnchorRow())
+                .findFirst().orElseThrow();
+            generated.add(new EmissionResult.GeneratedStateReference(state.originalRow(),
+                state.nativeStateId(), EmissionResult.StateKind.INTERVAL_TARGET,
+                state.offsetRasterPixels(), state.offsetOriginId(),
+                Optional.of(anchorReference(domain, left)), Optional.of(anchorReference(domain, right))));
+        }
+        generated.sort(Comparator.comparingInt(EmissionResult.GeneratedStateReference::originalRow)
+            .thenComparingInt(EmissionResult.GeneratedStateReference::nativeStateId)
+            .thenComparingInt(EmissionResult.GeneratedStateReference::originId));
+        var eligibleReferences = eligible.stream().map(anchor -> anchorReference(domain, anchor)).toList();
+        var selected = new java.util.LinkedHashSet<EmissionResult.AnchorReference>();
+        for (var stage : intervalReferences) {
+            selected.add(stage.leftAnchor()); selected.add(stage.rightAnchor());
+        }
+        var firstVertices = firstPath.points().stream().map(LegacyEmissionKernel::vertex).toList();
+        return new EmissionResult.Provenance(source, seeds, chosen, tables, origins, generated,
+            eligibleReferences, List.copyOf(selected), firstVertices, arcResults(firstPath.arcs()),
+            intervalReferences);
+    }
+
+    private static EmissionResult.AnchorReference anchorReference(LegacyEmissionDomain domain,
+            AnchorProposal proposal) {
+        return new EmissionResult.AnchorReference(proposal.originalRow(),
+            domain.originalPeakId(proposal.peakOwner()));
+    }
+
+    private static double nativeEvidenceReward(CrossSectionPeak peak) {
+        return peak.intensity() * 2.25
+            + peak.gradientStrength() * (0.22 + 0.18 * peak.gradientBalance())
+            + peak.nativeFilteredAgreement() * 0.12
+            + peak.scaleAgreement() * 0.06;
+    }
+
+    private static double nativeLocalPenalty(CrossSectionProfile profile, CrossSectionPeak peak,
+            double sourcePixelSizePx, double edgeLimitPx) {
+        double strongest = profile.peaks().stream().mapToDouble(CrossSectionPeak::intensity)
+            .max().orElse(0.0);
+        double regret = Math.max(0.0, strongest - peak.intensity());
+        double penalty = regret * 4.2;
+        if (Double.isFinite(edgeLimitPx) && edgeLimitPx > 0.0
+                && Math.abs(peak.offsetPx()) >= edgeLimitPx * 0.88
+                && peak.supportWidthPx() <= Math.max(3.0, sourcePixelSizePx * 0.30))
+            penalty += 0.65 + regret * 2.0;
+        if (peak.supportWidthPx() <= sourcePixelSizePx * 0.15
+                && strongest > peak.intensity() + 0.03)
+            penalty += 0.30;
+        penalty += (1.0 - peak.nativeFilteredAgreement()) * 0.18;
+        penalty += (1.0 - peak.scaleAgreement()) * 0.10;
+        penalty += Math.min(0.12, peak.centerUncertaintyPx()
+            / Math.max(1.0, sourcePixelSizePx) * 0.03);
+        return penalty;
     }
 
     private static EmissionResult.Vertex vertex(PointDraft point) {

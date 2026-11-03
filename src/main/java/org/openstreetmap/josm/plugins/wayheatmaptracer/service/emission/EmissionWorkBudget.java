@@ -73,6 +73,7 @@ public final class EmissionWorkBudget {
 
     private final long workLimit;
     private final long pairLimit;
+    private final int stateFamilyLimit;
     private final CancellationProbe cancellation;
     private final EnumMap<Operation, Long> operationUnits = new EnumMap<>(Operation.class);
     private long workUsed;
@@ -85,6 +86,7 @@ public final class EmissionWorkBudget {
         this.cancellation = Objects.requireNonNull(cancellation, "cancellation");
         workLimit = Math.min(TOTAL_WORK_HARD_CAP, limits.maximumTransitions());
         pairLimit = Math.min(PAIR_VISIT_HARD_CAP, limits.maximumPairVisits());
+        stateFamilyLimit = Math.min(96, limits.maximumStatesPerProfile());
         for (Operation operation : Operation.values()) {
             operationUnits.put(operation, 0L);
         }
@@ -135,4 +137,7 @@ public final class EmissionWorkBudget {
     public synchronized Snapshot snapshot() {
         return new Snapshot(workLimit, pairLimit, workUsed, pairVisits, operationUnits);
     }
+
+    /** Effective original-row state-family ceiling, including a stricter caller limit. */
+    public int stateFamilyLimit() { return stateFamilyLimit; }
 }

@@ -41,6 +41,20 @@ class LegacyEmissionStagesTest {
                 assertEquals(NativeConnectorEvaluator.SourceClass.GAP,
                     result.originalObservations().get(3).sourceClass());
                 assertFalse(result.intervalStages().isEmpty(), "Actual reliable anchors must trigger stage two");
+                assertFalse(result.eligibleAnchors().isEmpty());
+                assertEquals(result.intervalStages().size(), result.intervalStageReferences().size());
+                for (int stage = 0; stage < result.intervalStages().size(); stage++) {
+                    var reference = result.intervalStageReferences().get(stage);
+                    assertEquals(result.intervalStages().get(stage), reference.costs());
+                    assertEquals(reference.vertices().size() - 1, reference.arcs().size());
+                    assertEquals(reference.costs().total(), reference.arcs().stream()
+                        .mapToDouble(arc -> arc.q() + arc.c() + arc.t() + arc.k()).sum(), 1e-9);
+                    assertTrue(result.selectedAnchors().contains(reference.leftAnchor()));
+                    assertTrue(result.selectedAnchors().contains(reference.rightAnchor()));
+                }
+                assertTrue(result.generatedStateReferences().stream().anyMatch(state ->
+                    state.originalRow() == 3 && state.kind() == EmissionResult.StateKind.INTERVAL_TARGET
+                        && state.leftAnchor().isPresent() && state.rightAnchor().isPresent()));
                 int gapVertex = result.mapping().emittedVertexForObservation(3).orElseThrow();
                 assertEquals(EmissionResult.StateKind.INTERVAL_TARGET,
                     result.inferenceVertices().get(gapVertex).kind());
@@ -98,7 +112,7 @@ class LegacyEmissionStagesTest {
                     + 0.28 * Math.abs(result.inferenceVertices().get(0).offsetRasterPixels().orElseThrow()
                         - 0), 1e-7);
                 assertEquals(48, result.sourceIntervalMassMeters(), 1e-12);
-                assertEquals(result.inferenceArcs().stream().filter(arc -> arc.meanNativeIntensity().isPresent())
+                assertEquals(result.postSmoothingArcs().stream().filter(arc -> arc.meanNativeIntensity().isPresent())
                     .mapToDouble(EmissionResult.Arc::lengthMeters).sum(),
                     result.measuredPhysicalLengthMeters(), 1e-10);
                 assertEquals(result.postSmoothing().total(), result.postSmoothingArcs().stream()
@@ -273,6 +287,222 @@ class LegacyEmissionStagesTest {
                 assertTrue(result.inferenceArcs().get(3).ordinaryPositive().isPresent());
                 assertEquals(0, result.inferenceArcs().get(3).k(), 1e-12,
                     "Two zero legs must preserve the original straight positive heading");
+            }
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
+    @Test
+    void publishedCoverageFollowsMovedSmoothedGeometry() {
+        withControlledSmoother(4, result -> {
+            assertEquals(3, result.inferenceVertices().size());
+            double inferenceLength = result.inferenceArcs().stream()
+                .mapToDouble(EmissionResult.Arc::lengthMeters).sum();
+            double finalLength = result.postSmoothingArcs().stream()
+                .mapToDouble(EmissionResult.Arc::lengthMeters).sum();
+            assertTrue(finalLength > inferenceLength + 0.5,
+                "The test smoother must actually change the published route length");
+            assertEquals(finalLength, result.totalPhysicalLengthMeters(), 1e-10);
+            assertEquals(result.postSmoothingArcs().stream()
+                .filter(arc -> arc.meanNativeIntensity().isPresent())
+                .mapToDouble(EmissionResult.Arc::lengthMeters).sum(),
+                result.measuredPhysicalLengthMeters(), 1e-10);
+        });
+    }
+
+    @Test
+    void publishedCoverageDropsWhenSmootherMovesRouteOutsideMeasuredSupport() {
+        withControlledSmoother(100, result -> {
+            assertTrue(result.inferenceArcs().stream()
+                .allMatch(arc -> arc.meanNativeIntensity().isPresent()));
+            assertTrue(result.postSmoothingArcs().stream()
+                .allMatch(arc -> arc.kind() == EmissionResult.ArcKind.ORDINARY_UNAVAILABLE));
+            assertEquals(0, result.measuredPhysicalLengthMeters(), 0);
+            assertEquals(result.postSmoothingArcs().stream()
+                .mapToDouble(EmissionResult.Arc::lengthMeters).sum(),
+                result.totalPhysicalLengthMeters(), 1e-10);
+        });
+    }
+
+    private static void withControlledSmoother(double middleDelta,
+            java.util.function.Consumer<EmissionResult> assertion) {
+        var source = fixture();
+        var locations = List.of(source.input().profileLocations().get(0),
+            source.input().profileLocations().get(2), source.input().profileLocations().get(4));
+        var trace = new CorridorTraceInput(locations, 1);
+        var chainage = new ProfileChainage(locations.stream()
+            .map(DetachedProfileSamplingLocation::cumulativeGroundDistanceMeters).toList(), 32);
+        var ledger = AttemptMemoryLedger.production();
+        var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+        try (var root = ledger.rootOwner();
+             var permit = OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(
+                 source.evidence(), FIELD, trace, chainage, 25, budget, root)) {
+            var retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(
+                source.evidence(), FIELD, trace.profileLocations(), 25, 1, 1, budget, permit);
+            var binding = OptionalEmissionContextFactory.createLegacyBinding(permit, retained,
+                List.of(0, 1, 2), 1, List.of());
+            try (var input = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit,
+                    retained, binding);
+                 var result = new LegacyEmissionKernel().solve(input,
+                     binding.observations().stream().map(LegacyEmissionBinding.OriginalObservation::profile).toList(),
+                     List.of(0.0), List.of(), (profiles, offsets, intensities) ->
+                         List.of(offsets.get(0), offsets.get(1) + middleDelta, offsets.get(2)),
+                     CancellationProbe.NONE)) {
+                assertion.accept(result);
+            }
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
+    @Test
+    void closingInputFirstKeepsPublishedReceiptsOwnedUntilResultCloses() {
+        var source = fixture();
+        var ledger = AttemptMemoryLedger.production();
+        var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+        try (var root = ledger.rootOwner();
+             var permit = OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(
+                 source.evidence(), FIELD, source.input(), source.chainage(), 25, budget, root)) {
+            var retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(
+                source.evidence(), FIELD, source.input().profileLocations(), 25, 1, 1, budget, permit);
+            var binding = OptionalEmissionContextFactory.createLegacyBinding(permit, retained,
+                List.of(0, 1, 2, 3, 4, 5, 6), 1, List.of());
+            var input = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit,
+                retained, binding);
+            EmissionResult result = null;
+            try {
+                result = new RidgeTracker().trackEmission(input, CancellationProbe.NONE);
+                assertTrue(ledger.currentBytes() > 0);
+                input.close();
+                assertThrows(IllegalStateException.class, input::context);
+                assertTrue(ledger.currentBytes() > 0,
+                    "The result's native receipt owner must survive input.close()");
+                assertFalse(result.inferenceArcs().isEmpty());
+                result.close();
+                assertThrows(IllegalStateException.class, result::inferenceArcs);
+            } finally {
+                if (result != null) result.close();
+                input.close();
+            }
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
+    @Test
+    void closingResultFirstLeavesInputUsableUntilItsOwnClose() {
+        var source = fixture();
+        var ledger = AttemptMemoryLedger.production();
+        var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+        try (var root = ledger.rootOwner();
+             var permit = OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(
+                 source.evidence(), FIELD, source.input(), source.chainage(), 25, budget, root)) {
+            var retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(
+                source.evidence(), FIELD, source.input().profileLocations(), 25, 1, 1, budget, permit);
+            var binding = OptionalEmissionContextFactory.createLegacyBinding(permit, retained,
+                List.of(0, 1, 2, 3, 4, 5, 6), 1, List.of());
+            var input = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit,
+                retained, binding);
+            try {
+                var result = new RidgeTracker().trackEmission(input, CancellationProbe.NONE);
+                result.close();
+                result.close();
+                assertThrows(IllegalStateException.class, result::inferenceArcs);
+                assertFalse(input.context().observations().isEmpty());
+                assertTrue(ledger.currentBytes() > 0,
+                    "Closing the result must not close its still-live input");
+            } finally {
+                input.close();
+            }
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
+    @Test
+    void callerFamilyCeilingAlsoCountsDistinctReachedCarriesAtOneGapRow() {
+        var source = fixture(); // Row 3 is a dark GAP; rows 1 and 2 each have a native peak.
+        var ledger = AttemptMemoryLedger.production();
+        var limits = TraceBudgets.defaults();
+        var budget = new EmissionWorkBudget(new TraceBudgets(1, limits.maximumPairVisits(),
+            limits.maximumTransitions(), limits.maximumRawAlternatives(),
+            limits.maximumDistinctAlternatives()), CancellationProbe.NONE);
+        try (var root = ledger.rootOwner();
+             var permit = OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(
+                 source.evidence(), FIELD, source.input(), source.chainage(), 25, budget, root)) {
+            var retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(
+                source.evidence(), FIELD, source.input().profileLocations(), 25, 1, 1, budget, permit);
+            var binding = OptionalEmissionContextFactory.createLegacyBinding(permit, retained,
+                List.of(0, 1, 2, 3, 4, 5, 6), 1, List.of());
+            try (var input = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit,
+                    retained, binding)) {
+                var failure = assertThrows(LegacyEmissionDomain.StateFamilyLimitException.class,
+                    () -> new RidgeTracker().trackEmission(input, CancellationProbe.NONE));
+                assertEquals(3, failure.originalRow());
+                assertEquals(2, failure.familySize());
+            }
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
+    @Test
+    void aPositiveFirstStageCannotPublishAnAllZeroSmoothedRoute() {
+        int width = 96, height = 96;
+        var frame = LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0, 0),
+            new GeographicPoint(-0.01, -0.01), new GeographicPoint(0.01, 0.01));
+        var transform = RasterMetricTransform.metricGrid(new MetricPoint(0, 0), 1, 0, 0, 1);
+        var valid = new boolean[width * height];
+        Arrays.fill(valid, true);
+        var field = new ScalarEvidenceField(width, height, new double[width * height], valid,
+            new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,
+                EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY, FIELD,
+                EvidenceCorrelationGroup.SYNTHETIC_TRUTH, false));
+        var bounds = MetricRegion.rectangle(0, 0, width - 1, height - 1);
+        var evidence = new EvidenceSnapshot("zeroable-route", frame, transform,
+            EvidenceResolution.nativeSource(1, 1), bounds,
+            MetricRegion.rectangle(-0.5, -0.5, width - 0.5, height - 0.5),
+            Map.of(FIELD, field), "zeroable-test");
+        var anchors = List.of(new MetricPoint(24, 64), new MetricPoint(32, 64),
+            new MetricPoint(24, 72), new MetricPoint(24, 64));
+        var locations = new ArrayList<DetachedProfileSamplingLocation>();
+        for (int row = 0; row < anchors.size(); row++) {
+            var point = anchors.get(row);
+            locations.add(DetachedProfileSamplingLocation.at(frame.toGeographic(point), frame,
+                transform, 12.0 * row));
+        }
+        var trace = new CorridorTraceInput(locations, 1);
+        var chainage = new ProfileChainage(locations.stream()
+            .map(DetachedProfileSamplingLocation::cumulativeGroundDistanceMeters).toList(), 36);
+        var ledger = AttemptMemoryLedger.production();
+        var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+        try (var root = ledger.rootOwner();
+             var permit = OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(evidence, FIELD,
+                 trace, chainage, 12, budget, root)) {
+            var retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(evidence, FIELD,
+                trace.profileLocations(), 12, 1, 1, budget, permit);
+            var binding = OptionalEmissionContextFactory.createLegacyBinding(permit, retained,
+                List.of(0, 1, 2, 3), 1, List.of());
+            try (var input = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit,
+                    retained, binding)) {
+                var failure = assertThrows(LegacyEmissionKernel.UnavailableException.class,
+                    () -> new LegacyEmissionKernel().solve(input,
+                        binding.observations().stream()
+                            .map(LegacyEmissionBinding.OriginalObservation::profile).toList(),
+                        List.of(0.0), List.of(), (profiles, offsets, intensities) -> {
+                            var target = profiles.get(0).anchorScreen();
+                            var moved = new ArrayList<Double>(offsets);
+                            for (int index = 1; index < moved.size() - 1; index++) {
+                                var profile = profiles.get(index);
+                                double dx = target.x - profile.anchorScreen().x;
+                                double dy = target.y - profile.anchorScreen().y;
+                                var normal = profile.normalScreen();
+                                double offset = (dx * normal.x + dy * normal.y)
+                                    / (normal.x * normal.x + normal.y * normal.y);
+                                assertEquals(target.x, profile.anchorScreen().x + normal.x * offset, 1e-9);
+                                assertEquals(target.y, profile.anchorScreen().y + normal.y * offset, 1e-9);
+                                moved.set(index, offset);
+                            }
+                            return List.copyOf(moved);
+                        }, CancellationProbe.NONE));
+                assertEquals(LegacyEmissionKernel.UnavailableReason.NO_POSITIVE_PHYSICAL_LEG,
+                    failure.reason());
             }
         }
         assertEquals(0, ledger.currentBytes());
