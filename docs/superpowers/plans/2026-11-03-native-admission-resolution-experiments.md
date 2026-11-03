@@ -74,10 +74,25 @@ Let d be captured requested lateral step, p the minimum factual native pitch and
 not the producer's effective L0 step).
 Record policy plus actual samples in immutable receipts; version identity must distinguish them. Do not change longitudinal probes, mode parameters or thresholds.
 
-- [ ] Add assertion-level RED for explicit policy identity/step and unchanged dense sample geometry; implement the minimal constructor/step switch.
-- [ ] Parameterize genuine R4 A/Legacy witness, no-ridge, scalar dip, mask/corner, region gap, fresh GAP, broad/faint, fork and zero-transport controls over policies with independently fixed expectations. Add phase-shifted thin ridge controls; retain originals and record any changed mode/flank/censor outcomes.
-- [ ] Run Java17 offline focused NativeConnectorEvaluatorTest plus integral/context/extractor/region neighbors. No weakened assertions or brighter fixtures to force agreement.
-- [ ] Independently review numerical scope and implementation. A failing variant stays experimental/refused; do not automatically choose the fastest policy.
+- [x] Add assertion-level RED for explicit policy identity/step and unchanged dense sample geometry; implement the minimal constructor/step switch.
+- [x] Parameterize genuine R4 A/Legacy witness, no-ridge, scalar dip, mask/corner, region gap, fresh GAP, broad/faint, fork and zero-transport controls over policies with independently fixed expectations. Add phase-shifted thin ridge controls; retain originals and record any changed mode/flank/censor outcomes.
+- [x] Run Java17 offline focused NativeConnectorEvaluatorTest plus integral/context/extractor/region neighbors. No weakened assertions or brighter fixtures to force agreement.
+- [x] Independently review numerical scope and implementation. A failing variant stays experimental/refused; do not automatically choose the fastest policy.
+
+Task2 complete at7e6c64f (24be56d+a170478+7e6c64f), isolated query worktree.
+Assertion-level policy-version RED preceded implementation. Final focused125tests
+and controller-expanded185tests/14XML (including region, budget and scalar-grid
+neighbors) pass with0failures/errors/skips; Java17 offline Gradle48s. Independent
+Sol/high actual-source review and focused closure find no blocking defect. The
+unchanged masked-ridge fixture explicitly admits dense measured support and
+rejects coarser NO_COMPLETE_MODE: numerical policies are not equivalent. Original
+faint Gaussian/ownership evidence is preserved, not brightened/deleted. No engine
+default or adoption changed. Source/class/JOSM fingerprint
+`4e6ca424eb2478b90fa9795095daab3fd6fbf61706f746bd1d020464b32a8f06`
+is frozen after final build/review. Task3 three-policy capped runner launched;
+results remain pending. Comparer now rejects missing/mixed/different input hashes
+and retains unmatched/unmeasured distinctions; its self-test passes. Java17 runner
+compile was verified before launch, with actual track and refusal-count scopes fixed.
 
 ### Task3: Same-input capped graph comparisons
 
