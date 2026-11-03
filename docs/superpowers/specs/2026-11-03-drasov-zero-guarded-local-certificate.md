@@ -125,3 +125,31 @@ adoption. If no feasible graph/solver margin results, stop this numerical screen
 do not open engine integration on an unsuccessful certificate. Real Drasov/Omice,
 strong/sparse/switchback preservation, consumers, topology, replay and release
 gates from the original goal remain required.
+
+## Separate exact execution-order experiment
+
+The first capped screen is NEGATIVE (579/26098,128M). Do not adopt this model or
+open its inference consumers on that result. A separate execution-only experiment
+may stop acquisition at an immutable mode failure; it must not change any local
+evidence/threshold predicate, accepted edge, Q, state, source or budget.
+
+Add explicit `ExecutionPolicy.EAGER_ALL_PROBES_V1` and
+`STOP_ON_FINAL_MODE_FAILURE_V1`. Existing constructors retain EAGER. A new
+four-argument constructor accepts the execution policy; STOP is valid only with
+ZERO_GUARDED_LOCAL_V1. Validate selection before opening an owner. Nondefault
+execution is identified in receipt parameterVersion and runner identity.
+
+Under STOP, after a probe is acquired, an own-probe failure is final only when its
+backend is DENSE_FALLBACK (settling never replaces it), or localNoModeProven is
+true. The current eager algorithm rejects on that failure before neighbor settling;
+no future probe can make it admit. Return the same failed predicate with actual
+measured prefix, planned count, incomplete continuation/envelope and charged work.
+Do not stop early on positive LOCAL evidence, provisional mutual/slab decisions,
+unknown local proof, or terminal resource errors disguised as ordinary negatives.
+Keep existing post-acquisition/settling behavior for all other outcomes.
+
+This changes execution/diagnostic suffix availability, not the numerical model.
+An interrupted/unmeasured suffix is never exported as measured. Cancellation and
+memory/work errors remain terminal across sessions. Preserve full source scalar
+integral, admitted Q, state order and zero-arc ownership. Broader skipping of local
+expansion is NOT authorized by this proof; its fixpoint remains unproved.

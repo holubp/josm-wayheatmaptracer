@@ -1375,3 +1375,38 @@ This removes an unsafe proposed mechanism, not the original performance gate;
 no early speedup is claimed. Existing three policies and full search/state/caps
 remain unchanged. New policy is internal only; full capped screen follows tests
 and independent source review, not worker implementation alone.
+
+Task2b worker batch e5fc530 is now implemented in the isolated zero-guarded
+worktree, NOT yet integrated/adopted or declared complete. Reported197tests is
+179+separate18context; exact saved evidence requested before closure. Independent
+Sol/high actual-code audit is active (scope coverage, fixed-point proof stability,
+zero/censor/halo/metadata, terminal resource lifetime and old numerical parity).
+New-policy zero transport/cancel/memory/remote-branch controls must be reconciled
+explicitly; old-policy-only tests are insufficient. Next: scoped fix batch if
+needed, complete focused/neighbors, freeze reviewed source/classes, then ONLY
+new-policy capped graph using prepared metadata runner. No full graph run yet.
+
+Current milestone supersedes the preceding worker report: Task2b fixes7374eb2
+are independently CLOSED; exact14-suite220tests/0fail/error/skip saved and parsed.
+Source locally integrated d4370ce+f498826. Sole new-policy graph run is NEGATIVE:
+579of26098completed,201admitted/378rejected,25519UNMEASURED,128Mwork stop,
+13.599s,14.4MBpeak,final0. All original state/input identities unchanged. Source
+fingerprint a600546d0653871cb17add6cb014bde30b0eb20a8c22eaa41b458fba8a021258.
+No engine/inference/release adoption. Details are in the bounded screen plan.
+
+Measured cause:219NO_COMPLETE_MODEpairs consume120.811Mwork (94.38%). Every
+planned probe is acquired before that failure is checked. First10replays match
+exactly and all first fail at probe0 on immutable DENSE_FALLBACK;77.78% of their
+sample queries lie in the later suffix. This is count opportunity, not a speedup.
+
+ACTIVE next bounded EXACT execution experiment (no new numerical predicate):
+`docs/superpowers/plans/2026-11-03-drasov-final-mode-failure-execution.md`.
+Sol/high mathematical review permits stopping only final dense failure/proved
+local absence; positive local, neighbor and slab evidence still settle normally.
+Default constructors remain eager; explicit opt-in order is versioned. All states,
+source identities/caps/admitted Q remain binding; no unproved no-expansion shortcut.
+Sole source writer `/root/query_policy`, new worktree
+`/data/data/com.termux/files/usr/tmp/josm-drasov-local-final-failure`, branch
+`codex/drasov-local-final-failure`, BASE7374eb2; it owns local Gradle. Old compiled
+zero-local worktree remains immutable baseline. Luna evidence worker prepares only
+external runner execution selection; no graph until tests/independent review.
