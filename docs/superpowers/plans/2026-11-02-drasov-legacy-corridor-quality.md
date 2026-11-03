@@ -130,8 +130,11 @@ A all-admitted global graph remains empirically over128M. Docs-only proposed
 executionamendment701b7387 (`2026-11-03-drasov-certified-competitive-execution-proposal.md`)
 gets bounded independent theorem approval in `drasov-a-certified-execution-review.md`
 subject to ordinary-prefix cost certification and Qloss-one lowerbound clarification.
-It is NOT ACTIVE: no Acode/graph until exactmodel/caps/ties/competitiveclosure
-executiongates formalized and independently closed. This is not statepruning,
+Subsequent independent theorem/clarification review has closed those two normative
+conditions. The execution-only addendum is now authorized for bounded implementation
+and tiny exhaustive oracles under standing positive-follow-on authority; Legacy's
+kernel repair review must close before any R4 A attempt. No practical A closure,
+adoption or release is claimed. This is not statepruning,
 budgetraise, fabricated fullE/X or permission to return a best-so-far on cap.
 
 Active: bounded original Legacy kernel/stage implementation packet at
