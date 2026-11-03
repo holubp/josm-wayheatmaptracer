@@ -57,6 +57,66 @@ public final class PolylineMath {
         return result;
     }
 
+    /** The exact source segment and interpolation fraction selected for a dense producer row. */
+    public record SourceParameter(int segmentIndex, double fraction, EastNorth point) {
+        public SourceParameter {
+            if (segmentIndex < 0 || !Double.isFinite(fraction) || fraction < 0.0
+                    || fraction > 1.0 || point == null) {
+                throw new IllegalArgumentException("Invalid source parameter");
+            }
+        }
+    }
+
+    /**
+     * Records source parameters in the same interpolation loop that produces managed Legacy rows.
+     * The returned point is the same object used for the row anchor; no nearest-source reconstruction occurs.
+     */
+    public static List<SourceParameter> resampleByCountWithParameters(List<EastNorth> polyline, int count) {
+        return resampleByCountWithParameters(polyline, count, units -> { });
+    }
+
+    /** Charges each source-segment visit before the managed producer performs it. */
+    public static List<SourceParameter> resampleByCountWithParameters(List<EastNorth> polyline,
+            int count, java.util.function.LongConsumer work) {
+        if (polyline == null || polyline.size() < 2 || count < 2) {
+            throw new IllegalArgumentException("Parameterized resampling needs a source and two rows");
+        }
+        java.util.Objects.requireNonNull(work, "source parameter work charge");
+        work.accept(polyline.size() - 1L);
+        double total = length(polyline);
+        if (!Double.isFinite(total) || total <= 0.0) {
+            throw new IllegalArgumentException("Parameterized source has no finite length");
+        }
+        List<SourceParameter> result = new ArrayList<>(count);
+        for (int row = 0; row < count; row++) {
+            work.accept(1);
+            double target = total * row / (count - 1.0);
+            double walked = 0.0;
+            boolean selected = false;
+            for (int segmentIndex = 1; segmentIndex < polyline.size(); segmentIndex++) {
+                work.accept(1);
+                EastNorth start = polyline.get(segmentIndex - 1);
+                EastNorth end = polyline.get(segmentIndex);
+                double segment = start.distance(end);
+                if (walked + segment >= target) {
+                    double fraction = segment == 0.0 ? 0.0 : (target - walked) / segment;
+                    EastNorth point = new EastNorth(
+                        start.east() + (end.east() - start.east()) * fraction,
+                        start.north() + (end.north() - start.north()) * fraction);
+                    result.add(new SourceParameter(segmentIndex - 1, fraction, point));
+                    selected = true;
+                    break;
+                }
+                walked += segment;
+            }
+            if (!selected) {
+                result.add(new SourceParameter(polyline.size() - 2, 1.0,
+                        polyline.get(polyline.size() - 1)));
+            }
+        }
+        return List.copyOf(result);
+    }
+
     /**
      * Normalizes a vector, returning the unit x-axis for zero-length vectors.
      *

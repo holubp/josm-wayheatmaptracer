@@ -109,11 +109,13 @@ class ManagedSourceRequestReceiptTest {
         ProjectionRegistry.setProjection(projection);
         DataSet dataSet = new DataSet();
         Node first = new Node(new LatLon(49.44, 14.0));
+        Node corner = new Node(new LatLon(49.44013, 14.0));
         Node last = new Node(new LatLon(49.44, 14.0001));
         dataSet.addPrimitive(first);
+        dataSet.addPrimitive(corner);
         dataSet.addPrimitive(last);
         Way way = new Way();
-        way.setNodes(List.of(first, last));
+        way.setNodes(List.of(first, corner, last));
         dataSet.addPrimitive(way);
         dataSet.setSelected(List.of(way));
         var selection = SelectionResolver.resolve(dataSet, false);
@@ -141,6 +143,37 @@ class ManagedSourceRequestReceiptTest {
                             IntensitySamplingMode.COLOR_MAPPING, budget, owner, CancellationProbe.NONE));
             var retained = sampler.sampleProfilesRetainingL0(capture, "hot",
                     IntensitySamplingMode.COLOR_MAPPING, budget, owner, CancellationProbe.NONE);
+            var parameters = retained.sourceParameters().orElseThrow();
+            assertEquals(retained.profiles().size(), parameters.rowCount());
+            assertEquals(source.size(), parameters.sourceVertexCount());
+            assertEquals(source.size(), parameters.originalOccurrences().size());
+            assertTrue(parameters.originalOccurrences().get(0).protectedOccurrence());
+            assertTrue(parameters.originalOccurrences().get(source.size() - 1).protectedOccurrence());
+            for (int vertex = 0; vertex < source.size(); vertex++) {
+                var occurrence = parameters.originalOccurrences().get(vertex);
+                assertEquals(selection.startIndex() + vertex, occurrence.fullWayIndex());
+                assertEquals(parameters.sourceVertexChainageMeters(vertex), occurrence.sourceChainageMeters());
+                assertTrue(occurrence.leftRow() >= 0);
+                assertEquals(occurrence.leftRow() + 1, occurrence.rightRow());
+            }
+            assertEquals(0.0, parameters.sourceChainageMeters(0));
+            assertEquals(parameters.sourceVertexChainageMeters(source.size() - 1),
+                    parameters.sourceChainageMeters(parameters.rowCount() - 1), 1e-8);
+            assertTrue(parameters.sourceSpanUpperMeters(0, parameters.rowCount() - 1)
+                    >= parameters.sourceChainageMeters(parameters.rowCount() - 1));
+            var ground = retained.groundTransform().orElseThrow();
+            var firstAnchor = retained.profiles().get(0).anchorScreen();
+            var lastAnchor = retained.profiles().get(retained.profiles().size() - 1).anchorScreen();
+            var firstMetric = ground.metricAt(new org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint(
+                    firstAnchor.x, firstAnchor.y));
+            var lastMetric = ground.metricAt(new org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint(
+                    lastAnchor.x, lastAnchor.y));
+            assertTrue(parameters.sourceChainageMeters(parameters.rowCount() - 1)
+                    > Math.hypot(lastMetric.xMeters() - firstMetric.xMeters(),
+                            lastMetric.yMeters() - firstMetric.yMeters()) + 1.0);
+            assertTrue(parameters.sourceChainageMeters(parameters.rowCount() - 1)
+                    > retained.profiles().get(retained.profiles().size() - 1)
+                            .cumulativeGroundDistanceMeters() + 0.001);
             capture.close();
             witness.requireCurrent(budget, owner);
             assertTrue(ledger.currentBytes() > 0);

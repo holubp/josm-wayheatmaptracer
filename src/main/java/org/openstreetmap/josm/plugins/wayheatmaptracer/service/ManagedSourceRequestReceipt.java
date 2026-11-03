@@ -24,6 +24,7 @@ public final class ManagedSourceRequestReceipt {
     private final double virtualRasterScale;
     private final TileHeatmapSampler.SamplingParameters parameters;
     private final WorldPixelCapsuleRegion originalWorldPixelDecisionRegion;
+    private final List<RasterPoint> originalWorldPoints;
     private final AttemptMemoryLedger.Owner owner;
     private final List<AttemptMemoryLedger.Owner> retainedOwners = new ArrayList<>();
 
@@ -31,7 +32,7 @@ public final class ManagedSourceRequestReceipt {
             String selectedColor, int zoom, int minTileX, int maxTileX, int minTileY,
             int maxTileY, double nativeSearchHalfWidth, double virtualRasterScale,
             TileHeatmapSampler.SamplingParameters parameters,
-            WorldPixelCapsuleRegion originalWorldPixelDecisionRegion,
+            WorldPixelCapsuleRegion originalWorldPixelDecisionRegion, List<RasterPoint> originalWorldPoints,
             AttemptMemoryLedger.Owner owner) {
         this.projection = projection;
         this.originalSource = originalSource;
@@ -45,6 +46,7 @@ public final class ManagedSourceRequestReceipt {
         this.virtualRasterScale = virtualRasterScale;
         this.parameters = parameters;
         this.originalWorldPixelDecisionRegion = originalWorldPixelDecisionRegion;
+        this.originalWorldPoints = originalWorldPoints;
         this.owner = owner;
     }
 
@@ -118,7 +120,7 @@ public final class ManagedSourceRequestReceipt {
             int bottom = Math.toIntExact((long) Math.floor((maxY + margin) / TileHeatmapSampler.TILE_SIZE));
             var receipt = new ManagedSourceRequestReceipt(projection, original, selectedColor,
                     zoom, left, right, top, bottom, radius, virtualRasterScale, parameters,
-                    new WorldPixelCapsuleRegion(sourceWorld, radius), owner);
+                    new WorldPixelCapsuleRegion(sourceWorld, radius), List.copyOf(sourceWorld), owner);
             reservation.adopt(receipt);
             complete = true;
             return receipt;
@@ -168,6 +170,11 @@ public final class ManagedSourceRequestReceipt {
 
     public Projection capturedProjection() { return projection; }
     public List<EastNorth> originalSource() { return originalSource; }
+    /** Frozen EPSG:3857 world-pixel source vertices created before the first tile fetch. */
+    public List<RasterPoint> originalWorldPoints() {
+        if (!isLive()) throw new IllegalStateException("Original managed request is closed");
+        return originalWorldPoints;
+    }
     public String selectedColor() { return selectedColor; }
     public int zoom() { return zoom; }
     public double nativeSearchHalfWidth() { return nativeSearchHalfWidth; }

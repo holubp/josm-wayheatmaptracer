@@ -534,11 +534,20 @@ public final class TileHeatmapSampler {
             if (capture == null) owner.reserve(retainedMosaicBytes(mosaic));
             budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
             var profileReservation = owner.reserve(retainedProfileBytes(shape));
+            var sourceParameterReservation = capture == null ? null
+                    : owner.reserve(Math.addExact(4096L,
+                            Math.multiplyExact((long) shape.profiles(), 160L)));
             budget.charge(EmissionWorkBudget.Operation.PREPARATION,
                     Math.multiplyExact((long) shape.profiles(), 3));
             var grid = ManagedScalarGrid.fromManagedMosaic(mosaic, detectorMode,
                     intensityMode, budget, owner);
-            List<EastNorth> dense = PolylineMath.resampleByCount(sourcePolyline, shape.profiles());
+            List<PolylineMath.SourceParameter> sourceParameters = capture == null ? null
+                    : PolylineMath.resampleByCountWithParameters(sourcePolyline, shape.profiles(),
+                            units -> budget.charge(EmissionWorkBudget.Operation.PREPARATION, units));
+            List<EastNorth> dense = sourceParameters == null
+                    ? PolylineMath.resampleByCount(sourcePolyline, shape.profiles())
+                    : sourceParameters.stream().map(PolylineMath.SourceParameter::point).toList();
+            if (sourceParameterReservation != null) sourceParameterReservation.adopt(sourceParameters);
             List<Point2D.Double> local = localPolyline(mosaic, dense, projection);
             var anchors = ProfileSamplingAnchor.pair(dense, local, projection);
             CancellationProbe chargedCancellation = () -> {
@@ -552,7 +561,13 @@ public final class TileHeatmapSampler {
             var profileSet = new MultiScaleProfileSet(List.of(
                     new MultiScaleProfileSet.ScaleProfileLevel(0, 1, 0.0, profiles)),
                     0L, grid.retainedBytes());
-            var retained = new RetainedManagedScalarProfiles(mosaic, grid, profileSet, owner, capture);
+            ManagedGroundTransform ground = capture == null ? null
+                    : ManagedGroundTransform.fromPreparedCapture(capture, budget, owner);
+            SourceParameterCertificate certificate = capture == null ? null
+                    : SourceParameterCertificate.fromManagedProducer(capture, sourceParameters,
+                            dense, ground, budget, owner);
+            var retained = new RetainedManagedScalarProfiles(mosaic, grid, profileSet, owner,
+                    capture, certificate, ground);
             profileReservation.adopt(retained);
             return retained;
         } catch (RuntimeException | Error failure) {
