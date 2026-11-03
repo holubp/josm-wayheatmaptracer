@@ -75,6 +75,42 @@ class ManagedScalarGridTest {
         }
     }
 
+    @Test void managedViewMapsVirtualProfileCoordinatesToNativeImageNodes() {
+        BufferedImage image = new BufferedImage(TileHeatmapSampler.TILE_SIZE,
+                TileHeatmapSampler.TILE_SIZE, BufferedImage.TYPE_INT_ARGB);
+        image.setRGB(0, 0, 0xFF000000);
+        image.setRGB(1, 0, 0xFFFFFFFF);
+        image.setRGB(0, 1, 0xFF000000);
+        image.setRGB(1, 1, 0xFFFFFFFF);
+        var parameters = new TileHeatmapSampler.SamplingParameters(15, 49.0, 3.0, 12.0, 2.0, 4, 1);
+        var tile = new TileHeatmapSampler.TileRecord("hot", 15, 2, 3, true, 200,
+                100, TileHeatmapSampler.TILE_SIZE, TileHeatmapSampler.TILE_SIZE, "test",
+                "usable", 1.0, 1.0, 2, null);
+        var mosaic = new TileHeatmapSampler.TileMosaic("hot", 15, 1024.0, 1536.0, image,
+                List.of(tile), java.util.Map.of("hot/z15-x2-y3.png", image), parameters, true, 2.5);
+        var owner = AttemptMemoryLedger.production().rootOwner();
+        try {
+            ManagedScalarGrid grid = ManagedScalarGrid.fromManagedMosaic(mosaic, "hot",
+                    IntensitySamplingMode.DIRECT_VALUE,
+                    new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE), owner);
+            assertEquals(new RasterPoint(1.0, 0.5),
+                    grid.view().toGrid(new RasterPoint(2.5, 1.25)));
+            assertEquals(new RasterPoint(2.5, 1.25),
+                    grid.view().toBaseRaster(new RasterPoint(1.0, 0.5)));
+            assertTrue(grid.view().supportsCell(0, 0));
+            var integral = BilinearSegmentIntegral.evaluate(grid.view(),
+                    grid.view().toGrid(new RasterPoint(0.0, 0.0)),
+                    grid.view().toGrid(new RasterPoint(2.5, 0.0)),
+                    CancellationProbe.NONE, () -> { });
+            assertEquals(BilinearSegmentIntegral.Status.COMPLETE, integral.status());
+            assertEquals(0.5, integral.mean().orElseThrow(), 1e-15);
+            assertEquals(1025.0, mosaic.originWorldPxX()
+                    + grid.view().toGrid(new RasterPoint(1.25, 0.0)).x() + 0.5);
+        } finally {
+            owner.close();
+        }
+    }
+
     @Test void gridMemoryIsAdmittedBeforeAllocationAndReleasedWithOwner() {
         BufferedImage image = image(2, 2, 0xFF000000, 0xFFFFFFFF, 0xFF000000, 0xFFFFFFFF);
         var tooSmall = new AttemptMemoryLedger(16);

@@ -18,14 +18,14 @@ public final class ManagedScalarGrid {
     private final ManagedScalarGridView view;
 
     private ManagedScalarGrid(int width, int height, double[] values, boolean[] acquiredNodes,
-            long retainedBytes, AttemptMemoryLedger.Owner owner) {
+            long retainedBytes, double profileCoordinateScale, AttemptMemoryLedger.Owner owner) {
         this.width = width;
         this.height = height;
         this.values = values;
         this.acquiredNodes = acquiredNodes;
         this.retainedBytes = retainedBytes;
         this.owner = owner;
-        this.view = new ManagedScalarGridView(this);
+        this.view = new ManagedScalarGridView(this, profileCoordinateScale);
     }
 
     /** Maps every acquired source pixel once, charging its retained array before allocation. */
@@ -101,7 +101,12 @@ public final class ManagedScalarGrid {
                             + x / TileHeatmapSampler.TILE_SIZE];
                 }
             }
-            var grid = new ManagedScalarGrid(width, height, values, acquiredNodes, bytes, owner);
+            double profileCoordinateScale = mosaic == null ? 1.0 : mosaic.virtualRasterScale();
+            if (!Double.isFinite(profileCoordinateScale) || profileCoordinateScale <= 0.0) {
+                throw new IllegalArgumentException("Managed virtual raster scale must be finite and positive");
+            }
+            var grid = new ManagedScalarGrid(width, height, values, acquiredNodes, bytes,
+                    profileCoordinateScale, owner);
             reservation.adopt(grid);
             return grid;
         } catch (RuntimeException | Error failure) {

@@ -2,10 +2,9 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.BilinearSegmentIntegral;
 
 /** Read-only, grid-coordinate view of an existing scalar intensity/evidence field. */
-public final class ScalarFieldGridView implements BilinearSegmentIntegral.ReadOnlyScalarGrid {
+public final class ScalarFieldGridView implements NativeScalarGridView {
     private final ScalarIntensityField intensity;
     private final ScalarEvidenceField evidence;
     private final int originX;
