@@ -13,15 +13,17 @@ public final class ManagedScalarGrid {
     private final int height;
     private final double[] values;
     private final boolean[] acquiredNodes;
+    private final long retainedBytes;
     private final AttemptMemoryLedger.Owner owner;
     private final ManagedScalarGridView view;
 
     private ManagedScalarGrid(int width, int height, double[] values, boolean[] acquiredNodes,
-            AttemptMemoryLedger.Owner owner) {
+            long retainedBytes, AttemptMemoryLedger.Owner owner) {
         this.width = width;
         this.height = height;
         this.values = values;
         this.acquiredNodes = acquiredNodes;
+        this.retainedBytes = retainedBytes;
         this.owner = owner;
         this.view = new ManagedScalarGridView(this);
     }
@@ -99,7 +101,7 @@ public final class ManagedScalarGrid {
                             + x / TileHeatmapSampler.TILE_SIZE];
                 }
             }
-            var grid = new ManagedScalarGrid(width, height, values, acquiredNodes, owner);
+            var grid = new ManagedScalarGrid(width, height, values, acquiredNodes, bytes, owner);
             reservation.adopt(grid);
             return grid;
         } catch (RuntimeException | Error failure) {
@@ -138,4 +140,7 @@ public final class ManagedScalarGrid {
 
     /** Read-only source-image-center coordinates for the connector's bilinear integral. */
     public ManagedScalarGridView view() { requireOpen(); return view; }
+
+    /** Actual admitted retained grid charge, including validity and tile coverage arrays. */
+    public long retainedBytes() { requireOpen(); return retainedBytes; }
 }

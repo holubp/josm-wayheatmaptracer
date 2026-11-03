@@ -277,6 +277,7 @@ public final class RenderedHeatmapSampler {
             return Collections.emptyList();
         }
         Objects.requireNonNull(cancellation, "cancellation");
+        CancellationProbe profileWork = grid == null ? CancellationProbe.NONE : cancellation;
         double coordinateScale = sourceCoordinateScale > 0.0 && Double.isFinite(sourceCoordinateScale)
             ? sourceCoordinateScale
             : 1.0;
@@ -298,6 +299,7 @@ public final class RenderedHeatmapSampler {
             int scaledStep = Math.max(1, (int) Math.round(stepPx * rasterScale));
             boolean anchorWithinRaster = isInsideRaster(raster, baseScreen.x / coordinateScale, baseScreen.y / coordinateScale);
             for (int offset = -scaledHalfWidth; offset <= scaledHalfWidth; offset += scaledStep) {
+                profileWork.checkpoint();
                 double x = baseScreen.x + normal.x * offset;
                 double y = baseScreen.y + normal.y * offset;
                 double sourceX = x / coordinateScale;
@@ -308,15 +310,16 @@ public final class RenderedHeatmapSampler {
                 offsets.add(new OffsetSample(offset, intensity));
                 insideRaster.add(isInsideRaster(raster, sourceX, sourceY));
             }
-            ProfileFilters filters = profileFilters(offsets);
-            samples.addAll(extractBrightBands(offsets, filters));
+            ProfileFilters filters = profileFilters(offsets, null, 1, profileWork);
+            samples.addAll(extractBrightBands(offsets, filters, profileWork));
             if (samples.isEmpty()) {
-                double strongest = offsets.stream().mapToDouble(OffsetSample::intensity).max().orElse(0.0);
+                double strongest = offsets.stream().peek(ignored -> profileWork.checkpoint())
+                    .mapToDouble(OffsetSample::intensity).max().orElse(0.0);
                 samples.add(new CrossSectionPeak(0.0, strongest, 0.0, true, 0.0, 0.0, strongest, 0.0, 0.0, 0.0));
             }
 
             profiles.add(new CrossSectionProfile(samplingAnchor, normal,
-                samples, anchorWithinRaster, intensitySamples(filters, insideRaster),
+                samples, anchorWithinRaster, intensitySamples(filters, insideRaster, profileWork),
                 captureProjectedLateralTransform(samplingAnchor, normal, projectedCoordinateProjector)));
         }
         if (!profiles.isEmpty()) {
@@ -984,7 +987,7 @@ public final class RenderedHeatmapSampler {
         CancellationProbe cancellation
     ) {
         List<OffsetSample> smoothed = filters.standardFiltered();
-        ProfileStats stats = profileStats(smoothed);
+        ProfileStats stats = profileStats(smoothed, cancellation);
         if (stats.maxIntensity() <= 0.14 || stats.maxProminence() <= 0.025) {
             return List.of();
         }
@@ -1013,25 +1016,28 @@ public final class RenderedHeatmapSampler {
                 ? Math.max(0.16, current * 0.60)
                 : Math.max(stats.noiseFloor() + prominence * 0.22, current * 0.45);
             while (start > 0 && smoothed.get(start - 1).intensity >= shoulderThreshold) {
+                cancellation.checkpoint();
                 start--;
             }
             while (end + 1 < smoothed.size() && smoothed.get(end + 1).intensity >= shoulderThreshold) {
+                cancellation.checkpoint();
                 end++;
             }
-            peaks.add(buildBandPeak(offsets, filters, stats, index, start, end));
+            peaks.add(buildBandPeak(offsets, filters, stats, index, start, end, cancellation));
         }
 
         if (peaks.isEmpty()) {
             int strongest = 0;
             for (int i = 1; i < smoothed.size(); i++) {
+                cancellation.checkpoint();
                 if (smoothed.get(i).intensity > smoothed.get(strongest).intensity) {
                     strongest = i;
                 }
             }
-            peaks.add(buildBandPeak(offsets, filters, stats, strongest, strongest, strongest));
+            peaks.add(buildBandPeak(offsets, filters, stats, strongest, strongest, strongest, cancellation));
         }
-        List<CrossSectionPeak> merged = mergeClosePeaks(peaks, filters.physicalSampleStepPx());
-        return addPairedShoulderCenters(merged, filters.physicalSampleStepPx());
+        List<CrossSectionPeak> merged = mergeClosePeaks(peaks, filters.physicalSampleStepPx(), cancellation);
+        return addPairedShoulderCenters(merged, filters.physicalSampleStepPx(), cancellation);
     }
 
     private List<CrossSectionPeak> extractBrightBands(
@@ -1249,16 +1255,23 @@ public final class RenderedHeatmapSampler {
     }
 
     private List<CrossSectionPeak> addPairedShoulderCenters(List<CrossSectionPeak> peaks, double sampleStep) {
+        return addPairedShoulderCenters(peaks, sampleStep, CancellationProbe.NONE);
+    }
+
+    private List<CrossSectionPeak> addPairedShoulderCenters(List<CrossSectionPeak> peaks,
+            double sampleStep, CancellationProbe cancellation) {
         if (peaks.size() < 2) {
             return peaks;
         }
         List<CrossSectionPeak> augmented = new ArrayList<>(peaks);
         for (int i = 0; i < peaks.size(); i++) {
+            cancellation.checkpoint();
             CrossSectionPeak left = peaks.get(i);
             if (left.offsetPx() >= 0.0) {
                 continue;
             }
             for (int j = i + 1; j < peaks.size(); j++) {
+                cancellation.checkpoint();
                 CrossSectionPeak right = peaks.get(j);
                 if (right.offsetPx() <= 0.0) {
                     continue;
@@ -1284,7 +1297,7 @@ public final class RenderedHeatmapSampler {
                 }
             }
         }
-        return mergeClosePeaks(augmented, sampleStep);
+        return mergeClosePeaks(augmented, sampleStep, cancellation);
     }
 
     private List<CrossSectionPeak> addPairedShoulderCenters(

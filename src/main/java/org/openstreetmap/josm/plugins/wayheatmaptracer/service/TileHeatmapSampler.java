@@ -278,8 +278,7 @@ public final class TileHeatmapSampler {
                     intensityMode, mosaicProjector(mosaic, projection), chargedCancellation, grid);
             var profileSet = new MultiScaleProfileSet(List.of(
                     new MultiScaleProfileSet.ScaleProfileLevel(0, 1, 0.0, profiles)),
-                    0L, Math.multiplyExact((long) mosaic.image().getWidth(),
-                            (long) mosaic.image().getHeight()) * Double.BYTES);
+                    0L, grid.retainedBytes());
             var retained = new RetainedManagedScalarProfiles(mosaic, grid, profileSet, owner);
             profileReservation.adopt(retained);
             return retained;

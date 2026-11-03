@@ -81,6 +81,26 @@ class LegacyManagedProfileSamplerTest {
         owner.close();
     }
 
+    @Test void retainedManagedProducerCancelsInsideLateralAndFilterWork() {
+        var fixture = fixture(List.of("hot"));
+        var mosaic = fixture.set().require("hot");
+        int profileCount = LegacyManagedProfileSampler.samplingShape(
+                LegacyManagedProfileSampler.freeze(fixture.set(), fixture.source(), "EPSG:3857",
+                        "hot", List.of("hot"), IntensitySamplingMode.COLOR_MAPPING, 1.75)).profiles();
+        var ledger = AttemptMemoryLedger.production();
+        var owner = ledger.rootOwner();
+        var checkpoints = new AtomicInteger();
+        assertThrows(CancellationException.class,
+                () -> TileHeatmapSampler.numericalOnly().sampleProfilesRetainingL0(mosaic,
+                        fixture.sourceEastNorth(), "hot", IntensitySamplingMode.COLOR_MAPPING,
+                        fixture.projection(),
+                        new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE),
+                        owner, () -> checkpoints.incrementAndGet() > profileCount + 3));
+        assertTrue(checkpoints.get() > profileCount);
+        assertEquals(0, ledger.currentBytes());
+        owner.close();
+    }
+
     @Test void retainedManagedL0PreservesEveryNativeLegacyProfileAcrossPalettes() {
         var fixture = fixture(COLORS);
         var sampler = TileHeatmapSampler.numericalOnly();
@@ -100,6 +120,9 @@ class LegacyManagedProfileSamplerTest {
                 assertSame(mosaic, retained.sourceMosaic());
                 assertFalse(retained.grid().view().supportsCell(0, 0),
                         "A frozen numerical mosaic without tile receipts cannot certify acquired cells");
+                assertTrue(retained.profileSet().estimatedBytes()
+                        > (long) mosaic.image().getWidth() * mosaic.image().getHeight() * Double.BYTES,
+                        "Retained scalar estimate includes acquisition validity, not just values");
                 assertTrue(ledger.currentBytes() > 0);
             }
             assertEquals(0, ledger.currentBytes());
