@@ -1743,6 +1743,184 @@ class NativeConnectorEvaluatorTest {
         assertEquals(0, ledger.currentBytes());
     }
 
+    @Test void originalOrdinalsControlSixteenRowGateAcrossRetainedPadding() {
+        try (var f = scene((x, y) -> Math.exp(-0.5 * Math.pow(y - 32, 2)),
+                (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.GAP,
+                19, 20)) {
+            var endpoints = List.of(f.states().get(0), f.states().get(18));
+            try (var defaultEvaluator = new NativeConnectorEvaluator(f.input(), new Domain(endpoints, List.of()));
+                 var sixteen = new NativeConnectorEvaluator(f.input(),
+                     new Domain(endpoints, List.of(), List.of(), Map.of(0, 0, 18, 17)));
+                 var seventeen = new NativeConnectorEvaluator(f.input(),
+                     new Domain(endpoints, List.of(), List.of(), Map.of(0, 0, 18, 18)))) {
+                assertEquals(Reason.SPAN, defaultEvaluator.evaluate(endpoints.get(0), endpoints.get(1)).reason());
+                assertEquals(Status.ADMITTED, sixteen.evaluate(endpoints.get(0), endpoints.get(1)).status(),
+                    "Exactly 16 original interior rows are eligible despite 17 retained rows between endpoints");
+                assertEquals(Reason.SPAN, seventeen.evaluate(endpoints.get(0), endpoints.get(1)).reason());
+            }
+        }
+    }
+
+    @Test void protectedEventBracketsAdjacentOriginalRowsAcrossRetainedPadding() {
+        try (var f = scene((x, y) -> Math.exp(-0.5 * Math.pow(y - 32, 2)),
+                (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.GAP,
+                19, 20)) {
+            var endpoints = List.of(f.states().get(0), f.states().get(18));
+            var event = new Barrier("protected-pad", 0, 18, 10, new MetricPoint(20, 32));
+            try (var evaluator = new NativeConnectorEvaluator(f.input(),
+                    new Domain(endpoints, List.of(0, 18), List.of(event), Map.of(0, 0, 18, 1)))) {
+                assertEquals(Reason.MANDATORY_BARRIER,
+                    evaluator.evaluate(endpoints.get(0), endpoints.get(1)).reason());
+                assertTrue(evaluator.registerOrdinaryPhysicalLeg(endpoints.get(0), event,
+                    NativeReferenceStatus.UNAVAILABLE).lengthMeters() > 0);
+                assertTrue(evaluator.registerOrdinaryPhysicalLeg(event, endpoints.get(1),
+                    NativeReferenceStatus.UNAVAILABLE).lengthMeters() > 0);
+            }
+            assertThrows(IllegalArgumentException.class, () -> new NativeConnectorEvaluator(f.input(),
+                new Domain(endpoints, List.of(0, 18), List.of(event), Map.of(0, 0, 18, 2))));
+        }
+    }
+
+    @Test void dynamicReachableCarryStatesKeepOriginalIdentityAndAdmission() {
+        try (var f = straight(false, SourceClass.GAP);
+             var evaluator = new NativeConnectorEvaluator(f.input(),
+                 new Domain(List.of(), List.of(), List.of(), Map.of(0, 0, 1, 1)))) {
+            var from = f.states().get(0);
+            var to = f.states().get(1);
+            assertSame(from, evaluator.registerState(from, 0));
+            assertSame(to, evaluator.registerState(to, 1));
+            assertEquals(Status.ADMITTED, evaluator.evaluate(from, to).status());
+            var duplicateId = new RowState(0, 0, 0, SourceClass.GAP, null);
+            assertThrows(IllegalArgumentException.class, () -> evaluator.registerState(duplicateId, 0));
+            assertThrows(IllegalArgumentException.class, () -> evaluator.registerState(
+                new RowState(1, 1, 0, SourceClass.GAP, null), 0));
+        }
+    }
+
+    @Test void dynamicReachableFamilyRefusesNinetySeventhStateWithoutTruncation() {
+        try (var f = straight(false, SourceClass.GAP);
+             var evaluator = new NativeConnectorEvaluator(f.input(),
+                 new Domain(List.of(), List.of(), List.of(), Map.of(0, 0)))) {
+            for (int id = 0; id < 96; id++)
+                evaluator.registerState(new RowState(0, id, 0, SourceClass.GAP, null), 0);
+            var failure = assertThrows(StateFamilyLimitException.class,
+                () -> evaluator.registerState(new RowState(0, 96, 0, SourceClass.GAP, null), 0));
+            assertEquals(0, failure.originalOrdinal());
+            assertEquals(96, failure.limit());
+            assertSame(failure, assertThrows(StateFamilyLimitException.class,
+                () -> evaluator.registerState(new RowState(0, 97, 0, SourceClass.GAP, null), 0)));
+        }
+    }
+
+    @Test void declaredNativeFamilyAlsoRefusesNinetySeventhState() {
+        try (var f = straight(false, SourceClass.GAP)) {
+            var declared = new ArrayList<RowState>();
+            for (int id = 0; id < 97; id++)
+                declared.add(new RowState(0, id, 0, SourceClass.GAP, null));
+            var failure = assertThrows(StateFamilyLimitException.class, () ->
+                new NativeConnectorEvaluator(f.input(), new Domain(declared, List.of())));
+            assertEquals(0, failure.originalOrdinal());
+            assertEquals(96, failure.limit());
+            assertSame(failure, assertThrows(StateFamilyLimitException.class,
+                () -> new NativeConnectorEvaluator(f.input(), new Domain(List.of(), List.of()))));
+        }
+    }
+
+    @Test void ordinaryZeroCursorRetainsOptionalOrOrdinaryPositiveDirection() {
+        var guide = List.of(new RasterPoint(10, 10), new RasterPoint(20, 10),
+            new RasterPoint(23, 10), new RasterPoint(23.84, 12.88));
+        try (var f = guided((x, y) -> Math.exp(-0.5 * Math.pow(y - 14, 2)), guide, 1)) {
+            double[] offsets = {4, 4, 5, 4};
+            var states = new ArrayList<RowState>();
+            for (int row = 0; row < guide.size(); row++)
+                states.add(new RowState(row, 0, offsets[row], SourceClass.GAP, null));
+            try (var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(states, List.of()))) {
+                var ordinary = evaluator.registerOrdinaryPhysicalLeg(states.get(0), states.get(1),
+                    NativeReferenceStatus.UNAVAILABLE);
+                var ordinaryCursor = evaluator.advanceOrdinaryZero(ordinary, states.get(1), states.get(2));
+                assertSame(states.get(2), ordinaryCursor.cursor());
+                var ordinaryZero = evaluator.evaluateWithDirectionCursor(states.get(2), states.get(3), ordinaryCursor);
+                assertEquals(Status.ADMITTED, ordinaryZero.status(), ordinaryZero::toString);
+                assertSame(ordinary, ordinaryZero.transportedOrdinary().orElseThrow());
+                assertTrue(ordinaryZero.transportedIncoming().isEmpty());
+
+                var optional = evaluator.evaluate(states.get(0), states.get(1));
+                assertEquals(Status.ADMITTED, optional.status(), optional::toString);
+                var optionalCursor = evaluator.advanceOrdinaryZero(optional, states.get(1), states.get(2));
+                var optionalZero = evaluator.evaluateWithDirectionCursor(states.get(2), states.get(3), optionalCursor);
+                assertEquals(Status.ADMITTED, optionalZero.status(), optionalZero::toString);
+                assertSame(optional, optionalZero.transportedIncoming().orElseThrow());
+                assertTrue(optionalZero.transportedOrdinary().isEmpty());
+
+                var chained = evaluator.advanceOrdinaryZero(ordinaryCursor, states.get(2), states.get(3));
+                assertSame(ordinary, chained.ordinaryOrigin().orElseThrow());
+                assertSame(states.get(3), chained.cursor());
+                try (var foreign = new NativeConnectorEvaluator(f.input(), new Domain(states, List.of()))) {
+                    assertEquals(Reason.INCOMING_DIRECTION_UNAVAILABLE,
+                        foreign.evaluateWithDirectionCursor(states.get(2), states.get(3), ordinaryCursor).reason());
+                }
+            }
+        }
+    }
+
+    @Test void boundaryOrdinaryLegUsesExactDeclaredOccurrenceWithoutFabricatedRow() {
+        var guide = List.of(new RasterPoint(10, 10), new RasterPoint(20, 10),
+            new RasterPoint(23, 10), new RasterPoint(23.84, 12.88));
+        try (var f = guided((x, y) -> Math.exp(-0.5 * Math.pow(y - 14, 2)), guide, 1)) {
+            double[] offsets = {4, 4, 5, 4};
+            var states = new ArrayList<RowState>();
+            for (int row = 0; row < guide.size(); row++)
+                states.add(new RowState(row, 0, offsets[row], SourceClass.GAP, null));
+            var boundary = new Barrier("protected-1", 0, 1, 5, new MetricPoint(15, 14));
+            try (var evaluator = new NativeConnectorEvaluator(f.input(),
+                    new Domain(states, List.of(0, 1), List.of(boundary)))) {
+                var left = evaluator.registerOrdinaryPhysicalLeg(states.get(0), boundary,
+                    NativeReferenceStatus.UNAVAILABLE);
+                assertEquals(boundary.exactPosition(), left.toMetric());
+                var right = evaluator.registerOrdinaryPhysicalLeg(boundary, states.get(1),
+                    NativeReferenceStatus.UNAVAILABLE);
+                assertEquals(boundary.exactPosition(), right.fromMetric());
+                var zero = evaluator.evaluateWithOrdinaryIncoming(states.get(1), states.get(2), right);
+                assertEquals(Status.ADMITTED, zero.status(), zero::toString);
+                assertSame(right, zero.transportedOrdinary().orElseThrow());
+                var cursor = evaluator.advanceOrdinaryZero(right, states.get(1), states.get(2));
+                assertEquals(Status.ADMITTED,
+                    evaluator.evaluateWithDirectionCursor(states.get(2), states.get(3), cursor).status());
+                var equalButForeign = new Barrier("protected-1", 0, 1, 5, new MetricPoint(15, 14));
+                assertThrows(IllegalArgumentException.class, () -> evaluator.registerOrdinaryPhysicalLeg(
+                    equalButForeign, states.get(1), NativeReferenceStatus.UNAVAILABLE));
+            }
+        }
+    }
+
+    @Test void equalChainageProtectedOccurrencesRemainDistinctOrderedZeroCursors() {
+        var guide = List.of(new RasterPoint(10, 10), new RasterPoint(20, 10),
+            new RasterPoint(23, 10), new RasterPoint(23.84, 12.88));
+        try (var f = guided((x, y) -> Math.exp(-0.5 * Math.pow(y - 14, 2)), guide, 1)) {
+            var first = new Barrier("protected-a", 0, 1, 5, new MetricPoint(15, 14));
+            var second = new Barrier("protected-b", 0, 1, 5, new MetricPoint(15, 14));
+            var third = new Barrier("protected-c", 0, 1, 8, new MetricPoint(18, 14));
+            var states = List.of(new RowState(0, 0, 4, SourceClass.GAP, null),
+                new RowState(1, 0, 4, SourceClass.GAP, null));
+            try (var evaluator = new NativeConnectorEvaluator(f.input(),
+                    new Domain(states, List.of(0, 1), List.of(first, second, third)))) {
+                var positive = evaluator.registerOrdinaryPhysicalLeg(states.get(0), first,
+                    NativeReferenceStatus.UNAVAILABLE);
+                var zeroCursor = evaluator.advanceOrdinaryZero(positive, first, second);
+                assertSame(second, zeroCursor.cursor());
+                assertSame(positive, zeroCursor.ordinaryOrigin().orElseThrow());
+                var nextPositive = evaluator.registerOrdinaryPhysicalLeg(second, third,
+                    NativeReferenceStatus.UNAVAILABLE);
+                assertSame(second, nextPositive.fromEndpoint());
+                assertSame(third, nextPositive.toEndpoint());
+                assertThrows(IllegalArgumentException.class, () -> evaluator.registerOrdinaryPhysicalLeg(
+                    first, third, NativeReferenceStatus.UNAVAILABLE));
+                assertTrue(evaluator.registerOrdinaryPhysicalLeg(third, states.get(1),
+                    NativeReferenceStatus.UNAVAILABLE).lengthMeters() > 0);
+            }
+        }
+    }
+
     private record Straight(AttemptMemoryLedger ledger,AttemptMemoryLedger.Owner owner,
             SampledEmissionInput input,List<RowState> states) implements AutoCloseable {
         @Override public void close(){ input.close(); owner.close(); assertEquals(0,ledger.currentBytes()); }

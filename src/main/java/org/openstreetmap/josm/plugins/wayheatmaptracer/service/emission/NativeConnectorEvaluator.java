@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CancellationException;
@@ -35,6 +36,19 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     public enum SourceClass { OBSERVED, GAP, CENSORED }
     /** Status of an ordinary leg's native geometric reference, not a claim of image support. */
     public enum NativeReferenceStatus { AVAILABLE, UNAVAILABLE }
+    /** Original row state or exact protected source occurrence; never a fabricated boundary row. */
+    public sealed interface PhysicalEndpoint permits RowState, Barrier { }
+    /** Exact reachable native row-family ceiling; the state set is never truncated. */
+    public static final class StateFamilyLimitException extends RuntimeException {
+        private final int originalOrdinal;
+        private final int limit;
+        private StateFamilyLimitException(int originalOrdinal, int limit) {
+            super("Native emission state family limit exceeded");
+            this.originalOrdinal = originalOrdinal; this.limit = limit;
+        }
+        public int originalOrdinal() { return originalOrdinal; }
+        public int limit() { return limit; }
+    }
     public enum Status { ADMITTED, REJECTED, UNAVAILABLE }
     public enum Reason {
         NONE, FOREIGN_STATE, INVALID_STATE, SPAN, MANDATORY_BARRIER, NATIVE_PITCH_UNAVAILABLE,
@@ -71,7 +85,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     /** Exact native enumeration identity; peak owns the underlying band, not necessarily offset. */
     public record RowState(int row, int nativeStateId, double offsetRasterPixels,
-            SourceClass sourceClass, CrossSectionPeak peakOwner) {
+            SourceClass sourceClass, CrossSectionPeak peakOwner) implements PhysicalEndpoint {
         public RowState {
             if (row < 0 || nativeStateId < 0 || !Double.isFinite(offsetRasterPixels) || sourceClass == null)
                 throw new IllegalArgumentException("Native row/state identity is incomplete");
@@ -80,8 +94,8 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     /** Issued physical orientation for an already admitted ordinary native transition. */
     public static final class OrdinaryPhysicalLeg {
-        private final RowState from;
-        private final RowState to;
+        private final PhysicalEndpoint from;
+        private final PhysicalEndpoint to;
         private final RasterPoint fromRaster;
         private final RasterPoint toRaster;
         private final MetricPoint fromMetric;
@@ -89,15 +103,26 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         private final double lengthMeters;
         private final NativeReferenceStatus nativeReferenceStatus;
 
-        private OrdinaryPhysicalLeg(RowState from, RowState to, RasterPoint fromRaster, RasterPoint toRaster,
+        private OrdinaryPhysicalLeg(PhysicalEndpoint from, PhysicalEndpoint to,
+                RasterPoint fromRaster, RasterPoint toRaster,
                 MetricPoint fromMetric, MetricPoint toMetric, double lengthMeters,
                 NativeReferenceStatus nativeReferenceStatus) {
             this.from = from; this.to = to; this.fromRaster = fromRaster; this.toRaster = toRaster;
             this.fromMetric = fromMetric; this.toMetric = toMetric; this.lengthMeters = lengthMeters;
             this.nativeReferenceStatus = nativeReferenceStatus;
         }
-        public RowState from() { return from; }
-        public RowState to() { return to; }
+        public PhysicalEndpoint fromEndpoint() { return from; }
+        public PhysicalEndpoint toEndpoint() { return to; }
+        /** Compatibility accessor for a row-owned physical origin. */
+        public RowState from() {
+            if (from instanceof RowState row) return row;
+            throw new IllegalStateException("Physical origin is a protected occurrence, not a row");
+        }
+        /** Compatibility accessor for a row-owned physical destination. */
+        public RowState to() {
+            if (to instanceof RowState row) return row;
+            throw new IllegalStateException("Physical destination is a protected occurrence, not a row");
+        }
         public RasterPoint fromRaster() { return fromRaster; }
         public RasterPoint toRaster() { return toRaster; }
         public MetricPoint fromMetric() { return fromMetric; }
@@ -108,12 +133,26 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     /** Exact protected event with its two immediately bracketing mandatory source rows. */
     public record Barrier(String occurrenceId, int leftRow, int rightRow, double sourceChainageMeters,
-            MetricPoint exactPosition) {
+            MetricPoint exactPosition) implements PhysicalEndpoint {
         public Barrier {
-            if (occurrenceId == null || occurrenceId.isBlank() || leftRow < 0 || rightRow != leftRow + 1
+            if (occurrenceId == null || occurrenceId.isBlank() || leftRow < 0 || rightRow <= leftRow
                     || !Double.isFinite(sourceChainageMeters) || exactPosition == null)
                 throw new IllegalArgumentException("Protected connector barrier is incomplete");
         }
+    }
+
+    /** Effective positive direction plus current source cursor after ordinary zero transitions. */
+    public static final class PhysicalDirectionCursor {
+        private final Receipt optionalOrigin;
+        private final OrdinaryPhysicalLeg ordinaryOrigin;
+        private final PhysicalEndpoint cursor;
+        private PhysicalDirectionCursor(Receipt optionalOrigin, OrdinaryPhysicalLeg ordinaryOrigin,
+                PhysicalEndpoint cursor) {
+            this.optionalOrigin = optionalOrigin; this.ordinaryOrigin = ordinaryOrigin; this.cursor = cursor;
+        }
+        public Optional<Receipt> optionalOrigin() { return Optional.ofNullable(optionalOrigin); }
+        public Optional<OrdinaryPhysicalLeg> ordinaryOrigin() { return Optional.ofNullable(ordinaryOrigin); }
+        public PhysicalEndpoint cursor() { return cursor; }
     }
 
     /**
@@ -121,14 +160,19 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
      * states/events from their native constructors. This declaration is not engine-authority attestation.
      * Caller owns construction; the evaluator reserves its execution copy before allocating it.
      */
-    public record Domain(List<RowState> states, List<Integer> mandatoryRows, List<Barrier> barriers) {
+    public record Domain(List<RowState> states, List<Integer> mandatoryRows, List<Barrier> barriers,
+            Map<Integer, Integer> originalOrdinalByContextRow) {
         public Domain(List<RowState> states, List<Integer> mandatoryRows) {
-            this(states, mandatoryRows, List.of());
+            this(states, mandatoryRows, List.of(), Map.of());
+        }
+        public Domain(List<RowState> states, List<Integer> mandatoryRows, List<Barrier> barriers) {
+            this(states, mandatoryRows, barriers, Map.of());
         }
         public Domain {
             states = List.copyOf(states);
             mandatoryRows = List.copyOf(mandatoryRows);
             barriers = List.copyOf(barriers);
+            originalOrdinalByContextRow = Map.copyOf(originalOrdinalByContextRow);
         }
     }
 
@@ -208,6 +252,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private final IdentityHashMap<RowState, Boolean> states;
     private final List<Integer> mandatoryRows;
     private final List<Barrier> barriers;
+    private final Map<Integer, Integer> originalOrdinalByContextRow;
     private final EvidenceModelParameters parameters = EvidenceModelParameters.defaults();
     private final LocalScalarProfileExtractor extractor = new LocalScalarProfileExtractor();
     private RuntimeException terminalFailure;
@@ -231,10 +276,30 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             throw new IllegalArgumentException("Stop-on-final-mode-failure requires the zero-guarded local query policy");
         owner = input.openExecutionOwner("native-connector");
         context = input.context(); budget = input.workBudget();
+        originalOrdinalByContextRow = domain.originalOrdinalByContextRow();
         try {
             // IdentityHashMap explicit sizing: at most 8 references per declaration is conservative.
-            reserve(owner, Math.addExact(2048L, Math.multiplyExact(160L, domain.states().size()))
-                + Math.multiplyExact(80L, (long) domain.mandatoryRows().size() + domain.barriers().size()));
+            reserve(owner, Math.addExact(Math.addExact(2048L,
+                Math.multiplyExact(160L, domain.states().size())),
+                Math.addExact(Math.multiplyExact(80L,
+                    (long) domain.mandatoryRows().size() + domain.barriers().size()),
+                    Math.multiplyExact(64L, originalOrdinalByContextRow.size()))));
+            for (var binding : originalOrdinalByContextRow.entrySet()) {
+                work(EmissionWorkBudget.Operation.PREPARATION, 1);
+                if (binding.getKey() < 0 || binding.getKey() >= context.observations().size()
+                        || binding.getValue() < 0)
+                    throw new IllegalArgumentException("Original ordinal binding is outside the retained source");
+                for (var other : originalOrdinalByContextRow.entrySet()) {
+                    work(EmissionWorkBudget.Operation.PREPARATION, 1);
+                    if (binding.getKey() < other.getKey() && binding.getValue() >= other.getValue())
+                        throw new IllegalArgumentException("Original ordinals must increase with retained rows");
+                }
+            }
+            if (!originalOrdinalByContextRow.isEmpty()) for (RowState state : domain.states()) {
+                work(EmissionWorkBudget.Operation.PREPARATION, 1);
+                if (!originalOrdinalByContextRow.containsKey(state.row()))
+                    throw new IllegalArgumentException("Native state has no original observation ordinal");
+            }
             work(EmissionWorkBudget.Operation.PREPARATION, domain.states().size());
             states = new IdentityHashMap<>(domain.states().size());
             // The existing reservation includes this primitive identity scratch array.
@@ -250,27 +315,51 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             work(EmissionWorkBudget.Operation.PREPARATION, Math.multiplyExact((long) nativeIds.length,
                 Math.max(1, 64 - Long.numberOfLeadingZeros(nativeIds.length))));
             Arrays.sort(nativeIds);
+            int family = nativeIds.length == 0 ? 0 : 1;
             for (int index = 1; index < nativeIds.length; index++) {
                 work(EmissionWorkBudget.Operation.PREPARATION, 1);
                 if (nativeIds[index] == nativeIds[index - 1])
                     throw new IllegalArgumentException("Duplicate native row/state identity");
+                family = nativeIds[index] >>> 32 == nativeIds[index - 1] >>> 32 ? family + 1 : 1;
+                if (family > 96) throw new StateFamilyLimitException(
+                    originalOrdinal((int) (nativeIds[index] >>> 32)), 96);
             }
             mandatoryRows = List.copyOf(domain.mandatoryRows()); barriers = List.copyOf(domain.barriers());
             for (int row : mandatoryRows) {
                 work(EmissionWorkBudget.Operation.PREPARATION, 1);
-                if (row < 0 || row >= context.observations().size())
+                if (row < 0 || row >= context.observations().size()
+                        || !originalOrdinalByContextRow.isEmpty()
+                            && !originalOrdinalByContextRow.containsKey(row))
                     throw new IllegalArgumentException("Mandatory row is outside the source");
             }
-            for (Barrier barrier : barriers) {
+            for (int barrierIndex = 0; barrierIndex < barriers.size(); barrierIndex++) {
+                Barrier barrier = barriers.get(barrierIndex);
                 work(EmissionWorkBudget.Operation.PREPARATION, 1);
                 if (barrier.rightRow() >= context.observations().size()
+                        || !originalOrdinalByContextRow.isEmpty()
+                            && (!originalOrdinalByContextRow.containsKey(barrier.leftRow())
+                                || !originalOrdinalByContextRow.containsKey(barrier.rightRow()))
+                        || originalOrdinal(barrier.rightRow()) != originalOrdinal(barrier.leftRow()) + 1
                         || chainage(barrier.leftRow()) > barrier.sourceChainageMeters()
                         || chainage(barrier.rightRow()) < barrier.sourceChainageMeters())
                     throw new IllegalArgumentException("Protected event does not match its source bracket");
+                for (int priorIndex = 0; priorIndex < barrierIndex; priorIndex++) {
+                    work(EmissionWorkBudget.Operation.PREPARATION, 1);
+                    Barrier prior = barriers.get(priorIndex);
+                    if (prior.occurrenceId().equals(barrier.occurrenceId())
+                            || prior.leftRow() > barrier.leftRow()
+                            || prior.leftRow() == barrier.leftRow()
+                                && (prior.rightRow() != barrier.rightRow()
+                                    || prior.sourceChainageMeters() > barrier.sourceChainageMeters()
+                                    || prior.sourceChainageMeters() == barrier.sourceChainageMeters()
+                                        && !prior.exactPosition().equals(barrier.exactPosition())))
+                        throw new IllegalArgumentException("Protected occurrence order or identity conflicts");
+                }
             }
         } catch (RuntimeException failure) {
             owner.close();
-            if (failure instanceof EmissionWorkBudget.LimitExceededException
+            if (failure instanceof StateFamilyLimitException
+                    || failure instanceof EmissionWorkBudget.LimitExceededException
                     || failure instanceof AttemptMemoryLedger.ResourceLimitException
                     || failure instanceof CancellationException) input.recordTerminalExecutionFailure(failure);
             throw failure;
@@ -279,24 +368,67 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     public Receipt evaluate(RowState from, RowState to) { return evaluate(from, to, null); }
 
+    /** Registers one reachable native family member without predeclaring potential carry origins. */
+    public RowState registerState(RowState state, int originalOrdinal) {
+        requireLive();
+        Objects.requireNonNull(state);
+        try {
+            input.requireOpenAndUnchanged();
+            work(EmissionWorkBudget.Operation.PAIR_INITIALIZATION, 1);
+            if (state.row() >= context.observations().size()
+                    || !originalOrdinalByContextRow.isEmpty()
+                        && !originalOrdinalByContextRow.containsKey(state.row())
+                    || originalOrdinal(state.row()) != originalOrdinal)
+                throw new IllegalArgumentException("Reachable native state has no exact original row binding");
+            int family = 0;
+            for (RowState existing : states.keySet()) {
+                work(EmissionWorkBudget.Operation.PREPARATION, 1);
+                if (existing == state || existing.row() == state.row()
+                        && existing.nativeStateId() == state.nativeStateId())
+                    throw new IllegalArgumentException("Duplicate native row/state identity");
+                if (originalOrdinal(existing.row()) == originalOrdinal) family++;
+            }
+            if (family >= 96) throw new StateFamilyLimitException(originalOrdinal, 96);
+            work(EmissionWorkBudget.Operation.ALLOCATION, 1);
+            try (var allocation = owner.child("reachable-native-state")) {
+                work(EmissionWorkBudget.Operation.ALLOCATION, 1);
+                var reservation = allocation.reserve(256);
+                work(EmissionWorkBudget.Operation.PREPARATION, 1);
+                reservation.adopt(state);
+                allocation.transferTo(owner);
+                states.put(state, Boolean.TRUE);
+                return state;
+            }
+        } catch (StateFamilyLimitException | EmissionWorkBudget.LimitExceededException
+                | AttemptMemoryLedger.ResourceLimitException | CancellationException failure) {
+            terminalFailure = failure;
+            input.recordTerminalExecutionFailure(failure);
+            throw failure;
+        }
+    }
+
     /** Records actual positive geometry after the caller attests ordinary native admission.
      * This token does not attest image support, a measured Q, or optional admission. */
     public OrdinaryPhysicalLeg registerOrdinaryPhysicalLeg(RowState from, RowState to,
+            NativeReferenceStatus nativeReferenceStatus) {
+        return issueOrdinaryLeg(from, to, nativeReferenceStatus);
+    }
+
+    private OrdinaryPhysicalLeg issueOrdinaryLeg(PhysicalEndpoint from, PhysicalEndpoint to,
             NativeReferenceStatus nativeReferenceStatus) {
         requireLive();
         Objects.requireNonNull(from); Objects.requireNonNull(to); Objects.requireNonNull(nativeReferenceStatus);
         try {
             input.requireOpenAndUnchanged();
             work(EmissionWorkBudget.Operation.PAIR_INITIALIZATION, 1);
-            if (!states.containsKey(from) || !states.containsKey(to) || to.row() != from.row() + 1
-                    || chainage(to.row()) < chainage(from.row()) || barrierBetween(from.row(), to.row()))
-                throw new IllegalArgumentException("Ordinary leg requires adjacent owned native states");
+            if (!ordinaryAdjacent(from, to))
+                throw new IllegalArgumentException("Ordinary leg requires adjacent owned source occurrences");
             work(EmissionWorkBudget.Operation.ALLOCATION, 1);
             try (var allocation = owner.child("ordinary-leg")) {
                 work(EmissionWorkBudget.Operation.ALLOCATION, 1);
                 var reservation = allocation.reserve(320);
-                RasterPoint fromRaster = point(from), toRaster = point(to);
-                MetricPoint fromMetric = metric(fromRaster), toMetric = metric(toRaster);
+                RasterPoint fromRaster = endpointRaster(from), toRaster = endpointRaster(to);
+                MetricPoint fromMetric = endpointMetric(from), toMetric = endpointMetric(to);
                 double length = fromMetric.distanceTo(toMetric);
                 if (!(length > 0) || !Double.isFinite(length))
                     throw new IllegalArgumentException("Ordinary physical leg must have finite positive length");
@@ -318,16 +450,111 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     /** Zero-edge entry for a session-owned ordinary physical leg. */
     public Receipt evaluateWithOrdinaryIncoming(RowState from, RowState to, OrdinaryPhysicalLeg incoming) {
-        return evaluateInternal(from, to, null, Objects.requireNonNull(incoming));
+        return evaluateInternal(from, to, null, Objects.requireNonNull(incoming), null);
+    }
+
+    /** Advances a native ordinary zero edge while retaining an issued positive ordinary direction. */
+    public PhysicalDirectionCursor advanceOrdinaryZero(OrdinaryPhysicalLeg incoming,
+            PhysicalEndpoint from, PhysicalEndpoint to) {
+        return advanceOrdinaryZeroInternal(null, Objects.requireNonNull(incoming), null, from, to);
+    }
+
+    /** Advances a native ordinary zero edge while retaining an issued positive optional direction. */
+    public PhysicalDirectionCursor advanceOrdinaryZero(Receipt incoming,
+            PhysicalEndpoint from, PhysicalEndpoint to) {
+        return advanceOrdinaryZeroInternal(Objects.requireNonNull(incoming), null, null, from, to);
+    }
+
+    /** Advances another ordinary zero edge using the same effective positive direction. */
+    public PhysicalDirectionCursor advanceOrdinaryZero(PhysicalDirectionCursor incoming,
+            PhysicalEndpoint from, PhysicalEndpoint to) {
+        return advanceOrdinaryZeroInternal(null, null, Objects.requireNonNull(incoming), from, to);
+    }
+
+    private PhysicalDirectionCursor advanceOrdinaryZeroInternal(Receipt receipt,
+            OrdinaryPhysicalLeg ordinary, PhysicalDirectionCursor prior,
+            PhysicalEndpoint from, PhysicalEndpoint to) {
+        requireLive();
+        Objects.requireNonNull(from); Objects.requireNonNull(to);
+        try {
+            input.requireOpenAndUnchanged();
+            work(EmissionWorkBudget.Operation.TRANSPORT, 1);
+            Receipt positiveOptional = null;
+            OrdinaryPhysicalLeg positiveOrdinary = null;
+            if (receipt != null) {
+                if (!issuedHere(receipt) || receipt.status() != Status.ADMITTED
+                        || receipt.context() != context || receipt.to() != from)
+                    throw new IllegalArgumentException("Incoming optional receipt is not this cursor's direction");
+                positiveOptional = receipt.emittedLengthMeters() > 0
+                    ? receipt : receipt.transportedIncoming().orElse(null);
+                if (positiveOptional == null) positiveOrdinary = receipt.transportedOrdinary().orElse(null);
+            } else if (ordinary != null) {
+                if (!issuedOrdinaryHere(ordinary) || ordinary.toEndpoint() != from)
+                    throw new IllegalArgumentException("Incoming ordinary leg is not this cursor's direction");
+                positiveOrdinary = ordinary;
+            } else {
+                if (!issuedDirectionHere(prior) || prior.cursor() != from)
+                    throw new IllegalArgumentException("Incoming direction cursor is foreign or misplaced");
+                positiveOptional = prior.optionalOrigin().orElse(null);
+                positiveOrdinary = prior.ordinaryOrigin().orElse(null);
+            }
+            if (positiveOptional == null && (positiveOrdinary == null
+                    || !issuedOrdinaryHere(positiveOrdinary)))
+                throw new IllegalArgumentException("Ordinary zero transport has no positive direction");
+            if (!ordinaryAdjacent(from, to))
+                throw new IllegalArgumentException("Ordinary zero endpoints are not adjacent owned occurrences");
+            MetricPoint a = endpointMetric(from), b = endpointMetric(to);
+            if (!a.equals(b))
+                throw new IllegalArgumentException("Ordinary zero transport must preserve the exact physical point");
+            work(EmissionWorkBudget.Operation.ALLOCATION, 1);
+            try (var allocation = owner.child("ordinary-zero-cursor")) {
+                work(EmissionWorkBudget.Operation.ALLOCATION, 1);
+                var reservation = allocation.reserve(192);
+                var result = new PhysicalDirectionCursor(positiveOptional, positiveOrdinary, to);
+                work(EmissionWorkBudget.Operation.PREPARATION, 1);
+                reservation.adopt(result);
+                allocation.transferTo(owner);
+                issuedDirections.put(result, Boolean.TRUE);
+                return result;
+            }
+        } catch (EmissionWorkBudget.LimitExceededException | AttemptMemoryLedger.ResourceLimitException
+                | CancellationException failure) {
+            terminalFailure = failure;
+            input.recordTerminalExecutionFailure(failure);
+            throw failure;
+        }
+    }
+
+    /** Uses an issued cursor to orient the next optional zero edge. */
+    public Receipt evaluateWithDirectionCursor(RowState from, RowState to, PhysicalDirectionCursor incoming) {
+        return evaluateInternal(from, to, null, null, Objects.requireNonNull(incoming));
+    }
+
+    /** Records an ordinary physical leg from an exact protected occurrence to its right row. */
+    public OrdinaryPhysicalLeg registerOrdinaryPhysicalLeg(Barrier from, RowState to,
+            NativeReferenceStatus nativeReferenceStatus) {
+        return issueOrdinaryLeg(from, to, nativeReferenceStatus);
+    }
+
+    /** Records an ordinary physical leg from a left row to its exact protected occurrence. */
+    public OrdinaryPhysicalLeg registerOrdinaryPhysicalLeg(RowState from, Barrier to,
+            NativeReferenceStatus nativeReferenceStatus) {
+        return issueOrdinaryLeg(from, to, nativeReferenceStatus);
+    }
+
+    /** Records an ordinary leg between consecutive exact events in one source bracket. */
+    public OrdinaryPhysicalLeg registerOrdinaryPhysicalLeg(Barrier from, Barrier to,
+            NativeReferenceStatus nativeReferenceStatus) {
+        return issueOrdinaryLeg(from, to, nativeReferenceStatus);
     }
 
     /** For a zero edge, incoming must be the preceding same-session receipt, including zero transport. */
     public Receipt evaluate(RowState from, RowState to, Receipt incoming) {
-        return evaluateInternal(from, to, incoming, null);
+        return evaluateInternal(from, to, incoming, null, null);
     }
 
     private Receipt evaluateInternal(RowState from, RowState to, Receipt incoming,
-            OrdinaryPhysicalLeg incomingOrdinary) {
+            OrdinaryPhysicalLeg incomingOrdinary, PhysicalDirectionCursor incomingDirection) {
         requireLive();
         Objects.requireNonNull(from); Objects.requireNonNull(to);
         try {
@@ -337,7 +564,8 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             if (!states.containsKey(from) || !states.containsKey(to))
                 return receipt(Status.UNAVAILABLE, Reason.FOREIGN_STATE, from, to, 0, 0, 0, null, false, false, List.of(), null);
             double span = chainage(to.row()) - chainage(from.row());
-            if (to.row() <= from.row() || to.row() - from.row() - 1 > 16 || span > 20 || span < 0)
+            if (to.row() <= from.row() || originalOrdinal(to.row()) - originalOrdinal(from.row()) - 1 > 16
+                    || span > 20 || span < 0)
                 return receipt(Status.REJECTED, Reason.SPAN, from, to, span, 0, 0, null, false, false, List.of(), null);
             if (barrierBetween(from.row(), to.row()))
                 return receipt(Status.REJECTED, Reason.MANDATORY_BARRIER, from, to, span, 0, 0, null, false, false, List.of(), null);
@@ -365,8 +593,14 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                 MetricPoint directionStart = ma, directionEnd = mb;
                 if (length == 0) {
                     work(EmissionWorkBudget.Operation.TRANSPORT, 1);
-                    if (incomingOrdinary != null) {
-                        if (!issuedOrdinaryHere(incomingOrdinary) || incomingOrdinary.to() != from)
+                    if (incomingDirection != null) {
+                        if (!issuedDirectionHere(incomingDirection) || incomingDirection.cursor() != from)
+                            return receipt(Status.UNAVAILABLE, Reason.INCOMING_DIRECTION_UNAVAILABLE, from, to,
+                                span, length, pitch, scalar, false, false, List.of(), null);
+                        transport = incomingDirection.optionalOrigin().orElse(null);
+                        ordinaryTransport = incomingDirection.ordinaryOrigin().orElse(null);
+                    } else if (incomingOrdinary != null) {
+                        if (!issuedOrdinaryHere(incomingOrdinary) || incomingOrdinary.toEndpoint() != from)
                             return receipt(Status.UNAVAILABLE, Reason.INCOMING_DIRECTION_UNAVAILABLE, from, to,
                                 span, length, pitch, scalar, false, false, List.of(), null);
                         ordinaryTransport = incomingOrdinary;
@@ -392,7 +626,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                         directionStart = ordinaryTransport.fromMetric();
                         directionEnd = ordinaryTransport.toMetric();
                     }
-                } else if (incomingOrdinary != null) {
+                } else if (incomingOrdinary != null || incomingDirection != null) {
                     return receipt(Status.UNAVAILABLE, Reason.INCOMING_DIRECTION_UNAVAILABLE, from, to,
                         span, length, pitch, scalar, false, false, List.of(), null);
                 }
@@ -506,6 +740,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     // Issued receipt identity is necessary for zero-edge orientation. No scalar/probe result cache.
     private final IdentityHashMap<Receipt, Boolean> issued = new IdentityHashMap<>(0);
     private final IdentityHashMap<OrdinaryPhysicalLeg, Boolean> issuedOrdinary = new IdentityHashMap<>(0);
+    private final IdentityHashMap<PhysicalDirectionCursor, Boolean> issuedDirections = new IdentityHashMap<>(0);
     /** Converts the precharged live evaluation payload into identities owned by issued receipts. */
     private Receipt publish(Receipt receipt,AttemptMemoryLedger.Owner evaluation) {
         for(Probe probe:receipt.probes()) {
@@ -534,6 +769,10 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private boolean issuedOrdinaryHere(OrdinaryPhysicalLeg leg) {
         work(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
         return issuedOrdinary.containsKey(leg);
+    }
+    private boolean issuedDirectionHere(PhysicalDirectionCursor direction) {
+        work(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
+        return issuedDirections.containsKey(direction);
     }
 
     private void transferProfileOwners(IdentityHashMap<Probe,AttemptMemoryLedger.Owner> profileOwners,
@@ -991,6 +1230,57 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                 + normal.y() * transform.yAxisNorthMetersPerSourcePixel()) / scale);
     }
 
+    private int barrierIndex(Barrier target) {
+        for (int index = 0; index < barriers.size(); index++) {
+            work(EmissionWorkBudget.Operation.PREPARATION, 1);
+            if (barriers.get(index) == target) return index;
+        }
+        return -1;
+    }
+
+    private boolean ordinaryAdjacent(PhysicalEndpoint from, PhysicalEndpoint to) {
+        if (from instanceof RowState left && to instanceof RowState right) {
+            return states.containsKey(left) && states.containsKey(right)
+                && originalOrdinal(right.row()) == originalOrdinal(left.row()) + 1
+                && chainage(right.row()) >= chainage(left.row())
+                && !barrierBetween(left.row(), right.row());
+        }
+        if (from instanceof RowState left && to instanceof Barrier right) {
+            int rightIndex = barrierIndex(right);
+            if (!states.containsKey(left) || rightIndex < 0 || right.leftRow() != left.row()) return false;
+            for (int index = 0; index < rightIndex; index++) {
+                work(EmissionWorkBudget.Operation.PREPARATION, 1);
+                if (barriers.get(index).leftRow() == left.row()) return false;
+            }
+            return true;
+        }
+        if (from instanceof Barrier left && to instanceof RowState right) {
+            int leftIndex = barrierIndex(left);
+            if (!states.containsKey(right) || leftIndex < 0 || left.rightRow() != right.row()) return false;
+            for (int index = leftIndex + 1; index < barriers.size(); index++) {
+                work(EmissionWorkBudget.Operation.PREPARATION, 1);
+                if (barriers.get(index).leftRow() == left.leftRow()) return false;
+            }
+            return true;
+        }
+        if (from instanceof Barrier left && to instanceof Barrier right) {
+            int leftIndex = barrierIndex(left), rightIndex = barrierIndex(right);
+            return leftIndex >= 0 && rightIndex == leftIndex + 1
+                && left.leftRow() == right.leftRow() && left.rightRow() == right.rightRow();
+        }
+        return false;
+    }
+
+    private RasterPoint endpointRaster(PhysicalEndpoint endpoint) {
+        return endpoint instanceof RowState row ? point(row)
+            : context.rasterTransform().metricToPixelCenter(((Barrier) endpoint).exactPosition());
+    }
+
+    private MetricPoint endpointMetric(PhysicalEndpoint endpoint) {
+        return endpoint instanceof RowState row ? metric(point(row))
+            : ((Barrier) endpoint).exactPosition();
+    }
+
     private boolean barrierBetween(int from,int to) {
         for(int row:mandatoryRows){work(EmissionWorkBudget.Operation.PREPARATION,1);if(row>from && row<to)return true;}
         for(var barrier:barriers){work(EmissionWorkBudget.Operation.PREPARATION,1);
@@ -1010,6 +1300,9 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         return minimum;
     }
     private double chainage(int row){return context.observations().get(row).location().cumulativeGroundDistanceMeters();}
+    private int originalOrdinal(int row) {
+        return originalOrdinalByContextRow.isEmpty() ? row : originalOrdinalByContextRow.get(row);
+    }
     private RasterPoint point(RowState state) {
         var fact=context.observations().get(state.row());var p=fact.location().rasterPoint();var n=fact.normal();
         return new RasterPoint(p.x()+n.x()*state.offsetRasterPixels(),p.y()+n.y()*state.offsetRasterPixels());
