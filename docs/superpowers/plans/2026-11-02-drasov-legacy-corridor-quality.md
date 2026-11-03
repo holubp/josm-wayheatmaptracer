@@ -1210,3 +1210,81 @@ controls/real Drasov+Omice quality, Move/Precise/Hybrid/Apply/Undo/replay and fi
 review. No release/default engine changed. Model routes explicitly requested per
 AGENTS; config has Luna/medium child defaults and no role pin files. Exact runtime
 allowance/model telemetry not surfaced; do not invent weekly usage. No Astra used.
+
+### Resumption checkpoint: query-policy review controls
+
+Task2 implementation is isolated at `josm-drasov-query-resolution`, a170478,
+with test-only review fixes in progress. Initial Java17 focused/neighbor run:
+119 tests, 0 failures/errors/skips (NativeConnectorEvaluatorTest has 56, not 57).
+Independent review found no production defect but required full three-arc R4
+admission assertions, a meaningful competing/censored-mode control and evaluator
+corner-mask coverage before Task2 closure. Do not treat the initial green run as
+completion. Single local Gradle slot remains with `/root/query_policy`.
+
+The new masked-ridge control invalidates only native node(20,34), with a genuine
+Gaussian ridge centered at y32 and genuine endpoint owners. Dense admission and
+coarser NO_COMPLETE_MODE differ. The earlier reported selected shoulder .007 was
+a diagnostic attribution error: at x19 the selected dense mode has centre0,
+sigma.5, shoulder .9036, valid samples at offsets +/-.25 with values .9016327,
+and valid below-core neighbours. The .007 threshold belongs to a separate censored
+mode more than 3 native pixels away. Preserve the unchanged fixture and obtain a
+causal independent ruling before asserting either agreement or a defect. Strict
+cell support can fail before x20; an exact t=.5 expectation was not justified.
+Adjacent-corner mask(20,33) already yields SCALAR_SUPPORT for every policy.
+
+The original faint phase-shift Gaussian and its RED evidence remain preserved;
+its old producer is GAP, while the new extractor still sees faint modes. The
+separate measured between-row area-coverage stroke supplies a genuine positive
+ownership control. Automatic review rejected widening/deleting the original test;
+no shell edit or guard bypass was used.
+
+Task3 harness remains unrun. Comparer fingerprint equality is being strengthened
+before use, in addition to existing common-completed/unmeasured distinctions.
+Next: close justified review assertions, run neighboring suites, then freeze the
+reviewed build and run all three capped same-input graph measurements. No engine
+integration, route-quality success or RC release is established by these controls.
+
+Ruling: preserve the masked fixture but assert its justified policy difference —
+independent Sol/high diagnosis confirms dense has genuine observed below-shoulder
+and below-core samples before the invalid support, whereas coarser policies lack
+a complete mode and conservatively reject. No production correction is indicated;
+forcing agreement would conceal numerical scope. The separate censored mode lies
+outside the declared competitor window. Cost if wrong: unsupported admission or
+lost coarse coverage; explicit receipt assertions and later common-pair admission
+adjudication remain required. Existing split/fork control covers this bounded
+Task2 concern; semantic parallel identity is not claimed. Diagnostic artifact:
+`drasov-censored-flank-diagnostic.txt`; review report updated independently.
+
+Task2 is now COMPLETE at7e6c64f: focused125tests and controller-expanded185tests
+/14XML (region/budget/grid neighbors),0failures/errors/skips, Java17 offline
+Gradle48s. Independent Sol/high closes all four focused findings on actual diff.
+Source integrated cleanly as87ad860+49e8323+131a9dc in the experimental worktree;
+no push/default/engine change. Reviewed source/class/JOSM fingerprint:
+`4e6ca424eb2478b90fa9795095daab3fd6fbf61706f746bd1d020464b32a8f06`.
+
+Task3 first complete capped comparisons ran successfully as a measurement harness,
+but every policy is NEGATIVE full-graph feasibility. Same239states/26098keys,
+identical scalar/state/chainage/field hashes verified by the comparer:
+
+| Policy | Completed | Admitted | Rejected | Unmeasured | Peak tracked bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Dense p/8 | 550 | 184 | 366 | 25548 | 10782536 |
+| Half-native | 1621 | 534 | 1087 | 24477 | 34067928 |
+| Pixel-capped | 7749 | 2869 | 4880 | 18349 | 68297040 |
+
+All stopped at128M total work (actual128000000/127999507/127999999),0unavailable
+completed receipts. Each interrupted pair is UNMEASURED, not rejected. Current
+memory in receipts is measured before closing retained input; harness separately
+asserts final ledger0. Per-policy elapsed was omitted in this first helper and is
+not invented; helper timing/final-memory output is being added before a preserved
+second run. Reference native tracking.472s is outside admission accounting.
+
+Common-completed550pair comparison: half changes56outcomes/reasons, including3
+dense-rejected admissions; pixel changes105, including45dense-rejected admissions.
+Half347/pixel2640admissions against dense-unmeasured remain UNKNOWN comparisons.
+No unmatched keys. Coarse-only admissions need image/receipt adjudication before
+adoption, even though inspected endpoints remain near the analytic ridge.
+Artifacts: Termux `drasov-query-policy-results-7e6c64f/`, frozen fingerprint and
+benchmark log. Next bounded exact-cost diagnosis delegated to Sol/high; Luna
+prepares pair summaries and timing-only helper correction. No inference kernel
+or original Drasov/Omice goal-completion claim follows from these measurements.
