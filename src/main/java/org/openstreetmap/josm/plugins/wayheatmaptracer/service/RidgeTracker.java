@@ -9,6 +9,9 @@ import java.util.Map;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EmissionResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.LegacyEmissionKernel;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /**
@@ -23,6 +26,32 @@ public final class RidgeTracker {
     /** Creates a legacy ridge tracker with no retained mutable state. */
     public RidgeTracker() {
         // Stateless service.
+    }
+
+    /**
+     * Experimental source-bound optional emission. The result's N observations and M vertices
+     * must be consumed through its mapping; it is not a legacy CenterlineCandidate.
+     */
+    public EmissionResult trackEmission(SampledEmissionInput input, CancellationProbe cancellation) {
+        java.util.Objects.requireNonNull(input, "retained emission input");
+        java.util.Objects.requireNonNull(cancellation, "cancellation probe");
+        input.requireOpenAndUnchanged();
+        var binding = input.legacyBinding().orElseThrow(() ->
+            new IllegalArgumentException("Original Legacy emission binding is required"));
+        List<RenderedHeatmapSampler.CrossSectionProfile> original = binding.observations().stream()
+            .map(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.LegacyEmissionBinding.OriginalObservation::profile)
+            .toList();
+        List<RenderedHeatmapSampler.CrossSectionProfile> suppressed =
+            suppressLongitudinalNoise(cancellableProfiles(original, cancellation));
+        List<Double> seeds = collectSeedOffsets(suppressed);
+        double normalization = binding.trackerNormalizationRasterPx();
+        List<LegacyEmissionKernel.AnchorProposal> proposals = reliableAnchors(suppressed, normalization,
+                profileEdgeLimit(suppressed)).stream()
+            .map(anchor -> new LegacyEmissionKernel.AnchorProposal(anchor.index(), anchor.peak()))
+            .toList();
+        return new LegacyEmissionKernel().solve(input, suppressed, seeds, proposals,
+            (runProfiles, offsets, intensities) -> smoothOffsets(runProfiles, offsets, intensities,
+                normalization), cancellation);
     }
 
     /**
