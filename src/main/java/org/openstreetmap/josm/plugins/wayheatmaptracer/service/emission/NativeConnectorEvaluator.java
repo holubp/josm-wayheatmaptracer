@@ -28,7 +28,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
  * Returned receipts borrow this session's retained lifetime; close it before closing its input.
  */
 public final class NativeConnectorEvaluator implements AutoCloseable {
-    public enum QueryPolicy { DENSE_EIGHTH_NATIVE_V1, HALF_NATIVE_L0_V1, PIXEL_CAPPED_L0_V1 }
+    public enum QueryPolicy {
+        DENSE_EIGHTH_NATIVE_V1, HALF_NATIVE_L0_V1, PIXEL_CAPPED_L0_V1, ZERO_GUARDED_LOCAL_V1
+    }
     public enum SourceClass { OBSERVED, GAP, CENSORED }
     public enum Status { ADMITTED, REJECTED, UNAVAILABLE }
     public enum Reason {
@@ -36,7 +38,32 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         SOURCE_INELIGIBLE, DECISION_AUTHORITY, ACQUISITION_AUTHORITY, SCALAR_SUPPORT,
         NO_COMPLETE_MODE, AMBIGUOUS_MODE, INCOMPLETE_FLANKS, MISSING_THRESHOLD,
         CENSORED_OR_SUPPRESSED_COMPETITOR, NONUNIQUE_CONTINUATION, ENDPOINT_OWNERSHIP,
-        SCALAR_BELOW_ENVELOPE, INCOMING_DIRECTION_UNAVAILABLE
+        SCALAR_BELOW_ENVELOPE, INCOMING_DIRECTION_UNAVAILABLE, LOCAL_NO_MODE
+    }
+
+    public enum ProfileBackend { FULL_WINDOW, LOCAL, DENSE_FALLBACK }
+    public enum FallbackCause {
+        NONE, INITIAL_WINDOW_TOO_WIDE, ZERO_GUARD_UNAVAILABLE, NOISE_FLOOR_NONZERO,
+        LOCAL_MODE_UNRESOLVED, COMPETITOR_SUPPORT_UNAVAILABLE, CROSS_PROBE_SUPPORT_UNAVAILABLE
+    }
+
+    /** Immutable provenance for the actual transverse profile samples retained by one probe. */
+    public record ProfileQueryEvidence(ProfileBackend backend, double halfWindowMeters,
+            int sampleCount, int expansionCount, FallbackCause fallbackCause,
+            int totalSampleQueries,
+            boolean localNoModeProven) {
+        public ProfileQueryEvidence {
+            Objects.requireNonNull(backend); Objects.requireNonNull(fallbackCause);
+            if (!Double.isFinite(halfWindowMeters) || halfWindowMeters < 0 || sampleCount < 0
+                    || totalSampleQueries < sampleCount
+                    || expansionCount < 0
+                    || backend == ProfileBackend.FULL_WINDOW
+                        && (fallbackCause != FallbackCause.NONE || expansionCount != 0 || localNoModeProven)
+                    || backend == ProfileBackend.LOCAL && fallbackCause != FallbackCause.NONE
+                    || backend == ProfileBackend.DENSE_FALLBACK
+                        && (fallbackCause == FallbackCause.NONE || localNoModeProven))
+                throw new IllegalArgumentException("Transverse profile query evidence is inconsistent");
+        }
     }
 
     /** Exact native enumeration identity; peak owns the underlying band, not necessarily offset. */
@@ -78,8 +105,13 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     public record Probe(double parameter, RasterPoint rasterPosition, MetricPoint metricPosition,
             MetricPoint metricNormal, double nativePitchMeters, List<Sample> samples,
             AcceptedThresholdExtraction extraction, Mode selectedMode,
-            AcceptedModeThresholdReceipt threshold) {
-        public Probe { samples = List.copyOf(samples); }
+            AcceptedModeThresholdReceipt threshold, ProfileQueryEvidence profileQuery) {
+        public Probe {
+            samples = List.copyOf(samples);
+            Objects.requireNonNull(profileQuery);
+            if (profileQuery.sampleCount() != samples.size())
+                throw new IllegalArgumentException("Profile query sample count does not match retained samples");
+        }
     }
 
     /** Scalar validity and measured native continuation have separate explicit success fields. */
@@ -87,14 +119,28 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             RowState from, RowState to, QueryPolicy queryPolicy, String parameterVersion,
             double sourceSpanMeters, double emittedLengthMeters, double minimumNativePitchMeters,
             Optional<BilinearSegmentIntegral.Result> scalar, boolean scalarEnvelopeComplete,
-            boolean measuredNativeContinuationComplete, List<Probe> probes,
+            boolean measuredNativeContinuationComplete, List<Probe> probes, int plannedProbeCount,
+            int firstFailingSlabIndex,
             Optional<Receipt> transportedIncoming) {
+        public Receipt(Status status, Reason reason, OptionalEmissionContext context, RowState from, RowState to,
+                QueryPolicy queryPolicy, String parameterVersion, double sourceSpanMeters, double emittedLengthMeters,
+                double minimumNativePitchMeters, Optional<BilinearSegmentIntegral.Result> scalar,
+                boolean scalarEnvelopeComplete, boolean measuredNativeContinuationComplete, List<Probe> probes,
+                Optional<Receipt> transportedIncoming) {
+            this(status, reason, context, from, to, queryPolicy, parameterVersion, sourceSpanMeters,
+                emittedLengthMeters, minimumNativePitchMeters, scalar, scalarEnvelopeComplete,
+                measuredNativeContinuationComplete, probes, -1, -1, transportedIncoming);
+        }
         public Receipt {
             Objects.requireNonNull(status); Objects.requireNonNull(reason); Objects.requireNonNull(context);
             Objects.requireNonNull(from); Objects.requireNonNull(to); Objects.requireNonNull(queryPolicy);
             Objects.requireNonNull(parameterVersion);
             scalar = Objects.requireNonNull(scalar); transportedIncoming = Objects.requireNonNull(transportedIncoming);
             probes = List.copyOf(probes);
+            if (plannedProbeCount < -1 || firstFailingSlabIndex < -1
+                    || plannedProbeCount >= 0 && probes.size() > plannedProbeCount
+                    || firstFailingSlabIndex >= 0 && firstFailingSlabIndex >= Math.max(1, probes.size()-1))
+                throw new IllegalArgumentException("Connector progress provenance is inconsistent");
             if (status == Status.ADMITTED && (reason != Reason.NONE || scalar.isEmpty()
                     || scalar.get().status() != BilinearSegmentIntegral.Status.COMPLETE
                     || !scalarEnvelopeComplete || !measuredNativeContinuationComplete)
@@ -231,22 +277,72 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                 double[] ts = probeParameters(a, b, length, pitch, evaluation);
                 reserve(evaluation, AttemptMemoryLedger.referenceArrayBytes(ts.length) * 2);
                 var probes = new ArrayList<Probe>(ts.length);
-                for (double t : ts) {
-                    var probe = measure(t, interpolate(a,b,t), normal, from, span, evaluation);
-                    probes.add(probe);
-                    Reason reason = probeFailure(probe);
-                    if (reason != Reason.NONE) {
-                        var result=receipt(Status.REJECTED, reason, from,to,span,length,pitch,scalar,false,false,probes,transport);
-                        evaluation.transferTo(owner); return remember(result);
+                if (queryPolicy == QueryPolicy.ZERO_GUARDED_LOCAL_V1) {
+                    reserve(evaluation,Math.multiplyExact((long)ts.length,96));
+                    var profileOwners=new IdentityHashMap<Probe,AttemptMemoryLedger.Owner>(ts.length);
+                    for (double t : ts) probes.add(measureLocalOrDense(t, interpolate(a,b,t), normal, from, span,
+                        evaluation,profileOwners));
+                    // A changed middle profile invalidates both adjacent competitor proofs.
+                    boolean changed;
+                    do {
+                        changed = false;
+                        for (int i = 1; i < probes.size(); i++) {
+                            work(EmissionWorkBudget.Operation.PREPARATION,1);
+                            Probe left = probes.get(i - 1), right = probes.get(i);
+                            if (!localPairSupported(left, right)) {
+                                for (int side=0;side<2;side++) {
+                                    work(EmissionWorkBudget.Operation.PREPARATION,1);
+                                    int index=side==0?i-1:i;
+                                    Probe old = probes.get(index);
+                                    if (old.profileQuery().backend() == ProfileBackend.LOCAL) {
+                                        probes.set(index, replaceWithDenseFallback(old,from,span,evaluation,
+                                            profileOwners,FallbackCause.CROSS_PROBE_SUPPORT_UNAVAILABLE));
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                    } while (changed);
+                    for(var probeOwner:profileOwners.values()) {
+                        work(EmissionWorkBudget.Operation.PREPARATION,1);
+                        probeOwner.transferTo(evaluation);
+                        probeOwner.close();
                     }
-                    if (probes.size() > 1 && !mutual(probes.get(probes.size()-2), probe)) {
-                        var result=receipt(Status.REJECTED,Reason.NONUNIQUE_CONTINUATION,from,to,span,length,pitch,scalar,false,false,probes,transport);
+                } else {
+                    for (double t : ts) {
+                        Probe probe=measure(t,interpolate(a,b,t),normal,from,span,evaluation);
+                        probes.add(probe);
+                        Reason reason=probeFailure(probe);
+                        if(reason!=Reason.NONE) {
+                            var result=receipt(Status.REJECTED,reason,from,to,span,length,pitch,scalar,false,false,
+                                probes,transport,ts.length,-1);
+                            evaluation.transferTo(owner); return remember(result);
+                        }
+                        if(probes.size()>1 && !mutual(probes.get(probes.size()-2),probe)) {
+                            var result=receipt(Status.REJECTED,Reason.NONUNIQUE_CONTINUATION,from,to,span,length,
+                                pitch,scalar,false,false,probes,transport,ts.length,-1);
+                            evaluation.transferTo(owner); return remember(result);
+                        }
+                    }
+                }
+                if(queryPolicy==QueryPolicy.ZERO_GUARDED_LOCAL_V1) {
+                    for(Probe probe:probes) {
+                        Reason reason=probeFailure(probe);
+                        if(reason!=Reason.NONE) {
+                            var result=receipt(Status.REJECTED,reason,from,to,span,length,pitch,scalar,false,false,
+                                probes,transport,ts.length,-1);
+                            evaluation.transferTo(owner); return remember(result);
+                        }
+                    }
+                    for(int i=1;i<probes.size();i++)if(!mutual(probes.get(i-1),probes.get(i))) {
+                        var result=receipt(Status.REJECTED,Reason.NONUNIQUE_CONTINUATION,from,to,span,length,
+                            pitch,scalar,false,false,probes,transport,ts.length,-1);
                         evaluation.transferTo(owner); return remember(result);
                     }
                 }
                 if (from.sourceClass() != SourceClass.OBSERVED && to.sourceClass() != SourceClass.OBSERVED
                         || !endpointOwned(from, probes.get(0)) || !endpointOwned(to, probes.get(probes.size()-1))) {
-                    var result=receipt(Status.UNAVAILABLE,Reason.ENDPOINT_OWNERSHIP,from,to,span,length,pitch,scalar,false,true,probes,transport);
+                    var result=receipt(Status.UNAVAILABLE,Reason.ENDPOINT_OWNERSHIP,from,to,span,length,pitch,scalar,false,true,probes,transport,ts.length,-1);
                     evaluation.transferTo(owner); return remember(result);
                 }
                 // Fresh GAP/censored endpoint ports are bound by the unique endpoint mode and its
@@ -257,11 +353,11 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                     var slab=integral(left.rasterPosition(),right.rasterPosition(),evaluation);
                     double threshold=Math.max(left.threshold().shoulderThreshold(),right.threshold().shoulderThreshold());
                     if (slab.status()!=BilinearSegmentIntegral.Status.COMPLETE || slab.minimum().orElseThrow()<threshold) {
-                        var result=receipt(Status.REJECTED,Reason.SCALAR_BELOW_ENVELOPE,from,to,span,length,pitch,scalar,false,true,probes,transport);
+                        var result=receipt(Status.REJECTED,Reason.SCALAR_BELOW_ENVELOPE,from,to,span,length,pitch,scalar,false,true,probes,transport,ts.length,k);
                         evaluation.transferTo(owner); return remember(result);
                     }
                 }
-                var result=receipt(Status.ADMITTED,Reason.NONE,from,to,span,length,pitch,scalar,true,true,probes,transport);
+                var result=receipt(Status.ADMITTED,Reason.NONE,from,to,span,length,pitch,scalar,true,true,probes,transport,ts.length,-1);
                 evaluation.transferTo(owner); return remember(result);
             }
         } catch (EmissionWorkBudget.LimitExceededException | AttemptMemoryLedger.ResourceLimitException
@@ -282,10 +378,16 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     private Receipt receipt(Status status,Reason reason,RowState from,RowState to,double span,double length,
             double pitch,BilinearSegmentIntegral.Result scalar,boolean envelope,boolean continuation,List<Probe> probes,Receipt incoming) {
+        return receipt(status,reason,from,to,span,length,pitch,scalar,envelope,continuation,probes,incoming,-1,-1);
+    }
+
+    private Receipt receipt(Status status,Reason reason,RowState from,RowState to,double span,double length,
+            double pitch,BilinearSegmentIntegral.Result scalar,boolean envelope,boolean continuation,List<Probe> probes,
+            Receipt incoming,int plannedProbeCount,int failingSlabIndex) {
         work(EmissionWorkBudget.Operation.ALLOCATION,1);
         work(EmissionWorkBudget.Operation.PREPARATION,probes.size());
         return new Receipt(status,reason,context,from,to,queryPolicy,parameters.version() + "/" + queryPolicy.name(),span,length,pitch,
-            Optional.ofNullable(scalar),envelope,continuation,probes,Optional.ofNullable(incoming));
+            Optional.ofNullable(scalar),envelope,continuation,probes,plannedProbeCount,failingSlabIndex,Optional.ofNullable(incoming));
     }
 
     private Probe measure(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
@@ -299,6 +401,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             case DENSE_EIGHTH_NATIVE_V1 -> Math.min(requestedStep, minimumPitch() / 8);
             case HALF_NATIVE_L0_V1 -> Math.min(requestedStep, Math.min(minimumPitch() / 2, outputPitch));
             case PIXEL_CAPPED_L0_V1 -> Math.min(requestedStep, Math.min(minimumPitch(), outputPitch));
+            case ZERO_GUARDED_LOCAL_V1 -> Math.min(requestedStep, minimumPitch() / 8);
         };
         double halfWidth=context.searchHalfWidthMeters();
         int intervals=checkedCount(Math.ceil(2*halfWidth/step));
@@ -329,7 +432,258 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             if(candidate.mode()==selected)threshold=candidate;
         }
         work(EmissionWorkBudget.Operation.PREPARATION,samples.size());
-        return new Probe(t,point,center,normal,pitch,samples,extraction,selected,threshold);
+        var evidence = new ProfileQueryEvidence(ProfileBackend.FULL_WINDOW, halfWidth,
+            samples.size(), 0, FallbackCause.NONE, samples.size(), false);
+        return new Probe(t,point,center,normal,pitch,samples,extraction,selected,threshold,evidence);
+    }
+
+    private Probe measureLocalOrDense(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
+            AttemptMemoryLedger.Owner evaluation,IdentityHashMap<Probe,AttemptMemoryLedger.Owner> profileOwners) {
+        double source=chainage(from.row())+span*t+context.profileChainage().sourceOriginGroundMeters();
+        double pitch=context.resolution().effectivePitchMetersAt(source);
+        double delta=Math.min(context.lateralStepMeters(),Math.min(minimumPitch()/2,
+            context.resolution().outputRasterPitchMeters()));
+        double half=delta*Math.ceil(Math.max(pitch+6*delta,2.5*pitch+2*delta)/delta);
+        var evidenceOwner=evaluation.child("connector-profile-evidence");
+        try {
+        if (!(delta>0) || !Double.isFinite(half) || half>context.searchHalfWidthMeters()) {
+            Probe fallback=denseFallback(t,point,normal,from,span,evidenceOwner,FallbackCause.INITIAL_WINDOW_TOO_WIDE);
+            profileOwners.put(fallback,evidenceOwner);
+            return fallback;
+        }
+        FallbackCause fallback=FallbackCause.LOCAL_MODE_UNRESOLVED;
+        int expansions=0;
+        int totalSampleQueries=0;
+        for(double window=half; window<=context.searchHalfWidthMeters(); window+=delta) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            if(window>context.searchHalfWidthMeters())break;
+            var local=evidenceOwner.child("connector-local-probe");
+            try {
+                Probe probe=measureWindow(t,point,normal,from,span,local,window,delta,ProfileBackend.LOCAL,
+                    expansions,FallbackCause.NONE,false,totalSampleQueries);
+                totalSampleQueries=Math.addExact(totalSampleQueries,probe.samples().size());
+                boolean allZero=true;
+                for(var sample:probe.samples()) {
+                    work(EmissionWorkBudget.Operation.PREPARATION,1);
+                    allZero &= sample.valid() && sample.intensity()==0.0;
+                }
+                if (allZero) {
+                    Probe noMode=new Probe(t,point,probe.metricPosition(),normal,pitch,probe.samples(),probe.extraction(),
+                        null,null,new ProfileQueryEvidence(ProfileBackend.LOCAL,window,probe.samples().size(),expansions,
+                            FallbackCause.NONE,totalSampleQueries,true));
+                    local.transferTo(evidenceOwner);
+                    profileOwners.put(noMode,evidenceOwner);
+                    return noMode;
+                }
+                if (localProof(probe) && probeFailure(probe)==Reason.NONE) {
+                    local.transferTo(evidenceOwner);
+                    profileOwners.put(probe,evidenceOwner);
+                    return probe;
+                }
+                fallback=localFailureCause(probe);
+            } finally {
+                local.close();
+            }
+            if(fallback==FallbackCause.NOISE_FLOOR_NONZERO
+                    || window+delta>context.searchHalfWidthMeters())break;
+            expansions++;
+        }
+        Probe dense=denseFallback(t,point,normal,from,span,evidenceOwner,fallback,expansions,totalSampleQueries);
+        profileOwners.put(dense,evidenceOwner);
+        return dense;
+        } catch(RuntimeException failure) {
+            evidenceOwner.close();
+            throw failure;
+        }
+    }
+
+    private Probe replaceWithDenseFallback(Probe old,RowState from,double span,
+            AttemptMemoryLedger.Owner evaluation,IdentityHashMap<Probe,AttemptMemoryLedger.Owner> profileOwners,
+            FallbackCause cause) {
+        var oldOwner=profileOwners.remove(old);
+        if(oldOwner==null)throw new IllegalStateException("Settled local profile has no evidence owner");
+        oldOwner.close();
+        var replacementOwner=evaluation.child("connector-profile-fallback");
+        try {
+            Probe replacement=denseFallback(old.parameter(),old.rasterPosition(),old.metricNormal(),from,span,
+                replacementOwner,cause,old.profileQuery().expansionCount(),old.profileQuery().totalSampleQueries());
+            profileOwners.put(replacement,replacementOwner);
+            return replacement;
+        } catch(RuntimeException failure) {
+            replacementOwner.close();
+            throw failure;
+        }
+    }
+
+    private FallbackCause localFailureCause(Probe probe) {
+        if(probe.extraction().result().baseline().noiseFloor()!=0.0)return FallbackCause.NOISE_FLOOR_NONZERO;
+        for(var sample:probe.samples()) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            if(!sample.valid())return FallbackCause.ZERO_GUARD_UNAVAILABLE;
+        }
+        double pitch=probe.nativePitchMeters(); boolean left=false,right=false;
+        for(var sample:probe.samples()) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            if(sample.offsetMeters() < -3*pitch && sample.intensity()==0.0)left=true;
+            if(sample.offsetMeters() > 3*pitch && sample.intensity()==0.0)right=true;
+        }
+        return probe.extraction().result().baseline().noiseFloor()!=0.0 ? FallbackCause.NOISE_FLOOR_NONZERO
+            : left && right ? FallbackCause.LOCAL_MODE_UNRESOLVED : FallbackCause.ZERO_GUARD_UNAVAILABLE;
+    }
+
+    private Probe denseFallback(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
+            AttemptMemoryLedger.Owner evaluation,FallbackCause cause) {
+        return denseFallback(t,point,normal,from,span,evaluation,cause,0);
+    }
+
+    private Probe denseFallback(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
+            AttemptMemoryLedger.Owner evaluation,FallbackCause cause,int expansions) {
+        return denseFallback(t,point,normal,from,span,evaluation,cause,expansions,0);
+    }
+
+    private Probe denseFallback(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
+            AttemptMemoryLedger.Owner evaluation,FallbackCause cause,int expansions,int previousQueries) {
+        double step=Math.min(context.lateralStepMeters(),minimumPitch()/8);
+        int intervals=checkedCount(Math.ceil(2*context.searchHalfWidthMeters()/step));
+        double actualStep=2*context.searchHalfWidthMeters()/intervals;
+        return measureWindow(t,point,normal,from,span,evaluation,context.searchHalfWidthMeters(),actualStep,
+            ProfileBackend.DENSE_FALLBACK,expansions,cause,false,previousQueries);
+    }
+
+    private Probe denseFallback(Probe old,RowState from,double span,AttemptMemoryLedger.Owner evaluation,
+            FallbackCause cause) {
+        return denseFallback(old.parameter(),old.rasterPosition(),old.metricNormal(),from,span,evaluation,cause,
+            old.profileQuery().expansionCount(),old.profileQuery().totalSampleQueries());
+    }
+
+    private Probe measureWindow(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
+            AttemptMemoryLedger.Owner evaluation,double halfWidth,double step,ProfileBackend backend,
+            int expansions,FallbackCause cause,boolean localNoMode,int previousQueries) {
+        double source=chainage(from.row())+span*t+context.profileChainage().sourceOriginGroundMeters();
+        double pitch=context.resolution().effectivePitchMetersAt(source);
+        int intervals=checkedCount(Math.ceil(2*halfWidth/step));
+        int count=Math.addExact(intervals,1);
+        reserve(evaluation,Math.addExact(512,Math.multiplyExact((long)count,88)));
+        var samples=new ArrayList<Sample>(count);
+        MetricPoint center=metric(point);
+        for(int i=0;i<count;i++) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            double u=i==intervals?halfWidth:-halfWidth+2*halfWidth*i/intervals;
+            var actual=new MetricPoint(center.xMeters()+u*normal.xMeters(),center.yMeters()+u*normal.yMeters());
+            boolean authorized=context.decisionRegion().containsConservatively(actual,CancellationProbe.NONE,
+                n->work(EmissionWorkBudget.Operation.REGION_QUERY,n))
+                && context.evidenceRegion().containsConservatively(actual,CancellationProbe.NONE,
+                    n->work(EmissionWorkBudget.Operation.REGION_QUERY,n));
+            double value=authorized?strictValue(context.rasterTransform().metricToPixelCenter(actual)):Double.NaN;
+            samples.add(new Sample(u,value,Double.isFinite(value)));
+        }
+        var extraction=extractor.extractDetailedWithAcceptedThresholds(samples,pitch,parameters.localization(),evaluation,
+            CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.MODE_EXTRACTION,n));
+        Mode selected=null; int compatible=0;
+        for(Mode mode:extraction.result().baseline().modes()) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            if(mode.distanceToCenterSet(0)<=mode.localizationSigmaMeters()){selected=mode;compatible++;}
+        }
+        if(compatible!=1)selected=null;
+        AcceptedModeThresholdReceipt threshold=null;
+        for(var candidate:extraction.acceptedReceipts()) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            if(candidate.mode()==selected)threshold=candidate;
+        }
+        work(EmissionWorkBudget.Operation.PREPARATION,samples.size());
+        var evidence=new ProfileQueryEvidence(backend,halfWidth,samples.size(),expansions,cause,
+            Math.addExact(previousQueries,samples.size()),localNoMode);
+        return new Probe(t,point,center,normal,pitch,samples,extraction,selected,threshold,evidence);
+    }
+
+    private boolean localProof(Probe probe) {
+        double pitch=probe.nativePitchMeters();
+        if(probe.extraction().result().baseline().noiseFloor()!=0.0 || probe.selectedMode()==null || probe.threshold()==null
+                || probe.selectedMode().localizationSigmaMeters()>pitch/2
+                || Math.abs(probe.threshold().originPeak().offsetMeters())>pitch
+                || probe.selectedMode().distanceToCenterSet(probe.threshold().originPeak().offsetMeters())>pitch/2) return false;
+        boolean left=false,right=false;
+        for(var sample:probe.samples()) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            if(!sample.valid())return false;
+            if(sample.offsetMeters() < -3*pitch && sample.intensity()==0.0)left=true;
+            if(sample.offsetMeters() > 3*pitch && sample.intensity()==0.0)right=true;
+        }
+        if(!left || !right)return false;
+        for(var peak:probe.extraction().result().rawPeaks()) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            if(Math.abs(peak.offsetMeters())>3*pitch)continue;
+            if(peak.firstSampleIndex()<6 || peak.lastSampleIndex()+6>=probe.samples().size())return false;
+            for(int i=peak.firstSampleIndex()-6;i<=peak.lastSampleIndex()+6;i++) {
+                work(EmissionWorkBudget.Operation.PREPARATION,1);
+                if(!probe.samples().get(i).valid())return false;
+            }
+        }
+        for(var suppressed:probe.extraction().result().suppressedModes())
+            { work(EmissionWorkBudget.Operation.PREPARATION,1); if(Math.abs(suppressed.rawPeakOffsetMeters())<=3*pitch)return false; }
+        for(var censored:probe.extraction().result().baseline().censoredModes()) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            double at=censored.inwardExtentMeasured()?censored.inwardSupportOffsetMeters():censored.boundaryOffsetMeters();
+            if(Math.abs(at)<=3*pitch)return false;
+        }
+        return true;
+    }
+
+    private boolean localPairSupported(Probe a,Probe b) {
+        if(a.profileQuery().localNoModeProven() || b.profileQuery().localNoModeProven())return true;
+        if(a.profileQuery().backend()!=ProfileBackend.LOCAL && b.profileQuery().backend()!=ProfileBackend.LOCAL)return true;
+        if(a.selectedMode()==null || b.selectedMode()==null)return false;
+        double radius=1.5*Math.min(a.nativePitchMeters(),b.nativePitchMeters());
+        return crossSupported(a,b,radius) && crossSupported(b,a,radius);
+    }
+
+    private boolean crossSupported(Probe target,Probe other,double radius) {
+        if(target.profileQuery().backend()!=ProfileBackend.LOCAL)return true;
+        double ox=other.metricPosition().xMeters()+other.metricNormal().xMeters()*other.selectedMode().centerMeters();
+        double oy=other.metricPosition().yMeters()+other.metricNormal().yMeters()*other.selectedMode().centerMeters();
+        double offset=(ox-target.metricPosition().xMeters())*target.metricNormal().xMeters()
+            +(oy-target.metricPosition().yMeters())*target.metricNormal().yMeters();
+        double p=target.nativePitchMeters();
+        double lo=offset-radius-p/2,hi=offset+radius+p/2;
+        if(lo < -3*p || hi > 3*p)return false;
+        int first=indexAtOrAfter(target.samples(),lo),last=indexAtOrBefore(target.samples(),hi);
+        if(first<0 || last<first)return false;
+        for(int i=first;i<=last;i++) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            if(!target.samples().get(i).valid())return false;
+        }
+        for(var peak:target.extraction().result().rawPeaks()) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            if(peak.offsetMeters()<lo || peak.offsetMeters()>hi)continue;
+            if(peak.firstSampleIndex()<6 || peak.lastSampleIndex()+6>=target.samples().size())return false;
+            for(int i=peak.firstSampleIndex()-6;i<=peak.lastSampleIndex()+6;i++) {
+                work(EmissionWorkBudget.Operation.PREPARATION,1);
+                if(!target.samples().get(i).valid())return false;
+            }
+        }
+        for(var suppressed:target.extraction().result().suppressedModes())
+            { work(EmissionWorkBudget.Operation.PREPARATION,1); if(suppressed.rawPeakOffsetMeters()>=lo && suppressed.rawPeakOffsetMeters()<=hi)return false; }
+        for(var censored:target.extraction().result().baseline().censoredModes()) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            double at=censored.inwardExtentMeasured()?censored.inwardSupportOffsetMeters():censored.boundaryOffsetMeters();
+            if(at>=lo && at<=hi)return false;
+        }
+        return true;
+    }
+
+    private int indexAtOrAfter(List<Sample> samples,double offset) {
+        for(int i=0;i<samples.size();i++) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            if(samples.get(i).offsetMeters()>=offset)return i;
+        }
+        return samples.size();
+    }
+    private int indexAtOrBefore(List<Sample> samples,double offset) {
+        for(int i=samples.size()-1;i>=0;i--) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            if(samples.get(i).offsetMeters()<=offset)return i;
+        }
+        return -1;
     }
 
     private Reason probeFailure(Probe probe) {
@@ -338,7 +692,8 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             work(EmissionWorkBudget.Operation.PREPARATION,1);
             if(mode.distanceToCenterSet(0)<=mode.localizationSigmaMeters())compatible++;
         }
-        if(compatible==0)return Reason.NO_COMPLETE_MODE;
+        if(compatible==0)return probe.profileQuery().localNoModeProven()
+            ? Reason.LOCAL_NO_MODE : Reason.NO_COMPLETE_MODE;
         if(compatible!=1)return Reason.AMBIGUOUS_MODE;
         var selected=probe.selectedMode();
         int flanks=0,cores=0;

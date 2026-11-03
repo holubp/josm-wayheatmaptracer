@@ -11,9 +11,13 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 
 class NativeConnectorEvaluatorTest {
     private static final int[] WITNESS = {0, 1, 15, 16};
+    private static final List<QueryPolicy> ESTABLISHED_POLICIES = List.of(
+        QueryPolicy.DENSE_EIGHTH_NATIVE_V1, QueryPolicy.HALF_NATIVE_L0_V1,
+        QueryPolicy.PIXEL_CAPPED_L0_V1);
 
     @Test void queryPoliciesRecordVersionedIdentityAndPreserveExplicitDenseNumerics() {
         try (var f = straight(false, SourceClass.OBSERVED);
@@ -64,6 +68,174 @@ class NativeConnectorEvaluatorTest {
                 assertEquals(originalProfile.intensitySamples(), oneMeterProfile.intensitySamples());
                 assertEquals(originalProfile.peaks(), oneMeterProfile.peaks());
             }
+        }
+    }
+
+    @Test void zeroGuardedLocalPolicyUsesActualLocalSamplesAndExplicitBackendReceipt() {
+        try (var f = scene((x, y) -> y == 32 ? 1.0 : y == 31 || y == 33 ? 0.5 : 0.0,
+                (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED,
+                2, 1, RasterMetricTransform.metricGrid(new MetricPoint(0, 0), 1, 0, 0, 1), budget(), 1);
+             var evaluator = new NativeConnectorEvaluator(f.input(),
+                 new Domain(f.states(), List.of()), QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+            var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
+            assertEquals(Status.ADMITTED, receipt.status(), receipt::toString);
+            assertEquals(QueryPolicy.ZERO_GUARDED_LOCAL_V1, receipt.queryPolicy());
+            assertTrue(receipt.parameterVersion().endsWith("/ZERO_GUARDED_LOCAL_V1"));
+            assertEquals(3, receipt.plannedProbeCount());
+            assertEquals(-1, receipt.firstFailingSlabIndex());
+            assertTrue(receipt.probes().stream().allMatch(probe -> {
+                var query = probe.profileQuery();
+                return query.backend() == ProfileBackend.LOCAL
+                    && query.halfWindowMeters() == 4.0
+                    && query.sampleCount() == 17
+                    && query.totalSampleQueries() == 17
+                    && query.expansionCount() == 0
+                    && query.fallbackCause() == FallbackCause.NONE
+                    && !query.localNoModeProven();
+            }), receipt.probes().stream().map(Probe::profileQuery).toList().toString());
+        }
+    }
+
+    @Test void broadGaussianUsesDenseFallbackAndRetainsFullNativeEvidence() {
+        try (var f=scene((x,y)->Math.exp(-0.5*Math.pow((y-32)/1.5,2)),(x,y)->true,
+                MetricRegion.rectangle(0,0,63,63),SourceClass.GAP,2,1,
+                RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),budget(),1);
+             var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                 QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+            var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
+            assertFalse(receipt.probes().isEmpty());
+            assertTrue(receipt.probes().stream().allMatch(p->p.profileQuery().backend()==ProfileBackend.DENSE_FALLBACK));
+            assertTrue(receipt.probes().stream().allMatch(p->p.profileQuery().halfWindowMeters()==8.0
+                && p.profileQuery().sampleCount()==129 && p.profileQuery().totalSampleQueries()>129
+                && p.extraction().result().baseline().noiseFloor()>0));
+            assertEquals(3,receipt.plannedProbeCount());
+        }
+    }
+
+    @Test void fullyObservedAllZeroLocalDomainIsTypedNoMode() {
+        try (var f=scene((x,y)->0.0,(x,y)->true,MetricRegion.rectangle(0,0,63,63),SourceClass.GAP,
+                2,1,RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),budget(),1);
+             var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                 QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+            var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
+            assertEquals(Status.REJECTED,receipt.status());
+            assertEquals(Reason.LOCAL_NO_MODE,receipt.reason());
+            assertTrue(receipt.probes().stream().allMatch(p->p.profileQuery().backend()==ProfileBackend.LOCAL
+                && p.profileQuery().localNoModeProven() && p.samples().stream().allMatch(sample->sample.valid())));
+        }
+    }
+
+    @Test void localPolicyReceiptIdentifiesTheFirstFinalThresholdSlabFailure() {
+        try (var f=scene((x,y)->(x<19.25?1.0:0.4)*Math.exp(-0.5*Math.pow(y-32,2)),(x,y)->true,
+                MetricRegion.rectangle(0,0,63,63),SourceClass.OBSERVED,2,20,
+                RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),budget(),1);
+             var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                 QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+            var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
+            assertEquals(Status.REJECTED,receipt.status(),receipt::toString);
+            assertEquals(Reason.SCALAR_BELOW_ENVELOPE,receipt.reason());
+            assertTrue(receipt.plannedProbeCount()>=receipt.probes().size());
+            assertTrue(receipt.firstFailingSlabIndex()>=0);
+            assertTrue(receipt.measuredNativeContinuationComplete());
+        }
+    }
+
+    @Test void rightNeighborFallbackSettlesMiddleBeforeTheLeftSlabThresholdCheck() {
+        java.util.function.DoubleUnaryOperator profile=offset -> offset==0?1.0:offset<=0.5?0.85:
+            offset<=1?0.55:offset<=1.5?0.2:offset<=4?0.0:0.3;
+        var provisionalSamples=new ArrayList<LocalScalarProfileExtractor.Sample>();
+        for(int i=-8;i<=8;i++)provisionalSamples.add(new LocalScalarProfileExtractor.Sample(i*0.5,
+            profile.applyAsDouble(Math.abs(i*0.5)),true));
+        var provisional=new LocalScalarProfileExtractor().extractDetailedWithAcceptedThresholds(provisionalSamples,
+            1.0,EvidenceModelParameters.Localization.defaults(),null,CancellationProbe.NONE,n->{ });
+        assertEquals(0.0,provisional.result().baseline().noiseFloor());
+        assertEquals(1,provisional.result().baseline().modes().size());
+        assertEquals(0.72,provisional.acceptedReceipts().get(0).shoulderThreshold(),1e-12);
+        var resolution=new EvidenceResolution(EvidenceResolution.Kind.NATIVE_SOURCE,
+            java.util.OptionalDouble.of(1),0.5,List.of(
+                new EvidenceResolution.PitchSample(0,java.util.OptionalDouble.of(1),0.5),
+                new EvidenceResolution.PitchSample(0.5,java.util.OptionalDouble.of(1),0.5),
+                new EvidenceResolution.PitchSample(1,java.util.OptionalDouble.of(5),0.5)),java.util.OptionalDouble.of(0.5));
+        try (var f=scene((x,y)->{
+                    double offset=Math.abs((y-(x==12?35:32))*0.5);
+                    if(x==10)return 0.76*profile.applyAsDouble(offset);
+                    if(x==11)return profile.applyAsDouble(offset);
+                    if(x==12)return y>=32 && y<=38?1.0:0.0;
+                    return 0.0;
+                },(x,y)->true,MetricRegion.rectangle(0,0,31.5,31.5),SourceClass.OBSERVED,2,1,
+                RasterMetricTransform.metricGrid(new MetricPoint(0,0),0.5,0,0,0.5),budget(),1,resolution,25);
+             var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                 QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+            var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
+            assertEquals(3,receipt.plannedProbeCount(),receipt::toString);
+            assertEquals(3,receipt.probes().size(),receipt::toString);
+            var left=receipt.probes().get(0);var middle=receipt.probes().get(1);var right=receipt.probes().get(2);
+            assertEquals(ProfileBackend.LOCAL,left.profileQuery().backend());
+            assertEquals(ProfileBackend.DENSE_FALLBACK,middle.profileQuery().backend());
+            assertEquals(FallbackCause.CROSS_PROBE_SUPPORT_UNAVAILABLE,middle.profileQuery().fallbackCause());
+            assertEquals(401,middle.profileQuery().sampleCount());
+            assertEquals(418,middle.profileQuery().totalSampleQueries());
+            assertEquals(0,middle.profileQuery().expansionCount());
+            assertTrue(middle.threshold().shoulderThreshold()>provisional.acceptedReceipts().get(0).shoulderThreshold());
+            assertEquals(0.76,receipt.scalar().orElseThrow().minimum().orElseThrow(),1e-6);
+            assertTrue(left.threshold().shoulderThreshold()<0.76);
+            assertTrue(middle.threshold().shoulderThreshold()>0.76,middle.threshold().toString());
+            assertEquals(Status.REJECTED,receipt.status(),receipt::toString);
+            assertEquals(Reason.SCALAR_BELOW_ENVELOPE,receipt.reason());
+            assertEquals(0,receipt.firstFailingSlabIndex());
+            assertTrue(receipt.measuredNativeContinuationComplete());
+            assertTrue(right.selectedMode().distanceToCenterSet(0)<=right.selectedMode().localizationSigmaMeters());
+        }
+    }
+
+    @Test void oneSidedLocalGuardFallsBackWithoutManufacturingTheMissingSide() {
+        try (var f=scene((x,y)->y==32?1.0:0.0,(x,y)->true,
+                MetricRegion.rectangle(0,0,63,32),SourceClass.OBSERVED,2,20,
+                RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),budget(),1);
+             var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                 QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+            var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
+            assertNotEquals(Status.ADMITTED,receipt.status());
+            assertTrue(receipt.probes().stream().anyMatch(p->p.profileQuery().backend()==ProfileBackend.DENSE_FALLBACK));
+            assertTrue(receipt.probes().stream().filter(p->p.profileQuery().backend()==ProfileBackend.DENSE_FALLBACK)
+                .allMatch(p->p.profileQuery().fallbackCause()!=FallbackCause.NONE));
+            assertTrue(receipt.probes().stream().filter(p->p.profileQuery().backend()==ProfileBackend.DENSE_FALLBACK)
+                .allMatch(p->p.profileQuery().expansionCount()>0
+                    && p.profileQuery().totalSampleQueries()>p.profileQuery().sampleCount()));
+        }
+    }
+
+    @Test void localPolicyRetainsSplitForkAsARealCompetitorFailure() {
+        try (var f=scene((x,y)->x<19?Math.exp(-0.5*Math.pow(y-32,2)):
+                    Math.max(Math.exp(-0.5*Math.pow(y-29,2)),Math.exp(-0.5*Math.pow(y-35,2))),
+                (x,y)->true,MetricRegion.rectangle(0,0,63,63),SourceClass.OBSERVED,2,20,
+                RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),budget(),1);
+             var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                 QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+            var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
+            assertNotEquals(Status.ADMITTED,receipt.status(),receipt::toString);
+            assertNotEquals(Reason.ENDPOINT_OWNERSHIP,receipt.reason());
+            assertFalse(receipt.measuredNativeContinuationComplete());
+            assertTrue(receipt.probes().stream().allMatch(p->p.profileQuery().backend()!=ProfileBackend.FULL_WINDOW));
+        }
+    }
+
+    @Test void localWindowUsesFactualSpatialPitchAlongTheConnector() {
+        var resolution=new EvidenceResolution(EvidenceResolution.Kind.NATIVE_SOURCE,
+            java.util.OptionalDouble.of(1),1,List.of(
+                new EvidenceResolution.PitchSample(0,java.util.OptionalDouble.of(1),1),
+                new EvidenceResolution.PitchSample(20,java.util.OptionalDouble.of(2),1)),java.util.OptionalDouble.empty());
+        try (var f=scene((x,y)->y==32?1.0:0.0,(x,y)->true,
+                MetricRegion.rectangle(0,0,63,63),SourceClass.OBSERVED,2,20,
+                RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),budget(),1,resolution);
+             var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                 QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+            var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
+            assertEquals(41,receipt.plannedProbeCount());
+            assertTrue(receipt.probes().get(0).nativePitchMeters()<receipt.probes().get(receipt.probes().size()-1).nativePitchMeters());
+            assertTrue(receipt.probes().stream().allMatch(p->p.profileQuery().backend()!=ProfileBackend.FULL_WINDOW));
+            assertTrue(receipt.probes().get(0).profileQuery().halfWindowMeters()
+                < receipt.probes().get(receipt.probes().size()-1).profileQuery().halfWindowMeters());
         }
     }
 
@@ -131,7 +303,7 @@ class NativeConnectorEvaluatorTest {
                 }
                 var expectedSampleCounts = Map.of(QueryPolicy.DENSE_EIGHTH_NATIVE_V1, 401,
                     QueryPolicy.HALF_NATIVE_L0_V1, 101, QueryPolicy.PIXEL_CAPPED_L0_V1, 51);
-                for (var policy : QueryPolicy.values()) {
+                for (var policy : ESTABLISHED_POLICIES) {
                     try (var evaluator = new NativeConnectorEvaluator(retained, new Domain(states,List.of()), policy)) {
                         for (int i = 1; i < WITNESS.length; i++) {
                             var receipt = evaluator.evaluate(states.get(WITNESS[i - 1]), states.get(WITNESS[i]));
@@ -144,19 +316,56 @@ class NativeConnectorEvaluatorTest {
                             assertTrue(receipt.to().peakOwner() != null && !receipt.to().peakOwner().syntheticCenter(), policy.name());
                             assertTrue(receipt.probes().stream().allMatch(probe ->
                                 probe.samples().size() == expectedSampleCounts.get(policy)), policy.name());
+                            assertTrue(receipt.probes().stream().allMatch(probe ->
+                                probe.profileQuery().backend() == ProfileBackend.FULL_WINDOW), policy.name());
                         }
+                    }
+                }
+                try (var evaluator=new NativeConnectorEvaluator(retained,new Domain(states,List.of()),
+                        QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+                    for(int i=1;i<WITNESS.length;i++) {
+                        var receipt=evaluator.evaluate(states.get(WITNESS[i-1]),states.get(WITNESS[i]));
+                        assertEquals(Status.ADMITTED,receipt.status(),engine+" local "+WITNESS[i-1]+"->"+WITNESS[i]+" "+receipt);
+                        assertTrue(receipt.scalarEnvelopeComplete() && receipt.measuredNativeContinuationComplete());
+                        assertTrue(receipt.probes().stream().allMatch(p->p.selectedMode()!=null
+                            && p.profileQuery().backend()!=ProfileBackend.FULL_WINDOW));
                     }
                 }
             }
         }
         assertEquals(0,ledger.currentBytes());
     }
-    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    @ParameterizedTest @EnumSource(value = QueryPolicy.class, names = {"DENSE_EIGHTH_NATIVE_V1", "HALF_NATIVE_L0_V1", "PIXEL_CAPPED_L0_V1"})
     void rejectsUniformBrightFieldWithoutNativeRidge(QueryPolicy policy) {
         try(var f=straight(true,SourceClass.GAP,1)) {
             try(var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),policy)) {
                 assertEquals(Status.REJECTED,evaluator.evaluate(f.states().get(0),f.states().get(1)).status());
             }
+        }
+    }
+
+    @Test void uniformBrightLocalPolicyFallsBackWithoutCallingItAnAllZeroNeighborhood() {
+        try(var f=straight(true,SourceClass.GAP,1);
+            var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+            var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
+            assertEquals(Status.REJECTED,receipt.status());
+            assertEquals(Reason.NO_COMPLETE_MODE,receipt.reason());
+            assertTrue(receipt.probes().stream().allMatch(p->p.profileQuery().backend()==ProfileBackend.DENSE_FALLBACK
+                && !p.profileQuery().localNoModeProven()));
+        }
+    }
+
+    @Test void localPolicyKeepsWorkBudgetFailureStickyInsteadOfTryingFallback() {
+        try(var f=straight(false,SourceClass.OBSERVED,1);
+            var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+            var failure=assertThrows(EmissionWorkBudget.LimitExceededException.class,
+                ()->f.input().workBudget().charge(EmissionWorkBudget.Operation.PREPARATION,Long.MAX_VALUE));
+            assertSame(failure,assertThrows(EmissionWorkBudget.LimitExceededException.class,
+                ()->evaluator.evaluate(f.states().get(0),f.states().get(1))));
+            assertSame(failure,assertThrows(EmissionWorkBudget.LimitExceededException.class,
+                ()->evaluator.evaluate(f.states().get(0),f.states().get(1))));
         }
     }
 
@@ -170,7 +379,7 @@ class NativeConnectorEvaluatorTest {
                 .allMatch(profile -> profile.peaks().get(0).syntheticCenter()));
             assertEquals(1.698566775303334e-4,
                 f.input().profiles().levelZeroProfiles().get(0).peaks().get(0).maxProfileIntensity(), 1e-15);
-            for (var policy : QueryPolicy.values()) {
+            for (var policy : ESTABLISHED_POLICIES) {
                 try (var evaluator = new NativeConnectorEvaluator(f.input(),
                         new Domain(f.states(), List.of()), policy)) {
                     var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
@@ -182,6 +391,14 @@ class NativeConnectorEvaluatorTest {
                     assertTrue(receipt.measuredNativeContinuationComplete(), policy.name());
                     assertTrue(receipt.scalar().isPresent(), policy.name());
                 }
+            }
+            try(var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                    QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+                var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
+                assertNotEquals(Status.ADMITTED,receipt.status());
+                assertEquals(Reason.ENDPOINT_OWNERSHIP,receipt.reason());
+                assertTrue(receipt.probes().stream().allMatch(p->p.selectedMode()!=null
+                    && !p.profileQuery().localNoModeProven()));
             }
         }
     }
@@ -203,7 +420,7 @@ class NativeConnectorEvaluatorTest {
             }
             var expectedSampleCounts = Map.of(QueryPolicy.DENSE_EIGHTH_NATIVE_V1, 129,
                 QueryPolicy.HALF_NATIVE_L0_V1, 33, QueryPolicy.PIXEL_CAPPED_L0_V1, 17);
-            for (var policy : QueryPolicy.values()) {
+            for (var policy : ESTABLISHED_POLICIES) {
                 try (var evaluator = new NativeConnectorEvaluator(f.input(),
                         new Domain(ownedStates, List.of()), policy)) {
                     var receipt = evaluator.evaluate(ownedStates.get(0), ownedStates.get(1));
@@ -211,10 +428,17 @@ class NativeConnectorEvaluatorTest {
                     assertEquals(expectedSampleCounts.get(policy), receipt.probes().get(0).samples().size(), policy.name());
                 }
             }
+            try (var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(ownedStates,List.of()),
+                    QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+                var receipt=evaluator.evaluate(ownedStates.get(0),ownedStates.get(1));
+                assertEquals(Status.ADMITTED,receipt.status(),receipt::toString);
+                assertTrue(receipt.probes().stream().allMatch(p->p.profileQuery().backend()==ProfileBackend.LOCAL
+                    && p.samples().size()==17));
+            }
         }
     }
 
-    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    @ParameterizedTest @EnumSource(value = QueryPolicy.class, names = {"DENSE_EIGHTH_NATIVE_V1", "HALF_NATIVE_L0_V1", "PIXEL_CAPPED_L0_V1"})
     void admitsMeasuredStraightRidgeWithOriginalPeakOwnership(QueryPolicy policy) {
         try (var f = straight(false, SourceClass.OBSERVED,1);
              var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()), policy)) {
@@ -227,7 +451,7 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    @ParameterizedTest @EnumSource(value = QueryPolicy.class, names = {"DENSE_EIGHTH_NATIVE_V1", "HALF_NATIVE_L0_V1", "PIXEL_CAPPED_L0_V1"})
     void freshUnownedPortsCannotBindEachOtherWithoutAnOriginalBranchOwner(QueryPolicy policy) {
         try (var f = straight(false, SourceClass.GAP,1);
              var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()), policy)) {
@@ -282,7 +506,7 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    @ParameterizedTest @EnumSource(value = QueryPolicy.class, names = {"DENSE_EIGHTH_NATIVE_V1", "HALF_NATIVE_L0_V1", "PIXEL_CAPPED_L0_V1"})
     void brightEndpointsDoNotAuthorizeAnInteriorDarkGap(QueryPolicy policy) {
         try (var f = scene((x, y) -> Math.abs(x - 20) <= 1 ? 0
                     : Math.exp(-0.5 * Math.pow(y - 32, 2)),
@@ -294,7 +518,7 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    @ParameterizedTest @EnumSource(value = QueryPolicy.class, names = {"DENSE_EIGHTH_NATIVE_V1", "HALF_NATIVE_L0_V1", "PIXEL_CAPPED_L0_V1"})
     void invalidInteriorCellIsNotInterpolatedAcross(QueryPolicy policy) {
         try (var f = scene((x, y) -> Math.exp(-0.5 * Math.pow(y - 32, 2)),
                 (x, y) -> x != 20 || y != 32, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED, 1);
@@ -305,7 +529,7 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    @ParameterizedTest @EnumSource(value = QueryPolicy.class, names = {"DENSE_EIGHTH_NATIVE_V1", "HALF_NATIVE_L0_V1", "PIXEL_CAPPED_L0_V1"})
     void invalidCellTouchedOnlyAtConnectorCornerRemainsUnsupported(QueryPolicy policy) {
         try (var f = scene((x, y) -> Math.exp(-0.5 * Math.pow(y - 32, 2)),
                 (x, y) -> x != 20 || y != 33, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED, 1);
@@ -318,7 +542,7 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    @ParameterizedTest @EnumSource(value = QueryPolicy.class, names = {"DENSE_EIGHTH_NATIVE_V1", "HALF_NATIVE_L0_V1", "PIXEL_CAPPED_L0_V1"})
     void coarsePoliciesConservativelyLoseLocalModeAtMaskedSupportEdge(QueryPolicy policy) {
         try (var f = scene((x, y) -> Math.exp(-0.5 * Math.pow(y - 32, 2)),
                 (x, y) -> x != 20 || y != 34, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED, 1);
@@ -379,7 +603,24 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    @Test void localPolicyFallsBackAtTheSameCensoredMaskAndUsesDenseSelectedEvidence() {
+        try (var f=scene((x,y)->Math.exp(-0.5*Math.pow(y-32,2)),
+                (x,y)->x!=20 || y!=34,MetricRegion.rectangle(0,0,63,63),SourceClass.OBSERVED,2,20,
+                RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1),budget(),1);
+             var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
+                 QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+            var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
+            assertEquals(Status.ADMITTED,receipt.status(),receipt::toString);
+            var edge=receipt.probes().stream().filter(p->Math.abs(p.metricPosition().xMeters()-19)<1e-12)
+                .findFirst().orElseThrow();
+            assertEquals(ProfileBackend.DENSE_FALLBACK,edge.profileQuery().backend());
+            assertNotNull(edge.selectedMode());
+            assertNotNull(edge.threshold());
+            assertTrue(edge.profileQuery().totalSampleQueries()>edge.profileQuery().sampleCount());
+        }
+    }
+
+    @ParameterizedTest @EnumSource(value = QueryPolicy.class, names = {"DENSE_EIGHTH_NATIVE_V1", "HALF_NATIVE_L0_V1", "PIXEL_CAPPED_L0_V1"})
     void decisionAuthorityMustCoverWholeConnectorIncludingNarrowNotch(QueryPolicy policy) {
         var authority = new MetricRegion(List.of(List.of(new MetricPoint(0, 0),
             new MetricPoint(63, 0), new MetricPoint(63, 63), new MetricPoint(20.01, 63),
@@ -394,7 +635,7 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    @ParameterizedTest @EnumSource(value = QueryPolicy.class, names = {"DENSE_EIGHTH_NATIVE_V1", "HALF_NATIVE_L0_V1", "PIXEL_CAPPED_L0_V1"})
     void oneFreshGapPortCanBindThroughDirectEvidenceToAnOwnedPort(QueryPolicy policy) {
         try (var f = straight(false, SourceClass.OBSERVED,1)) {
             var gap = new RowState(0, 0, 0, SourceClass.GAP, null);
@@ -469,7 +710,7 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    @ParameterizedTest @EnumSource(value = QueryPolicy.class, names = {"DENSE_EIGHTH_NATIVE_V1", "HALF_NATIVE_L0_V1", "PIXEL_CAPPED_L0_V1"})
     void representableSubEventToleranceNotchCannotBeSkipped(QueryPolicy policy) {
         double left = 20 - 0.5e-9, right = 20 + 0.5e-9;
         var authority = new MetricRegion(List.of(
@@ -556,7 +797,7 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    @ParameterizedTest @EnumSource(value = QueryPolicy.class, names = {"DENSE_EIGHTH_NATIVE_V1", "HALF_NATIVE_L0_V1", "PIXEL_CAPPED_L0_V1"})
     void completeBroadPlateauRemainsAdmissible(QueryPolicy policy) {
             try (var f = scene((x, y) -> Math.exp(-0.5 * Math.pow(Math.max(0, Math.abs(y - 32) - 2), 2)),
                     (x, y) -> true,
@@ -567,7 +808,7 @@ class NativeConnectorEvaluatorTest {
             }
     }
 
-    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    @ParameterizedTest @EnumSource(value = QueryPolicy.class, names = {"DENSE_EIGHTH_NATIVE_V1", "HALF_NATIVE_L0_V1", "PIXEL_CAPPED_L0_V1"})
     void faintConcentratedEndpointCanBindWithoutRelabellingSyntheticSourceAsObserved(QueryPolicy policy) {
         try (var f = scene((x, y) -> (0.1 + 0.6 * Math.max(0, Math.min(1, (30 - x) / 20)))
                     * Math.exp(-0.5 * Math.pow(y - 32, 2)),
@@ -583,6 +824,12 @@ class NativeConnectorEvaluatorTest {
                 assertEquals(SourceClass.GAP, receipt.to().sourceClass());
                 assertNull(receipt.to().peakOwner());
             }
+            try (var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(List.of(f.states().get(0),gap),List.of()),
+                    QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+                var receipt=evaluator.evaluate(f.states().get(0),gap);
+                assertEquals(Status.ADMITTED,receipt.status(),receipt::toString);
+                assertEquals(SourceClass.GAP,receipt.to().sourceClass());
+            }
         }
     }
 
@@ -595,7 +842,7 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    @ParameterizedTest @EnumSource(value = QueryPolicy.class, names = {"DENSE_EIGHTH_NATIVE_V1", "HALF_NATIVE_L0_V1", "PIXEL_CAPPED_L0_V1"})
     void measuredForkCannotAuthorizeTheStraightDarkMiddle(QueryPolicy policy) {
         try (var f = scene((x, y) -> x < 19 ? Math.exp(-0.5 * Math.pow(y - 32, 2))
                     : Math.max(Math.exp(-0.5 * Math.pow(y - 29, 2)),
@@ -609,7 +856,7 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    @ParameterizedTest @EnumSource(value = QueryPolicy.class, names = {"DENSE_EIGHTH_NATIVE_V1", "HALF_NATIVE_L0_V1", "PIXEL_CAPPED_L0_V1"})
     void zeroLengthEdgeRequiresAndTransportsAnActualIssuedIncomingArc(QueryPolicy policy) {
         int w = 64, h = 64;
         double[] values = new double[w * h];
@@ -704,13 +951,25 @@ class NativeConnectorEvaluatorTest {
             java.util.function.BiPredicate<Integer, Integer> validity, MetricRegion decision,
             SourceClass sourceClass, int rows, double span, RasterMetricTransform transform,
             EmissionWorkBudget work, double requestedStep) {
+        return scene(intensity,validity,decision,sourceClass,rows,span,transform,work,requestedStep,null);
+    }
+    private static Straight scene(java.util.function.DoubleBinaryOperator intensity,
+            java.util.function.BiPredicate<Integer, Integer> validity, MetricRegion decision,
+            SourceClass sourceClass, int rows, double span, RasterMetricTransform transform,
+            EmissionWorkBudget work, double requestedStep, EvidenceResolution resolution) {
+        return scene(intensity,validity,decision,sourceClass,rows,span,transform,work,requestedStep,resolution,8);
+    }
+    private static Straight scene(java.util.function.DoubleBinaryOperator intensity,
+            java.util.function.BiPredicate<Integer, Integer> validity, MetricRegion decision,
+            SourceClass sourceClass, int rows, double span, RasterMetricTransform transform,
+            EmissionWorkBudget work, double requestedStep, EvidenceResolution resolution,double searchHalfWidth) {
         int w=64,h=64; double[] values=new double[w*h];
         boolean[] valid = new boolean[w * h];
         for(int y=0;y<h;y++)for(int x=0;x<w;x++) {
             values[y*w+x]=intensity.applyAsDouble(x,y);
             valid[y*w+x]=validity.test(x,y);
         }
-        var evidence=evidence(w,h,values,valid,transform,decision);
+        var evidence=evidence(w,h,values,valid,transform,decision,resolution);
         var locations = new ArrayList<DetachedProfileSamplingLocation>();
         for (int row = 0; row < rows; row++) {
             double chainage = span * row / (rows - 1);
@@ -721,7 +980,8 @@ class NativeConnectorEvaluatorTest {
         SampledEmissionInput sampled;
         try {
             sampled=new DetachedScalarProfileSampler().sampleDeclaredSyntheticForEmission(evidence,"native",input,
-                new ProfileChainage(locations.stream().map(DetachedProfileSamplingLocation::cumulativeGroundDistanceMeters).toList(), span / (rows - 1)),8,work,owner);
+                new ProfileChainage(locations.stream().map(DetachedProfileSamplingLocation::cumulativeGroundDistanceMeters).toList(), span / (rows - 1)),
+                searchHalfWidth,work,owner);
         } catch (RuntimeException failure) {
             owner.close();
             assertEquals(0, ledger.currentBytes());
@@ -741,6 +1001,10 @@ class NativeConnectorEvaluatorTest {
         return evidence(w,h,values,valid,transform,decision);
     }
     private static EvidenceSnapshot evidence(int w,int h,double[] values,boolean[] valid,RasterMetricTransform transform,MetricRegion decision) {
+        return evidence(w,h,values,valid,transform,decision,null);
+    }
+    private static EvidenceSnapshot evidence(int w,int h,double[] values,boolean[] valid,RasterMetricTransform transform,
+            MetricRegion decision,EvidenceResolution resolution) {
         var origin=new GeographicPoint(0,0);
         var frame=LocalMetricFrame.certifiedEquirectangular(origin,new GeographicPoint(-.01,-.01),new GeographicPoint(.01,.01));
         var field=new ScalarEvidenceField(w,h,values,valid,new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,
@@ -748,7 +1012,8 @@ class NativeConnectorEvaluatorTest {
         double scale = transform.axisUnit() == RasterMetricTransform.AxisUnit.SOURCE_PIXEL
             ? transform.rasterPixelsPerSourcePixel() : 1;
         double pitch = Math.hypot(transform.xAxisEastMetersPerSourcePixel(), transform.xAxisNorthMetersPerSourcePixel()) / scale;
-        return new EvidenceSnapshot("native-connector-test",frame,transform,EvidenceResolution.nativeSource(pitch,pitch),decision,
+        EvidenceResolution effective=resolution==null?EvidenceResolution.nativeSource(pitch,pitch):resolution;
+        return new EvidenceSnapshot("native-connector-test",frame,transform,effective,decision,
             MetricRegion.rectangle(transform.origin().xMeters(),transform.origin().yMeters(),transform.pixelCenterToMetric(w-1,h-1).xMeters(),transform.pixelCenterToMetric(w-1,h-1).yMeters()),Map.of("native",field),"declared-only");
     }
     private static DetachedProfileSamplingLocation at(EvidenceSnapshot evidence,RasterPoint raster,double chainage) {
