@@ -11,6 +11,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.AbstractList;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -35,6 +41,11 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileCache;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileRequest;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileCachePolicy;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TilePurpose;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CancellationToken;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileDecoderClassifier;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchStatus;
@@ -45,6 +56,52 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 class ManagedSourceRequestReceiptTest {
     @TempDir Path cache;
+
+    @Test void cancellationDetachesOnlyManagedSubscriberDuringBlockedSharedFetch() throws Exception {
+        var projection = Projections.getProjectionByCode("EPSG:3857");
+        var source = List.of(projection.latlon2eastNorth(new LatLon(49.44, 14.0)),
+                projection.latlon2eastNorth(new LatLon(49.44, 14.0001)));
+        var settings = managedSettings();
+        var decoder = new TileDecoderClassifier();
+        byte[] png = colorRoutePng();
+        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        AtomicReference<TileRequest> firstRequest = new AtomicReference<>();
+        AtomicBoolean cancelled = new AtomicBoolean();
+        var ledger = AttemptMemoryLedger.production();
+        var owner = ledger.rootOwner();
+        var budget = new EmissionWorkBudget(TraceBudgets.defaults(), cancelled::get);
+        var executor = Executors.newSingleThreadExecutor();
+        try (var coordinator = new TileFetchCoordinator((request, credentials) -> {
+                    firstRequest.set(request);
+                    entered.countDown();
+                    try { release.await(); }
+                    catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+                    return new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                            png, null, Duration.ZERO, "");
+                }, new ManagedTileCache(cache, decoder), decoder, TileReliabilityPolicy.defaults())) {
+            var sampler = new TileHeatmapSampler(coordinator);
+            var first = executor.submit(() -> sampler.prepareForEmission(settings, source,
+                    List.of("hot"), "hot", false, projection, budget, owner));
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            TileRequest original = firstRequest.get();
+            var other = coordinator.fetch(new TileRequest(original.address(), original.generation(),
+                    TilePurpose.ALIGNMENT_REQUIRED, TileCachePolicy.USE_CACHE,
+                    java.time.Instant.now().plusSeconds(30), new CancellationToken()),
+                    CredentialSnapshot.fromConfig(settings)).toCompletableFuture();
+            cancelled.set(true);
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> first.get(2, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof CancellationException);
+            assertFalse(other.isDone());
+            release.countDown();
+            assertTrue(other.get(2, TimeUnit.SECONDS).usable());
+            assertEquals(0L, ledger.currentBytes());
+        } finally {
+            release.countDown();
+            executor.shutdownNow();
+            owner.close();
+        }
+    }
 
     @Test void selectedWitnessSurvivesCaptureCloseOnlyWhileRetainedProducerOwnsIt() throws Exception {
         Config.setPreferencesInstance(new MemoryPreferences());
@@ -73,9 +130,15 @@ class ManagedSourceRequestReceiptTest {
             var sampler = new TileHeatmapSampler(coordinator);
             var witness = ManagedSelectionWitness.capture(dataSet, selection, projection, source,
                     budget, owner);
+            assertThrows(IllegalArgumentException.class,
+                    () -> sampler.prepareForEmission(managedSettings(), witness,
+                            List.of("blue"), "blue", false, budget, owner));
             var capture = sampler.prepareForEmission(managedSettings(), witness,
                     List.of("hot"), "hot", false, budget, owner);
             assertSame(witness, capture.selectionWitness().orElseThrow());
+            assertThrows(IllegalArgumentException.class,
+                    () -> sampler.sampleProfilesRetainingL0(capture, "blue",
+                            IntensitySamplingMode.COLOR_MAPPING, budget, owner, CancellationProbe.NONE));
             var retained = sampler.sampleProfilesRetainingL0(capture, "hot",
                     IntensitySamplingMode.COLOR_MAPPING, budget, owner, CancellationProbe.NONE);
             capture.close();

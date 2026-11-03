@@ -278,6 +278,11 @@ public final class TileHeatmapSampler {
             AttemptMemoryLedger.Owner parentOwner) {
         java.util.Objects.requireNonNull(witness, "selected source witness");
         witness.requireCurrent(budget, parentOwner);
+        AlignmentTileSourcePlan sourcePlan = AlignmentTileSourcePlan.from(config);
+        if (!sourcePlan.selectedColor().equals(selectedColor)
+                || !sourcePlan.orderedColors().equals(tileColors)) {
+            throw new IllegalArgumentException("Managed source colors differ from the active alignment plan");
+        }
         PreparedManagedCapture capture = prepareForEmission(config, witness.originalSource(), tileColors, selectedColor,
                 sketchLikeSelection, witness.projection(), budget, parentOwner, witness);
         witness.close();
@@ -355,11 +360,11 @@ public final class TileHeatmapSampler {
             for (String color : frozenColors) {
                 budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
                 TileMosaic primary = loadMosaic(config, color, frozenSource, inference,
-                        mode.stableFixedScale(), capturedProjection);
+                        mode.stableFixedScale(), capturedProjection, budget);
                 mosaics.put(key(color, inferenceZoom), primary);
                 if (validationZoom != inferenceZoom) {
                     TileMosaic validationMosaic = loadMosaic(config, color, frozenSource,
-                            validation, false, capturedProjection);
+                            validation, false, capturedProjection, budget);
                     mosaics.put(key(color, validationZoom), validationMosaic);
                 }
             }
@@ -491,6 +496,11 @@ public final class TileHeatmapSampler {
             AttemptMemoryLedger.Owner parentOwner, CancellationProbe cancellation) {
         java.util.Objects.requireNonNull(capture, "prepared managed capture");
         capture.requireSourceCurrent(capture.sourceConfig, budget);
+        if (capture.selectionWitness != null
+                && (!capture.originalRequest().selectedColor().equals(detectorMode)
+                    || capture.sourceConfig.intensitySamplingMode() != intensityMode)) {
+            throw new IllegalArgumentException("Managed producer detector differs from selected native source");
+        }
         var request = capture.originalRequest();
         return sampleProfilesRetainingL0(capture.selectedMosaic(), request.originalSource(),
                 detectorMode, intensityMode, request.capturedProjection(), budget,
@@ -846,6 +856,19 @@ public final class TileHeatmapSampler {
         boolean stableInference,
         Projection capturedProjection
     ) {
+        return loadMosaic(config, color, sourcePolyline, parameters,
+                stableInference, capturedProjection, null);
+    }
+
+    private TileMosaic loadMosaic(
+        ManagedHeatmapConfig config,
+        String color,
+        List<EastNorth> sourcePolyline,
+        SamplingParameters parameters,
+        boolean stableInference,
+        Projection capturedProjection,
+        EmissionWorkBudget budget
+    ) {
         List<Point2D.Double> worldPixels = sourcePolyline.stream()
             .map(point -> capturedProjection == null ? toWorldPixel(point, parameters.zoom())
                 : toWorldPixel(point, parameters.zoom(), capturedProjection))
@@ -867,7 +890,9 @@ public final class TileHeatmapSampler {
         try {
             for (int x = minTileX; x <= maxTileX; x++) {
                 for (int y = minTileY; y <= maxTileY; y++) {
-                    FetchedTile fetched = fetchTile(config, color, parameters.zoom(), x, y);
+                    FetchedTile fetched = budget == null
+                            ? fetchTile(config, color, parameters.zoom(), x, y)
+                            : fetchTileForEmission(config, color, parameters.zoom(), x, y, budget);
                     TileRecord record = fetched.record();
                     records.add(record);
                     if (!record.usable()) {
@@ -977,6 +1002,65 @@ public final class TileHeatmapSampler {
         BufferedImage image = result.image() == null
             ? new BufferedImage(TILE_SIZE, TILE_SIZE, BufferedImage.TYPE_INT_ARGB) : result.image();
         return new FetchedTile(image, record);
+    }
+
+    /** Experimental attempt-owned subscriber with bounded checks of the shared cancellation budget. */
+    private FetchedTile fetchTileForEmission(ManagedHeatmapConfig config, String color,
+            int zoom, int x, int y, EmissionWorkBudget budget) {
+        budget.charge(EmissionWorkBudget.Operation.TRANSPORT, 1);
+        String activity = safe(config.activity(), "all");
+        String tileColor = safe(color, "hot");
+        ManagedTileGeneration generation = new ManagedTileGeneration(Math.max(0L, config.cacheBuster()));
+        CancellationToken token = new CancellationToken();
+        TileRequest request = new TileRequest(new ManagedTileAddress(activity, tileColor, zoom, x, y),
+                generation, tileColor.equals(safe(config.color(), "hot"))
+                    ? TilePurpose.ALIGNMENT_REQUIRED : TilePurpose.ALIGNMENT_OPTIONAL_AGGREGATE,
+                TileCachePolicy.USE_CACHE, Instant.now().plusSeconds(30), token);
+        CancellationProbe checkpoint = () -> {
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION, 0);
+            return false;
+        };
+        try {
+            checkpoint.checkpoint();
+            var future = tileCoordinator.fetch(request, CredentialSnapshot.fromConfig(config))
+                    .toCompletableFuture();
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
+            TileFetchResult result;
+            while (true) {
+                checkpoint.checkpoint();
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) {
+                    throw new IllegalStateException("Managed tile acquisition did not complete");
+                }
+                try {
+                    result = future.get(Math.min(remaining,
+                            java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(100)),
+                            java.util.concurrent.TimeUnit.NANOSECONDS);
+                    break;
+                } catch (java.util.concurrent.TimeoutException pending) {
+                    // A bounded wait checkpoint allows a polling-only attempt probe to cancel.
+                }
+            }
+            checkpoint.checkpoint();
+            if (result.status() == org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchStatus.CANCELLED) {
+                throw new java.util.concurrent.CancellationException("Managed tile acquisition was cancelled");
+            }
+            TileRecord record = tileRecord(result);
+            BufferedImage image = result.image() == null
+                    ? new BufferedImage(TILE_SIZE, TILE_SIZE, BufferedImage.TYPE_INT_ARGB)
+                    : result.image();
+            return new FetchedTile(image, record);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            token.cancel();
+            throw new java.util.concurrent.CancellationException("Managed tile acquisition was interrupted");
+        } catch (java.util.concurrent.ExecutionException failure) {
+            token.cancel();
+            throw new IllegalStateException("Managed tile acquisition failed safely");
+        } catch (RuntimeException failure) {
+            token.cancel();
+            throw failure;
+        }
     }
 
     static File managedTileCacheFile(ManagedHeatmapConfig config, String activity, String color, int zoom, int x, int y) {
