@@ -31,6 +31,32 @@ worker. Luna now implements the bounded immutable Legacy input-binding slice in
 `josm-drasov-legacy-binding` at c1327e1: binding/input/factory/newtest only.
 Binding is final at publication, not mutable attachment or aliased close ownership.
 Actual sampler adapters, solver and final consumers remain separate unfinished gates.
+Meaningful fresh-port RED now established: four positive GAP/censored combinations
+fail ENDPOINT_OWNERSHIP with complete scalar/mode evidence; three negatives pass.
+Initial missing imports were setup failures, not RED. Ordinary-reference missing
+API compilation is also setup only; a compilable refusing seam must reproduce the
+behavior before exact transport implementation. No temporary seam may remain.
+Auto-review rejected a stale faint-fixture expectation edit as potential guard
+weakening. Independent actual fixture review finds coherent native positive ridge
+above threshold; approved fresh-port contract permits it without reclassifying GAP.
+Resubmit only evidence-grounded structured patch with stronger numerical assertions
+and exact-zero negative; no shell/edit bypass. Review receipt
+`/data/data/com.termux/files/usr/tmp/drasov-faint-fresh-port-review.md`.
+Typed ordinary RowState references are the first API slice; boundary-occurrence
+ordinary legs still require exact typed ownership, never a dummy numeric offset.
+Production adapter preparation found actual Legacy managed sampling currently maps
+nearest ARGB directly, not an already-retained L0 scalar field. Its shared producer
+must preserve exact native profiles and scalar semantics; no invented retention,
+second acquisition or float-quantized profile substitution is approved.
+Independent source review approves a bounded exact-double shared-grid producer
+correction, conditional on bitwise profile/peak/tracker parity. Sol managed_adapter
+owns new managed-grid worktree at397bde4, only new grid/retained-profile types and
+opt-in TileHeatmapSampler/RenderedHeatmapSampler overloads/tests. No overlap with
+binding/factory/evaluator/kernel writers. It is not production authority: managed
+selection/tile/event attestation and nonlinear whole-connector ground authority
+remain integration gates. Packet/review: `drasov-managed-adapter-packet.md` and
+`drasov-managed-adapter-review.md` under the task tmp evidence directory.
+Local Gradle queue is connector→binding follow-up→managed grid, one process only.
 
 Active: bounded original Legacy kernel/stage implementation packet at
 `/data/data/com.termux/files/usr/tmp/drasov-legacy-kernel-packet.md` (Sol), existing
