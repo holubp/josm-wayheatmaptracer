@@ -314,6 +314,46 @@ class TileAcquisitionFoundationTest {
     }
 
     @Test
+    void restoredGenerationStartsNewFlightAndOldFlightCannotPublish() throws Exception {
+        CountDownLatch oldEntered = new CountDownLatch(1), releaseOld = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        byte[] oldBody = png(tile(new Color(255, 100, 0, 255)));
+        byte[] newBody = png(tile(new Color(0, 255, 0, 255)));
+        ManagedTileTransport transport = (request, credentials) -> {
+            if (calls.incrementAndGet() == 1) {
+                oldEntered.countDown();
+                await(releaseOld);
+                return success(oldBody);
+            }
+            return success(newBody);
+        };
+        try (TileFetchCoordinator coordinator = coordinator(transport, Clock.systemUTC())) {
+            ManagedTileAddress tile = address("hot", 17);
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(15));
+            var oldFlight = coordinator.fetch(request(tile, 15, TilePurpose.ALIGNMENT_REQUIRED),
+                    credentials()).toCompletableFuture();
+            assertTrue(oldEntered.await(2, TimeUnit.SECONDS));
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(16));
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(15));
+            var currentFlight = coordinator.fetch(request(tile, 15, TilePurpose.ALIGNMENT_REQUIRED),
+                    credentials()).toCompletableFuture();
+            assertTrue(currentFlight.get(2, TimeUnit.SECONDS).usable(),
+                    "restored generation must not join an older in-flight request");
+            assertEquals(2, calls.get());
+            releaseOld.countDown();
+            assertEquals(TileFetchStatus.STALE_GENERATION,
+                    oldFlight.get(2, TimeUnit.SECONDS).status());
+            var cached = coordinator.fetch(request(tile, 15, TilePurpose.ALIGNMENT_REQUIRED),
+                    credentials()).toCompletableFuture().get(2, TimeUnit.SECONDS);
+            assertTrue(cached.usable());
+            assertEquals(new Color(0, 255, 0, 255).getRGB(), cached.image().getRGB(0, 0),
+                    "late old response must not overwrite the current generation's cache");
+        } finally {
+            releaseOld.countDown();
+        }
+    }
+
+    @Test
     void boundedDispatchNeverExecutesCallbackInline() throws Exception {
         ManagedTileTransport transport = (request, credentials) -> new TransportResponse(
             TileFetchStatus.NO_TILE, 404, "", null, null, Duration.ZERO, "http-no-tile");
