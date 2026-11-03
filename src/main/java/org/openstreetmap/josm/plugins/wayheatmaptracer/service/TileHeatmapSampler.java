@@ -166,6 +166,142 @@ public final class TileHeatmapSampler {
             inferenceZoom, validationZoom, TILE_SIZE, mosaics, inference, validation);
     }
 
+    /** Source-owned original request and search footprint, captured before the first tile fetch. */
+    public static final class PreparedManagedCapture implements AutoCloseable {
+        private final TileMosaicSet mosaics;
+        private final TileMosaic selectedMosaic;
+        private final ManagedSourceRequestReceipt request;
+        private final AttemptMemoryLedger.Owner mosaicOwner;
+
+        private PreparedManagedCapture(TileMosaicSet mosaics, TileMosaic selectedMosaic,
+                ManagedSourceRequestReceipt request, AttemptMemoryLedger.Owner mosaicOwner) {
+            this.mosaics = mosaics;
+            this.selectedMosaic = selectedMosaic;
+            this.request = request;
+            this.mosaicOwner = mosaicOwner;
+        }
+        public TileMosaicSet mosaics() { request.requireMatches(selectedMosaic); return mosaics; }
+        public TileMosaic selectedMosaic() { request.requireMatches(selectedMosaic); return selectedMosaic; }
+        public ManagedSourceRequestReceipt originalRequest() {
+            request.requireMatches(selectedMosaic);
+            return request;
+        }
+        @Override public void close() { mosaicOwner.close(); request.close(); }
+    }
+
+    /**
+     * Opt-in managed acquisition with a separately retained original search receipt.
+     * The receipt is frozen before any tile request, and only this producer can construct the pair.
+     */
+    public PreparedManagedCapture prepareForEmission(ManagedHeatmapConfig config,
+            List<EastNorth> sourcePolyline, List<String> tileColors, String selectedColor,
+            boolean sketchLikeSelection, Projection capturedProjection,
+            EmissionWorkBudget budget, AttemptMemoryLedger.Owner parentOwner) {
+        if (tileCoordinator == null || config == null || sourcePolyline == null
+                || tileColors == null || selectedColor == null || !tileColors.contains(selectedColor)
+                || capturedProjection == null || budget == null || parentOwner == null
+                || sourcePolyline.size() < 2) {
+            throw new IllegalArgumentException("Managed emission requires the original selected tile request");
+        }
+        int inferenceZoom = effectiveInferenceZoom(config);
+        int validationZoom = effectiveValidationZoom(config);
+        double latitude = representativeLatitude(sourcePolyline, capturedProjection);
+        SamplingParameters inference = parametersFor(config, inferenceZoom, latitude, sketchLikeSelection);
+        SamplingParameters validation = parametersFor(config, validationZoom, latitude, sketchLikeSelection);
+        double virtualScale = inference.metersPerPixel() / REFERENCE_VIEW_METERS_PER_PIXEL
+                * REFERENCE_RASTER_SCALE;
+        var request = ManagedSourceRequestReceipt.captureBeforeFetch(sourcePolyline,
+                selectedColor, inferenceZoom, inference, virtualScale, capturedProjection,
+                point -> {
+                    LatLon geo = capturedProjection.eastNorth2latlon(point);
+                    if (!Double.isFinite(geo.lat()) || !Double.isFinite(geo.lon())
+                            || Math.abs(geo.lat()) > 85.05112878) {
+                        throw new IllegalArgumentException("Original source leaves Web Mercator domain");
+                    }
+                    return toWorldPixel(point, inferenceZoom, capturedProjection);
+                }, budget, parentOwner);
+        var mosaicOwner = parentOwner.child("managed-acquired-mosaics");
+        boolean complete = false;
+        try {
+            List<EastNorth> frozenSource = request.originalSource();
+            if (Double.doubleToLongBits(latitude)
+                    != Double.doubleToLongBits(representativeLatitude(frozenSource, capturedProjection))) {
+                throw new IllegalArgumentException("Selected source changed during original request capture");
+            }
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+            var colorsReservation = mosaicOwner.reserve(Math.addExact(512L,
+                    AttemptMemoryLedger.referenceArrayBytes(tileColors.size())));
+            List<String> frozenColors = List.copyOf(tileColors);
+            if (!frozenColors.contains(selectedColor)) {
+                throw new IllegalArgumentException("Selected source color changed during request capture");
+            }
+            Map<String, TileMosaic> mosaics = new LinkedHashMap<>();
+            InferenceMode mode = inferenceMode(config);
+            long admittedMosaicBytes = 0L;
+            for (String color : frozenColors) {
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                admittedMosaicBytes = Math.addExact(admittedMosaicBytes,
+                        estimatedPreparedMosaicBytes(frozenSource, inference,
+                                mode.stableFixedScale(), capturedProjection, budget));
+                if (validationZoom != inferenceZoom) {
+                    admittedMosaicBytes = Math.addExact(admittedMosaicBytes,
+                            estimatedPreparedMosaicBytes(frozenSource, validation,
+                                    false, capturedProjection, budget));
+                }
+            }
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+            var mosaicReservation = mosaicOwner.reserve(admittedMosaicBytes);
+            for (String color : frozenColors) {
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                TileMosaic primary = loadMosaic(config, color, frozenSource, inference,
+                        mode.stableFixedScale(), capturedProjection);
+                mosaics.put(key(color, inferenceZoom), primary);
+                if (validationZoom != inferenceZoom) {
+                    TileMosaic validationMosaic = loadMosaic(config, color, frozenSource,
+                            validation, false, capturedProjection);
+                    mosaics.put(key(color, validationZoom), validationMosaic);
+                }
+            }
+            TileMosaicSet set = new TileMosaicSet(mode,
+                    clampZoom(config.inferenceZoom(), 10, 16),
+                    clampZoom(config.validationZoom(), 10, 16), inferenceZoom,
+                    validationZoom, TILE_SIZE,
+                    java.util.Collections.unmodifiableMap(new LinkedHashMap<>(mosaics)),
+                    inference, validation);
+            TileMosaic selected = set.require(selectedColor);
+            request.requireMatches(selected);
+            var capture = new PreparedManagedCapture(set, selected, request, mosaicOwner);
+            mosaicReservation.adopt(capture);
+            colorsReservation.adopt(capture);
+            complete = true;
+            return capture;
+        } finally {
+            if (!complete) { mosaicOwner.close(); request.close(); }
+        }
+    }
+
+    private long estimatedPreparedMosaicBytes(List<EastNorth> source,
+            SamplingParameters parameters, boolean stableInference,
+            Projection projection, EmissionWorkBudget budget) {
+        double minX = Double.POSITIVE_INFINITY, minY = Double.POSITIVE_INFINITY;
+        double maxX = Double.NEGATIVE_INFINITY, maxY = Double.NEGATIVE_INFINITY;
+        for (EastNorth point : source) {
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            Point2D.Double world = toWorldPixel(point, parameters.zoom(), projection);
+            minX = Math.min(minX, world.x); maxX = Math.max(maxX, world.x);
+            minY = Math.min(minY, world.y); maxY = Math.max(maxY, world.y);
+        }
+        double margin = Math.max(64.0, parameters.halfWidthPx() * 3.0);
+        long columns = (long) floorTile(maxX + margin) - floorTile(minX - margin) + 1L;
+        long rows = (long) floorTile(maxY + margin) - floorTile(minY - margin) + 1L;
+        long tiles = Math.multiplyExact(columns, rows);
+        long pixels = Math.multiplyExact(tiles, Math.multiplyExact((long) TILE_SIZE, TILE_SIZE));
+        // Includes retained decoded tiles and mosaic, plus the stable path's temporary filter arrays.
+        long perPixel = stableInference ? 32L : 12L;
+        return Math.addExact(16384L,
+                Math.addExact(Math.multiplyExact(tiles, 2048L), Math.multiplyExact(pixels, perPixel)));
+    }
+
     /**
      * Samples cross-section profiles from a prepared source-tile mosaic.
      *
@@ -240,6 +376,27 @@ public final class TileHeatmapSampler {
             TileMosaic mosaic, List<EastNorth> sourcePolyline, String detectorMode,
             IntensitySamplingMode intensityMode, Projection projection, EmissionWorkBudget budget,
             AttemptMemoryLedger.Owner parentOwner, CancellationProbe cancellation) {
+        return sampleProfilesRetainingL0(mosaic, sourcePolyline, detectorMode, intensityMode,
+                projection, budget, parentOwner, cancellation, null);
+    }
+
+    /** Shares the pre-admitted exact source request and acquisition with the retained producer. */
+    public RetainedManagedScalarProfiles sampleProfilesRetainingL0(
+            PreparedManagedCapture capture, String detectorMode,
+            IntensitySamplingMode intensityMode, EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner parentOwner, CancellationProbe cancellation) {
+        java.util.Objects.requireNonNull(capture, "prepared managed capture");
+        var request = capture.originalRequest();
+        return sampleProfilesRetainingL0(capture.selectedMosaic(), request.originalSource(),
+                detectorMode, intensityMode, request.capturedProjection(), budget,
+                parentOwner, cancellation, capture);
+    }
+
+    private RetainedManagedScalarProfiles sampleProfilesRetainingL0(
+            TileMosaic mosaic, List<EastNorth> sourcePolyline, String detectorMode,
+            IntensitySamplingMode intensityMode, Projection projection, EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner parentOwner, CancellationProbe cancellation,
+            PreparedManagedCapture capture) {
         java.util.Objects.requireNonNull(mosaic, "prepared mosaic");
         java.util.Objects.requireNonNull(sourcePolyline, "selected source polyline");
         java.util.Objects.requireNonNull(detectorMode, "detector");
@@ -258,7 +415,7 @@ public final class TileHeatmapSampler {
         try {
             // These are conservative retained capacities, not a claim about all transient JVM heap.
             budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
-            owner.reserve(retainedMosaicBytes(mosaic));
+            if (capture == null) owner.reserve(retainedMosaicBytes(mosaic));
             budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
             var profileReservation = owner.reserve(retainedProfileBytes(shape));
             budget.charge(EmissionWorkBudget.Operation.PREPARATION,
@@ -279,7 +436,7 @@ public final class TileHeatmapSampler {
             var profileSet = new MultiScaleProfileSet(List.of(
                     new MultiScaleProfileSet.ScaleProfileLevel(0, 1, 0.0, profiles)),
                     0L, grid.retainedBytes());
-            var retained = new RetainedManagedScalarProfiles(mosaic, grid, profileSet, owner);
+            var retained = new RetainedManagedScalarProfiles(mosaic, grid, profileSet, owner, capture);
             profileReservation.adopt(retained);
             return retained;
         } catch (RuntimeException | Error failure) {
@@ -572,8 +729,20 @@ public final class TileHeatmapSampler {
         SamplingParameters parameters,
         boolean stableInference
     ) {
+        return loadMosaic(config, color, sourcePolyline, parameters, stableInference, null);
+    }
+
+    private TileMosaic loadMosaic(
+        ManagedHeatmapConfig config,
+        String color,
+        List<EastNorth> sourcePolyline,
+        SamplingParameters parameters,
+        boolean stableInference,
+        Projection capturedProjection
+    ) {
         List<Point2D.Double> worldPixels = sourcePolyline.stream()
-            .map(point -> toWorldPixel(point, parameters.zoom()))
+            .map(point -> capturedProjection == null ? toWorldPixel(point, parameters.zoom())
+                : toWorldPixel(point, parameters.zoom(), capturedProjection))
             .toList();
         BoundsPx bounds = boundsFor(worldPixels, Math.max(64, parameters.halfWidthPx() * 3));
         int minTileX = floorTile(bounds.minX());
@@ -781,6 +950,14 @@ public final class TileHeatmapSampler {
             count++;
         }
         return count == 0 ? 0.0 : sum / count;
+    }
+
+    private double representativeLatitude(List<EastNorth> points, Projection projection) {
+        double sum = 0.0;
+        for (EastNorth point : points) {
+            sum += projection.eastNorth2latlon(point).lat();
+        }
+        return sum / points.size();
     }
 
     static double metersPerPixel(int zoom, double latitude) {
