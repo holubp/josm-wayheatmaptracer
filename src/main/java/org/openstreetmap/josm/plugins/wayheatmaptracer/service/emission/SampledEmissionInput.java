@@ -45,6 +45,7 @@ public final class SampledEmissionInput implements AutoCloseable {
         workBudget.charge(EmissionWorkBudget.Operation.PREPARATION,
             Math.multiplyExact((long) context.observations().size(), profiles.levels().size()));
         context.requireProfilesUnchanged(profiles);
+        legacyBinding.ifPresent(binding -> binding.requireNativeProfilesUnchanged(workBudget));
     }
     /** First terminal admission failure belongs to the whole retained attempt, not one phase. */
     synchronized void recordTerminalExecutionFailure(RuntimeException failure) {

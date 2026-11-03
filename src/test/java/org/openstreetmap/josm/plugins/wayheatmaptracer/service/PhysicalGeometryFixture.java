@@ -7,6 +7,9 @@ import java.util.List;
 
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceCorrelationGroup;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineage;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
 
 /** Independent straight image ridge sampled through regular or folded source-normal charts. */
 final class PhysicalGeometryFixture {
@@ -19,11 +22,20 @@ final class PhysicalGeometryFixture {
 
     /** One fixture pixel represents one metre; image truth is y=64 independently of source geometry. */
     static List<RenderedHeatmapSampler.CrossSectionProfile> straightRidgeThroughParabola(double radius) {
+        return r4SyntheticFrame(radius).profiles().subList(1, 18);
+    }
+
+    /** Full synthetic source and untrimmed profiles used to prove the R4 crop mapping. */
+    static R4SyntheticFrame r4SyntheticFrame(double radius) {
         BufferedImage raster = new BufferedImage(128, 128, BufferedImage.TYPE_INT_ARGB);
+        double[] scalar = new double[128 * 128];
+        boolean[] valid = new boolean[scalar.length];
+        java.util.Arrays.fill(valid, true);
         for (int y = 0; y < raster.getHeight(); y++) {
             int value = (int) Math.round(255.0 * Math.exp(-0.5 * Math.pow((y - CENTER) / 0.8, 2)));
             for (int x = 0; x < raster.getWidth(); x++) {
                 raster.setRGB(x, y, 0xff000000 | value << 16 | value << 8 | value);
+                scalar[y * raster.getWidth() + x] = value / 255.0;
             }
         }
         List<Point2D.Double> anchors = new ArrayList<>();
@@ -32,10 +44,18 @@ final class PhysicalGeometryFixture {
             anchors.add(new Point2D.Double(CENTER + j,
                     CENTER - DISPLACEMENT + j * j / (2.0 * radius)));
         }
-        return new RenderedHeatmapSampler().sampleMultiScaleProfilesOnScaledRaster(
+        var profiles = new RenderedHeatmapSampler().sampleMultiScaleProfilesOnScaledRaster(
                 raster, anchors, 25, 1, "hot", 1.0, 1.0,
-                IntensitySamplingMode.DIRECT_VALUE, 1.0).levelZeroProfiles().subList(1, 18);
+            IntensitySamplingMode.DIRECT_VALUE, 1.0).levelZeroProfiles();
+        var grid = new ScalarEvidenceField(128, 128, scalar, valid,
+            new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,
+                EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY, "R4 synthetic raster",
+                EvidenceCorrelationGroup.SYNTHETIC_TRUTH, false));
+        return new R4SyntheticFrame(profiles, anchors, grid);
     }
+
+    record R4SyntheticFrame(List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+            List<Point2D.Double> anchors, ScalarEvidenceField fullScalarGrid) { }
 
     static Point2D.Double strongestObservedPoint(RenderedHeatmapSampler.CrossSectionProfile profile) {
         var peak = profile.peaks().stream().filter(p -> !p.syntheticCenter())

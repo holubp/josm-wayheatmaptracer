@@ -21,11 +21,15 @@ public final class LegacyEmissionBinding {
     }
 
     /** One producer peak reference with its unmodified native enumeration ID. */
-    public record PeakOwner(int originalPeakId, CrossSectionPeak peak) {
+    public record PeakOwner(int originalPeakId, CrossSectionPeak peak, CrossSectionPeak measurementPeakOwner) {
         public PeakOwner {
-            if (originalPeakId < 0 || peak == null) {
+            if (originalPeakId < 0 || peak == null || measurementPeakOwner == null) {
                 throw new IllegalArgumentException("Legacy peak ownership is incomplete");
             }
+        }
+
+        public PeakOwner(int originalPeakId, CrossSectionPeak peak) {
+            this(originalPeakId, peak, peak);
         }
     }
 
@@ -34,11 +38,13 @@ public final class LegacyEmissionBinding {
         int originalRow,
         int retainedObservationIndex,
         CrossSectionProfile profile,
+        CrossSectionProfile measurementProfile,
         SourceClass sourceClass,
         List<PeakOwner> producerPeaks
     ) {
         public OriginalObservation {
-            if (originalRow < 0 || retainedObservationIndex < 0 || profile == null || sourceClass == null) {
+            if (originalRow < 0 || retainedObservationIndex < 0 || profile == null || measurementProfile == null
+                    || sourceClass == null) {
                 throw new IllegalArgumentException("Legacy original observation is incomplete");
             }
             producerPeaks = List.copyOf(Objects.requireNonNull(producerPeaks, "producer peaks"));
@@ -46,11 +52,18 @@ public final class LegacyEmissionBinding {
             for (PeakOwner owner : producerPeaks) {
                 if (owner.originalPeakId() <= previousId
                         || owner.originalPeakId() >= profile.peaks().size()
-                        || profile.peaks().get(owner.originalPeakId()) != owner.peak()) {
+                        || profile.peaks().get(owner.originalPeakId()) != owner.peak()
+                        || measurementProfile.peaks().stream()
+                            .noneMatch(candidate -> candidate == owner.measurementPeakOwner())) {
                     throw new IllegalArgumentException("Legacy peak IDs must retain original producer identity and order");
                 }
                 previousId = owner.originalPeakId();
             }
+        }
+
+        public OriginalObservation(int originalRow, int retainedObservationIndex, CrossSectionProfile profile,
+                SourceClass sourceClass, List<PeakOwner> producerPeaks) {
+            this(originalRow, retainedObservationIndex, profile, profile, sourceClass, producerPeaks);
         }
     }
 
@@ -84,6 +97,7 @@ public final class LegacyEmissionBinding {
     /** No production producer/selection attestation is available through this structural factory. */
     private final boolean productionEligible;
     private final AttemptMemoryLedger.Reservation retainedMetadata;
+    private final DeclaredSyntheticRasterReceipt syntheticRasterReceipt;
 
     LegacyEmissionBinding(
         OptionalEmissionContextFactory.SourceBinding sourcePermit,
@@ -93,6 +107,20 @@ public final class LegacyEmissionBinding {
         double trackerNormalizationRasterPx,
         List<ProtectedOccurrence> protectedOccurrences,
         AttemptMemoryLedger.Reservation retainedMetadata
+    ) {
+        this(sourcePermit, producedProfiles, originalRowToRetainedObservation, observations,
+            trackerNormalizationRasterPx, protectedOccurrences, retainedMetadata, null);
+    }
+
+    LegacyEmissionBinding(
+        OptionalEmissionContextFactory.SourceBinding sourcePermit,
+        MultiScaleProfileSet producedProfiles,
+        List<Integer> originalRowToRetainedObservation,
+        List<OriginalObservation> observations,
+        double trackerNormalizationRasterPx,
+        List<ProtectedOccurrence> protectedOccurrences,
+        AttemptMemoryLedger.Reservation retainedMetadata,
+        DeclaredSyntheticRasterReceipt syntheticRasterReceipt
     ) {
         if (sourcePermit == null || producedProfiles == null || originalRowToRetainedObservation == null
                 || observations == null || originalRowToRetainedObservation.isEmpty()
@@ -113,8 +141,53 @@ public final class LegacyEmissionBinding {
         this.productionEligible = productionAttestation.isPresent()
             && origin == OptionalEmissionContext.Origin.DETACHED_FROZEN;
         this.retainedMetadata = retainedMetadata;
+        this.syntheticRasterReceipt = syntheticRasterReceipt;
         validateRowSequence();
         validateProtectedOccurrences();
+        this.nativeProfileSnapshots = syntheticRasterReceipt == null ? List.of()
+            : observations.stream().map(NativeProfileSnapshot::capture).toList();
+    }
+
+    private final List<NativeProfileSnapshot> nativeProfileSnapshots;
+
+    private record NativeProfileSnapshot(
+        CrossSectionProfile profile,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.service.ProfileSamplingLocation anchor,
+        double anchorX, double anchorY, double normalX, double normalY, double chainage,
+        List<CrossSectionPeak> peaks
+    ) {
+        private static NativeProfileSnapshot capture(OriginalObservation observation) {
+            CrossSectionProfile profile = observation.profile();
+            return new NativeProfileSnapshot(profile, profile.samplingAnchor(), profile.anchorScreen().x,
+                profile.anchorScreen().y, profile.normalScreen().x, profile.normalScreen().y,
+                profile.cumulativeGroundDistanceMeters(), List.copyOf(profile.peaks()));
+        }
+
+        private boolean unchanged(OriginalObservation observation) {
+            if (profile != observation.profile() || profile.samplingAnchor() != anchor
+                    || Double.doubleToLongBits(profile.anchorScreen().x) != Double.doubleToLongBits(anchorX)
+                    || Double.doubleToLongBits(profile.anchorScreen().y) != Double.doubleToLongBits(anchorY)
+                    || Double.doubleToLongBits(profile.normalScreen().x) != Double.doubleToLongBits(normalX)
+                    || Double.doubleToLongBits(profile.normalScreen().y) != Double.doubleToLongBits(normalY)
+                    || Double.doubleToLongBits(profile.cumulativeGroundDistanceMeters())
+                        != Double.doubleToLongBits(chainage)
+                    || profile.peaks().size() != peaks.size()) return false;
+            for (int index = 0; index < peaks.size(); index++) {
+                if (profile.peaks().get(index) != peaks.get(index)) return false;
+            }
+            return true;
+        }
+    }
+
+    /** Compact validated declaration retained for synthetic R4 diagnostics only. */
+    record DeclaredSyntheticRasterReceipt(
+        int fullWidth, int fullHeight, int cropOriginX, int cropOriginY,
+        double nativePitchRasterPixels, double chainageOriginMeters, int sourceIdentity,
+        List<ProtectedOccurrence> protectedOccurrences
+    ) {
+        DeclaredSyntheticRasterReceipt {
+            protectedOccurrences = List.copyOf(protectedOccurrences);
+        }
     }
 
     private void validateRowSequence() {
@@ -189,21 +262,37 @@ public final class LegacyEmissionBinding {
         for (OriginalObservation observation : observations) {
             int index = observation.retainedObservationIndex();
             if (index >= context.observations().size() || index >= retained.profileLocations().size()
-                    || observation.profile() != retained.profiles().levelZeroProfiles().get(index)
-                    || observation.profile().samplingAnchor() != retained.profileLocations().get(index)) {
-                throw new IllegalArgumentException("Legacy binding row does not retain its original producer profile");
+                    || observation.measurementProfile() != retained.profiles().levelZeroProfiles().get(index)
+                    || observation.measurementProfile().samplingAnchor() != retained.profileLocations().get(index)) {
+                throw new IllegalArgumentException("Legacy binding row does not retain its measurement producer profile");
+            }
+            if (syntheticRasterReceipt == null && observation.profile() != observation.measurementProfile()) {
+                throw new IllegalArgumentException("Strict producer binding must preserve profile object identity");
             }
             OptionalEmissionContext.Observation fact = context.observations().get(index);
-            if (fact.index() != index || !fact.location().equals(observation.profile().samplingAnchor())
+            if (fact.index() != index || !fact.location().equals(observation.measurementProfile().samplingAnchor())
                     || Double.doubleToLongBits(fact.normal().x())
-                        != Double.doubleToLongBits(observation.profile().normalScreen().x)
+                        != Double.doubleToLongBits(observation.measurementProfile().normalScreen().x)
                     || Double.doubleToLongBits(fact.normal().y())
-                        != Double.doubleToLongBits(observation.profile().normalScreen().y)
+                        != Double.doubleToLongBits(observation.measurementProfile().normalScreen().y)
                     || Double.doubleToLongBits(fact.location().cumulativeGroundDistanceMeters())
-                        != Double.doubleToLongBits(observation.profile().cumulativeGroundDistanceMeters())) {
+                        != Double.doubleToLongBits(observation.measurementProfile().cumulativeGroundDistanceMeters())) {
                 throw new IllegalArgumentException("Legacy binding row differs from retained context coordinates");
             }
             validateSourceClass(observation);
+        }
+        requireNativeProfilesUnchanged(sourcePermit.budget());
+    }
+
+    void requireNativeProfilesUnchanged(EmissionWorkBudget budget) {
+        if (syntheticRasterReceipt == null) return;
+        for (int index = 0; index < observations.size(); index++) {
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,
+                1L + nativeProfileSnapshots.get(index).peaks().size());
+            if (!nativeProfileSnapshots.get(index).unchanged(observations.get(index))) {
+                throw new IllegalStateException("Original Legacy profile changed after binding publication");
+            }
+            validateSourceClass(observations.get(index));
         }
     }
 
@@ -233,6 +322,7 @@ public final class LegacyEmissionBinding {
 
     public List<Integer> originalRowToRetainedObservation() { return originalRowToRetainedObservation; }
     public List<OriginalObservation> observations() { return observations; }
+    DeclaredSyntheticRasterReceipt syntheticRasterReceipt() { return syntheticRasterReceipt; }
     public double trackerNormalizationRasterPx() { return trackerNormalizationRasterPx; }
     public List<ProtectedOccurrence> protectedOccurrences() { return protectedOccurrences; }
     public OptionalEmissionContext.Origin origin() { return origin; }

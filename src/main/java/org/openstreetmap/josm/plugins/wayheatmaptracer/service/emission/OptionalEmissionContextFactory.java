@@ -22,6 +22,27 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 /** Source-specific, pre-admitted construction of factual optional-emission input. */
 public final class OptionalEmissionContextFactory {
     private OptionalEmissionContextFactory() { }
+    private static final double R4_SYNTHETIC_ROUNDOFF_BOUND = 1.0e-12;
+
+    /** Declared facts needed to validate the synthetic R4 full-raster to crop mapping. */
+    public record DeclaredSyntheticRasterTruth(
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField fullSourceGrid,
+        int cropOriginX,
+        int cropOriginY,
+        double nativePitchRasterPixels,
+        double chainageOriginMeters,
+        List<LegacyEmissionBinding.ProtectedOccurrence> protectedOccurrences
+    ) {
+        public DeclaredSyntheticRasterTruth {
+            if (fullSourceGrid == null || cropOriginX < 0 || cropOriginY < 0
+                    || !Double.isFinite(nativePitchRasterPixels) || nativePitchRasterPixels <= 0
+                    || !Double.isFinite(chainageOriginMeters) || chainageOriginMeters < 0
+                    || protectedOccurrences == null) {
+                throw new IllegalArgumentException("Declared synthetic raster truth is incomplete");
+            }
+            protectedOccurrences = List.copyOf(protectedOccurrences);
+        }
+    }
 
     /**
      * Opaque construction permit owning caller-admitted retention before native production.
@@ -322,6 +343,239 @@ public final class OptionalEmissionContextFactory {
             binding.failTerminally(failure);
             throw failure;
         }
+    }
+
+    /**
+     * Binds the synthetic R4 Legacy profile objects separately from equivalent cropped image measurements.
+     * This route is permanently nonproduction and requires a complete declared raster/crop truth record.
+     */
+    public static LegacyEmissionBinding createDeclaredSyntheticR4Binding(SourceBinding binding,
+            RetainedScalarProfiles retained,
+            List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionProfile>
+                originalProfiles,
+            List<Integer> originalRowToRetainedObservation,
+            double trackerNormalizationRasterPx,
+            DeclaredSyntheticRasterTruth truth) {
+        if (binding != null) binding.requireNoTerminalFailure();
+        if (binding == null || retained == null || originalProfiles == null || originalProfiles.size() != 17
+                || originalRowToRetainedObservation == null || originalRowToRetainedObservation.size() != 17
+                || truth == null || truth.protectedOccurrences() == null
+                || binding.origin() != OptionalEmissionContext.Origin.DECLARED_SYNTHETIC_METRIC_GRID
+                || !retained.boundTo(binding) || binding.produced != retained || binding.published
+                || binding.owner.isClosed() || Double.doubleToLongBits(trackerNormalizationRasterPx)
+                    != Double.doubleToLongBits(1.0)
+                || Double.doubleToLongBits(truth.nativePitchRasterPixels()) != Double.doubleToLongBits(1.0)
+                || Double.doubleToLongBits(binding.source().resolution().outputRasterPitchMeters())
+                    != Double.doubleToLongBits(1.0)
+                || Double.doubleToLongBits(truth.chainageOriginMeters()) != Double.doubleToLongBits(0.0)
+                || Double.doubleToLongBits(truth.chainageOriginMeters())
+                    != Double.doubleToLongBits(binding.chainage().sourceOriginGroundMeters())) {
+            throw new IllegalArgumentException("R4 binding requires its exact declared synthetic producer and units");
+        }
+        try {
+            long peakReferences = 0;
+            long nativeSamples = 0;
+            for (var profile : originalProfiles) {
+                peakReferences = Math.addExact(peakReferences, profile.peaks().size());
+                nativeSamples = Math.addExact(nativeSamples, profile.intensitySamples().size());
+            }
+            long metadataBytes = Math.addExact(512L,
+                Math.addExact(AttemptMemoryLedger.referenceArrayBytes(17L * 3L
+                        + truth.protectedOccurrences().size() + peakReferences + nativeSamples),
+                    Math.addExact(Math.multiplyExact(17L, 256L),
+                        Math.addExact(Math.multiplyExact(peakReferences, 224L),
+                            Math.multiplyExact(nativeSamples, 64L)))));
+            binding.budget().charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+            var reservation = binding.owner.reserve(metadataBytes);
+            boolean success = false;
+            try {
+                var croppedSource = binding.source().fields().get(binding.fieldName());
+                var fullSource = truth.fullSourceGrid();
+                if (fullSource.width() != 128 || fullSource.height() != 128
+                        || truth.cropOriginX() != 18 || truth.cropOriginY() != 17
+                        || croppedSource.width() != 93 || croppedSource.height() != 86
+                        || croppedSource.lineage().acquisitionKind()
+                            != org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineage.AcquisitionKind.SYNTHETIC
+                        || fullSource.lineage().acquisitionKind()
+                            != org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineage.AcquisitionKind.SYNTHETIC
+                        || croppedSource.lineage().derivationKind() != fullSource.lineage().derivationKind()
+                        || croppedSource.lineage().correlationGroup() != fullSource.lineage().correlationGroup()
+                        || croppedSource.lineage().completeAggregate() != fullSource.lineage().completeAggregate()
+                        || !croppedSource.lineage().scalarOperations().equals(fullSource.lineage().scalarOperations())
+                        || retained.profiles().levelZeroProfiles().size() != 19) {
+                    throw new IllegalArgumentException("R4 crop dimensions do not match the declared 17-to-19 fixture");
+                }
+                binding.budget().charge(EmissionWorkBudget.Operation.PREPARATION,
+                    Math.multiplyExact((long) croppedSource.width(), croppedSource.height()));
+                for (int y = 0; y < croppedSource.height(); y++) for (int x = 0; x < croppedSource.width(); x++) {
+                    var expected = fullSource.sample(truth.cropOriginX() + x, truth.cropOriginY() + y);
+                    var actual = croppedSource.sample(x, y);
+                    if (expected.isPresent() != actual.isPresent()
+                            || (expected.isPresent() && Double.doubleToLongBits(expected.getAsDouble())
+                                != Double.doubleToLongBits(actual.getAsDouble()))) {
+                        throw new IllegalArgumentException("R4 cropped scalar source differs from declared full raster");
+                    }
+                }
+
+                List<Integer> mapping = List.copyOf(originalRowToRetainedObservation);
+                List<LegacyEmissionBinding.OriginalObservation> observations = new ArrayList<>(17);
+                var retainedProfiles = retained.profiles().levelZeroProfiles();
+                for (int row = 0; row < 17; row++) {
+                    binding.budget().charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                    int retainedIndex = mapping.get(row);
+                    if (retainedIndex != row + 1) {
+                        throw new IllegalArgumentException("R4 original rows must map to retained observations 1 through 17");
+                    }
+                    var nativeProfile = originalProfiles.get(row);
+                    var measurementProfile = retainedProfiles.get(retainedIndex);
+                    var measurementLocation = retained.profileLocations().get(retainedIndex);
+                    boolean xMatches = sameBits(nativeProfile.anchorScreen().x - truth.cropOriginX(),
+                        measurementProfile.anchorScreen().x);
+                    boolean yMatches = sameBits(nativeProfile.anchorScreen().y - truth.cropOriginY(),
+                        measurementProfile.anchorScreen().y);
+                    boolean normalXMatches = sameBits(nativeProfile.normalScreen().x, measurementProfile.normalScreen().x);
+                    boolean normalYMatches = sameBits(nativeProfile.normalScreen().y, measurementProfile.normalScreen().y);
+                    boolean profileChainageMatches = sameBits(nativeProfile.cumulativeGroundDistanceMeters(),
+                        measurementProfile.cumulativeGroundDistanceMeters());
+                    boolean locationChainageMatches = sameBits(truth.chainageOriginMeters()
+                        + nativeProfile.cumulativeGroundDistanceMeters(), measurementLocation.cumulativeGroundDistanceMeters());
+                    boolean samplesMatch = nativeProfile.anchorWithinRaster() == measurementProfile.anchorWithinRaster()
+                        && nativeProfile.peaks().size() == measurementProfile.peaks().size()
+                        && isCensored(nativeProfile) == isCensored(measurementProfile)
+                        && isUnsupported(nativeProfile) == isUnsupported(measurementProfile)
+                        && sameCompleteProfileEvidence(nativeProfile, measurementProfile);
+                    if (!xMatches || !yMatches || !normalXMatches || !normalYMatches || !profileChainageMatches
+                            || !locationChainageMatches || !samplesMatch) {
+                        int differingSample = -1;
+                        int commonSamples = Math.min(nativeProfile.intensitySamples().size(),
+                            measurementProfile.intensitySamples().size());
+                        for (int sample = 0; sample < commonSamples; sample++) {
+                            if (!nativeProfile.intensitySamples().get(sample)
+                                    .equals(measurementProfile.intensitySamples().get(sample))) {
+                                differingSample = sample;
+                                break;
+                            }
+                        }
+                        throw new IllegalArgumentException("R4 row " + row + " parity mismatch x=" + xMatches + " y="
+                            + yMatches + " normal=(" + normalXMatches + "," + normalYMatches + ") chainage=("
+                            + profileChainageMatches + "," + locationChainageMatches + ") samples=" + samplesMatch
+                            + " nativeAnchor=" + nativeProfile.anchorScreen() + " translatedNative=("
+                            + (nativeProfile.anchorScreen().x - truth.cropOriginX()) + ","
+                            + (nativeProfile.anchorScreen().y - truth.cropOriginY()) + ") measurementAnchor="
+                            + measurementProfile.anchorScreen() + " nativeNormal=" + nativeProfile.normalScreen()
+                            + " measurementNormal=" + measurementProfile.normalScreen() + " nativeSample0="
+                            + nativeProfile.intensitySamples().get(0) + " measurementSample0="
+                            + measurementProfile.intensitySamples().get(0) + " sampleCounts="
+                            + nativeProfile.intensitySamples().size() + "/" + measurementProfile.intensitySamples().size()
+                            + " firstDifferentSample=" + differingSample + " values=" + (differingSample < 0 ? "same-length"
+                                : nativeProfile.intensitySamples().get(differingSample) + " vs "
+                                    + measurementProfile.intensitySamples().get(differingSample)));
+                    }
+                    List<LegacyEmissionBinding.PeakOwner> peaks = new ArrayList<>(nativeProfile.peaks().size());
+                    java.util.Set<org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionPeak>
+                        assignedMeasurementOwners = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+                    for (int peakId = 0; peakId < nativeProfile.peaks().size(); peakId++) {
+                        var nativePeak = nativeProfile.peaks().get(peakId);
+                        int matches = 0;
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionPeak
+                            measurementOwner = null;
+                        for (var candidate : measurementProfile.peaks()) {
+                            binding.budget().charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                            if (samePeakBand(nativePeak, candidate)) {
+                                matches++;
+                                measurementOwner = candidate;
+                            }
+                        }
+                        if (matches != 1 || !assignedMeasurementOwners.add(measurementOwner)) {
+                            throw new IllegalArgumentException("Each native R4 peak requires one unique same-band measurement owner");
+                        }
+                        peaks.add(new LegacyEmissionBinding.PeakOwner(peakId, nativePeak, measurementOwner));
+                    }
+                    boolean censored = isCensored(nativeProfile);
+                    boolean unsupported = isUnsupported(nativeProfile);
+                    var sourceClass = censored ? NativeConnectorEvaluator.SourceClass.CENSORED
+                        : unsupported ? NativeConnectorEvaluator.SourceClass.GAP
+                        : NativeConnectorEvaluator.SourceClass.OBSERVED;
+                    observations.add(new LegacyEmissionBinding.OriginalObservation(row, retainedIndex, nativeProfile,
+                        measurementProfile, sourceClass, peaks));
+                }
+                    var receipt = new LegacyEmissionBinding.DeclaredSyntheticRasterReceipt(
+                        fullSource.width(), fullSource.height(), truth.cropOriginX(), truth.cropOriginY(),
+                        truth.nativePitchRasterPixels(), truth.chainageOriginMeters(),
+                        System.identityHashCode(fullSource), truth.protectedOccurrences());
+                    var result = new LegacyEmissionBinding(binding, retained.profiles(), mapping, observations,
+                        trackerNormalizationRasterPx, truth.protectedOccurrences(), reservation, receipt);
+                    success = true;
+                    return result;
+            } finally {
+                if (!success) reservation.close();
+            }
+        } catch (AttemptMemoryLedger.ResourceLimitException
+                | EmissionWorkBudget.LimitExceededException | CancellationException failure) {
+            binding.failTerminally(failure);
+            throw failure;
+        }
+    }
+
+    private static boolean sameBits(double first, double second) {
+        return Double.doubleToLongBits(first) == Double.doubleToLongBits(second);
+    }
+
+    private static boolean sameCompleteProfileEvidence(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionProfile first,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionProfile second) {
+        var a = first.intensitySamples();
+        var b = second.intensitySamples();
+        if (a.size() != b.size()) return false;
+        for (int index = 0; index < a.size(); index++) {
+            var left = a.get(index);
+            var right = b.get(index);
+            if (!sameBits(left.offsetPx(), right.offsetPx()) || left.insideRaster() != right.insideRaster()
+                    || !sameSyntheticRoundoff(left.nativeIntensity(), right.nativeIntensity())
+                    || !sameSyntheticRoundoff(left.lightFilteredIntensity(), right.lightFilteredIntensity())
+                    || !sameSyntheticRoundoff(left.standardFilteredIntensity(), right.standardFilteredIntensity())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Allows only reviewed R4 arithmetic roundoff after identical nodes/geometry pass exact checks. */
+    private static boolean sameSyntheticRoundoff(double first, double second) {
+        return Double.isFinite(first) && Double.isFinite(second)
+            && Math.abs(first - second) <= R4_SYNTHETIC_ROUNDOFF_BOUND;
+    }
+
+    private static boolean samePeakBand(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionPeak first,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionPeak second) {
+        return first.syntheticCenter() == second.syntheticCenter()
+            && sameSyntheticRoundoff(first.offsetPx(), second.offsetPx())
+            && sameSyntheticRoundoff(first.intensity(), second.intensity())
+            && sameSyntheticRoundoff(first.supportWidthPx(), second.supportWidthPx())
+            && sameSyntheticRoundoff(first.prominence(), second.prominence())
+            && sameSyntheticRoundoff(first.noiseFloor(), second.noiseFloor())
+            && sameSyntheticRoundoff(first.maxProfileIntensity(), second.maxProfileIntensity())
+            && sameSyntheticRoundoff(first.gradientStrength(), second.gradientStrength())
+            && sameSyntheticRoundoff(first.gradientBalance(), second.gradientBalance())
+            && sameSyntheticRoundoff(first.nativeFilteredAgreement(), second.nativeFilteredAgreement())
+            && sameSyntheticRoundoff(first.rawCenterPx(), second.rawCenterPx())
+            && sameSyntheticRoundoff(first.lightFilteredCenterPx(), second.lightFilteredCenterPx())
+            && sameSyntheticRoundoff(first.standardFilteredCenterPx(), second.standardFilteredCenterPx())
+            && sameSyntheticRoundoff(first.scaleOffsetRmsPx(), second.scaleOffsetRmsPx())
+            && sameSyntheticRoundoff(first.scaleAgreement(), second.scaleAgreement())
+            && sameSyntheticRoundoff(first.centerUncertaintyPx(), second.centerUncertaintyPx());
+    }
+
+    private static boolean isCensored(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionProfile profile) {
+        return !profile.anchorWithinRaster() || profile.intensitySamples().stream().anyMatch(sample -> !sample.insideRaster());
+    }
+
+    private static boolean isUnsupported(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionProfile profile) {
+        return profile.peaks().isEmpty() || profile.peaks().stream().allMatch(peak -> peak.syntheticCenter()
+            && peak.supportWidthPx() <= 0.0 && peak.prominence() <= 0.0 && peak.maxProfileIntensity() <= 0.0);
     }
 
     public static SampledEmissionInput fromDetached(SourceBinding binding, RetainedScalarProfiles retained,
