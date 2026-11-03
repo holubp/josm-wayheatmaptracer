@@ -14,6 +14,7 @@ import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.ManagedSelectionWitness;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.data.projection.Projection;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
@@ -175,12 +176,13 @@ public final class TileHeatmapSampler {
         private final ManagedHeatmapConfig sourceConfig;
         private final TileFetchCoordinator coordinator;
         private final long sourceEpoch;
+        private final ManagedSelectionWitness selectionWitness;
         private boolean sampled;
 
         private PreparedManagedCapture(TileMosaicSet mosaics, TileMosaic selectedMosaic,
                 ManagedSourceRequestReceipt request, AttemptMemoryLedger.Owner mosaicOwner,
                 ManagedHeatmapConfig sourceConfig, TileFetchCoordinator coordinator,
-                long sourceEpoch) {
+                long sourceEpoch, ManagedSelectionWitness selectionWitness) {
             this.mosaics = mosaics;
             this.selectedMosaic = selectedMosaic;
             this.request = request;
@@ -188,12 +190,25 @@ public final class TileHeatmapSampler {
             this.sourceConfig = sourceConfig;
             this.coordinator = coordinator;
             this.sourceEpoch = sourceEpoch;
+            this.selectionWitness = selectionWitness;
         }
         public TileMosaicSet mosaics() { request.requireMatches(selectedMosaic); return mosaics; }
         public TileMosaic selectedMosaic() { request.requireMatches(selectedMosaic); return selectedMosaic; }
         public ManagedSourceRequestReceipt originalRequest() {
             request.requireMatches(selectedMosaic);
             return request;
+        }
+        /** Empty for the older numeric-only prepared-mosaic route. */
+        public java.util.Optional<ManagedSelectionWitness> selectionWitness() {
+            request.requireMatches(selectedMosaic);
+            return java.util.Optional.ofNullable(selectionWitness);
+        }
+        public void requireSelectionCurrent(EmissionWorkBudget budget,
+                AttemptMemoryLedger.Owner scratchParent) {
+            if (selectionWitness == null) {
+                throw new IllegalStateException("Managed capture has no selected-source witness");
+            }
+            selectionWitness.requireCurrent(budget, scratchParent);
         }
         /** Checks source-affecting settings and the plugin coordinator's live generation. */
         public void requireSourceCurrent(ManagedHeatmapConfig current,
@@ -238,6 +253,7 @@ public final class TileHeatmapSampler {
             request.requireMatches(selectedMosaic);
             coOwner.retain(this);
             request.retainFor(coOwner);
+            if (selectionWitness != null) selectionWitness.retainFor(coOwner);
             sampled = true;
         }
         @Override public void close() { mosaicOwner.close(); request.close(); }
@@ -251,6 +267,28 @@ public final class TileHeatmapSampler {
             List<EastNorth> sourcePolyline, List<String> tileColors, String selectedColor,
             boolean sketchLikeSelection, Projection capturedProjection,
             EmissionWorkBudget budget, AttemptMemoryLedger.Owner parentOwner) {
+        return prepareForEmission(config, sourcePolyline, tileColors, selectedColor,
+                sketchLikeSelection, capturedProjection, budget, parentOwner, null);
+    }
+
+    /** Binds the actual selected OSM occurrence witness to this pre-fetch source request. */
+    public PreparedManagedCapture prepareForEmission(ManagedHeatmapConfig config,
+            ManagedSelectionWitness witness, List<String> tileColors, String selectedColor,
+            boolean sketchLikeSelection, EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner parentOwner) {
+        java.util.Objects.requireNonNull(witness, "selected source witness");
+        witness.requireCurrent(budget, parentOwner);
+        PreparedManagedCapture capture = prepareForEmission(config, witness.originalSource(), tileColors, selectedColor,
+                sketchLikeSelection, witness.projection(), budget, parentOwner, witness);
+        witness.close();
+        return capture;
+    }
+
+    private PreparedManagedCapture prepareForEmission(ManagedHeatmapConfig config,
+            List<EastNorth> sourcePolyline, List<String> tileColors, String selectedColor,
+            boolean sketchLikeSelection, Projection capturedProjection,
+            EmissionWorkBudget budget, AttemptMemoryLedger.Owner parentOwner,
+            ManagedSelectionWitness witness) {
         if (tileCoordinator == null || config == null || sourcePolyline == null
                 || tileColors == null || selectedColor == null || !tileColors.contains(selectedColor)
                 || capturedProjection == null || budget == null || parentOwner == null
@@ -282,6 +320,7 @@ public final class TileHeatmapSampler {
         var mosaicOwner = parentOwner.child("managed-acquired-mosaics");
         boolean complete = false;
         try {
+            if (witness != null) witness.retainFor(mosaicOwner);
             List<EastNorth> frozenSource = request.originalSource();
             if (Double.doubleToLongBits(latitude)
                     != Double.doubleToLongBits(representativeLatitude(frozenSource, capturedProjection))) {
@@ -334,9 +373,10 @@ public final class TileHeatmapSampler {
             request.requireMatches(selected);
             colorsReservation.close();
             var capture = new PreparedManagedCapture(set, selected, request, mosaicOwner,
-                    config, tileCoordinator, sourceEpoch);
+                    config, tileCoordinator, sourceEpoch, witness);
             mosaicReservation.adopt(capture);
             capture.requireSourceCurrent(config, budget);
+            if (witness != null) capture.requireSelectionCurrent(budget, parentOwner);
             complete = true;
             return capture;
         } finally {

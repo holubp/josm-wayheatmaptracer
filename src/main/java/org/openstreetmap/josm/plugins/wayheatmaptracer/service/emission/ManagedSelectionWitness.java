@@ -25,7 +25,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionIntegrit
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 
 /** Bounded live selected-occurrence and incoming-referrer witness under one dataset read lock. */
-public final class ManagedSelectionWitness {
+public final class ManagedSelectionWitness implements AutoCloseable {
     private static final int MAX_FULL_WAY_NODES = 20_000;
     private static final int MAX_RELEVANT_PRIMITIVES = 2_048;
     private static final int MAX_RELEVANT_MEMBERS = 20_000;
@@ -46,6 +46,7 @@ public final class ManagedSelectionWitness {
     private final List<EastNorth> originalSource;
     private final Snapshot frozen;
     private final AttemptMemoryLedger.Owner owner;
+    private final List<AttemptMemoryLedger.Owner> retainedOwners = new ArrayList<>();
 
     private ManagedSelectionWitness(DataSet dataSet, SelectionContext selection,
             Projection projection, List<EastNorth> originalSource, Snapshot frozen,
@@ -96,7 +97,7 @@ public final class ManagedSelectionWitness {
 
     /** Rechecks exact source/referrer facts under the same read-lock rule before a later decision. */
     public void requireCurrent(EmissionWorkBudget budget, AttemptMemoryLedger.Owner scratchParent) {
-        if (owner.isClosed()) throw new IllegalStateException("Managed selection witness is closed");
+        if (!isLive()) throw new IllegalStateException("Managed selection witness is closed");
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
         try (var scratch = scratchParent.child("managed-selection-recheck")) {
             long bytes = Math.addExact(16384L, Math.addExact(
@@ -317,6 +318,20 @@ public final class ManagedSelectionWitness {
         return true;
     }
 
+    public void retainFor(AttemptMemoryLedger.Owner coOwner) {
+        if (!isLive()) throw new IllegalStateException("Managed selection witness is closed");
+        coOwner.retain(this);
+        synchronized (retainedOwners) { retainedOwners.add(coOwner); }
+    }
+
+    private boolean isLive() {
+        if (!owner.isClosed()) return true;
+        synchronized (retainedOwners) {
+            return retainedOwners.stream().anyMatch(retainer -> !retainer.isClosed());
+        }
+    }
+
+    @Override public void close() { owner.close(); }
     public DataSet dataSet() { return dataSet; }
     public SelectionContext selection() { return selection; }
     public Projection projection() { return projection; }

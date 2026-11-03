@@ -16,6 +16,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
+import org.openstreetmap.josm.data.osm.DataSet;
+import org.openstreetmap.josm.data.osm.Node;
+import org.openstreetmap.josm.data.osm.Way;
+import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
@@ -25,6 +29,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.ManagedSelectionWitness;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileCache;
@@ -34,9 +40,54 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchStatus;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileReliabilityPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TransportResponse;
+import org.openstreetmap.josm.spi.preferences.Config;
+import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 class ManagedSourceRequestReceiptTest {
     @TempDir Path cache;
+
+    @Test void selectedWitnessSurvivesCaptureCloseOnlyWhileRetainedProducerOwnsIt() throws Exception {
+        Config.setPreferencesInstance(new MemoryPreferences());
+        var projection = Projections.getProjectionByCode("EPSG:3857");
+        ProjectionRegistry.setProjection(projection);
+        DataSet dataSet = new DataSet();
+        Node first = new Node(new LatLon(49.44, 14.0));
+        Node last = new Node(new LatLon(49.44, 14.0001));
+        dataSet.addPrimitive(first);
+        dataSet.addPrimitive(last);
+        Way way = new Way();
+        way.setNodes(List.of(first, last));
+        dataSet.addPrimitive(way);
+        dataSet.setSelected(List.of(way));
+        var selection = SelectionResolver.resolve(dataSet, false);
+        var source = selection.segmentNodes().stream().map(node -> node.getEastNorth(projection)).toList();
+        var ledger = AttemptMemoryLedger.production();
+        var owner = ledger.rootOwner();
+        var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+        byte[] png = colorRoutePng();
+        var decoder = new TileDecoderClassifier();
+        try (var coordinator = new TileFetchCoordinator((request, credentials) ->
+                    new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                            png, null, Duration.ZERO, ""),
+                new ManagedTileCache(cache, decoder), decoder, TileReliabilityPolicy.defaults())) {
+            var sampler = new TileHeatmapSampler(coordinator);
+            var witness = ManagedSelectionWitness.capture(dataSet, selection, projection, source,
+                    budget, owner);
+            var capture = sampler.prepareForEmission(managedSettings(), witness,
+                    List.of("hot"), "hot", false, budget, owner);
+            assertSame(witness, capture.selectionWitness().orElseThrow());
+            var retained = sampler.sampleProfilesRetainingL0(capture, "hot",
+                    IntensitySamplingMode.COLOR_MAPPING, budget, owner, CancellationProbe.NONE);
+            capture.close();
+            witness.requireCurrent(budget, owner);
+            assertTrue(ledger.currentBytes() > 0);
+            retained.close();
+            assertEquals(0L, ledger.currentBytes());
+            assertThrows(IllegalStateException.class, () -> witness.requireCurrent(budget, owner));
+        } finally {
+            owner.close();
+        }
+    }
 
     @Test void originalSearchReceiptRefusesAnAcquiredButUnauthorizedConnector() {
         var owner = AttemptMemoryLedger.production().rootOwner();
