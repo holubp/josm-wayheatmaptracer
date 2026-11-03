@@ -158,6 +158,17 @@ raw-peak condition, then measure earlier unchanged dense fallback opportunity.
 Source53b2ef8/classes remain frozen. No production shortcut or additional graph
 is authorized by the diagnostic helper alone; controller owns the evidence gate.
 
+The100-key replay is now complete:100/100same baseline receipts and dense profiles,
+35/50farther-offset and0/50near-ridge keys satisfy the proposed necessary condition.
+Avoidable local suffix3854889/13033253units (29.6% selected work) is insufficient
+to justify another exact-shortcut cycle given the observed~13.4x full-graph cost
+gap. Independent cost review closes that branch without production implementation.
+Active next work: one Sol numerical-certificate redesign in
+`/data/data/com.termux/files/usr/tmp/drasov-cheap-certificate-design.md`, with explicit
+changed numerical contract, full existing state/arc inventories and caps, amortized
+cost targets, quality/adversarial controls, and a feasibility-first discriminator.
+This preserves scope; it does not mark any original engine task complete.
+
 Public CI41580122880 succeeds at507269e:2601test executions/231XML suites,
 0failure/error/skip, public validation plus both GUI smoke engines. Private inputs
 were not executed. This CI covers the prior zero-local batch, not53b2ef8 or actual
