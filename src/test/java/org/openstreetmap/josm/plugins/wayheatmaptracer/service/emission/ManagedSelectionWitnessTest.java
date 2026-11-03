@@ -64,12 +64,41 @@ class ManagedSelectionWitnessTest {
     }
 
     @Test
-    void refusesIncompleteRelevantRelationWithoutGlobalDatasetBan() {
+    void retainsRelevantRelationMembershipWithDistantUnloadedMember() {
         Fixture fixture = fixture();
-        Node unloaded = new Node(100);
+        Way unloaded = new Way(100);
         fixture.dataSet.addPrimitive(unloaded);
-        fixture.dataSet.addPrimitive(relation(fixture.middle, unloaded));
+        Relation route = new Relation();
+        route.setMembers(List.of(new RelationMember("selected", fixture.dataSet.getSelectedWays().iterator().next()),
+                new RelationMember("distant", unloaded)));
+        fixture.dataSet.addPrimitive(route);
         SelectionContext selection = SelectionResolver.resolve(fixture.dataSet, false);
+        try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+            ManagedSelectionWitness witness = ManagedSelectionWitness.capture(
+                    fixture.dataSet, selection, ProjectionRegistry.getProjection(),
+                    source(selection), budget(), owner);
+            witness.requireCurrent(budget(), owner);
+            route.setMembers(List.of(new RelationMember("changed", selection.way()),
+                    new RelationMember("distant", unloaded)));
+            assertThrows(IllegalStateException.class,
+                    () -> witness.requireCurrent(budget(), owner));
+            Way otherUnloaded = new Way(102);
+            fixture.dataSet.addPrimitive(otherUnloaded);
+            route.setMembers(List.of(new RelationMember("selected", selection.way()),
+                    new RelationMember("distant", otherUnloaded)));
+            assertThrows(IllegalStateException.class,
+                    () -> witness.requireCurrent(budget(), owner));
+        }
+    }
+
+    @Test
+    void refusesIncompleteIncidentWayGeometry() {
+        Fixture fixture = fixture();
+        SelectionContext selection = SelectionResolver.resolve(fixture.dataSet, false);
+        Node unloaded = new Node(101);
+        fixture.dataSet.addPrimitive(unloaded);
+        Way incident = way(fixture.middle, unloaded);
+        fixture.dataSet.addPrimitive(incident);
         try (var owner = AttemptMemoryLedger.production().rootOwner()) {
             assertThrows(IllegalStateException.class, () -> ManagedSelectionWitness.capture(
                     fixture.dataSet, selection, ProjectionRegistry.getProjection(),

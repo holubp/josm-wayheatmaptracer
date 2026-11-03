@@ -212,9 +212,8 @@ public final class ManagedSelectionWitness {
                     ways.put(way, new WayFact(way, List.copyOf(wayNodes), List.copyOf(wayCoordinates),
                             Map.copyOf(keys)));
                 } else if (primitive instanceof Relation relation) {
-                    if (relation.hasIncompleteMembers()) {
-                        throw new IllegalStateException("Relevant managed relation is incomplete");
-                    }
+                    // A loaded route may name a distant unloaded member. Its ID and role are
+                    // local membership facts; distant geometry is outside this selected edit.
                     budget.charge(EmissionWorkBudget.Operation.PREPARATION, relation.getMembersCount());
                     memberVisits = Math.addExact(memberVisits, relation.getMembersCount());
                     if (memberVisits > MAX_RELEVANT_MEMBERS) {
@@ -223,9 +222,8 @@ public final class ManagedSelectionWitness {
                     List<MemberFact> members = new ArrayList<>(relation.getMembersCount());
                     for (RelationMember member : relation.getMembers()) {
                         OsmPrimitive target = member.getMember();
-                        if (target == null || target.getDataSet() != dataSet || target.isDeleted()
-                                || target.isIncomplete()) {
-                            throw new IllegalStateException("Relevant managed relation member is incomplete");
+                        if (target == null) {
+                            throw new IllegalStateException("Relevant managed relation member is absent");
                         }
                         members.add(new MemberFact(target, member.getRole()));
                     }

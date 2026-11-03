@@ -217,8 +217,17 @@ class ManagedSourceRequestReceiptTest {
             var sampler = new TileHeatmapSampler(coordinator);
             var capture = sampler.prepareForEmission(managedSettings(), source,
                     List.of("hot"), "hot", false, projection, budget, owner);
+            capture.requireSourceCurrent(managedSettings(), budget);
+            assertThrows(IllegalStateException.class,
+                    () -> capture.requireSourceCurrent(managedSettings().withSearchHalfWidthMeters(29.0), budget));
             var retained = sampler.sampleProfilesRetainingL0(capture, "hot",
                     IntensitySamplingMode.COLOR_MAPPING, budget, owner, CancellationProbe.NONE);
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(1L));
+            assertThrows(IllegalStateException.class,
+                    () -> capture.requireSourceCurrent(managedSettings(), budget));
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(0L));
+            assertThrows(IllegalStateException.class,
+                    () -> capture.requireSourceCurrent(managedSettings(), budget));
             long jointlyCharged = ledger.currentBytes();
             assertTrue(jointlyCharged > retained.grid().retainedBytes());
             assertThrows(IllegalStateException.class,

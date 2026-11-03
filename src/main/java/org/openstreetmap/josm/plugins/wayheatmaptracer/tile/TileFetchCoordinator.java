@@ -46,6 +46,7 @@ public final class TileFetchCoordinator implements AutoCloseable {
     private final AtomicLong joins = new AtomicLong();
     private final AtomicLong retrySuppressed = new AtomicLong();
     private volatile long activeGeneration = -1L;
+    private long activeGenerationEpoch;
 
     /**
      * Creates a production coordinator with the system clock.
@@ -178,12 +179,13 @@ public final class TileFetchCoordinator implements AutoCloseable {
      *
      * @param generation newly active settings generation
      */
-    public void updateActiveGeneration(ManagedTileGeneration generation) {
+    public synchronized void updateActiveGeneration(ManagedTileGeneration generation) {
         long next = Objects.requireNonNull(generation, "generation").value();
         if (activeGeneration == next) {
             return;
         }
         activeGeneration = next;
+        activeGenerationEpoch = Math.addExact(activeGenerationEpoch, 1L);
         negatives.keySet().removeIf(key -> key.generation().value() != next);
         authBlocked.keySet().removeIf(value -> value != next);
         rateLimited.keySet().removeIf(value -> value != next);
@@ -202,6 +204,17 @@ public final class TileFetchCoordinator implements AutoCloseable {
     /** Returns the factual currently active generation without starting tile work. */
     public long activeGenerationValue() {
         return activeGeneration;
+    }
+
+    /** Monotonic change count; a generation restored after a switch remains a new source epoch. */
+    public synchronized long activeGenerationEpoch() {
+        return activeGenerationEpoch;
+    }
+
+    /** Tests generation and epoch together at a source admission boundary. */
+    public synchronized boolean isActiveGenerationAtEpoch(ManagedTileGeneration generation, long epoch) {
+        return generation != null && generation.value() == activeGeneration
+                && epoch == activeGenerationEpoch;
     }
 
     /**

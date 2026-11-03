@@ -172,20 +172,61 @@ public final class TileHeatmapSampler {
         private final TileMosaic selectedMosaic;
         private final ManagedSourceRequestReceipt request;
         private final AttemptMemoryLedger.Owner mosaicOwner;
+        private final ManagedHeatmapConfig sourceConfig;
+        private final TileFetchCoordinator coordinator;
+        private final long sourceEpoch;
         private boolean sampled;
 
         private PreparedManagedCapture(TileMosaicSet mosaics, TileMosaic selectedMosaic,
-                ManagedSourceRequestReceipt request, AttemptMemoryLedger.Owner mosaicOwner) {
+                ManagedSourceRequestReceipt request, AttemptMemoryLedger.Owner mosaicOwner,
+                ManagedHeatmapConfig sourceConfig, TileFetchCoordinator coordinator,
+                long sourceEpoch) {
             this.mosaics = mosaics;
             this.selectedMosaic = selectedMosaic;
             this.request = request;
             this.mosaicOwner = mosaicOwner;
+            this.sourceConfig = sourceConfig;
+            this.coordinator = coordinator;
+            this.sourceEpoch = sourceEpoch;
         }
         public TileMosaicSet mosaics() { request.requireMatches(selectedMosaic); return mosaics; }
         public TileMosaic selectedMosaic() { request.requireMatches(selectedMosaic); return selectedMosaic; }
         public ManagedSourceRequestReceipt originalRequest() {
             request.requireMatches(selectedMosaic);
             return request;
+        }
+        /** Checks source-affecting settings and the plugin coordinator's live generation. */
+        public void requireSourceCurrent(ManagedHeatmapConfig current,
+                EmissionWorkBudget budget) {
+            java.util.Objects.requireNonNull(budget, "shared work budget");
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            if (current == null || !sameSourceConfig(sourceConfig, current)
+                    || !coordinator.isActiveGenerationAtEpoch(
+                            new ManagedTileGeneration(Math.max(0L, sourceConfig.cacheBuster())),
+                            sourceEpoch)) {
+                throw new IllegalStateException("Managed source settings or tile generation changed");
+            }
+            request.requireMatches(selectedMosaic);
+        }
+
+        private static boolean sameSourceConfig(ManagedHeatmapConfig a, ManagedHeatmapConfig b) {
+            return java.util.Objects.equals(a.keyPairId(), b.keyPairId())
+                    && java.util.Objects.equals(a.policy(), b.policy())
+                    && java.util.Objects.equals(a.signature(), b.signature())
+                    && java.util.Objects.equals(a.sessionToken(), b.sessionToken())
+                    && java.util.Objects.equals(a.activity(), b.activity())
+                    && java.util.Objects.equals(a.color(), b.color())
+                    && a.inferenceMode() == b.inferenceMode()
+                    && a.inferenceZoom() == b.inferenceZoom()
+                    && a.validationZoom() == b.validationZoom()
+                    && Double.doubleToLongBits(a.searchHalfWidthMeters())
+                        == Double.doubleToLongBits(b.searchHalfWidthMeters())
+                    && Double.doubleToLongBits(a.sampleStepMeters())
+                        == Double.doubleToLongBits(b.sampleStepMeters())
+                    && a.intensitySamplingMode() == b.intensitySamplingMode()
+                    && a.multiColorDetection() == b.multiColorDetection()
+                    && a.aggregateAllColorSchemes() == b.aggregateAllColorSchemes()
+                    && a.cacheBuster() == b.cacheBuster();
         }
         private synchronized void retainFor(AttemptMemoryLedger.Owner coOwner) {
             if (mosaicOwner.isClosed()) {
@@ -269,6 +310,9 @@ public final class TileHeatmapSampler {
             }
             budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
             var mosaicReservation = mosaicOwner.reserve(admittedMosaicBytes);
+            tileCoordinator.updateActiveGeneration(
+                    new ManagedTileGeneration(Math.max(0L, config.cacheBuster())));
+            long sourceEpoch = tileCoordinator.activeGenerationEpoch();
             for (String color : frozenColors) {
                 budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
                 TileMosaic primary = loadMosaic(config, color, frozenSource, inference,
@@ -289,8 +333,10 @@ public final class TileHeatmapSampler {
             TileMosaic selected = set.require(selectedColor);
             request.requireMatches(selected);
             colorsReservation.close();
-            var capture = new PreparedManagedCapture(set, selected, request, mosaicOwner);
+            var capture = new PreparedManagedCapture(set, selected, request, mosaicOwner,
+                    config, tileCoordinator, sourceEpoch);
             mosaicReservation.adopt(capture);
+            capture.requireSourceCurrent(config, budget);
             complete = true;
             return capture;
         } finally {
@@ -404,6 +450,7 @@ public final class TileHeatmapSampler {
             IntensitySamplingMode intensityMode, EmissionWorkBudget budget,
             AttemptMemoryLedger.Owner parentOwner, CancellationProbe cancellation) {
         java.util.Objects.requireNonNull(capture, "prepared managed capture");
+        capture.requireSourceCurrent(capture.sourceConfig, budget);
         var request = capture.originalRequest();
         return sampleProfilesRetainingL0(capture.selectedMosaic(), request.originalSource(),
                 detectorMode, intensityMode, request.capturedProjection(), budget,
