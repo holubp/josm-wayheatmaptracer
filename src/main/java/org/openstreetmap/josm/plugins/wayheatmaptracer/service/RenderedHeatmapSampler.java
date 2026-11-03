@@ -245,6 +245,34 @@ public final class RenderedHeatmapSampler {
         RasterCoordinateProjector projectedCoordinateProjector,
         CancellationProbe cancellation
     ) {
+        return sampleProfilesOnAnchors(raster, anchors, halfWidthPx, stepPx, colorMode,
+            rasterScale, sourceCoordinateScale, intensitySamplingMode,
+            projectedCoordinateProjector, cancellation, null);
+    }
+
+    /** Uses the same Legacy profile loop with source pixels already mapped once to exact L0 doubles. */
+    List<CrossSectionProfile> sampleProfilesOnManagedGrid(
+        BufferedImage raster, List<ProfileSamplingAnchor> anchors, int halfWidthPx, int stepPx,
+        String colorMode, double rasterScale, double sourceCoordinateScale,
+        IntensitySamplingMode intensitySamplingMode,
+        RasterCoordinateProjector projectedCoordinateProjector,
+        CancellationProbe cancellation, ManagedScalarGrid grid
+    ) {
+        if (grid == null || grid.width() != raster.getWidth() || grid.height() != raster.getHeight()) {
+            throw new IllegalArgumentException("Managed grid and source image dimensions differ");
+        }
+        return sampleProfilesOnAnchors(raster, anchors, halfWidthPx, stepPx, colorMode,
+            rasterScale, sourceCoordinateScale, intensitySamplingMode,
+            projectedCoordinateProjector, cancellation, grid);
+    }
+
+    private List<CrossSectionProfile> sampleProfilesOnAnchors(
+        BufferedImage raster, List<ProfileSamplingAnchor> anchors, int halfWidthPx, int stepPx,
+        String colorMode, double rasterScale, double sourceCoordinateScale,
+        IntensitySamplingMode intensitySamplingMode,
+        RasterCoordinateProjector projectedCoordinateProjector,
+        CancellationProbe cancellation, ManagedScalarGrid grid
+    ) {
         if (anchors.size() < 2) {
             return Collections.emptyList();
         }
@@ -274,7 +302,9 @@ public final class RenderedHeatmapSampler {
                 double y = baseScreen.y + normal.y * offset;
                 double sourceX = x / coordinateScale;
                 double sourceY = y / coordinateScale;
-                double intensity = intensityAt(raster, sourceX, sourceY, colorMode, intensitySamplingMode);
+                double intensity = grid == null
+                    ? intensityAt(raster, sourceX, sourceY, colorMode, intensitySamplingMode)
+                    : grid.sampleNearest(sourceX, sourceY);
                 offsets.add(new OffsetSample(offset, intensity));
                 insideRaster.add(isInsideRaster(raster, sourceX, sourceY));
             }
@@ -1842,7 +1872,11 @@ public final class RenderedHeatmapSampler {
         if (!isInsideRaster(image, sx, sy)) {
             return 0.0;
         }
-        int argb = image.getRGB(sx, sy);
+        return scalarIntensity(image.getRGB(sx, sy), colorMode, intensitySamplingMode);
+    }
+
+    /** Exact historical ARGB-to-double mapping, shared by direct and retained Legacy sampling. */
+    static double scalarIntensity(int argb, String colorMode, IntensitySamplingMode intensitySamplingMode) {
         int alpha = (argb >>> 24) & 0xFF;
         if (alpha == 0) {
             return 0.0;

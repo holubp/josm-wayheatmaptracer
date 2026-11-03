@@ -26,10 +26,108 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfi
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacySeedAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry.ProjectedPoint;
 
 class LegacyManagedProfileSamplerTest {
+    @Test void retainedManagedL0PreservesHighVirtualScaleAndImageCenterPhase() {
+        var fixture = fixture(List.of("bluered"));
+        var base = fixture.set().require("bluered");
+        var scaled = new TileHeatmapSampler.TileMosaic(base.color(), base.zoom(),
+                base.originWorldPxX(), base.originWorldPxY(), base.image(), base.tiles(),
+                base.tileImages(), base.parameters(), false, 24.001238633946606);
+        var sampler = TileHeatmapSampler.numericalOnly();
+        var old = sampler.sampleProfiles(scaled, fixture.sourceEastNorth(), "bluered",
+                IntensitySamplingMode.COLOR_MAPPING, fixture.projection(), CancellationProbe.NONE);
+        var owner = AttemptMemoryLedger.production().rootOwner();
+        var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+        try (var retained = sampler.sampleProfilesRetainingL0(scaled, fixture.sourceEastNorth(),
+                "bluered", IntensitySamplingMode.COLOR_MAPPING, fixture.projection(), budget,
+                owner, CancellationProbe.NONE)) {
+            assertEquals(old, retained.profiles());
+            assertEquals(0, retained.profileSet().levels().get(0).level());
+            assertEquals(1, retained.profileSet().levels().get(0).reduction());
+            assertEquals(1, retained.profileSet().levels().size());
+        }
+        owner.close();
+    }
+
+    @Test void retainedManagedProducerClosesAllChargesOnCancellationAndAdmissionFailure() {
+        var fixture = fixture(List.of("hot"));
+        var sampler = TileHeatmapSampler.numericalOnly();
+        var mosaic = fixture.set().require("hot");
+        var limited = new AttemptMemoryLedger(1024);
+        var limitedOwner = limited.rootOwner();
+        assertThrows(AttemptMemoryLedger.ResourceLimitException.class,
+                () -> sampler.sampleProfilesRetainingL0(mosaic, fixture.sourceEastNorth(), "hot",
+                        IntensitySamplingMode.COLOR_MAPPING, fixture.projection(),
+                        new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE),
+                        limitedOwner, CancellationProbe.NONE));
+        assertEquals(0, limited.currentBytes());
+        limitedOwner.close();
+
+        var ledger = AttemptMemoryLedger.production();
+        var owner = ledger.rootOwner();
+        var checks = new AtomicInteger();
+        assertThrows(CancellationException.class,
+                () -> sampler.sampleProfilesRetainingL0(mosaic, fixture.sourceEastNorth(), "hot",
+                        IntensitySamplingMode.COLOR_MAPPING, fixture.projection(),
+                        new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE), owner,
+                        () -> checks.incrementAndGet() > 1));
+        assertEquals(0, ledger.currentBytes());
+        owner.close();
+    }
+
+    @Test void retainedManagedL0PreservesEveryNativeLegacyProfileAcrossPalettes() {
+        var fixture = fixture(COLORS);
+        var sampler = TileHeatmapSampler.numericalOnly();
+        for (String palette : COLORS) {
+            var mosaic = fixture.set().require(palette);
+            var old = sampler.sampleProfiles(mosaic, fixture.sourceEastNorth(), palette,
+                    IntensitySamplingMode.COLOR_MAPPING, fixture.projection(), CancellationProbe.NONE);
+            var ledger = AttemptMemoryLedger.production();
+            var owner = ledger.rootOwner();
+            var work = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+            try (var retained = sampler.sampleProfilesRetainingL0(mosaic, fixture.sourceEastNorth(), palette,
+                    IntensitySamplingMode.COLOR_MAPPING, fixture.projection(), work, owner,
+                    CancellationProbe.NONE)) {
+                assertEquals(old, retained.profiles(), palette + " full profiles/peaks/anchors");
+                assertEquals(new RidgeTracker().track(old, 1.75),
+                        new RidgeTracker().track(retained.profiles(), 1.75), palette + " native tracker");
+                assertSame(mosaic, retained.sourceMosaic());
+                assertFalse(retained.grid().view().supportsCell(0, 0),
+                        "A frozen numerical mosaic without tile receipts cannot certify acquired cells");
+                assertTrue(ledger.currentBytes() > 0);
+            }
+            assertEquals(0, ledger.currentBytes());
+            owner.close();
+        }
+    }
+
+    @Test void managedConnectorCellsRequireTheActualUsableTileReceipt() {
+        var fixture = fixture(List.of("hot"));
+        var source = fixture.set().require("hot");
+        int tileX = (int) (source.originWorldPxX() / TileHeatmapSampler.TILE_SIZE);
+        int tileY = (int) (source.originWorldPxY() / TileHeatmapSampler.TILE_SIZE);
+        var receipt = new TileHeatmapSampler.TileRecord("hot", ZOOM, tileX, tileY, true,
+                200, 1, 512, 512, "source-hash", "valid", 1, 1, 1, "");
+        var mosaic = new TileHeatmapSampler.TileMosaic("hot", ZOOM,
+                source.originWorldPxX(), source.originWorldPxY(), source.image(),
+                List.of(receipt), Map.of("hot/z15-x" + tileX + "-y" + tileY + ".png", source.image()),
+                source.parameters(), true, source.virtualRasterScale());
+        var owner = AttemptMemoryLedger.production().rootOwner();
+        try (var retained = TileHeatmapSampler.numericalOnly().sampleProfilesRetainingL0(mosaic,
+                fixture.sourceEastNorth(), "hot", IntensitySamplingMode.COLOR_MAPPING,
+                fixture.projection(), new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE),
+                owner, CancellationProbe.NONE)) {
+            assertTrue(retained.grid().view().supportsCell(0, 0));
+        }
+        owner.close();
+    }
+
     @ParameterizedTest @ValueSource(strings = {"hot", "all-colors-combined"})
     void admissionUsesFactualReferenceMosaicEvenWhenSummaryParametersDiffer(String detector) {
         var fixture = fixture(COLORS);

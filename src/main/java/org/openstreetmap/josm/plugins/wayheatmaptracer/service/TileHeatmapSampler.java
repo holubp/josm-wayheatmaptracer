@@ -13,6 +13,8 @@ import java.util.Map;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.data.projection.Projection;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
@@ -231,6 +233,83 @@ public final class TileHeatmapSampler {
                 ProfileSamplingAnchor.pair(dense, local, projection), halfWidthPx, stepPx,
                 detectorMode, REFERENCE_RASTER_SCALE, mosaic.virtualRasterScale(), intensityMode,
                 mosaicProjector(mosaic, projection), cancellation);
+    }
+
+    /** Experimental retained scalar source for the existing managed Legacy profile path. */
+    public RetainedManagedScalarProfiles sampleProfilesRetainingL0(
+            TileMosaic mosaic, List<EastNorth> sourcePolyline, String detectorMode,
+            IntensitySamplingMode intensityMode, Projection projection, EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner parentOwner, CancellationProbe cancellation) {
+        java.util.Objects.requireNonNull(mosaic, "prepared mosaic");
+        java.util.Objects.requireNonNull(sourcePolyline, "selected source polyline");
+        java.util.Objects.requireNonNull(detectorMode, "detector");
+        java.util.Objects.requireNonNull(intensityMode, "intensity mode");
+        java.util.Objects.requireNonNull(projection, "captured projection");
+        java.util.Objects.requireNonNull(budget, "shared work budget");
+        java.util.Objects.requireNonNull(parentOwner, "retained parent owner");
+        java.util.Objects.requireNonNull(cancellation, "cancellation");
+        var shape = legacySamplingShape(PolylineMath.length(sourcePolyline),
+                sourcePolyline.size(), mosaic.parameters());
+        if (shape.profiles() < 2) {
+            throw new IllegalArgumentException("Managed emission needs at least two original profiles");
+        }
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+        var owner = parentOwner.child("managed-legacy-l0");
+        try {
+            // These are conservative retained capacities, not a claim about all transient JVM heap.
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+            owner.reserve(retainedMosaicBytes(mosaic));
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+            var profileReservation = owner.reserve(retainedProfileBytes(shape));
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,
+                    Math.multiplyExact((long) shape.profiles(), 3));
+            var grid = ManagedScalarGrid.fromManagedMosaic(mosaic, detectorMode,
+                    intensityMode, budget, owner);
+            List<EastNorth> dense = PolylineMath.resampleByCount(sourcePolyline, shape.profiles());
+            List<Point2D.Double> local = localPolyline(mosaic, dense, projection);
+            var anchors = ProfileSamplingAnchor.pair(dense, local, projection);
+            CancellationProbe chargedCancellation = () -> {
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                return cancellation.cancelled();
+            };
+            var profiles = new RenderedHeatmapSampler().sampleProfilesOnManagedGrid(
+                    mosaic.image(), anchors, shape.referenceHalfWidthPx(), shape.referenceStepPx(),
+                    detectorMode, REFERENCE_RASTER_SCALE, mosaic.virtualRasterScale(),
+                    intensityMode, mosaicProjector(mosaic, projection), chargedCancellation, grid);
+            var profileSet = new MultiScaleProfileSet(List.of(
+                    new MultiScaleProfileSet.ScaleProfileLevel(0, 1, 0.0, profiles)),
+                    0L, Math.multiplyExact((long) mosaic.image().getWidth(),
+                            (long) mosaic.image().getHeight()) * Double.BYTES);
+            var retained = new RetainedManagedScalarProfiles(mosaic, grid, profileSet, owner);
+            profileReservation.adopt(retained);
+            return retained;
+        } catch (RuntimeException | Error failure) {
+            owner.close();
+            throw failure;
+        }
+    }
+
+    private static long retainedMosaicBytes(TileMosaic mosaic) {
+        long bytes = AttemptMemoryLedger.objectBytes(8192L
+                + Math.multiplyExact((long) mosaic.tiles().size(), 512L)
+                + Math.multiplyExact((long) mosaic.tileImages().size(), 128L));
+        bytes = Math.addExact(bytes, retainedImageBytes(mosaic.image()));
+        for (BufferedImage tile : mosaic.tileImages().values()) {
+            bytes = Math.addExact(bytes, retainedImageBytes(tile));
+        }
+        return bytes;
+    }
+
+    private static long retainedImageBytes(BufferedImage image) {
+        long pixels = Math.multiplyExact((long) image.getWidth(), image.getHeight());
+        return AttemptMemoryLedger.arrayBytes(pixels, 8L);
+    }
+
+    private static long retainedProfileBytes(LegacySamplingShape shape) {
+        long perProfile = Math.addExact(2048L,
+                Math.multiplyExact((long) shape.samplesPerProfile(), 1024L));
+        return Math.addExact(AttemptMemoryLedger.referenceArrayBytes(shape.profiles()),
+                Math.multiplyExact((long) shape.profiles(), perProfile));
     }
 
     /**
