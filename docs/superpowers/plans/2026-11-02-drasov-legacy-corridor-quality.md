@@ -1076,3 +1076,137 @@ Controller took over its isolated worktree inline; Luna retains the Gradle slot
 for domain RED/GREEN. A briefly overlapping connector run was terminated by the
 controller; its incomplete results are not evidence. No retry/model escalation
 or Astra use. Current connector/source-input edits remain experimental/unreviewed.
+
+### Native implementation checkpoint — 2026-11-03
+
+A domain implementation ac67ba2 plus test fix f86f40e independently reviewed by
+Sol6medium fallback (6.1capacity unavailable): exact native helper reuse/default
+optimizer unchanged. Review found missing nonunit/full-reduction parity tests;
+Luna closed both, scoped re-review ADDRESSED,25focused Java17 tests green. Entire
+ordered canonical output is checked at sourcePixel0.5 and NaN->native1.0, with
+more than21eligible source samples and actual post-dedup19states, not an invented
+requirement to fill21. Integrated into experimental branch as a4497d6+fe2c175;
+not yet pushed/CI-tested at this new head. No behavior/default adoption.
+
+Connector inline implementation: first11tests exposed/fixed acceptance of two
+unowned ports and duplicate native row/state IDs (actual assertion RED retained).
+Real R4 known witness admission passes for A and Legacy through retained cropped
+field, production extraction and factual endpoint ownership. Expanded suite now
+110tests/10XMLs, zero failures/errors/skips, Java17. Includes slab darkness, invalid
+cells, narrow authority notch, exact16/20limits, protected barriers, sourceGAP
+fresh binding, foreign identities, sticky exhausted work, closed input, measured
+fork, broad plateau, off-connector invalid sample and issued zero-edge transport.
+Initial0.1faint control wrongly called the original synthetic fallback OBSERVED;
+corrected to a real observed0.7owner tapering to unchanged0.1GAP endpoint, and
+asserts original fallback/GAP provenance explicitly. No intensity/threshold tuning.
+
+Full source/report/diff are in native-connector worktree and
+`/data/data/com.termux/files/usr/tmp/drasov-native-connector-{report,review}.md`
+(review report pending), initial/expanded logs and RED XMLs in Termux tmp. Source
+uncommitted and not integrated. Independent Sol6high review is in progress under
+the allowed fallback after6.1capacity failure. Its first concrete finding is
+projection before validation and scalar-pitch rather than actual affine normal
+displacement in state bounds; controller awaits complete report for one coherent
+TDD fix wave. Do not count110green as complete review/admission correctness.
+
+Parallel Luna prepares ignored actual complete R4 native-A graph runner, reusing
+all original states, factual limits and ONE shared work/memory attempt. It must
+report typed resource refusal as negative feasibility, never reset/catch-continue
+or infer graph practicality from the witness. Run after review corrections. All
+native inference kernels, actual Drasov/Omice quality, consumers and original
+integration/private gates remain outstanding. No RC/release created.
+
+Review-fix wave: independent connector review found projection-before-validation,
+general affine scalar-pitch assumptions, and inherited tiny authority tolerances.
+Discriminating executions matter: the retained producer ALREADY rejects materially
+anisotropic/skewed frames, so that proposed adversary is an upstream guard control,
+not a reproduced evaluator defect. A valid uniform2m transform with matching
+resolution/ground chainages DOES reproduce overflow before validation. A single
+tiny-notch polygon was rejected at construction (not RED); the accepted union of
+two rectangles separated1e-9m DOES reproduce skipped authority. Corrected run:
+3tests,2intended assertion failures; anisotropy guard passed. Root reordered native
+state/span validation before projection and derives normal displacement/owner
+uncertainty from retained affine axes defensively without widening accepted frames.
+
+Sol6high owns isolated `josm-drasov-conservative-authority` (base180701b), brief
+`/data/data/com.termux/files/usr/tmp/drasov-conservative-authority-brief.md`.
+New opt-in conservative segment AND point membership preserve ordinary methods;
+unresolved event intervals/near-parallel or boundary arithmetic fail closed.
+Actual union-gap RED retained, then40MetricRegion tests GREEN; tightened independent
+near-parallel fixture rerun6GREEN with unchanged source (34neighbors retain valid
+evidence). Implementation review/commit/integration remain pending; worker cannot
+approve its own consequential change. No new default authority convention adopted.
+
+Additional attempt-lifetime regression: deterministic in-evaluation cancellation
+passes, but after memory refusal releasing scratch allowed a NEW evaluator session
+on the same attempt. Actual assertion RED retained in terminal-red XML. Root added
+first-failure retention to SampledEmissionInput execution entry (debug source access
+remains available); constructor/evaluation resource failures record it. This fix
+awaits combined GREEN and independent review. Do not label it verified yet.
+
+Ignored full-R4-A graph runner prepared by Luna, no execution yet. Its reference
+native tracking/enumeration is explicitly outside measured admission accounting;
+domain preparation charges are labelled proxies. It can show negative admission
+feasibility or bounded admission execution, never full solver/engine feasibility.
+All real original state pairs retained, ONEsharedcap, no reset/pruning. Source/class
+fingerprint must match final Gradle output before running, Java heap512MiB matches
+project setting. Prep report `/data/data/com.termux/files/usr/tmp/drasov-r4-full-graph-prep.md`.
+
+### Reviewed prototype and measured admission limit
+
+Authority2b534fd+84a093e independently reviewed clean, including literal invalid
+notch constructor rejection plus valid wider one-polygon notch forward/reverse.
+Native source checkpoint e1e9b72, helper imports f24b75a+4e6c9bb and conservative
+call-site4704668 are clean in `josm-drasov-native-connector`. Final combined
+Java17 offline run123tests/11XML,0failures/errors/skips. Scoped independent Sol6high
+review closes the original findings and new terminal-input lifetime correction;
+report `drasov-native-connector-fix-review.md`. Relevant prototype control coverage
+is not equivalent to completed native engine/adoption gates.
+
+Integrated locally into `codex/drasov-optional-emission-experiment`:
+a4497d6/fe2c175 (A domain),751e308/562aba1/2f0ac63/80cd23f (connector/authority).
+Head80cd23f, clean, not pushed yet. Public full CI still only establishes180701b.
+Keep the native checkpoint's known-RED authority dependency history honest; its
+subsequent helper/call-site commits and123test run close that regression.
+
+ACTUAL complete-graph screen at4704668 is NEGATIVE feasibility:239states and26098
+potential pairs,551attempted/550completed,184admitted/366rejected, remaining25548
+pairs unmeasured (includes the interrupted pair). Stopped typed total-work limit
+at127999998units requesting4more.8.423s graph,10.9MiBpeak tracked memory, final0.
+Work:mode extraction72.08M,node reads22.24M,regions22.12M,preparation8.69M,
+cell queries2.85M. No cap increase, catch-continue, missing-pair rejection claim,
+or solver-quality success. Reference tracking/domain proxies remain explicitly
+outside/bounded estimates in the receipt. Source/class fingerprint/launch receipt,
+helper and report remain ignored in `20261103-r4-full-a-graph/`.
+
+Cheap necessary-owner census (Luna) proves only6of239states/1173of26098pairs fail
+that distance bound;24925pairs remain (95.505%). At equal work1.047x, not the
+rough48x gap. Do not spend a first implementation batch on this tiny filter alone.
+
+Reviewed follow-on subplan:
+`docs/superpowers/plans/2026-11-03-native-admission-resolution-experiments.md`.
+Dense p/8 transverse step was implementation-added, not an approved lateral rule.
+v2half-native ALONG-connector probes remain unchanged. Proposed explicit
+HALF_NATIVE_L0 and PIXEL_CAPPED_L0 numerical variants preserve dense baseline and
+all native states/caps; no automatic adoption or equivalence claim. Requested d
+differs from producer interleaved actual L0 max(d,r)/2 (R4.5m), so the1mvariant
+is NOT labelled producer-equivalent. Stop-truncated dense pairs are UNMEASURED;
+common-pair comparison/new-admission independent adjudication are mandatory.
+
+Active writer: pinned Luna/medium `/root/query_policy`, isolated
+`/data/data/com.termux/files/usr/tmp/josm-drasov-query-resolution` base4704668.
+Brief `drasov-query-resolution-brief.md`. It owns the single local Gradle slot;
+assertion RED and preliminary92test GREEN reported, then extending all required
+policy safety/phase controls before final report. Do not call Task2complete yet.
+Bench harness prepared externally at `/data/data/com.termux/files/usr/tmp/drasov-query-policy-benchmark`;
+Python comparison self-test passed; NOnew Java compile/run yet. Root must verify
+code/tests/review and source/class fingerprint before three independent capped
+policy runs. CI/publication of this coherent batch awaits those outcomes.
+
+Further gates unchanged: actual A and Legacy inference kernels, genuine A band
+owners (not fabricated Legacy peak ownership), protected captured events and live
+factories, exact observations/emissions mapping consumers, original preservation
+controls/real Drasov+Omice quality, Move/Precise/Hybrid/Apply/Undo/replay and final
+review. No release/default engine changed. Model routes explicitly requested per
+AGENTS; config has Luna/medium child defaults and no role pin files. Exact runtime
+allowance/model telemetry not surfaced; do not invent weekly usage. No Astra used.
