@@ -127,6 +127,37 @@ public final class ManagedGroundTransform {
         return maximumNativePixelPitchMeters;
     }
 
+    /** Local ground pitch of a native image pixel at one certified producer raster point. */
+    public double nativePixelPitchAt(RasterPoint virtualRasterPoint) {
+        requireOpen();
+        Objects.requireNonNull(virtualRasterPoint, "virtual raster point");
+        double nativeX = virtualRasterPoint.x() / mosaic.virtualRasterScale();
+        double nativeY = virtualRasterPoint.y() / mosaic.virtualRasterScale();
+        if (!Double.isFinite(nativeX) || !Double.isFinite(nativeY)
+                || nativeX < 0.0 || nativeY < 0.0
+                || nativeX > mosaic.image().getWidth() - 1.0
+                || nativeY > mosaic.image().getHeight() - 1.0) {
+            throw new IllegalArgumentException("Managed pitch point leaves acquired source cells");
+        }
+        double worldY = mosaic.originWorldPxY() + nativeY + 0.5;
+        double latitude = latitude(worldY, worldSize);
+        double k = 2.0 * Math.PI / worldSize;
+        double east = frame.distortionCertificate().eastMetersPerRadian();
+        double north = frame.distortionCertificate().northMetersPerRadian()
+                * Math.cos(Math.toRadians(latitude));
+        double local = Math.nextUp(k * Math.max(east, north) * (1.0 + 1e-12));
+        if (!Double.isFinite(local) || local <= 0.0
+                || local > maximumNativePixelPitchMeters) {
+            throw new IllegalStateException("Managed local pitch exceeds certified domain bound");
+        }
+        return local;
+    }
+
+    /** Local ground pitch of one virtual profile-raster pixel, distinct from native tile pitch. */
+    public double virtualPixelPitchAt(RasterPoint virtualRasterPoint) {
+        return nativePixelPitchAt(virtualRasterPoint) / mosaic.virtualRasterScale();
+    }
+
     /** Analytic deviation of the transformed raster segment from its metric endpoint chord. */
     public double maximumNorthChordErrorMeters(RasterPoint start, RasterPoint end) {
         requireOpen();

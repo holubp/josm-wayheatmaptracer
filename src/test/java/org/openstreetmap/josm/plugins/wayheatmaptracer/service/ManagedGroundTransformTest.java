@@ -62,7 +62,14 @@ class ManagedGroundTransformTest {
                 double localPitch = k * Math.max(eastScale,
                         northScale * Math.cos(Math.toRadians(latitude)));
                 assertTrue(transform.maximumNativePixelPitchMeters() >= localPitch);
+                RasterPoint localRaster = new RasterPoint(0.0,
+                        (y - mosaic.originWorldPxY() - 0.5) * scale);
+                assertEquals(localPitch, transform.nativePixelPitchAt(localRaster), 1e-8);
+                assertEquals(transform.nativePixelPitchAt(localRaster) / scale,
+                        transform.virtualPixelPitchAt(localRaster), 0.0);
             }
+            assertThrows(IllegalArgumentException.class,
+                    () -> transform.nativePixelPitchAt(new RasterPoint(-scale, 0)));
             RasterPoint start = new RasterPoint(20.0 * scale, 30.0 * scale);
             RasterPoint end = new RasterPoint(200.0 * scale, 300.0 * scale);
             RasterPoint mid = new RasterPoint((start.x() + end.x()) * 0.5,
