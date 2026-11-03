@@ -35,6 +35,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeCo
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.RowState;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.SourceClass;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.Status;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 

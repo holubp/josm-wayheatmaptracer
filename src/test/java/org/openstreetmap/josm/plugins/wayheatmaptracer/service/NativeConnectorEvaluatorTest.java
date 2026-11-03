@@ -894,7 +894,7 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @Test void halfSampleGaussianWithTinyIntegerSupportCannotBorrowMissingOldProducerOwnership() {
+    @Test void faintHalfSampleNativeSignalBindsFreshGapPortsWithoutRelabelingOriginal() {
         try (var f = scene((x, y) -> Math.exp(-0.5 * Math.pow((y - 32.5) / 0.12, 2)),
                 (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.GAP,
                 2, 20, RasterMetricTransform.metricGrid(new MetricPoint(0, 0), 1, 0, 0, 1), budget(), 1)) {
@@ -908,22 +908,55 @@ class NativeConnectorEvaluatorTest {
                 try (var evaluator = new NativeConnectorEvaluator(f.input(),
                         new Domain(f.states(), List.of()), policy)) {
                     var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
-                    assertNotEquals(Status.ADMITTED, receipt.status(), policy.name() + " " + receipt);
-                    assertEquals(Reason.ENDPOINT_OWNERSHIP, receipt.reason(), policy.name());
+                    // All four policies were measured independently before correcting this obsolete
+                    // source-label oracle: 41 complete modes, native mean/min 1.698566775303334e-4,
+                    // maximum shoulder threshold 1.2229680782184006e-4, complete envelope.
+                    assertEquals(Status.ADMITTED, receipt.status(), policy.name() + " " + receipt);
+                    assertEquals(SourceClass.GAP, receipt.from().sourceClass());
+                    assertEquals(SourceClass.GAP, receipt.to().sourceClass());
+                    assertNull(receipt.from().peakOwner());
+                    assertNull(receipt.to().peakOwner());
+                    assertEquals(1.698566775303334e-4, receipt.scalar().orElseThrow().mean().orElseThrow(), 1e-15);
+                    assertEquals(1.698566775303334e-4, receipt.scalar().orElseThrow().minimum().orElseThrow(), 1e-15);
                     assertFalse(receipt.probes().isEmpty(), policy.name());
                     assertTrue(receipt.probes().stream().allMatch(probe -> probe.selectedMode() != null),
                         "Retain the faint measured modes rather than calling the pixels no-signal");
                     assertTrue(receipt.measuredNativeContinuationComplete(), policy.name());
                     assertTrue(receipt.scalar().isPresent(), policy.name());
+                    assertTrue(receipt.scalarEnvelopeComplete(), policy.name());
+                    assertEquals(41, receipt.probes().size(), policy.name());
+                    assertTrue(receipt.probes().stream().allMatch(probe -> probe.threshold() != null
+                        && probe.threshold().shoulderThreshold() < 1.698566775303334e-4
+                        && !probe.extraction().result().flankReceipts().isEmpty()
+                        && !probe.extraction().result().rawCoreReceipts().isEmpty()), policy.name());
                 }
             }
             try(var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
                     QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
                 var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
-                assertNotEquals(Status.ADMITTED,receipt.status());
-                assertEquals(Reason.ENDPOINT_OWNERSHIP,receipt.reason());
+                assertEquals(Status.ADMITTED,receipt.status(),receipt::toString);
+                assertEquals(SourceClass.GAP,receipt.from().sourceClass());
+                assertEquals(SourceClass.GAP,receipt.to().sourceClass());
+                assertEquals(1.698566775303334e-4,receipt.scalar().orElseThrow().minimum().orElseThrow(),1e-15);
+                assertTrue(receipt.scalarEnvelopeComplete());
                 assertTrue(receipt.probes().stream().allMatch(p->p.selectedMode()!=null
                     && !p.profileQuery().localNoModeProven()));
+            }
+        }
+    }
+
+    @Test void quantizedHalfSampleWithoutPositiveNativeNodesHasNoFreshGapPort() {
+        try (var f = scene((x, y) -> Math.rint(255 * Math.exp(-0.5 * Math.pow((y - 32.5) / 0.12, 2))) / 255,
+                (x, y) -> true, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.GAP,
+                2, 20, RasterMetricTransform.metricGrid(new MetricPoint(0, 0), 1, 0, 0, 1), budget(), 1)) {
+            for (var policy : QueryPolicy.values()) {
+                try (var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()), policy)) {
+                    var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
+                    assertNotEquals(Status.ADMITTED, receipt.status(), policy.name());
+                    assertEquals(0.0, receipt.scalar().orElseThrow().mean().orElseThrow(), 0.0);
+                    assertEquals(SourceClass.GAP, receipt.from().sourceClass());
+                    assertEquals(SourceClass.GAP, receipt.to().sourceClass());
+                }
             }
         }
     }
@@ -1000,12 +1033,14 @@ class NativeConnectorEvaluatorTest {
     }
 
     @ParameterizedTest @EnumSource(value = QueryPolicy.class, names = {"DENSE_EIGHTH_NATIVE_V1", "HALF_NATIVE_L0_V1", "PIXEL_CAPPED_L0_V1"})
-    void freshUnownedPortsCannotBindEachOtherWithoutAnOriginalBranchOwner(QueryPolicy policy) {
+    void freshUnownedPortsBindOnlyThroughMeasuredNativeBranch(QueryPolicy policy) {
         try (var f = straight(false, SourceClass.GAP,1);
              var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()), policy)) {
             var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
-            assertEquals(Status.UNAVAILABLE, receipt.status());
-            assertEquals(Reason.ENDPOINT_OWNERSHIP, receipt.reason());
+            assertEquals(Status.ADMITTED, receipt.status(), receipt::toString);
+            assertEquals(SourceClass.GAP, receipt.from().sourceClass());
+            assertEquals(SourceClass.GAP, receipt.to().sourceClass());
+            assertTrue(receipt.measuredNativeContinuationComplete());
         }
     }
 
@@ -1597,6 +1632,38 @@ class NativeConnectorEvaluatorTest {
                     incoming.probes(), incoming.transportedIncoming());
                 assertEquals(Reason.INCOMING_DIRECTION_UNAVAILABLE,
                     evaluator.evaluate(states.get(1), states.get(2), forged).reason());
+                var ordinary = evaluator.registerOrdinaryPhysicalLeg(states.get(0), states.get(1),
+                    NativeReferenceStatus.UNAVAILABLE);
+                var ordinaryZero = evaluator.evaluateWithOrdinaryIncoming(states.get(1), states.get(2), ordinary);
+                assertEquals(Status.ADMITTED, ordinaryZero.status(), ordinaryZero::toString);
+                assertEquals(0, ordinaryZero.emittedLengthMeters());
+                assertSame(ordinary, ordinaryZero.transportedOrdinary().orElseThrow());
+                assertTrue(ordinaryZero.transportedIncoming().isEmpty(),
+                    "An ordinary physical leg must not masquerade as a measured optional receipt");
+                assertSame(states.get(0), ordinary.from());
+                assertSame(states.get(1), ordinary.to());
+                assertTrue(ordinary.lengthMeters() > 0);
+                assertEquals(NativeReferenceStatus.UNAVAILABLE, ordinary.nativeReferenceStatus());
+                long retainedBeforeInvalidZeroLeg = ledger.currentBytes();
+                assertThrows(IllegalArgumentException.class, () -> evaluator.registerOrdinaryPhysicalLeg(
+                    states.get(1), states.get(2), NativeReferenceStatus.UNAVAILABLE));
+                assertEquals(retainedBeforeInvalidZeroLeg, ledger.currentBytes(),
+                    "A refused zero ordinary leg must not retain a physical-token payload");
+                assertThrows(IllegalArgumentException.class, () -> evaluator.registerOrdinaryPhysicalLeg(
+                    states.get(0), states.get(2), NativeReferenceStatus.UNAVAILABLE));
+                assertThrows(IllegalArgumentException.class, () -> evaluator.registerOrdinaryPhysicalLeg(
+                    states.get(1), states.get(0), NativeReferenceStatus.UNAVAILABLE));
+                var foreignState = new RowState(states.get(0).row(), states.get(0).nativeStateId(),
+                    states.get(0).offsetRasterPixels(), states.get(0).sourceClass(), states.get(0).peakOwner());
+                assertThrows(IllegalArgumentException.class, () -> evaluator.registerOrdinaryPhysicalLeg(
+                    foreignState, states.get(1), NativeReferenceStatus.UNAVAILABLE));
+                try (var other = new NativeConnectorEvaluator(sampled, new Domain(states, List.of()), policy)) {
+                    assertEquals(Reason.INCOMING_DIRECTION_UNAVAILABLE,
+                        other.evaluateWithOrdinaryIncoming(states.get(1), states.get(2), ordinary).reason());
+                }
+                evaluator.close();
+                assertThrows(IllegalStateException.class,
+                    () -> evaluator.evaluateWithOrdinaryIncoming(states.get(1), states.get(2), ordinary));
             }
             if(policy==QueryPolicy.ZERO_GUARDED_LOCAL_V1) {
                 try(var evaluator=new NativeConnectorEvaluator(sampled,new Domain(states,List.of()),policy,
@@ -1608,6 +1675,69 @@ class NativeConnectorEvaluatorTest {
                     assertEquals(0.0,zero.emittedLengthMeters());
                     assertSame(incoming,zero.transportedIncoming().orElseThrow());
                 }
+            }
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
+    @Test void ordinaryPhysicalLegMemoryRefusalIsAttemptSticky() {
+        try (var f = straight(false, SourceClass.OBSERVED);
+             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()))) {
+            long baseline = f.ledger().currentBytes();
+            AttemptMemoryLedger.ResourceLimitException failure;
+            try (var pressure = f.owner().reserve(f.ledger().limitBytes() - baseline - 100)) {
+                failure = assertThrows(AttemptMemoryLedger.ResourceLimitException.class,
+                    () -> evaluator.registerOrdinaryPhysicalLeg(f.states().get(0), f.states().get(1),
+                        NativeReferenceStatus.UNAVAILABLE));
+            }
+            assertSame(failure, assertThrows(AttemptMemoryLedger.ResourceLimitException.class,
+                () -> evaluator.registerOrdinaryPhysicalLeg(f.states().get(0), f.states().get(1),
+                    NativeReferenceStatus.UNAVAILABLE)));
+        }
+    }
+
+    @Test void ordinaryIncomingWithUnavailableImageSupportStillOrientsMeasuredZeroPoint() {
+        int w = 64, h = 64;
+        double[] values = new double[w * h];
+        boolean[] valid = new boolean[w * h];
+        Arrays.fill(valid, true);
+        for (int y = 0; y < h; y++) for (int x = 0; x < w; x++)
+            values[y * w + x] = Math.exp(-0.5 * Math.pow(y - 15, 2));
+        valid[15 * w + 12] = false; // Inside the ordinary x=5..20 leg, away from its zero-edge endpoint.
+        var evidence = evidence(w, h, values, valid,
+            RasterMetricTransform.metricGrid(new MetricPoint(0, 0), 1, 0, 0, 1),
+            MetricRegion.rectangle(0, 0, 63, 63));
+        var guide = List.of(new RasterPoint(10, 20), new RasterPoint(20, 10),
+            new RasterPoint(20, 20), new RasterPoint(30, 10));
+        var locations = new ArrayList<DetachedProfileSamplingLocation>();
+        double distance = 0;
+        for (int row = 0; row < guide.size(); row++) {
+            if (row > 0) distance += Math.hypot(guide.get(row).x() - guide.get(row - 1).x(),
+                guide.get(row).y() - guide.get(row - 1).y());
+            locations.add(at(evidence, guide.get(row), distance));
+        }
+        var ledger = AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner();
+             var sampled = new DetachedScalarProfileSampler().sampleDeclaredSyntheticForEmission(
+                 evidence, "native", new CorridorTraceInput(locations, 1),
+                 new ProfileChainage(locations.stream().map(
+                     DetachedProfileSamplingLocation::cumulativeGroundDistanceMeters).toList(), 1),
+                 12, budget(), owner)) {
+            double[] offsets = {-5 * Math.sqrt(2), 5, -5};
+            var states = new ArrayList<RowState>();
+            for (int row = 0; row < 3; row++)
+                states.add(new RowState(row, 0, offsets[row], SourceClass.GAP, null));
+            try (var evaluator = new NativeConnectorEvaluator(sampled, new Domain(states, List.of()))) {
+                var unavailable = evaluator.evaluate(states.get(0), states.get(1));
+                assertEquals(Status.UNAVAILABLE, unavailable.status());
+                assertEquals(Reason.SCALAR_SUPPORT, unavailable.reason());
+                var ordinary = evaluator.registerOrdinaryPhysicalLeg(states.get(0), states.get(1),
+                    NativeReferenceStatus.UNAVAILABLE);
+                var zero = evaluator.evaluateWithOrdinaryIncoming(states.get(1), states.get(2), ordinary);
+                assertEquals(Status.ADMITTED, zero.status(), zero::toString);
+                assertSame(ordinary, zero.transportedOrdinary().orElseThrow());
+                assertEquals(SourceClass.GAP, zero.from().sourceClass());
+                assertTrue(zero.scalar().orElseThrow().mean().orElseThrow() > 0);
             }
         }
         assertEquals(0, ledger.currentBytes());

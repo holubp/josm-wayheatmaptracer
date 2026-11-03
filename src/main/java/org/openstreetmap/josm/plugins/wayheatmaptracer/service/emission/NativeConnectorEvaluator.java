@@ -33,6 +33,8 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     }
     public enum ExecutionPolicy { EAGER_ALL_PROBES_V1, STOP_ON_FINAL_MODE_FAILURE_V1 }
     public enum SourceClass { OBSERVED, GAP, CENSORED }
+    /** Status of an ordinary leg's native geometric reference, not a claim of image support. */
+    public enum NativeReferenceStatus { AVAILABLE, UNAVAILABLE }
     public enum Status { ADMITTED, REJECTED, UNAVAILABLE }
     public enum Reason {
         NONE, FOREIGN_STATE, INVALID_STATE, SPAN, MANDATORY_BARRIER, NATIVE_PITCH_UNAVAILABLE,
@@ -74,6 +76,34 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             if (row < 0 || nativeStateId < 0 || !Double.isFinite(offsetRasterPixels) || sourceClass == null)
                 throw new IllegalArgumentException("Native row/state identity is incomplete");
         }
+    }
+
+    /** Issued physical orientation for an already admitted ordinary native transition. */
+    public static final class OrdinaryPhysicalLeg {
+        private final RowState from;
+        private final RowState to;
+        private final RasterPoint fromRaster;
+        private final RasterPoint toRaster;
+        private final MetricPoint fromMetric;
+        private final MetricPoint toMetric;
+        private final double lengthMeters;
+        private final NativeReferenceStatus nativeReferenceStatus;
+
+        private OrdinaryPhysicalLeg(RowState from, RowState to, RasterPoint fromRaster, RasterPoint toRaster,
+                MetricPoint fromMetric, MetricPoint toMetric, double lengthMeters,
+                NativeReferenceStatus nativeReferenceStatus) {
+            this.from = from; this.to = to; this.fromRaster = fromRaster; this.toRaster = toRaster;
+            this.fromMetric = fromMetric; this.toMetric = toMetric; this.lengthMeters = lengthMeters;
+            this.nativeReferenceStatus = nativeReferenceStatus;
+        }
+        public RowState from() { return from; }
+        public RowState to() { return to; }
+        public RasterPoint fromRaster() { return fromRaster; }
+        public RasterPoint toRaster() { return toRaster; }
+        public MetricPoint fromMetric() { return fromMetric; }
+        public MetricPoint toMetric() { return toMetric; }
+        public double lengthMeters() { return lengthMeters; }
+        public NativeReferenceStatus nativeReferenceStatus() { return nativeReferenceStatus; }
     }
 
     /** Exact protected event with its two immediately bracketing mandatory source rows. */
@@ -122,7 +152,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             Optional<BilinearSegmentIntegral.Result> scalar, boolean scalarEnvelopeComplete,
             boolean measuredNativeContinuationComplete, List<Probe> probes, int plannedProbeCount,
             int firstFailingSlabIndex,
-            Optional<Receipt> transportedIncoming) {
+            Optional<Receipt> transportedIncoming, Optional<OrdinaryPhysicalLeg> transportedOrdinary) {
         public Receipt(Status status, Reason reason, OptionalEmissionContext context, RowState from, RowState to,
                 QueryPolicy queryPolicy, String parameterVersion, double sourceSpanMeters, double emittedLengthMeters,
                 double minimumNativePitchMeters, Optional<BilinearSegmentIntegral.Result> scalar,
@@ -130,13 +160,26 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                 Optional<Receipt> transportedIncoming) {
             this(status, reason, context, from, to, queryPolicy, parameterVersion, sourceSpanMeters,
                 emittedLengthMeters, minimumNativePitchMeters, scalar, scalarEnvelopeComplete,
-                measuredNativeContinuationComplete, probes, -1, -1, transportedIncoming);
+                measuredNativeContinuationComplete, probes, -1, -1, transportedIncoming, Optional.empty());
+        }
+        public Receipt(Status status, Reason reason, OptionalEmissionContext context, RowState from, RowState to,
+                QueryPolicy queryPolicy, String parameterVersion, double sourceSpanMeters, double emittedLengthMeters,
+                double minimumNativePitchMeters, Optional<BilinearSegmentIntegral.Result> scalar,
+                boolean scalarEnvelopeComplete, boolean measuredNativeContinuationComplete, List<Probe> probes,
+                int plannedProbeCount, int firstFailingSlabIndex, Optional<Receipt> transportedIncoming) {
+            this(status, reason, context, from, to, queryPolicy, parameterVersion, sourceSpanMeters,
+                emittedLengthMeters, minimumNativePitchMeters, scalar, scalarEnvelopeComplete,
+                measuredNativeContinuationComplete, probes, plannedProbeCount, firstFailingSlabIndex,
+                transportedIncoming, Optional.empty());
         }
         public Receipt {
             Objects.requireNonNull(status); Objects.requireNonNull(reason); Objects.requireNonNull(context);
             Objects.requireNonNull(from); Objects.requireNonNull(to); Objects.requireNonNull(queryPolicy);
             Objects.requireNonNull(parameterVersion);
             scalar = Objects.requireNonNull(scalar); transportedIncoming = Objects.requireNonNull(transportedIncoming);
+            transportedOrdinary = Objects.requireNonNull(transportedOrdinary);
+            if (transportedIncoming.isPresent() && transportedOrdinary.isPresent())
+                throw new IllegalArgumentException("A zero edge cannot transport two physical legs");
             probes = List.copyOf(probes);
             if (plannedProbeCount < -1 || firstFailingSlabIndex < -1
                     || plannedProbeCount >= 0 && probes.size() > plannedProbeCount
@@ -236,8 +279,55 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     public Receipt evaluate(RowState from, RowState to) { return evaluate(from, to, null); }
 
+    /** Records actual positive geometry after the caller attests ordinary native admission.
+     * This token does not attest image support, a measured Q, or optional admission. */
+    public OrdinaryPhysicalLeg registerOrdinaryPhysicalLeg(RowState from, RowState to,
+            NativeReferenceStatus nativeReferenceStatus) {
+        requireLive();
+        Objects.requireNonNull(from); Objects.requireNonNull(to); Objects.requireNonNull(nativeReferenceStatus);
+        try {
+            input.requireOpenAndUnchanged();
+            work(EmissionWorkBudget.Operation.PAIR_INITIALIZATION, 1);
+            if (!states.containsKey(from) || !states.containsKey(to) || to.row() != from.row() + 1
+                    || chainage(to.row()) < chainage(from.row()) || barrierBetween(from.row(), to.row()))
+                throw new IllegalArgumentException("Ordinary leg requires adjacent owned native states");
+            work(EmissionWorkBudget.Operation.ALLOCATION, 1);
+            try (var allocation = owner.child("ordinary-leg")) {
+                work(EmissionWorkBudget.Operation.ALLOCATION, 1);
+                var reservation = allocation.reserve(320);
+                RasterPoint fromRaster = point(from), toRaster = point(to);
+                MetricPoint fromMetric = metric(fromRaster), toMetric = metric(toRaster);
+                double length = fromMetric.distanceTo(toMetric);
+                if (!(length > 0) || !Double.isFinite(length))
+                    throw new IllegalArgumentException("Ordinary physical leg must have finite positive length");
+                var result = new OrdinaryPhysicalLeg(from, to, fromRaster, toRaster, fromMetric, toMetric,
+                    length, nativeReferenceStatus);
+                work(EmissionWorkBudget.Operation.PREPARATION, 1);
+                reservation.adopt(result);
+                allocation.transferTo(owner);
+                issuedOrdinary.put(result, Boolean.TRUE);
+                return result;
+            }
+        } catch (EmissionWorkBudget.LimitExceededException | AttemptMemoryLedger.ResourceLimitException
+                | CancellationException failure) {
+            terminalFailure = failure;
+            input.recordTerminalExecutionFailure(failure);
+            throw failure;
+        }
+    }
+
+    /** Zero-edge entry for a session-owned ordinary physical leg. */
+    public Receipt evaluateWithOrdinaryIncoming(RowState from, RowState to, OrdinaryPhysicalLeg incoming) {
+        return evaluateInternal(from, to, null, Objects.requireNonNull(incoming));
+    }
+
     /** For a zero edge, incoming must be the preceding same-session receipt, including zero transport. */
     public Receipt evaluate(RowState from, RowState to, Receipt incoming) {
+        return evaluateInternal(from, to, incoming, null);
+    }
+
+    private Receipt evaluateInternal(RowState from, RowState to, Receipt incoming,
+            OrdinaryPhysicalLeg incomingOrdinary) {
         requireLive();
         Objects.requireNonNull(from); Objects.requireNonNull(to);
         try {
@@ -271,16 +361,40 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                 if (scalar.status() != BilinearSegmentIntegral.Status.COMPLETE)
                     return receipt(Status.UNAVAILABLE, Reason.SCALAR_SUPPORT, from, to, span, length, pitch, scalar, false, false, List.of(), null);
                 Receipt transport = null;
+                OrdinaryPhysicalLeg ordinaryTransport = null;
                 MetricPoint directionStart = ma, directionEnd = mb;
                 if (length == 0) {
                     work(EmissionWorkBudget.Operation.TRANSPORT, 1);
-                    if (incoming == null || incoming.status() != Status.ADMITTED || incoming.context() != context
-                            || incoming.to() != from || !issuedHere(incoming))
-                        return receipt(Status.UNAVAILABLE, Reason.INCOMING_DIRECTION_UNAVAILABLE, from, to, span, length, pitch, scalar, false, false, List.of(), null);
-                    transport = incoming.emittedLengthMeters() > 0 ? incoming : incoming.transportedIncoming().orElse(null);
-                    if (transport == null || transport.emittedLengthMeters() <= 0)
-                        return receipt(Status.UNAVAILABLE, Reason.INCOMING_DIRECTION_UNAVAILABLE, from, to, span, length, pitch, scalar, false, false, List.of(), null);
-                    directionStart = metric(point(transport.from())); directionEnd = metric(point(transport.to()));
+                    if (incomingOrdinary != null) {
+                        if (!issuedOrdinaryHere(incomingOrdinary) || incomingOrdinary.to() != from)
+                            return receipt(Status.UNAVAILABLE, Reason.INCOMING_DIRECTION_UNAVAILABLE, from, to,
+                                span, length, pitch, scalar, false, false, List.of(), null);
+                        ordinaryTransport = incomingOrdinary;
+                    } else {
+                        if (incoming == null || incoming.status() != Status.ADMITTED || incoming.context() != context
+                                || incoming.to() != from || !issuedHere(incoming))
+                            return receipt(Status.UNAVAILABLE, Reason.INCOMING_DIRECTION_UNAVAILABLE, from, to,
+                                span, length, pitch, scalar, false, false, List.of(), null);
+                        transport = incoming.emittedLengthMeters() > 0
+                            ? incoming : incoming.transportedIncoming().orElse(null);
+                        if (transport == null) ordinaryTransport = incoming.transportedOrdinary().orElse(null);
+                        if (transport == null && (ordinaryTransport == null || !issuedOrdinaryHere(ordinaryTransport)))
+                            return receipt(Status.UNAVAILABLE, Reason.INCOMING_DIRECTION_UNAVAILABLE, from, to,
+                                span, length, pitch, scalar, false, false, List.of(), null);
+                    }
+                    if (transport != null) {
+                        if (!(transport.emittedLengthMeters() > 0))
+                            return receipt(Status.UNAVAILABLE, Reason.INCOMING_DIRECTION_UNAVAILABLE, from, to,
+                                span, length, pitch, scalar, false, false, List.of(), null);
+                        directionStart = metric(point(transport.from()));
+                        directionEnd = metric(point(transport.to()));
+                    } else {
+                        directionStart = ordinaryTransport.fromMetric();
+                        directionEnd = ordinaryTransport.toMetric();
+                    }
+                } else if (incomingOrdinary != null) {
+                    return receipt(Status.UNAVAILABLE, Reason.INCOMING_DIRECTION_UNAVAILABLE, from, to,
+                        span, length, pitch, scalar, false, false, List.of(), null);
                 }
                 double headingLength = directionStart.distanceTo(directionEnd);
                 MetricPoint normal = new MetricPoint(-(directionEnd.yMeters()-directionStart.yMeters())/headingLength,
@@ -302,7 +416,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                                 if(failure!=Reason.NONE) {
                                     transferProfileOwners(profileOwners,evaluation);
                                     var result=receipt(Status.REJECTED,failure,from,to,span,length,pitch,scalar,false,false,
-                                        probes,transport,ts.length,-1);
+                                        probes,transport,ordinaryTransport,ts.length,-1);
                                     return publish(result,evaluation);
                                 }
                             }
@@ -337,12 +451,12 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                         Reason reason=probeFailure(probe);
                         if(reason!=Reason.NONE) {
                             var result=receipt(Status.REJECTED,reason,from,to,span,length,pitch,scalar,false,false,
-                                probes,transport,ts.length,-1);
+                                probes,transport,ordinaryTransport,ts.length,-1);
                             return publish(result,evaluation);
                         }
                         if(probes.size()>1 && !mutual(probes.get(probes.size()-2),probe)) {
                             var result=receipt(Status.REJECTED,Reason.NONUNIQUE_CONTINUATION,from,to,span,length,
-                                pitch,scalar,false,false,probes,transport,ts.length,-1);
+                                pitch,scalar,false,false,probes,transport,ordinaryTransport,ts.length,-1);
                             return publish(result,evaluation);
                         }
                     }
@@ -352,19 +466,18 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                         Reason reason=probeFailure(probe);
                         if(reason!=Reason.NONE) {
                             var result=receipt(Status.REJECTED,reason,from,to,span,length,pitch,scalar,false,false,
-                                probes,transport,ts.length,-1);
+                                probes,transport,ordinaryTransport,ts.length,-1);
                             return publish(result,evaluation);
                         }
                     }
                     for(int i=1;i<probes.size();i++)if(!mutual(probes.get(i-1),probes.get(i))) {
                         var result=receipt(Status.REJECTED,Reason.NONUNIQUE_CONTINUATION,from,to,span,length,
-                            pitch,scalar,false,false,probes,transport,ts.length,-1);
+                            pitch,scalar,false,false,probes,transport,ordinaryTransport,ts.length,-1);
                         return publish(result,evaluation);
                     }
                 }
-                if (from.sourceClass() != SourceClass.OBSERVED && to.sourceClass() != SourceClass.OBSERVED
-                        || !endpointOwned(from, probes.get(0)) || !endpointOwned(to, probes.get(probes.size()-1))) {
-                    var result=receipt(Status.UNAVAILABLE,Reason.ENDPOINT_OWNERSHIP,from,to,span,length,pitch,scalar,false,true,probes,transport,ts.length,-1);
+                if (!endpointOwned(from, probes.get(0)) || !endpointOwned(to, probes.get(probes.size()-1))) {
+                    var result=receipt(Status.UNAVAILABLE,Reason.ENDPOINT_OWNERSHIP,from,to,span,length,pitch,scalar,false,true,probes,transport,ordinaryTransport,ts.length,-1);
                     return publish(result,evaluation);
                 }
                 // Fresh GAP/censored endpoint ports are bound by the unique endpoint mode and its
@@ -375,11 +488,11 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                     var slab=integral(left.rasterPosition(),right.rasterPosition(),evaluation);
                     double threshold=Math.max(left.threshold().shoulderThreshold(),right.threshold().shoulderThreshold());
                     if (slab.status()!=BilinearSegmentIntegral.Status.COMPLETE || slab.minimum().orElseThrow()<threshold) {
-                        var result=receipt(Status.REJECTED,Reason.SCALAR_BELOW_ENVELOPE,from,to,span,length,pitch,scalar,false,true,probes,transport,ts.length,k);
+                        var result=receipt(Status.REJECTED,Reason.SCALAR_BELOW_ENVELOPE,from,to,span,length,pitch,scalar,false,true,probes,transport,ordinaryTransport,ts.length,k);
                         return publish(result,evaluation);
                     }
                 }
-                var result=receipt(Status.ADMITTED,Reason.NONE,from,to,span,length,pitch,scalar,true,true,probes,transport,ts.length,-1);
+                var result=receipt(Status.ADMITTED,Reason.NONE,from,to,span,length,pitch,scalar,true,true,probes,transport,ordinaryTransport,ts.length,-1);
                 return publish(result,evaluation);
             }
         } catch (EmissionWorkBudget.LimitExceededException | AttemptMemoryLedger.ResourceLimitException
@@ -392,6 +505,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     // Issued receipt identity is necessary for zero-edge orientation. No scalar/probe result cache.
     private final IdentityHashMap<Receipt, Boolean> issued = new IdentityHashMap<>(0);
+    private final IdentityHashMap<OrdinaryPhysicalLeg, Boolean> issuedOrdinary = new IdentityHashMap<>(0);
     /** Converts the precharged live evaluation payload into identities owned by issued receipts. */
     private Receipt publish(Receipt receipt,AttemptMemoryLedger.Owner evaluation) {
         for(Probe probe:receipt.probes()) {
@@ -417,6 +531,10 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         issued.put(receipt,Boolean.TRUE); return receipt;
     }
     private boolean issuedHere(Receipt receipt) { work(EmissionWorkBudget.Operation.PAIR_LOOKUP,1); return issued.containsKey(receipt); }
+    private boolean issuedOrdinaryHere(OrdinaryPhysicalLeg leg) {
+        work(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
+        return issuedOrdinary.containsKey(leg);
+    }
 
     private void transferProfileOwners(IdentityHashMap<Probe,AttemptMemoryLedger.Owner> profileOwners,
             AttemptMemoryLedger.Owner evaluation) {
@@ -436,12 +554,20 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private Receipt receipt(Status status,Reason reason,RowState from,RowState to,double span,double length,
             double pitch,BilinearSegmentIntegral.Result scalar,boolean envelope,boolean continuation,List<Probe> probes,
             Receipt incoming,int plannedProbeCount,int failingSlabIndex) {
+        return receipt(status,reason,from,to,span,length,pitch,scalar,envelope,continuation,probes,
+            incoming,null,plannedProbeCount,failingSlabIndex);
+    }
+
+    private Receipt receipt(Status status,Reason reason,RowState from,RowState to,double span,double length,
+            double pitch,BilinearSegmentIntegral.Result scalar,boolean envelope,boolean continuation,List<Probe> probes,
+            Receipt incoming,OrdinaryPhysicalLeg ordinary,int plannedProbeCount,int failingSlabIndex) {
         work(EmissionWorkBudget.Operation.ALLOCATION,1);
         work(EmissionWorkBudget.Operation.PREPARATION,probes.size());
         String version=parameters.version()+"/"+queryPolicy.name();
         if(executionPolicy!=ExecutionPolicy.EAGER_ALL_PROBES_V1)version+="/"+executionPolicy.name();
         return new Receipt(status,reason,context,from,to,queryPolicy,version,span,length,pitch,
-            Optional.ofNullable(scalar),envelope,continuation,probes,plannedProbeCount,failingSlabIndex,Optional.ofNullable(incoming));
+            Optional.ofNullable(scalar),envelope,continuation,probes,plannedProbeCount,failingSlabIndex,
+            Optional.ofNullable(incoming),Optional.ofNullable(ordinary));
     }
 
     private Probe measure(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
