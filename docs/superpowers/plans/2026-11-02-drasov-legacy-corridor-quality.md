@@ -151,6 +151,13 @@ unknown eager outcomes. Full admission feasibility remains NEGATIVE, with24161
 unmeasured keys; no engine/default/kernel activation or release is justified.
 The detailed experiment plan records work/query/ownership evidence and next action.
 
+Integrated source67ce845/docs9655509 on the public experimental branch; CI41582739824
+is pending at9655509. Active follow-on is read-only100-key replay under
+`2026-11-03-drasov-impossible-local-proof-screen.md`: prove a narrow impossible-local-
+raw-peak condition, then measure earlier unchanged dense fallback opportunity.
+Source53b2ef8/classes remain frozen. No production shortcut or additional graph
+is authorized by the diagnostic helper alone; controller owns the evidence gate.
+
 Public CI41580122880 succeeds at507269e:2601test executions/231XML suites,
 0failure/error/skip, public validation plus both GUI smoke engines. Private inputs
 were not executed. This CI covers the prior zero-local batch, not53b2ef8 or actual
