@@ -73,6 +73,43 @@ or uncharged second inference. Root owns integration and independent review.
   release. Product use needs an explicit reviewed native-integral-v2 section4
   numerical amendment and actual production implementations/tests/replay.
 
+## Prefix refinement and current evidence
+
+Primitive analytic/grid RED→GREEN covers broad20/9p, positive-background and
+zero-background faint ridges, finite plateau, uniform bright, interior quadratic
+peak, clipped flank, invalid node, tiny region gap versus real decision boundary,
+phase/rotation and reduction2. Rigorous threshold bounds and exported all-mode/
+unresolved evidence are being completed. These are external standalone tests,
+not production-engine or full-admission qualification. The eight-ULP heuristic
+was identified as inadequate and replaced before any cost result was claimed.
+
+Independent review permits a charged **component-cost prefix only** while local
+versus old full-window branch semantics remain open. A3p local view cannot claim
+old25m mutual uniqueness. Its remote-broad counterexample must be retained as
+UNRESOLVED/refusal; a visible censored component must not be silently omitted.
+Ruling: measure actual feature/Q cost now, report no ADMITTED arcs and no section4
+closure. This avoids building an expensive binder before its basic costs are
+known. No production or whole-goal gate is waived.
+
+Luna's separate ignored runner directory is
+`/data/data/com.termux/files/usr/tmp/drasov-continuous-prefix-runner/`.
+Its verified selection scaffold parsed26098unique keys/133row groups and selected
+1197Cartesian first/middle/last representatives plus3A witness keys (1200total).
+The3Legacy witness arcs remain separate with engine-specific offsets; coincident
+row/state IDs do not imply equal geometry. Frozen b4b493/input hashes match.
+No numerical evaluation occurred in that scaffold.
+
+The component screen will execute all scheduled feature queries of selected
+keys and actual scalar Q/min under one shared attempt. Arc status is LOCAL_REFUSAL
+for a local feature failure, otherwise UNRESOLVED with BRANCH_BINDING_PENDING.
+Per-query features/status/work and untouched keys remain explicit. No human REVIEW
+or locally selected mode is a substitute for a completed connector proof. A
+projected component cost is neither a measured census nor an upper bound on the
+remaining algorithm. One-A/one-Legacy API smoke and root gate precede1200queries;
+independent actual-helper/status/accounting audit precedes any full census.
+The original admission gate is still blocked on a specific reviewed section4
+numerical/continuation contract, not merely on collecting these measurements.
+
 Review focus: broad/low-contrast false refusals, unsupported dark switches,
 manufactured semantic/group ownership, hidden numerical tolerances, clipped
 authority, stale coefficient identity, uncharged cache/diagnostic work and claims
