@@ -9,6 +9,24 @@ that the actual Legacy family cannot fit. No new numerical policy or state pruni
 
 ## Non-negotiable scope
 
+## Resumed implementation dependency rulings — 2026-11-03
+
+| Tasks/interfaces | Producer/consumer conflict | Ruling |
+| --- | --- | --- |
+| Fresh-port regression / native evaluator | Existing pair-level owner veto contradicts approved fresh-port rule | Remove only the extra original-OBSERVED requirement; preserve all measured mode/authority predicates and original source classes. Independent tests own a separate new file. |
+| Native ordinary-leg reference / Legacy kernel | Optional-only Receipt cannot represent admitted ordinary geometry with unavailable image support | Add a distinct same-session owned ordinary physical reference; never fabricate image admission or reset physical memory. |
+| Legacy binding / evaluator rows | Original ordinal and retained image index may differ | Prove mapping at engine boundary; use original ordinals for priors/span limits, retained indices for measurements. Padding is not original state inventory. |
+| Legacy R4 screen / kernel oracle | A constructed four-vertex witness is not proof of the exact optimizer winner | Require independent geometric/cost oracle and actual optimality where asserted; do not mandate exactly13consumed rows merely from the witness. |
+| Legacy / A / production consumers | Synthetic certificate success is not whole-engine fitting or Apply success | Keep separate implementation, real-fixture, consumer and independent-review gates. No RC/default changes by these experiments. |
+
+Current ownership: Sol `connector_review` is sole writer in
+`josm-drasov-native-contract` and sole local Gradle owner; Luna `query_policy` writes
+only new fresh-port tests in `josm-drasov-fresh-port-tests`; independent Sol
+`authority_audit` checks production-closure dependencies read-only. Both writing
+worktrees start c1327e1; frozen corrected133receipt inputs remain unchanged.
+This reuses the approved scope and prior independent review rather than restarting
+the design or requiring routine maintainer approval.
+
 Original native-integral-v2 section7 governs every Legacy peak, support flag,
 seed, BaseCarry/IntervalTarget origin, scalar/physical memory and stage. Do not
 infer family size from modern L0 peak counts, select only best-offset states, use

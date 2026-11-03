@@ -12,6 +12,26 @@
 
 ## Current execution status — 2026-11-03
 
+Execution resumed by explicit user instruction to finish remaining steps1–4.
+Step1 owners: connector_review implements the two independently confirmed native
+contract corrections in isolated `josm-drasov-native-contract` at c1327e1;
+query_policy adds independent fresh-port regression tests in
+`josm-drasov-fresh-port-tests` at the same base. Only connector_review owns local
+Gradle until explicit handoff. Both record RED/GREEN, preserve source classes,
+caps and numeric predicates; controller integrates and commissions actual-delta
+review. Remaining steps are Legacy integration/real Drasov, Corridor A and review;
+they are not completed by these bounded evaluator repairs.
+CI41604808996 at397bde4 is now verified SUCCESS: public validation plus both
+Probabilistic B and Legacy→B GUI jobs. No new RC/default change.
+Artifact audit:2616executions/231XMLsuites,2522distinct test IDs,
+0failures/errors/skips/malformed; bothGUI summaries PASS. Report
+`/data/data/com.termux/files/usr/tmp/drasov-ci-41604808996-report.md`.
+Fresh-port tests-only commit f38ee8b is ready; RED/GREEN belongs to the evaluator
+worker. Luna now implements the bounded immutable Legacy input-binding slice in
+`josm-drasov-legacy-binding` at c1327e1: binding/input/factory/newtest only.
+Binding is final at publication, not mutable attachment or aliased close ownership.
+Actual sampler adapters, solver and final consumers remain separate unfinished gates.
+
 Active: bounded original Legacy kernel/stage implementation packet at
 `/data/data/com.termux/files/usr/tmp/drasov-legacy-kernel-packet.md` (Sol), existing
 regression/fixture inventory (Luna), and verified source integration/CI (controller).
