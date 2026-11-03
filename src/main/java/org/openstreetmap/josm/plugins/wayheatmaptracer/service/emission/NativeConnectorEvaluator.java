@@ -28,6 +28,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
  * Returned receipts borrow this session's retained lifetime; close it before closing its input.
  */
 public final class NativeConnectorEvaluator implements AutoCloseable {
+    public enum QueryPolicy { DENSE_EIGHTH_NATIVE_V1, HALF_NATIVE_L0_V1, PIXEL_CAPPED_L0_V1 }
     public enum SourceClass { OBSERVED, GAP, CENSORED }
     public enum Status { ADMITTED, REJECTED, UNAVAILABLE }
     public enum Reason {
@@ -83,14 +84,15 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     /** Scalar validity and measured native continuation have separate explicit success fields. */
     public record Receipt(Status status, Reason reason, OptionalEmissionContext context,
-            RowState from, RowState to, String parameterVersion,
+            RowState from, RowState to, QueryPolicy queryPolicy, String parameterVersion,
             double sourceSpanMeters, double emittedLengthMeters, double minimumNativePitchMeters,
             Optional<BilinearSegmentIntegral.Result> scalar, boolean scalarEnvelopeComplete,
             boolean measuredNativeContinuationComplete, List<Probe> probes,
             Optional<Receipt> transportedIncoming) {
         public Receipt {
             Objects.requireNonNull(status); Objects.requireNonNull(reason); Objects.requireNonNull(context);
-            Objects.requireNonNull(from); Objects.requireNonNull(to); Objects.requireNonNull(parameterVersion);
+            Objects.requireNonNull(from); Objects.requireNonNull(to); Objects.requireNonNull(queryPolicy);
+            Objects.requireNonNull(parameterVersion);
             scalar = Objects.requireNonNull(scalar); transportedIncoming = Objects.requireNonNull(transportedIncoming);
             probes = List.copyOf(probes);
             if (status == Status.ADMITTED && (reason != Reason.NONE || scalar.isEmpty()
@@ -111,6 +113,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private final OptionalEmissionContext context;
     private final EmissionWorkBudget budget;
     private final AttemptMemoryLedger.Owner owner;
+    private final QueryPolicy queryPolicy;
     private final IdentityHashMap<RowState, Boolean> states;
     private final List<Integer> mandatoryRows;
     private final List<Barrier> barriers;
@@ -119,8 +122,13 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private RuntimeException terminalFailure;
 
     public NativeConnectorEvaluator(SampledEmissionInput input, Domain domain) {
+        this(input, domain, QueryPolicy.DENSE_EIGHTH_NATIVE_V1);
+    }
+
+    public NativeConnectorEvaluator(SampledEmissionInput input, Domain domain, QueryPolicy queryPolicy) {
         this.input = Objects.requireNonNull(input);
         Objects.requireNonNull(domain);
+        this.queryPolicy = Objects.requireNonNull(queryPolicy, "queryPolicy");
         owner = input.openExecutionOwner("native-connector");
         context = input.context(); budget = input.workBudget();
         try {
@@ -276,7 +284,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             double pitch,BilinearSegmentIntegral.Result scalar,boolean envelope,boolean continuation,List<Probe> probes,Receipt incoming) {
         work(EmissionWorkBudget.Operation.ALLOCATION,1);
         work(EmissionWorkBudget.Operation.PREPARATION,probes.size());
-        return new Receipt(status,reason,context,from,to,parameters.version(),span,length,pitch,
+        return new Receipt(status,reason,context,from,to,queryPolicy,parameters.version() + "/" + queryPolicy.name(),span,length,pitch,
             Optional.ofNullable(scalar),envelope,continuation,probes,Optional.ofNullable(incoming));
     }
 
@@ -285,7 +293,13 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         double source=chainage(from.row())+span*t+context.profileChainage().sourceOriginGroundMeters();
         work(EmissionWorkBudget.Operation.PREPARATION,context.resolution().spatialPitchSamples().size());
         double pitch=context.resolution().effectivePitchMetersAt(source);
-        double step=Math.min(context.lateralStepMeters(),minimumPitch()/8);
+        double requestedStep = context.lateralStepMeters();
+        double outputPitch = context.resolution().outputRasterPitchMeters();
+        double step = switch (queryPolicy) {
+            case DENSE_EIGHTH_NATIVE_V1 -> Math.min(requestedStep, minimumPitch() / 8);
+            case HALF_NATIVE_L0_V1 -> Math.min(requestedStep, Math.min(minimumPitch() / 2, outputPitch));
+            case PIXEL_CAPPED_L0_V1 -> Math.min(requestedStep, Math.min(minimumPitch(), outputPitch));
+        };
         double halfWidth=context.searchHalfWidthMeters();
         int intervals=checkedCount(Math.ceil(2*halfWidth/step));
         int count=Math.addExact(intervals,1);

@@ -12,6 +12,44 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 class NativeConnectorEvaluatorTest {
     private static final int[] WITNESS = {0, 1, 15, 16};
 
+    @Test void queryPoliciesRecordVersionedIdentityAndPreserveExplicitDenseNumerics() {
+        try (var f = straight(false, SourceClass.OBSERVED);
+             var dense = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()));
+             var explicitDense = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()),
+                 QueryPolicy.DENSE_EIGHTH_NATIVE_V1);
+             var half = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()),
+                 QueryPolicy.HALF_NATIVE_L0_V1);
+             var pixel = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()),
+                 QueryPolicy.PIXEL_CAPPED_L0_V1)) {
+            var from = f.states().get(0);
+            var to = f.states().get(1);
+            var defaultReceipt = dense.evaluate(from, to);
+            var explicitDenseReceipt = explicitDense.evaluate(from, to);
+            var halfReceipt = half.evaluate(from, to);
+            var pixelReceipt = pixel.evaluate(from, to);
+            assertEquals(QueryPolicy.DENSE_EIGHTH_NATIVE_V1, defaultReceipt.queryPolicy());
+            assertEquals(defaultReceipt.parameterVersion(), explicitDenseReceipt.parameterVersion());
+            assertEquals(defaultReceipt.probes().get(0).samples(), explicitDenseReceipt.probes().get(0).samples());
+            assertEquals(defaultReceipt.probes().get(0).selectedMode(), explicitDenseReceipt.probes().get(0).selectedMode());
+            assertEquals(defaultReceipt.scalar().orElseThrow().mean(), explicitDenseReceipt.scalar().orElseThrow().mean());
+            assertEquals(defaultReceipt.scalar().orElseThrow().minimum(), explicitDenseReceipt.scalar().orElseThrow().minimum());
+            assertNotEquals(defaultReceipt.parameterVersion(), halfReceipt.parameterVersion());
+            assertNotEquals(halfReceipt.parameterVersion(), pixelReceipt.parameterVersion());
+        }
+    }
+
+    @Test void nullQueryPolicyFailsBeforeOpeningExecutionOwner() {
+        try (var f = straight(false, SourceClass.OBSERVED)) {
+            long retainedBytes = f.ledger().currentBytes();
+            assertThrows(NullPointerException.class, () -> new NativeConnectorEvaluator(
+                f.input(), new Domain(f.states(), List.of()), null));
+            assertEquals(retainedBytes, f.ledger().currentBytes());
+            try (var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()))) {
+                assertEquals(Status.ADMITTED, evaluator.evaluate(f.states().get(0), f.states().get(1)).status());
+            }
+        }
+    }
+
     @Test void admitsActualR4NativeWitnessForBothEnginesThroughRetainedCroppedField() throws Exception {
         var original = PhysicalGeometryFixture.straightRidgeThroughParabola(4);
         // This is the production crop, not a full-image field or a profile-derived raster.
@@ -72,6 +110,14 @@ class NativeConnectorEvaluatorTest {
                     for(int i=1;i<WITNESS.length;i++) {
                         var receipt=evaluator.evaluate(states.get(WITNESS[i-1]),states.get(WITNESS[i]));
                         assertEquals(Status.ADMITTED,receipt.status(),engine+" "+WITNESS[i-1]+"->"+WITNESS[i]+" "+receipt);
+                    }
+                }
+                var expectedSampleCounts = Map.of(QueryPolicy.DENSE_EIGHTH_NATIVE_V1, 401,
+                    QueryPolicy.HALF_NATIVE_L0_V1, 101, QueryPolicy.PIXEL_CAPPED_L0_V1, 51);
+                for (var policy : QueryPolicy.values()) {
+                    try (var evaluator = new NativeConnectorEvaluator(retained, new Domain(states,List.of()), policy)) {
+                        var receipt = evaluator.evaluate(states.get(0), states.get(1));
+                        assertEquals(expectedSampleCounts.get(policy), receipt.probes().get(0).samples().size(), policy.name());
                     }
                 }
             }
@@ -415,7 +461,7 @@ class NativeConnectorEvaluatorTest {
                 assertSame(incoming, zero.transportedIncoming().orElseThrow());
                 assertTrue(zero.sourceSpanMeters() > 0);
                 var forged = new Receipt(incoming.status(), incoming.reason(), incoming.context(),
-                    incoming.from(), incoming.to(), incoming.parameterVersion(), incoming.sourceSpanMeters(),
+                    incoming.from(), incoming.to(), incoming.queryPolicy(), incoming.parameterVersion(), incoming.sourceSpanMeters(),
                     incoming.emittedLengthMeters(), incoming.minimumNativePitchMeters(), incoming.scalar(),
                     incoming.scalarEnvelopeComplete(), incoming.measuredNativeContinuationComplete(),
                     incoming.probes(), incoming.transportedIncoming());
