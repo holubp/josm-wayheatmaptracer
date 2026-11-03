@@ -8,6 +8,14 @@ document creates no additional user approval stop, default adoption or release a
 Parent: `docs/superpowers/specs/2026-11-02-drasov-optional-emission-amendment.md`.
 Policy identity: `optional-emission-native-integral-v2`.
 
+Reviewed A execution addendum: `2026-11-03-drasov-certified-competitive-execution-proposal.md`
+supersedes only the upfront all-admitted graph construction prerequisite in §§4/6/8
+for its explicit, fully certified experimental executor. The numerical model, complete
+native domain, admission predicate, ties, limits and final quality gates remain unchanged.
+Implementation/tiny-oracle work is authorized; no A feasibility or successful replay claim
+is allowed without its complete closure certificate and remaining acceptance gates.
+Existing eager execution and the separate Legacy pipeline retain their original contracts.
+
 ## 1. Superseded accounting and actual screens
 
 The previous worst-finite-native-unary consumption debit is SUPERSEDED. The actual

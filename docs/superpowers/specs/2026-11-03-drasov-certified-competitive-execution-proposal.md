@@ -1,10 +1,23 @@
 # Proposed amendment: certified competitive execution for A optional emission
 
-**Status: PROPOSED, not active.** This changes only the execution and proof gate in
-`2026-11-02-drasov-optional-emission-native-integral-v2.md` §§4, 6 and 8. Independent contract and
-correctness review must accept it before code or an A feasibility run. The present v2
-all-admitted-graph rule continues to govern until then. Legacy's measured 133-pair global DENSE
-result and its separate kernel gate remain unchanged.
+**Status: independently reviewed; bounded implementation authorized.** This changes only
+the execution and proof gate in `2026-11-02-drasov-optional-emission-native-integral-v2.md`
+§§4, 6 and 8 for the explicit experimental competitive executor. Independent theorem review
+and affected clarification review are recorded in `drasov-a-certified-execution-review.md`
+and `drasov-a-certified-execution-clarification-review.md` under the task evidence directory.
+Standing user authorization covers implementation plans and related positive follow-ons;
+Legacy's full R4 solve and preservation controls provide that positive experimental gate.
+This authorizes implementation and tiny-oracle checks, not a claim of practical closure,
+production adoption, changed engine defaults or release readiness. The Legacy kernel's
+outstanding correctness review repairs must close before the bounded R4 A attempt.
+Legacy's measured 133-pair global DENSE result and its separate kernel gate remain unchanged.
+
+Ruling: replace infeasible exhaustive upfront A admission with a certified competitive
+closure proof, preserving the complete mathematical model, native predicates, output/ties
+and all resource limits. This is a specific execution correction, not a waiver of unknown
+admissions or final quality/replay gates. Until its proof obligations are implemented and
+verified, an incomplete graph has no successful execution certificate. Existing eager
+methods keep their existing all-admitted prerequisite. Practical savings remain unproven.
 
 ## Motivation and unchanged contract
 

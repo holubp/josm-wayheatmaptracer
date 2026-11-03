@@ -12,6 +12,14 @@
 
 ## Current execution status — 2026-11-03
 
+The active completion ledger is maintained on controller branch
+`codex/v022-legacy-b-release` in this same plan path; the historical receipts below
+remain evidence. This experimental branch integrates the independently reviewed
+managed source/kernel work (CI41809033588 at a71708d3 PASS) and the reviewed A
+competitive-execution components. Later numerical fitting, source binding, runtime,
+consumer and release gates remain open; no default or RC adoption is authorized.
+The reviewed execution-only A amendment permits bounded implementation, without
+changing states, admission, objective, caps or full qualification requirements.
 Active: bounded original Legacy kernel/stage implementation packet at
 `/data/data/com.termux/files/usr/tmp/drasov-legacy-kernel-packet.md` (Sol), existing
 regression/fixture inventory (Luna), and verified source integration/CI (controller).
