@@ -1288,3 +1288,46 @@ Artifacts: Termux `drasov-query-policy-results-7e6c64f/`, frozen fingerprint and
 benchmark log. Next bounded exact-cost diagnosis delegated to Sol/high; Luna
 prepares pair summaries and timing-only helper correction. No inference kernel
 or original Drasov/Omice goal-completion claim follows from these measurements.
+
+Timed repeat with timing-only helper correction yields byte-identical CSVs:
+dense8.904s,half8.505s,pixel10.616s to their different work-cap prefixes; final
+closed tracked memory0 each. Not whole-engine/full-graph speed measurements.
+Public reviewed batch f7f11d4 pushed; CI41560731847 is running (public inputs only).
+
+Independent numerical inspection of48policy-specific admissions (45distinct keys,
+3half included in45pixel) finds identical scalar integrals and no hidden dark
+interior: endpoint offsets.5361–.6055native pixels, analytic quantized-Gaussian
+minima agree within1.6e-9. Coarser sampled peaks can lower their own shoulder
+thresholds; no established formula defect, but summary rows omit per-probe/slab
+proof. Targeted135evaluation replay/export is now delegated to Luna under the
+same caps, not another full graph. Unknown dense-unmeasured admissions stay unknown.
+
+Sol/high cost review finds no single local exact optimization plausibly bridges
+the remaining3.4xPixel/~16xHalf work gap. Task4 in the resolution subplan measures
+bitwise profile-query reuse before a cache; Luna executes ignored helper only,
+with actual witness bit-parity checks before full enumeration. Do not implement
+a speculative cache or raise caps. Exact forward reachability could omit only
+proved zero-mass sources, but original ordinary native edges also propagate even
+when scalar support is unavailable (loss1). Thus optional-only reachability is NOT
+a valid pruning argument; reviewer is checking whether native ordinary adjacency
+already reaches every R4 state. Full graph gate remains until a concrete reviewed
+correction, with no approval waiver inferred from these negative runs.
+
+Exact-key census COMPLETE/negative:9/9witness schedule bit checks, all26098pairs
+and334958queries/policy;0duplicate exact conservative keys,0zero-length arcs.
+No cache implemented. Broader content/factored reuse is not disproved. Newly
+generated310MB tables losslessly compressed to36MB with decompressed hashes
+verified against the report; manifest retained, unrelated files untouched.
+Independent source review also closes reachability as unhelpful: all239native
+states are reachable through ordinary adjacency, even without optional edges.
+No lazy-kernel gate waiver or optional-only pruning. See resolution subplan Task4.
+
+Next scope is a bounded NEW numerical-certificate design consultation (Sol/high,
+no Astra): original full-window 20th-percentile noise/background and +/-6sample
+uncertainty forbid claiming a small local window is an exact optimization. Any
+candidate must explicitly version different local semantics, preserve all native
+states/full configured search, prove measured core/flanks/competitor/halo support,
+expand/fallback on unknown bounds, then face original strong/sparse/switchback and
+capped graph gates. No code for this new policy is authorized by a false exactness
+claim. Standing autonomous experiment authority covers design and testing; original
+completion/engine/replay/release requirements are not narrowed.
