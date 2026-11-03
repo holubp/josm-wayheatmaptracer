@@ -78,15 +78,10 @@ public final class ManagedGroundTransform {
             if (!Double.isFinite(pitch) || pitch <= 0.0) {
                 throw new IllegalArgumentException("Managed native pitch is not certified");
             }
-            for (var polygon : request.originalWorldPixelDecisionRegion().polygons()) {
-                budget.charge(EmissionWorkBudget.Operation.PREPARATION, polygon.size());
-                for (MetricPoint point : polygon) {
-                    if (point.xMeters() < westWorld + 0.5 || point.xMeters() > eastWorld - 0.5
-                            || point.yMeters() < northWorld + 0.5
-                            || point.yMeters() > southWorld - 0.5) {
-                        throw new IllegalArgumentException("Original search leaves acquired source cells");
-                    }
-                }
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION, request.originalSource().size());
+            if (!request.originalSearchWithin(westWorld + 0.5, northWorld + 0.5,
+                    eastWorld - 0.5, southWorld - 0.5)) {
+                throw new IllegalArgumentException("Original search leaves acquired source cells");
             }
             var result = new ManagedGroundTransform(mosaic, frame, worldSize, pitch, owner);
             reservation.adopt(result);

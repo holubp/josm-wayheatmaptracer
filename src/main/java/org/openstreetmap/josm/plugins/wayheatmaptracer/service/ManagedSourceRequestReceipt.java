@@ -8,15 +8,13 @@ import java.util.function.Function;
 
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.projection.Projection;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 
 /** Original selected-source search footprint frozen before managed tile acquisition. */
 public final class ManagedSourceRequestReceipt {
-    private static final int MAX_SOURCE_SEGMENTS = 4096;
+    static final int MAX_SOURCE_SEGMENTS = 4096;
     private final Projection projection;
     private final List<EastNorth> originalSource;
     private final String selectedColor;
@@ -25,15 +23,15 @@ public final class ManagedSourceRequestReceipt {
     private final double nativeSearchHalfWidth;
     private final double virtualRasterScale;
     private final TileHeatmapSampler.SamplingParameters parameters;
-    // MetricRegion is used only as a polygon predicate; these coordinates are world pixels, not metres.
-    private final MetricRegion originalWorldPixelDecisionRegion;
+    private final WorldPixelCapsuleRegion originalWorldPixelDecisionRegion;
     private final AttemptMemoryLedger.Owner owner;
+    private final List<AttemptMemoryLedger.Owner> retainedOwners = new ArrayList<>();
 
     private ManagedSourceRequestReceipt(Projection projection, List<EastNorth> originalSource,
             String selectedColor, int zoom, int minTileX, int maxTileX, int minTileY,
             int maxTileY, double nativeSearchHalfWidth, double virtualRasterScale,
             TileHeatmapSampler.SamplingParameters parameters,
-            MetricRegion originalWorldPixelDecisionRegion,
+            WorldPixelCapsuleRegion originalWorldPixelDecisionRegion,
             AttemptMemoryLedger.Owner owner) {
         this.projection = projection;
         this.originalSource = originalSource;
@@ -68,6 +66,7 @@ public final class ManagedSourceRequestReceipt {
                 || parameters.zoom() != zoom) {
             throw new IllegalArgumentException("Managed source search cannot be certified");
         }
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION, selectedSource.size());
         var shape = TileHeatmapSampler.legacySamplingShape(
                 PolylineMath.length(selectedSource), selectedSource.size(), parameters);
         double radius = Math.max(1, (int) Math.round(shape.referenceHalfWidthPx()
@@ -98,7 +97,11 @@ public final class ManagedSourceRequestReceipt {
                 minX = Math.min(minX, projected.x); maxX = Math.max(maxX, projected.x);
                 minY = Math.min(minY, projected.y); maxY = Math.max(maxY, projected.y);
             }
-            List<List<MetricPoint>> quads = new ArrayList<>(world.size() - 1);
+            List<RasterPoint> sourceWorld = new ArrayList<>(world.size());
+            for (Point2D.Double point : world) {
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                sourceWorld.add(new RasterPoint(point.x, point.y));
+            }
             for (int i = 1; i < world.size(); i++) {
                 budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
                 Point2D.Double a = world.get(i - 1), b = world.get(i);
@@ -107,11 +110,6 @@ public final class ManagedSourceRequestReceipt {
                 if (!Double.isFinite(length) || length <= 0.0) {
                     throw new IllegalArgumentException("Original managed source has an unresolved zero-length segment");
                 }
-                double nx = -dy / length * radius, ny = dx / length * radius;
-                quads.add(List.of(new MetricPoint(a.x + nx, a.y + ny),
-                        new MetricPoint(b.x + nx, b.y + ny),
-                        new MetricPoint(b.x - nx, b.y - ny),
-                        new MetricPoint(a.x - nx, a.y - ny)));
             }
             double margin = Math.max(64.0, parameters.halfWidthPx() * 3.0);
             int left = Math.toIntExact((long) Math.floor((minX - margin) / TileHeatmapSampler.TILE_SIZE));
@@ -120,7 +118,7 @@ public final class ManagedSourceRequestReceipt {
             int bottom = Math.toIntExact((long) Math.floor((maxY + margin) / TileHeatmapSampler.TILE_SIZE));
             var receipt = new ManagedSourceRequestReceipt(projection, original, selectedColor,
                     zoom, left, right, top, bottom, radius, virtualRasterScale, parameters,
-                    new MetricRegion(quads), owner);
+                    new WorldPixelCapsuleRegion(sourceWorld, radius), owner);
             reservation.adopt(receipt);
             complete = true;
             return receipt;
@@ -130,7 +128,7 @@ public final class ManagedSourceRequestReceipt {
     }
 
     void requireMatches(TileHeatmapSampler.TileMosaic mosaic) {
-        if (owner.isClosed() || mosaic == null || !selectedColor.equals(mosaic.color())
+        if (!isLive() || mosaic == null || !selectedColor.equals(mosaic.color())
                 || zoom != mosaic.zoom() || mosaic.parameters() != parameters
                 || Double.doubleToLongBits(mosaic.virtualRasterScale())
                     != Double.doubleToLongBits(virtualRasterScale)
@@ -151,15 +149,20 @@ public final class ManagedSourceRequestReceipt {
         Objects.requireNonNull(budget, "shared work budget");
         Objects.requireNonNull(scratchOwner, "scratch owner");
         budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, 1);
-        MetricPoint a = toWorld(mosaic, start), b = toWorld(mosaic, end);
-        return originalWorldPixelDecisionRegion.containsSegmentWithBoundedEvents(a, b,
-                () -> { budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, 1); return false; },
-                units -> budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, units), scratchOwner);
+        RasterPoint a = toWorld(mosaic, start), b = toWorld(mosaic, end);
+        if (!insideRequestedTiles(a) || !insideRequestedTiles(b)) return false;
+        return originalWorldPixelDecisionRegion.containsSegment(a, b, budget, scratchOwner);
     }
 
-    private static MetricPoint toWorld(TileHeatmapSampler.TileMosaic mosaic, RasterPoint point) {
+    private boolean insideRequestedTiles(RasterPoint point) {
+        double tile = TileHeatmapSampler.TILE_SIZE;
+        return point.x() >= minTileX * tile && point.x() <= (maxTileX + 1.0) * tile
+                && point.y() >= minTileY * tile && point.y() <= (maxTileY + 1.0) * tile;
+    }
+
+    private static RasterPoint toWorld(TileHeatmapSampler.TileMosaic mosaic, RasterPoint point) {
         double scale = mosaic.virtualRasterScale();
-        return new MetricPoint(mosaic.originWorldPxX() + point.x() / scale + 0.5,
+        return new RasterPoint(mosaic.originWorldPxX() + point.x() / scale + 0.5,
                 mosaic.originWorldPxY() + point.y() / scale + 0.5);
     }
 
@@ -172,6 +175,24 @@ public final class ManagedSourceRequestReceipt {
     public int maxTileX() { return maxTileX; }
     public int minTileY() { return minTileY; }
     public int maxTileY() { return maxTileY; }
-    public MetricRegion originalWorldPixelDecisionRegion() { return originalWorldPixelDecisionRegion; }
+    boolean containsOriginalWorldPixel(RasterPoint point) {
+        if (!isLive()) throw new IllegalStateException("Managed source request is closed");
+        return originalWorldPixelDecisionRegion.contains(point);
+    }
+    boolean originalSearchWithin(double minX, double minY, double maxX, double maxY) {
+        if (!isLive()) throw new IllegalStateException("Managed source request is closed");
+        return originalWorldPixelDecisionRegion.withinRectangle(minX, minY, maxX, maxY);
+    }
+    void retainFor(AttemptMemoryLedger.Owner coOwner) {
+        if (owner.isClosed()) throw new IllegalStateException("Original managed request is closed");
+        coOwner.retain(this);
+        synchronized (retainedOwners) { retainedOwners.add(coOwner); }
+    }
+    private boolean isLive() {
+        if (!owner.isClosed()) return true;
+        synchronized (retainedOwners) {
+            return retainedOwners.stream().anyMatch(retainer -> !retainer.isClosed());
+        }
+    }
     void close() { owner.close(); }
 }

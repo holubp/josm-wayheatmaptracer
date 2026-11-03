@@ -172,6 +172,7 @@ public final class TileHeatmapSampler {
         private final TileMosaic selectedMosaic;
         private final ManagedSourceRequestReceipt request;
         private final AttemptMemoryLedger.Owner mosaicOwner;
+        private boolean sampled;
 
         private PreparedManagedCapture(TileMosaicSet mosaics, TileMosaic selectedMosaic,
                 ManagedSourceRequestReceipt request, AttemptMemoryLedger.Owner mosaicOwner) {
@@ -185,6 +186,18 @@ public final class TileHeatmapSampler {
         public ManagedSourceRequestReceipt originalRequest() {
             request.requireMatches(selectedMosaic);
             return request;
+        }
+        private synchronized void retainFor(AttemptMemoryLedger.Owner coOwner) {
+            if (mosaicOwner.isClosed()) {
+                throw new IllegalStateException("Managed capture cannot admit a new retained owner after close");
+            }
+            if (sampled) {
+                throw new IllegalStateException("Original managed capture was already sampled");
+            }
+            request.requireMatches(selectedMosaic);
+            coOwner.retain(this);
+            request.retainFor(coOwner);
+            sampled = true;
         }
         @Override public void close() { mosaicOwner.close(); request.close(); }
     }
@@ -203,6 +216,11 @@ public final class TileHeatmapSampler {
                 || sourcePolyline.size() < 2) {
             throw new IllegalArgumentException("Managed emission requires the original selected tile request");
         }
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+        if (sourcePolyline.size() - 1 > ManagedSourceRequestReceipt.MAX_SOURCE_SEGMENTS) {
+            throw new IllegalArgumentException("Original source exceeds bounded managed capture");
+        }
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION, sourcePolyline.size());
         int inferenceZoom = effectiveInferenceZoom(config);
         int validationZoom = effectiveValidationZoom(config);
         double latitude = representativeLatitude(sourcePolyline, capturedProjection);
@@ -270,9 +288,9 @@ public final class TileHeatmapSampler {
                     inference, validation);
             TileMosaic selected = set.require(selectedColor);
             request.requireMatches(selected);
+            colorsReservation.close();
             var capture = new PreparedManagedCapture(set, selected, request, mosaicOwner);
             mosaicReservation.adopt(capture);
-            colorsReservation.adopt(capture);
             complete = true;
             return capture;
         } finally {
@@ -413,6 +431,7 @@ public final class TileHeatmapSampler {
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
         var owner = parentOwner.child("managed-legacy-l0");
         try {
+            if (capture != null) capture.retainFor(owner);
             // These are conservative retained capacities, not a claim about all transient JVM heap.
             budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
             if (capture == null) owner.reserve(retainedMosaicBytes(mosaic));
