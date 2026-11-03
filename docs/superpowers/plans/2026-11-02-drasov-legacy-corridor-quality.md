@@ -210,6 +210,23 @@ substitution across colliding IDs. One-key API smoke then root gate precedes tha
 screen. All arc statuses remain provisional; no global proof/engine improvement
 is claimed. Details and ownership in the active feasibility plan.
 
+**Priority update: Legacy first.** Independent actual-spec audit establishes that
+A's failed admission screen need not block the approved Legacy-before-A sequence.
+Active work is `2026-11-03-drasov-legacy-first-global-screen.md`: Luna inventories
+actual native Legacy suppression/support/seeds/families/zero variants before one
+complete original DENSE certificate screen.17fixture rows/133row-pair groups are
+known;17Legacy states/133arc keys are not assumed. No original family pruning or
+new numerical rule is allowed. The synthetic screen cannot certify Drasov or the
+future production census adapter (retained source includes padding).
+
+Continuous research is deferred at seven-source plateau-guard snapshot
+f54c6eac10702083ee759e9bb30d40d8c19bea6da534e3bc96ccb410762ee4b4.
+Standalone controls pass; two-key smoke has unresolved R4 arithmetic and no
+connector proof, and earlier cost figures had identified accounting gaps. Source
+snapshots68c8/822d/f54c are archived/verified. No1200run/fullcensus/admission/product
+change occurred. Do not resume local research ahead of the bounded Legacy inventory
+without a deliberate recorded priority decision. Both original engines remain open.
+
 Public CI41580122880 succeeds at507269e:2601test executions/231XML suites,
 0failure/error/skip, public validation plus both GUI smoke engines. Private inputs
 were not executed. This CI covers the prior zero-local batch, not53b2ef8 or actual
