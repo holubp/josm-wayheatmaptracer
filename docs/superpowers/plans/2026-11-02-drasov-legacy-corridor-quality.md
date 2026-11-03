@@ -87,6 +87,26 @@ backpointer comparisons replace copied whole-path tie strings. Compile, oracle,
 evaluator ordinal/boundary follow-on and wholekernelreview remain pending.
 Luna `query_policy` prepares independent tiny exhaustive kernel oracle in separate
 `josm-drasov-legacy-oracle`; tests must call production entry, not a test-only solver.
+Firstevaluator987efca review now CLOSED:245tests/15suites0f/e/s. Integrated and
+pushed experimental6ba8dc9; CI41670103404 runs full public validation. Managed
+be53718+714e555 source review CLOSED for exact numerical producer/work accounting;
+integrated/pushed9ca7b53, CI41673834301 in progress. Neither is a public release.
+Durable managed19focused XML/log now in `drasov-managed-grid-evidence/final19/`,
+testedHEAD2fbe4cd plus uncommitted common-interface files; do not silently label
+that source pure714e555. Exact integrated9ca7b53 full CI is the closure evidence.
+Kernel independent oracle commits7925354+cdfe483:2/2focusedGREEN, analyticQ,
+nonzero firstseedprior coefficient.28 (not an offset requirement), direct/skip tie
+and GAP BaseCarry native-origin lex tie. Not fullkernel/Drasov/A qualification.
+R4preflight found old17nativeprofiles/peaks differ in identity from19retained
+measurementprofiles. Sol ruling `drasov-legacy-r4-binding-gap-review.md` requires
+declared-synthetic-only native/measurement crosswalk, exact source/crop/normal/
+chainage checks and originalnative17census. Luna owns Binding/Factory/Input until
+its scoped correction commits; managed adapter must not concurrently edit them.
+Managed adapter independently implements common grid/source-request receipt/ground
+proof classes under `drasov-managed-capture-integration-review.md` rulings; no new
+production attestation until original request authority, locked selection witness,
+wholecurve transform and bounded pitch proofs exist. Actual Legacy/A fitting,
+preview/Apply consumers and whole-goal quality remain unfinished.
 
 Active: bounded original Legacy kernel/stage implementation packet at
 `/data/data/com.termux/files/usr/tmp/drasov-legacy-kernel-packet.md` (Sol), existing
