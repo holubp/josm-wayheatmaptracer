@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 
@@ -162,6 +163,24 @@ class ManagedSelectionWitnessTest {
             assertThrows(CancellationException.class, () -> ManagedSelectionWitness.capture(
                     fixture.dataSet, selection, ProjectionRegistry.getProjection(),
                     source(selection), cancelled, owner));
+        }
+    }
+
+    @Test
+    void selectedOccurrenceAccessorsRetainFrozenIdentityEvenIfCallerListChanges() {
+        Fixture fixture = fixture();
+        SelectionContext resolved = SelectionResolver.resolve(fixture.dataSet, false);
+        List<Node> callerList = new ArrayList<>(resolved.segmentNodes());
+        SelectionContext mutableCaller = new SelectionContext(resolved.way(),
+                resolved.startIndex(), resolved.endIndex(), callerList, resolved.fixedNodes());
+        try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+            ManagedSelectionWitness witness = ManagedSelectionWitness.capture(fixture.dataSet,
+                    mutableCaller, ProjectionRegistry.getProjection(), source(mutableCaller),
+                    budget(), owner);
+            callerList.set(1, fixture.before);
+            assertEquals(fixture.middle, witness.selectedOccurrences().get(1));
+            assertThrows(IllegalStateException.class,
+                    () -> witness.requireCurrent(budget(), owner));
         }
     }
 

@@ -44,17 +44,20 @@ public final class ManagedSelectionWitness implements AutoCloseable {
     private final SelectionContext selection;
     private final Projection projection;
     private final List<EastNorth> originalSource;
+    private final List<Node> selectedOccurrences;
     private final Snapshot frozen;
     private final AttemptMemoryLedger.Owner owner;
     private final List<AttemptMemoryLedger.Owner> retainedOwners = new ArrayList<>();
 
     private ManagedSelectionWitness(DataSet dataSet, SelectionContext selection,
-            Projection projection, List<EastNorth> originalSource, Snapshot frozen,
+            Projection projection, List<EastNorth> originalSource,
+            List<Node> selectedOccurrences, Snapshot frozen,
             AttemptMemoryLedger.Owner owner) {
         this.dataSet = dataSet;
         this.selection = selection;
         this.projection = projection;
         this.originalSource = originalSource;
+        this.selectedOccurrences = selectedOccurrences;
         this.frozen = frozen;
         this.owner = owner;
     }
@@ -85,8 +88,13 @@ public final class ManagedSelectionWitness implements AutoCloseable {
             var reservation = owner.reserve(bytes);
             List<EastNorth> sourceCopy = List.copyOf(originalSource);
             Snapshot frozen = snapshot(dataSet, selection, projection, sourceCopy, budget);
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION, sourceCopy.size());
+            List<Node> selectedNodes = new ArrayList<>(sourceCopy.size());
+            for (int index = selection.startIndex(); index <= selection.endIndex(); index++) {
+                selectedNodes.add(frozen.fullWay().get(index).node());
+            }
             var result = new ManagedSelectionWitness(dataSet, selection, projection,
-                    sourceCopy, frozen, owner);
+                    sourceCopy, List.copyOf(selectedNodes), frozen, owner);
             reservation.adopt(result);
             complete = true;
             return result;
@@ -337,7 +345,7 @@ public final class ManagedSelectionWitness implements AutoCloseable {
     public Projection projection() { return projection; }
     public List<EastNorth> originalSource() { return originalSource; }
     public List<Node> selectedOccurrences() {
-        return selection.segmentNodes();
+        return selectedOccurrences;
     }
     public boolean isProtected(Node node) {
         int index = -1;
