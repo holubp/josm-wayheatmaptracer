@@ -24,32 +24,30 @@ edits, Gradle, private upload, release or recursive delegation. Shared unchanged
 
 ## Execution
 
-- [ ] Reflect actual RidgeTracker suppression/support/seed logic on the original
+- [x] Reflect actual RidgeTracker suppression/support/seed logic on the original
   Legacy R4 profiles. Freeze per-row original post-suppression peak IDs/offsets/
   support flags, seeds and all carry/target possibilities. Bind these separately
   from retained native-grid image-port owners; never substitute equal-ID A offsets.
   Retained context has padding rows; report its relationship to the17active native
   fixture rows without claiming a complete production observation-census adapter.
-- [ ] Derive all eligible endpoint states/row pairs under exact16-row/20m gates,
+- [x] Derive all eligible endpoint states/row pairs under exact16-row/20m gates,
   and zero-length arcs/heading variants.133row-pair groups are established, not
   yet133Legacy keys. If unsupported rows, origin compatibility, anchors or zero
   variants remain unresolved, report them and stop before a false complete screen.
-- [ ] Verify native original state geometry, retained branch-port owner and actual
+- [x] Verify native original state geometry, retained branch-port owner and actual
   source-chainage binding. Validate Java17 helper, no-overwrite and fingerprint
   checks. Root reviews this inventory before any admission benchmark.
-- [ ] Run ONE complete Legacy-only DENSE_EIGHTH_NATIVE_V1 admission screen using
+- [x] Run ONE complete Legacy-only DENSE_EIGHTH_NATIVE_V1 admission screen using
   the existing evaluator/global extractor, one actual input/work/memory attempt.
   Record every key/status/Q, actual work/peak memory, every typed stop and all
   untouched keys as UNMEASURED. No budget reset or numerical/resolution changes.
-- [ ] Check all actual Legacy R4 witness arcs; distinguish graph admission from
+- [x] Check all actual Legacy R4 witness arcs; distinguish graph admission from
   scalar/physical-memory DP, seeds, anchored stage and final smoothing. A positive
   graph result only opens the next bounded original Legacy kernel/stage packet;
   it does not declare Legacy fitting/Apply or A complete. A negative result is
   checkpointed without cap raises or silently dropping a family.
 - [ ] Obtain independent actual-helper/source/identity/evidence review, update the
   main ledger and proceed through original Legacy requirements if this gate passes.
-
-## Existing local-policy research
 
 ## Inventory and first exact screen evidence
 
@@ -77,24 +75,48 @@ New isolated worktree `/data/data/com.termux/files/usr/tmp/josm-drasov-retained-
 branch `codex/drasov-retained-receipts`, BASE53b2ef8. One Sol writer, only
 NativeConnectorEvaluator.java and NativeConnectorEvaluatorTest.java.
 
-- [ ] Reproduce intended RED: a live issued receipt with many distinct Sample
+- [x] Reproduce intended RED: a live issued receipt with many distinct Sample
   records must keep at least their two-double/boolean payload bytes charged until
   evaluator disposal; measure delta from retained input baseline. Current raw
   reservation transfer loses that live charge. Also cover multiple receipts.
-- [ ] Use adopted real payload identities/leases to retain samples and dynamic
+- [x] Use adopted real payload identities/leases to retain samples and dynamic
   receipt/probe references through owner transfer. Do not change global ledger
   transfer semantics or keep discarded local scratch as a permanent live payload.
   Cover dense/half/pixel/local paths, early-failure prefix, repeated/cross-probe
   fallback, resource/cancel terminals and close-to-input-baseline/then0.
-- [ ] Preserve scalar values, states, branch predicates, Q and all caps. Correct
+- [x] Preserve scalar values, states, branch predicates, Q and all caps. Correct
   resource identity if needed; old low memory receipts are historical, not new
   qualification. No blanket reservation-based cap inflation or uncharged data.
-- [ ] Focused RED/GREEN then exact14-suite batch, saved XML/log, diff-check and
+- [x] Focused RED/GREEN then exact14-suite batch, saved XML/log, diff-check and
   scoped commit. Independent actual-delta/resource-lifetime audit before rerun.
-- [ ] Freeze corrected source/classes/JOSM and rerun the complete Legacy dense
+- [x] Freeze corrected source/classes/JOSM and rerun the complete Legacy dense
   screen once; code/resource correction invalidates old memory evidence and
   justifies this single repeat. Reconcile133keys/status/Q/work and actual live
   memory before proceeding to the approved Legacy kernel/stage packet.
+
+### Corrected resource-qualified result
+
+Clean c1327e1 changes evaluator/test only. Genuine RED retained16441distinct
+Sample records but charged45904bytes versus minimum279497payload bytes. Adopted
+sample/probe/query/list/receipt identities now transfer to the issued owner;
+cross-probe replacement keeps old payload charged through new construction.
+235tests/14XML suites pass, no failures/errors/skips. Actual source/test evidence
+and corrected run are independently audited in
+`/data/data/com.termux/files/usr/tmp/drasov-legacy-resource-review.md`.
+
+Corrected single evaluated run:
+`/data/data/com.termux/files/usr/tmp/drasov-legacy-global-screen/dense-c1327e1-20261103-run2/`.
+The first setup attempt failed compilation before any evaluation and was preserved.
+Live source/classes/JOSM fingerprint d97ce6f59d8d1664485e5e786831ab72cda32de0206c18984f1e8a3180380d40
+is verified before compilation, before evaluation and after it.133/133ADMITTED,
+3witnesses,1599planned/actual profiles,641199samples/queries, terminalNONE.
+Shared work31022034/128M,133/8Mpair visits,35230736bytes peak/256MiB, final0.
+All28shared non-work/operations fields match old receipts exactly. Work increases
+647861units for corrected accounting; old memory is not comparable. Corrected
+CSV has31fields and explicit potential399seed uses/executed seed solves0.
+This closes the R4 image-certificate gate only, not native stage/kernel execution.
+
+## Deferred local-policy research
 
 Continuous bilinear local research is deferred, not adopted or discarded. External
 snapshot `helper-sources-plateau-guard.sha256` binds seven files; compilation and
