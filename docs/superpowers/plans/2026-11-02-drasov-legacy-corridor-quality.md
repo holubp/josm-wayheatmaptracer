@@ -179,10 +179,26 @@ the fixed1/8contrast and2p-core bounds analytically refuse required positive
 broad/low-contrast controls. Same-corridor thin recordings versus separate parallel
 paths also need an explicit ownership contract. Review:
 `/data/data/com.termux/files/usr/tmp/drasov-cheap-certificate-design-review.md`.
-Do not build a helper merely to rediscover these known failures. Active next action
-is one focused corrective Sol design pass, saved separately as
+Do not build a helper merely to rediscover these known failures. The focused
+corrective Sol design pass is saved separately as
 `/data/data/com.termux/files/usr/tmp/drasov-cheap-certificate-design-v2.md`, including
 any actual objective/ownership conflict rather than silently narrowing scope.
+
+Scope reconciliation is now closed against the actual approved November2 specs:
+new grouped dark-gap representatives are outside this optional-emission experiment;
+making them mandatory positives would broaden it. Existing native-parent successes
+remain whole-goal preservation gates. REVIEW cannot replace unique connector proof.
+Frozen corrected V2 SHA256cce2cd673347a397f8336608203bb5c4c087333940259888cc3de109a028dc4d
+removes arbitrary amplitude/core-width refusals while retaining raw support/Q and
+explicit numerical-policy change. Independent scope ruling is appended to the
+design-review report. No new user approval or B/grouped-objective redesign needed.
+
+**Active implementation:** bounded ignored Sol helper under
+`/data/data/com.termux/files/usr/tmp/drasov-continuous-certificate-screen/`, governed
+by `2026-11-03-drasov-continuous-certificate-feasibility.md`: API audit and analytic
+RED/GREEN, then charged representative cost prefix only. Full census is gated on
+independent actual-helper review and plausible80M admission/48Msolver headroom.
+No production source/Gradle/default/release changes in this helper assignment.
 
 Public CI41580122880 succeeds at507269e:2601test executions/231XML suites,
 0failure/error/skip, public validation plus both GUI smoke engines. Private inputs
