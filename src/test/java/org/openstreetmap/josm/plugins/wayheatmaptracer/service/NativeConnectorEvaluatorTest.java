@@ -132,8 +132,18 @@ class NativeConnectorEvaluatorTest {
                     QueryPolicy.HALF_NATIVE_L0_V1, 101, QueryPolicy.PIXEL_CAPPED_L0_V1, 51);
                 for (var policy : QueryPolicy.values()) {
                     try (var evaluator = new NativeConnectorEvaluator(retained, new Domain(states,List.of()), policy)) {
-                        var receipt = evaluator.evaluate(states.get(0), states.get(1));
-                        assertEquals(expectedSampleCounts.get(policy), receipt.probes().get(0).samples().size(), policy.name());
+                        for (int i = 1; i < WITNESS.length; i++) {
+                            var receipt = evaluator.evaluate(states.get(WITNESS[i - 1]), states.get(WITNESS[i]));
+                            assertEquals(Status.ADMITTED, receipt.status(), engine + " " + policy + " "
+                                + WITNESS[i - 1] + "->" + WITNESS[i] + " " + receipt);
+                            assertTrue(receipt.scalarEnvelopeComplete(), policy.name());
+                            assertTrue(receipt.measuredNativeContinuationComplete(), policy.name());
+                            assertTrue(receipt.probes().stream().allMatch(probe -> probe.selectedMode() != null), policy.name());
+                            assertTrue(receipt.from().peakOwner() != null && !receipt.from().peakOwner().syntheticCenter(), policy.name());
+                            assertTrue(receipt.to().peakOwner() != null && !receipt.to().peakOwner().syntheticCenter(), policy.name());
+                            assertTrue(receipt.probes().stream().allMatch(probe ->
+                                probe.samples().size() == expectedSampleCounts.get(policy)), policy.name());
+                        }
                     }
                 }
             }
@@ -291,6 +301,80 @@ class NativeConnectorEvaluatorTest {
             var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
             assertEquals(Status.UNAVAILABLE, receipt.status());
             assertEquals(Reason.SCALAR_SUPPORT, receipt.reason());
+        }
+    }
+
+    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    void invalidCellTouchedOnlyAtConnectorCornerRemainsUnsupported(QueryPolicy policy) {
+        try (var f = scene((x, y) -> Math.exp(-0.5 * Math.pow(y - 32, 2)),
+                (x, y) -> x != 20 || y != 33, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED, 1);
+             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()), policy)) {
+            assertTrue(f.states().stream().allMatch(state -> state.peakOwner() != null
+                && !state.peakOwner().syntheticCenter()));
+            var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
+            assertEquals(Status.UNAVAILABLE, receipt.status(), policy.name());
+            assertEquals(Reason.SCALAR_SUPPORT, receipt.reason(), policy.name());
+        }
+    }
+
+    @ParameterizedTest @EnumSource(QueryPolicy.class)
+    void coarsePoliciesConservativelyLoseLocalModeAtMaskedSupportEdge(QueryPolicy policy) {
+        try (var f = scene((x, y) -> Math.exp(-0.5 * Math.pow(y - 32, 2)),
+                (x, y) -> x != 20 || y != 34, MetricRegion.rectangle(0, 0, 63, 63), SourceClass.OBSERVED, 1);
+             var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()), policy)) {
+            assertTrue(f.states().stream().allMatch(state -> state.peakOwner() != null
+                && !state.peakOwner().syntheticCenter()));
+            var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
+            assertTrue(receipt.scalar().isPresent());
+            assertEquals(BilinearSegmentIntegral.Status.COMPLETE, receipt.scalar().orElseThrow().status());
+            if (policy == QueryPolicy.DENSE_EIGHTH_NATIVE_V1) {
+                assertEquals(Status.ADMITTED, receipt.status(), receipt::toString);
+                assertTrue(receipt.scalarEnvelopeComplete());
+                assertTrue(receipt.measuredNativeContinuationComplete());
+                var edgeProbe = receipt.probes().stream()
+                    .filter(probe -> Math.abs(probe.metricPosition().xMeters() - 19) < 1e-12)
+                    .findFirst().orElseThrow();
+                var selected = edgeProbe.selectedMode();
+                assertNotNull(selected);
+                assertEquals(0, selected.centerMeters(), 1e-12);
+                assertEquals(.5, selected.localizationSigmaMeters(), 1e-12);
+                var threshold = edgeProbe.threshold();
+                assertNotNull(threshold);
+                assertEquals(0, threshold.originPeak().offsetMeters(), 1e-12);
+                assertEquals(1, threshold.originPeak().value(), 1e-12);
+                assertEquals(.903600013256073, threshold.shoulderThreshold(), 1e-12);
+                for (double offset : new double[] {-.25, .25}) {
+                    var sample = edgeProbe.samples().stream()
+                        .filter(value -> Math.abs(value.offsetMeters() - offset) < 1e-12)
+                        .findFirst().orElseThrow();
+                    assertTrue(sample.valid());
+                    assertEquals(.9016326665878296, sample.intensity(), 1e-12);
+                    assertTrue(sample.intensity() < threshold.shoulderThreshold());
+                }
+                var flank = edgeProbe.extraction().result().flankReceipts().stream()
+                    .filter(value -> value.mode() == selected).findFirst().orElseThrow();
+                assertEquals(62, flank.leftBracketSampleIndex());
+                assertEquals(66, flank.rightBracketSampleIndex());
+                assertTrue(flank.hasTwoSidedValidOutwardContinuation());
+                var core = edgeProbe.extraction().result().rawCoreReceipts().stream()
+                    .filter(value -> value.mode() == selected).findFirst().orElseThrow();
+                assertEquals(64, core.rawStageWinnerSampleIndex());
+                assertTrue(core.leftAdjacentObservedValid() && core.leftAdjacentBelowCore());
+                assertTrue(core.rightAdjacentObservedValid() && core.rightAdjacentBelowCore());
+                assertTrue(edgeProbe.extraction().result().baseline().censoredModes().stream()
+                    .allMatch(mode -> Math.abs(mode.boundaryOffsetMeters()) > 1.5 * edgeProbe.nativePitchMeters()));
+            } else {
+                assertEquals(Status.REJECTED, receipt.status(), policy.name());
+                assertEquals(Reason.NO_COMPLETE_MODE, receipt.reason(), policy.name());
+                assertFalse(receipt.measuredNativeContinuationComplete());
+                var lastProbe = receipt.probes().get(receipt.probes().size() - 1);
+                assertEquals(19, lastProbe.metricPosition().xMeters(), 1e-12);
+                assertEquals(.45, lastProbe.parameter(), 1e-12);
+                assertNull(lastProbe.selectedMode());
+                assertNull(lastProbe.threshold());
+                assertTrue(lastProbe.samples().stream().anyMatch(sample -> !sample.valid()
+                    && Math.abs(sample.offsetMeters() - 2) < 1e-12));
+            }
         }
     }
 
@@ -499,6 +583,7 @@ class NativeConnectorEvaluatorTest {
              var evaluator = new NativeConnectorEvaluator(f.input(), new Domain(f.states(), List.of()), policy)) {
             var receipt = evaluator.evaluate(f.states().get(0), f.states().get(1));
             assertNotEquals(Status.ADMITTED, receipt.status());
+            assertNotEquals(Reason.ENDPOINT_OWNERSHIP, receipt.reason());
             assertFalse(receipt.measuredNativeContinuationComplete());
         }
     }
