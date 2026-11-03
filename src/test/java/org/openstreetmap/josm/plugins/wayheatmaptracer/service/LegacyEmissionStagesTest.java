@@ -437,6 +437,10 @@ class LegacyEmissionStagesTest {
                     () -> new RidgeTracker().trackEmission(input, CancellationProbe.NONE));
                 assertEquals(3, failure.originalRow());
                 assertEquals(2, failure.familySize());
+                assertEquals(1, failure.limit());
+                assertSame(failure, assertThrows(LegacyEmissionDomain.StateFamilyLimitException.class,
+                    () -> new RidgeTracker().trackEmission(input, CancellationProbe.NONE)),
+                    "A family refusal must terminate the same retained attempt");
             }
         }
         assertEquals(0, ledger.currentBytes());

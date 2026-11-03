@@ -20,12 +20,17 @@ public final class LegacyEmissionDomain {
     public static final class StateFamilyLimitException extends RuntimeException {
         private final int originalRow;
         private final int familySize;
+        private final int limit;
         public StateFamilyLimitException(int originalRow, int familySize) {
-            super("Original Legacy row state family exceeds 96");
-            this.originalRow = originalRow; this.familySize = familySize;
+            this(originalRow, familySize, 96);
+        }
+        public StateFamilyLimitException(int originalRow, int familySize, int limit) {
+            super("Original Legacy row state family exceeds " + limit);
+            this.originalRow = originalRow; this.familySize = familySize; this.limit = limit;
         }
         public int originalRow() { return originalRow; }
         public int familySize() { return familySize; }
+        public int limit() { return limit; }
     }
 
     /** Native state identity uses the original row, never the retained context index. */
@@ -110,7 +115,7 @@ public final class LegacyEmissionDomain {
                     evaluatorState));
             }
             if (states.size() > budget.stateFamilyLimit())
-                throw new StateFamilyLimitException(row, states.size());
+                throw new StateFamilyLimitException(row, states.size(), budget.stateFamilyLimit());
             rows.add(List.copyOf(states));
         }
         observed = List.copyOf(rows);

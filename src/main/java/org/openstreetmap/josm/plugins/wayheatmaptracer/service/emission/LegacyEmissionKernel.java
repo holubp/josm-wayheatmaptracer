@@ -226,7 +226,9 @@ public final class LegacyEmissionKernel {
             resultLease.close();
             if (failure instanceof CancellationException
                     || failure instanceof EmissionWorkBudget.LimitExceededException
-                    || failure instanceof AttemptMemoryLedger.ResourceLimitException)
+                    || failure instanceof AttemptMemoryLedger.ResourceLimitException
+                    || failure instanceof LegacyEmissionDomain.StateFamilyLimitException
+                    || failure instanceof NativeConnectorEvaluator.StateFamilyLimitException)
                 input.recordTerminalExecutionFailure(failure);
             throw failure;
         }
@@ -316,7 +318,7 @@ public final class LegacyEmissionKernel {
         budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
         if (existingMembers >= budget.stateFamilyLimit())
             throw new LegacyEmissionDomain.StateFamilyLimitException(originalRow,
-                Math.addExact(existingMembers, 1));
+                Math.addExact(existingMembers, 1), budget.stateFamilyLimit());
     }
 
     private static List<Node> chain(Node terminal, EmissionWorkBudget budget) {

@@ -17,6 +17,7 @@ class LegacyEmissionFamilyAdmissionTest {
             () -> LegacyEmissionKernel.requireFamilyCapacity(7, 96, budget));
         assertEquals(7, refusal.originalRow());
         assertEquals(97, refusal.familySize());
+        assertEquals(96, refusal.limit());
         assertTrue(budget.snapshot().workUsed() > 0);
     }
 }
