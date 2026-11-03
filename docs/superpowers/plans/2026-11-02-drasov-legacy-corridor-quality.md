@@ -12,20 +12,23 @@
 
 ## Current execution status — 2026-11-03
 
-Active: fix retained receipt/sample accounting in isolated
-`/data/data/com.termux/files/usr/tmp/josm-drasov-retained-receipts`, BASE53b2ef8;
-bounded Sol writer owns evaluator/test and local Gradle. Then independent audit
-and one corrected Legacy-only dense screen. Original kernels/engine fitting,
-consumers/private Drasov quality and whole-goal gates remain unfinished.
+Active: bounded original Legacy kernel/stage implementation packet at
+`/data/data/com.termux/files/usr/tmp/drasov-legacy-kernel-packet.md` (Sol), existing
+regression/fixture inventory (Luna), and verified source integration/CI (controller).
+Original kernels/engine fitting, consumers/private Drasov quality and whole-goal
+gates remain unfinished. No source-writing kernel assignment until packet closure.
 
-Verified numeric-only Legacy screen:133/133global dense image proofs, all3witnesses,
-30374173/128Mwork. Actual native inventory is17observed states,3seeds,133geometry
-keys/399seed references, no carry/targets/zero variants. Ledger peak is NOT qualified:
-controller found escaped raw reservations released despite live Sample payloads.
+Retained-payload correction c1327e1 is independently reviewed;235tests/14suites pass.
+Corrected Legacy-only global dense screen is independently resource-qualified:
+133/133proofs, all3witnesses,31022034/128Mwork,35230736bytes peak/final0, no cap stop.
+Actual native R4 inventory is17observed states,3seeds,133geometry keys/399potential
+seed uses, no carry/targets/zero variants. Seed solves were not executed. Old
+4.46MBledger receipt is invalid; corrected source/classes/JOSM fingerprint is
+d97ce6f59d8d1664485e5e786831ab72cda32de0206c18984f1e8a3180380d40.
 Detailed evidence and correction packet: `2026-11-03-drasov-legacy-first-global-screen.md`.
 Continuous local research is deferred; no1200run or full local census occurred.
-Public experimental9655509 passesCI41582739824 (2610executions/bothGUI); it predates
-this new correction. No new RC or production-default change.
+Public experimental9655509 passesCI41582739824 (2610executions/bothGUI); controller
+is integrating the new correction for its own CI. No RC/default change.
 
 ## Global Constraints
 
