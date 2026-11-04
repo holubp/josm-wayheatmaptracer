@@ -8,6 +8,8 @@ import java.util.OptionalDouble;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.OrdinaryAffinityClassifier;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.ManagedOrdinaryAffinity;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeMeasuredProfileReceipt;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
 
 /** An opt-in Legacy route with separate original observations and actual vertices. */
@@ -263,6 +265,32 @@ public final class EmissionResult implements AutoCloseable {
                 && finalGeometry.stream().allMatch(a -> a.status() == OrdinaryAffinityClassifier.Status.COMPATIBLE);
         }
     }
+    /** Managed local proof is separate from affine slabs and supplemental state ownership. */
+    public record ManagedAffinityArcReference(int arcIndex,boolean unchangedNativeCertificate,
+        Optional<ManagedOrdinaryAffinity.Receipt> receipt) {
+        public ManagedAffinityArcReference {
+            Objects.requireNonNull(receipt);
+            if(arcIndex<0||unchangedNativeCertificate&&receipt.isPresent())throw new IllegalArgumentException("Managed arc evidence is inconsistent");
+        }
+        public OrdinaryAffinityClassifier.Status status(){return unchangedNativeCertificate?OrdinaryAffinityClassifier.Status.COMPATIBLE:
+            receipt.map(ManagedOrdinaryAffinity.Receipt::status).orElse(OrdinaryAffinityClassifier.Status.UNKNOWN);}
+    }
+    public record ManagedSmoothingOutcome(int firstVertex,int lastVertex,SmoothingDisposition disposition,
+        SmoothingReason reason,List<ManagedOrdinaryAffinity.Receipt> proposedEdgeEvidence) {
+        public ManagedSmoothingOutcome { proposedEdgeEvidence=List.copyOf(proposedEdgeEvidence); }
+    }
+    public record ManagedAffinityDiagnostics(String policyId,List<ManagedAffinityArcReference> inference,
+        List<ManagedAffinityArcReference> finalGeometry,int preparedSourcePairs,long stationExtractions,
+        List<ManagedSmoothingOutcome> smoothingOutcomes,NativeMeasuredProfileReceipt.Availability globalModeFamilyAvailability) {
+        public ManagedAffinityDiagnostics {
+            inference=List.copyOf(inference);finalGeometry=List.copyOf(finalGeometry);smoothingOutcomes=List.copyOf(smoothingOutcomes);
+            if(!ManagedOrdinaryAffinity.POLICY_ID.equals(policyId)||preparedSourcePairs<0||stationExtractions<0
+                    ||globalModeFamilyAvailability!=NativeMeasuredProfileReceipt.Availability.UNAVAILABLE)
+                throw new IllegalArgumentException("Managed local diagnostics cannot certify a global Mode family");
+        }
+        public boolean allPublishedArcsCompatible(){return inference.stream().allMatch(a->a.status()==OrdinaryAffinityClassifier.Status.COMPATIBLE)
+            &&finalGeometry.stream().allMatch(a->a.status()==OrdinaryAffinityClassifier.Status.COMPATIBLE);}
+    }
 
     private final List<OriginalObservation> originalObservations;
     private final EmissionMapping mapping;
@@ -282,6 +310,7 @@ public final class EmissionResult implements AutoCloseable {
     private final AutoCloseable receiptLifetime;
     private final Provenance provenance;
     private final Optional<AffinityDiagnostics> affinity;
+    private final Optional<ManagedAffinityDiagnostics> managedAffinity;
     private volatile boolean closed;
 
     public EmissionResult(List<OriginalObservation> originalObservations,
@@ -304,6 +333,18 @@ public final class EmissionResult implements AutoCloseable {
             double totalPhysicalLengthMeters, EmissionWorkBudget.Snapshot work,
             long peakRetainedBytes, Provenance provenance, AutoCloseable receiptLifetime,
             Optional<AffinityDiagnostics> affinity) {
+        this(originalObservations,mapping,inferenceVertices,smoothedVertices,inferenceArcs,postSmoothingArcs,
+            firstStage,intervalStages,stitched,postSmoothing,sourceIntervalMassMeters,measuredPhysicalLengthMeters,
+            totalPhysicalLengthMeters,work,peakRetainedBytes,provenance,receiptLifetime,affinity,Optional.empty());
+    }
+    public EmissionResult(List<OriginalObservation> originalObservations,
+            EmissionMapping mapping,List<Vertex> inferenceVertices,List<Vertex> smoothedVertices,
+            List<Arc> inferenceArcs,List<Arc> postSmoothingArcs,Costs firstStage,
+            List<Costs> intervalStages,Costs stitched,Costs postSmoothing,
+            double sourceIntervalMassMeters,double measuredPhysicalLengthMeters,
+            double totalPhysicalLengthMeters,EmissionWorkBudget.Snapshot work,
+            long peakRetainedBytes,Provenance provenance,AutoCloseable receiptLifetime,
+            Optional<AffinityDiagnostics> affinity,Optional<ManagedAffinityDiagnostics> managedAffinity) {
         this.originalObservations = List.copyOf(Objects.requireNonNull(originalObservations));
         this.mapping = Objects.requireNonNull(mapping);
         this.inferenceVertices = List.copyOf(Objects.requireNonNull(inferenceVertices));
@@ -321,6 +362,7 @@ public final class EmissionResult implements AutoCloseable {
         this.peakRetainedBytes = peakRetainedBytes;
         this.provenance = Objects.requireNonNull(provenance);
         this.affinity = Objects.requireNonNull(affinity);
+        this.managedAffinity=Objects.requireNonNull(managedAffinity);
         this.receiptLifetime = Objects.requireNonNull(receiptLifetime);
         if (mapping.observationCount() != this.originalObservations.size()
                 || mapping.vertexOwners().size() != this.inferenceVertices.size()
@@ -338,6 +380,10 @@ public final class EmissionResult implements AutoCloseable {
         if (affinity.isPresent() && (affinity.orElseThrow().inference().size() != this.inferenceArcs.size()
                 || affinity.orElseThrow().finalGeometry().size() != this.postSmoothingArcs.size()))
             throw new IllegalArgumentException("Affinity classifications do not cover the actual result arcs");
+        if(managedAffinity.isPresent()&&(affinity.isPresent()
+                ||managedAffinity.orElseThrow().inference().size()!=this.inferenceArcs.size()
+                ||managedAffinity.orElseThrow().finalGeometry().size()!=this.postSmoothingArcs.size()))
+            throw new IllegalArgumentException("Managed evidence must exclusively cover the actual result arcs");
         for (int i = 0; i < this.inferenceVertices.size(); i++) {
             if (!mapping.vertexOwners().get(i).equals(this.inferenceVertices.get(i).owner())
                     || !mapping.vertexOwners().get(i).equals(this.smoothedVertices.get(i).owner()))
@@ -381,6 +427,7 @@ public final class EmissionResult implements AutoCloseable {
     public long peakRetainedBytes() { requireOpen(); return peakRetainedBytes; }
     public SourceReference sourceReference() { requireOpen(); return provenance.sourceReference(); }
     public Optional<AffinityDiagnostics> affinity() { requireOpen(); return affinity; }
+    public Optional<ManagedAffinityDiagnostics> managedAffinity(){requireOpen();return managedAffinity;}
     public List<SeedReference> seedReferences() { requireOpen(); return provenance.seedReferences(); }
     public SeedReference chosenSeed() { requireOpen(); return provenance.chosenSeed(); }
     public List<NativeStateTable> nativeStateTables() { requireOpen(); return provenance.nativeStateTables(); }

@@ -43,7 +43,11 @@ public final class NativeMeasuredProfileReceipt {
         /** Correct dual-basis parameters, with no assumed-unit dot product. */
         public ParameterBox project(MetricPoint point){
             try{
-            issuer.fresh();issuer.work(64);
+            issuer.fresh();return projectValidated(point);
+            }catch(RuntimeException failure){issuer.abort(failure);throw failure;}
+        }
+        private ParameterBox projectValidated(MetricPoint point){
+            issuer.work(64);
             var dx=new BigDecimal(point.xMeters()).subtract(new BigDecimal(origin.xMeters()));
             var dy=new BigDecimal(point.yMeters()).subtract(new BigDecimal(origin.yMeters()));
             var a=dx.multiply(new BigDecimal(normal.yMeters())).subtract(dy.multiply(new BigDecimal(normal.xMeters())));
@@ -53,11 +57,27 @@ public final class NativeMeasuredProfileReceipt {
             var math=new CensusGeometry(issuer.budget);
             var s=math.ratio(a,denominator);var u=math.ratio(b,denominator);
             return new ParameterBox(s.lower(),s.upper(),u.lower(),u.upper());
-            }catch(RuntimeException failure){issuer.abort(failure);throw failure;}
         }
         public MetricPoint numericAnchor(double s){
             issuer.live();if(!Double.isFinite(s)||s<first||s>last)throw new IllegalArgumentException("Family station outside frozen domain");
             return new MetricPoint(origin.xMeters()+s*direction.xMeters(),origin.yMeters()+s*direction.yMeters());
+        }
+        /** Whole actual native subsegment projected through continuous F_N^-1, never rounded G. */
+        public ParameterBox projectNativeSegment(RasterPoint from,RasterPoint to,double first,double last){
+            try{
+                issuer.fresh();issuer.work(16);issuer.budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);
+                try(var scratch=issuer.memory.reserve(32768)){
+                    var box=issuer.context.nativeSegmentContinuousMetricBounds(from,to,first,last,issuer.budget);
+                    var a=projectValidated(new MetricPoint(box.minimumEast(),box.minimumNorth()));
+                    var b=projectValidated(new MetricPoint(box.minimumEast(),box.maximumNorth()));
+                    var c=projectValidated(new MetricPoint(box.maximumEast(),box.minimumNorth()));
+                    var d=projectValidated(new MetricPoint(box.maximumEast(),box.maximumNorth()));
+                    return new ParameterBox(Math.min(Math.min(a.minimumS(),b.minimumS()),Math.min(c.minimumS(),d.minimumS())),
+                        Math.max(Math.max(a.maximumS(),b.maximumS()),Math.max(c.maximumS(),d.maximumS())),
+                        Math.min(Math.min(a.minimumU(),b.minimumU()),Math.min(c.minimumU(),d.minimumU())),
+                        Math.max(Math.max(a.maximumU(),b.maximumU()),Math.max(c.maximumU(),d.maximumU())));
+                }
+            }catch(RuntimeException failure){issuer.abort(failure);throw failure;}
         }
     }
 

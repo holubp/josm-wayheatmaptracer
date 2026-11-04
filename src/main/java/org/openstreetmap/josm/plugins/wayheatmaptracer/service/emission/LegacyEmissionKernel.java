@@ -425,6 +425,13 @@ public final class LegacyEmissionKernel {
             NativeConnectorEvaluator.QueryPolicy.DENSE_EIGHTH_NATIVE_V1,
             NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1, true, null);
     }
+    /** Explicit local managed connector experiment; creates no supplemental state family. */
+    public EmissionResult solveManagedChartAffinity(SampledEmissionInput input,List<CrossSectionProfile> suppressed,
+            List<Double> seeds,List<AnchorProposal> proposals,Smoother smoother,CancellationProbe cancellation){
+        return solveBody(input,suppressed,seeds,proposals,smoother,cancellation,
+            NativeConnectorEvaluator.QueryPolicy.DENSE_EIGHTH_NATIVE_V1,
+            NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1,false,true,null);
+    }
 
     private EmissionResult solve(SampledEmissionInput input, List<CrossSectionProfile> suppressed,
             List<Double> seeds, List<AnchorProposal> proposals, Smoother smoother,
@@ -449,7 +456,13 @@ public final class LegacyEmissionKernel {
             List<Double> seeds,List<AnchorProposal> proposals,Smoother smoother,CancellationProbe cancellation,
             NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
             boolean measuredAffinity, LegacyEmissionProgress progress) {
-        return solveBody(input,suppressed,seeds,proposals,smoother,cancellation,queryPolicy,executionPolicy,measuredAffinity,progress,null);
+        return solveBody(input,suppressed,seeds,proposals,smoother,cancellation,queryPolicy,executionPolicy,measuredAffinity,false,progress,null);
+    }
+    private EmissionResult solveBody(SampledEmissionInput input,List<CrossSectionProfile> suppressed,
+            List<Double> seeds,List<AnchorProposal> proposals,Smoother smoother,CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
+            boolean measuredAffinity,boolean managedAffinity,LegacyEmissionProgress progress){
+        return solveBody(input,suppressed,seeds,proposals,smoother,cancellation,queryPolicy,executionPolicy,measuredAffinity,managedAffinity,progress,null);
     }
 
     /** Opt-in all-stage grouped execution. Compatibility, affinity and UI consumers never select it implicitly. */
@@ -481,6 +494,12 @@ public final class LegacyEmissionKernel {
             List<Double> seeds,List<AnchorProposal> proposals,Smoother smoother,CancellationProbe cancellation,
             NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
             boolean measuredAffinity,LegacyEmissionProgress progress,GroupedFacts grouped) {
+        return solveBody(input,suppressed,seeds,proposals,smoother,cancellation,queryPolicy,executionPolicy,measuredAffinity,false,progress,grouped);
+    }
+    private EmissionResult solveBody(SampledEmissionInput input,List<CrossSectionProfile> suppressed,
+            List<Double> seeds,List<AnchorProposal> proposals,Smoother smoother,CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
+            boolean measuredAffinity,boolean managedAffinity,LegacyEmissionProgress progress,GroupedFacts grouped){
         Objects.requireNonNull(input); Objects.requireNonNull(suppressed); Objects.requireNonNull(seeds);
         Objects.requireNonNull(proposals); Objects.requireNonNull(smoother); Objects.requireNonNull(cancellation);
         Objects.requireNonNull(queryPolicy); Objects.requireNonNull(executionPolicy);
@@ -506,10 +525,12 @@ public final class LegacyEmissionKernel {
         }
         NativeConnectorEvaluator bestEvaluator = null;
         AttemptMemoryLedger.Owner bestSeedOwner = null;
+        ManagedOrdinaryAffinity managedClassifier=null;
         try {
             var domain = new LegacyEmissionDomain(binding, suppressed, seeds, budget, owner,
                 measuredAffinity ? input.experimentalMeasuredModes() : null);
             var affinity = measuredAffinity ? new OrdinaryAffinityClassifier(input, domain, owner) : null;
+            managedClassifier=managedAffinity?new ManagedOrdinaryAffinity(input,domain):null;
             if(progress!=null)progress.domainComplete(domain.seeds().size());
             Node best = null;
             Inventory bestInventory = null;
@@ -522,7 +543,7 @@ public final class LegacyEmissionKernel {
                 boolean retained = false;
                 try {
                     if(progress!=null)progress.prepareMutation();
-                    var inventory = inventory(domain, budget, seedOwner, affinity);
+                    var inventory = inventory(domain, budget, seedOwner, affinity,managedClassifier);
                     if(progress!=null)progress.inventoryComplete(inventory.evaluatorStates().size());
                     evaluator = evaluator(input, domain, inventory, queryPolicy, executionPolicy,progress);
                     Node candidate = grouped==null ? solveBase(input, domain, seed, inventory, evaluator,
@@ -633,6 +654,7 @@ public final class LegacyEmissionKernel {
             }
             }
         } catch (RuntimeException failure) {
+            if(managedClassifier!=null)try{managedClassifier.close();}catch(RuntimeException cleanup){failure.addSuppressed(cleanup);}
             if (bestEvaluator != null) bestEvaluator.close();
             owner.close();
             resultLease.close();
@@ -777,10 +799,12 @@ public final class LegacyEmissionKernel {
             Map<OrdinaryLegIdentity, NativeConnectorEvaluator.OrdinaryPhysicalLeg> ordinaryLegs,
             Map<ZeroCursorIdentity, NativeConnectorEvaluator.PhysicalDirectionCursor> zeroCursors,
             Map<ZeroConnectorIdentity, NativeConnectorEvaluator.Receipt> zeroReceipts,
-            List<NativeConnectorEvaluator.RowState> evaluatorStates, OrdinaryAffinityClassifier affinity) { }
+            List<NativeConnectorEvaluator.RowState> evaluatorStates, OrdinaryAffinityClassifier affinity,
+            ManagedOrdinaryAffinity managedAffinity) { }
 
     private Inventory inventory(LegacyEmissionDomain domain,
-            EmissionWorkBudget budget, AttemptMemoryLedger.Owner owner, OrdinaryAffinityClassifier affinity) {
+            EmissionWorkBudget budget, AttemptMemoryLedger.Owner owner, OrdinaryAffinityClassifier affinity,
+            ManagedOrdinaryAffinity managedAffinity) {
         var byRow = new ArrayList<List<LegacyEmissionDomain.State>>(domain.rowCount());
         var familySizes = new int[domain.rowCount()];
         var all = new ArrayList<NativeConnectorEvaluator.RowState>();
@@ -797,7 +821,7 @@ public final class LegacyEmissionKernel {
         }
         return new Inventory(List.copyOf(byRow), familySizes, new HashMap<>(), new HashMap<>(),
             new HashMap<>(), new HashMap<>(), new HashMap<>(), new HashMap<>(),
-            new HashMap<>(), List.copyOf(all), affinity);
+            new HashMap<>(), List.copyOf(all), affinity,managedAffinity);
     }
 
     private LegacyEmissionDomain.State reachedCarry(LegacyEmissionDomain domain, Inventory inventory,
@@ -1100,6 +1124,8 @@ public final class LegacyEmissionKernel {
         if (optional && !events.isEmpty()) return null;
         if (!optional && events.isEmpty() && inventory.affinity() != null
                 && !inventory.affinity().classifyInValidatedExecution(a, to, pa, pb).ordinaryEligible()) return null;
+        if(!optional&&events.isEmpty()&&inventory.managedAffinity()!=null
+                &&!inventory.managedAffinity().classify(a,to).ordinaryEligible())return null;
         MetricPoint cursor = pa;
         double cursorSource = sourceChainage(domain, input.context(), rowA);
         PhysicalLeg physical = from.key.lastPositive();
@@ -1520,7 +1546,10 @@ public final class LegacyEmissionKernel {
         if(progress!=null)progress.phase(LegacyEmissionProgress.Phase.SMOOTH,0,-1,-1);
         List<EmissionResult.SmoothingOutcome> smoothingOutcomes = inventory.affinity() == null
             ? List.of() : new ArrayList<>();
-        var smoothed = smooth(path, smoother, domain, input.context(), budget, owner, inventory.affinity(), smoothingOutcomes);
+        List<EmissionResult.ManagedSmoothingOutcome> managedOutcomes=inventory.managedAffinity()==null?List.of():new ArrayList<>();
+        var smoothed = inventory.managedAffinity()==null
+            ?smooth(path,smoother,domain,input.context(),budget,owner,inventory.affinity(),smoothingOutcomes)
+            :smoothManaged(path,smoother,domain,input.context(),budget,owner,inventory.managedAffinity(),managedOutcomes);
         var smoothedArcs = arcResults(remeasure(input, path, smoothed, best.seedOffset,
             owner, budget, cancellation));
         if(progress!=null){progress.phaseComplete();progress.phase(LegacyEmissionProgress.Phase.RESULT,0,-1,-1);}
@@ -1551,7 +1580,8 @@ public final class LegacyEmissionKernel {
             intervalReferences, eligible, inventory, owner, budget, queryPolicy, executionPolicy,grouped);
         var affinityDiagnostics = affinityDiagnostics(domain, inventory, path, vertices, smoothed,
             owner, budget, smoothingOutcomes);
-        if (domain.measuredModes() != null) input.requireOpenAndUnchanged();
+        var managedDiagnostics=managedAffinityDiagnostics(domain,inventory,path,vertices,smoothed,input.context(),owner,budget,managedOutcomes);
+        if (domain.measuredModes() != null||inventory.managedAffinity()!=null) input.requireOpenAndUnchanged();
         // The result retains immutable vertex/arc values, never the DP predecessor graph.
         unpinChain(best, budget);
         unpinChain(firstNode, budget);
@@ -1559,7 +1589,8 @@ public final class LegacyEmissionKernel {
             arcs, smoothedArcs, first, intervals, stitched, post, source, measured, length,
             budget.snapshot(), owner.peakBytes(), provenance, () -> {
                 try {
-                    evaluator.close();
+                    try{if(inventory.managedAffinity()!=null)inventory.managedAffinity().close();}
+                    finally{evaluator.close();}
                 } finally {
                     try {
                         owner.close();
@@ -1571,7 +1602,38 @@ public final class LegacyEmissionKernel {
                         }
                     }
                 }
-            }, affinityDiagnostics);
+            }, affinityDiagnostics,managedDiagnostics);
+    }
+
+    private Optional<EmissionResult.ManagedAffinityDiagnostics> managedAffinityDiagnostics(LegacyEmissionDomain domain,
+            Inventory inventory,Flattened path,List<EmissionResult.Vertex> raw,List<EmissionResult.Vertex> finalGeometry,
+            OptionalEmissionContext context,AttemptMemoryLedger.Owner owner,EmissionWorkBudget budget,List<EmissionResult.ManagedSmoothingOutcome> outcomes){
+        var classifier=inventory.managedAffinity();if(classifier==null)return Optional.empty();
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);budget.charge(EmissionWorkBudget.Operation.PREPARATION,64L+path.arcs().size()*2L+outcomes.size());
+        owner.reserve(512L+256L*path.arcs().size()+64L*outcomes.size());
+        var inference=managedAffinityArcs(classifier,domain,path,raw,context,budget);
+        var actualFinal=managedAffinityArcs(classifier,domain,path,finalGeometry,context,budget);
+        return Optional.of(new EmissionResult.ManagedAffinityDiagnostics(ManagedOrdinaryAffinity.POLICY_ID,inference,actualFinal,
+            classifier.preparedRowPairs(),classifier.stationExtractions(),outcomes,NativeMeasuredProfileReceipt.Availability.UNAVAILABLE));
+    }
+    private List<EmissionResult.ManagedAffinityArcReference> managedAffinityArcs(ManagedOrdinaryAffinity classifier,
+            LegacyEmissionDomain domain,Flattened path,List<EmissionResult.Vertex> geometry,OptionalEmissionContext context,EmissionWorkBudget budget){
+        var result=new ArrayList<EmissionResult.ManagedAffinityArcReference>();
+        for(int i=0;i<path.arcs().size();i++){
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,1);
+            boolean moved=moved(geometry.get(i),path.points().get(i))||moved(geometry.get(i+1),path.points().get(i+1));
+            if(!moved&&path.arcs().get(i).kind()==EmissionResult.ArcKind.OPTIONAL_ADMITTED){
+                result.add(new EmissionResult.ManagedAffinityArcReference(i,true,Optional.empty()));continue;
+            }
+            var from=path.points().get(i).state();var to=path.points().get(i+1).state();
+            ManagedOrdinaryAffinity.Receipt receipt=null;
+            if(from!=null&&to!=null){
+                receipt=moved?classifier.classifyFinalGeometry(from,to,geometry.get(i),geometry.get(i+1)):classifier.classify(from,to);
+                if(receipt.status()==OrdinaryAffinityClassifier.Status.INCOMPATIBLE||moved&&receipt.status()!=OrdinaryAffinityClassifier.Status.COMPATIBLE)
+                    throw new UnavailableException(UnavailableReason.FINAL_AFFINITY_CONFLICT);
+            }
+            result.add(new EmissionResult.ManagedAffinityArcReference(i,false,Optional.ofNullable(receipt)));
+        }return List.copyOf(result);
     }
 
     private Optional<EmissionResult.AffinityDiagnostics> affinityDiagnostics(LegacyEmissionDomain domain,
@@ -1644,10 +1706,11 @@ public final class LegacyEmissionKernel {
                 Math.multiplyExact(192L, intervalReferences.size())))));
         var context = input.context();
         boolean revised = domain.measuredModes() != null;
+        boolean managed=inventory.managedAffinity()!=null;
         var source = new EmissionResult.SourceReference(context.sourceIdentity(),
-            context.evidenceContentHash(), context.requestIdentity(), revised
+            context.evidenceContentHash(), context.requestIdentity(),managed?context.policyId()+"/"+ManagedOrdinaryAffinity.POLICY_ID: revised
                 ? context.policyId() + "/" + ExperimentalMeasuredModeInventory.POLICY_ID : context.policyId(),
-            revised ? "LEGACY_OPTIONAL_MEASURED_AFFINITY_V1"
+            managed?"LEGACY_OPTIONAL_MANAGED_LOCAL_CONNECTOR_V1":revised ? "LEGACY_OPTIONAL_MEASURED_AFFINITY_V1"
                 : grouped==null?modelPolicyId(queryPolicy, executionPolicy, owner, budget)
                 : groupedModelPolicyId(grouped.execution(),queryPolicy,executionPolicy,owner,budget), binding.trackerNormalizationRasterPx(),
             context.nativePitchMeters().orElseThrow(), binding.productionEligible());
@@ -1817,6 +1880,32 @@ public final class LegacyEmissionKernel {
                     ? Optional.of(cursor) : Optional.empty()));
         }
         return List.copyOf(result);
+    }
+
+    /** One unchanged smoother proposal, followed by fresh managed evidence or whole raw-run retention. */
+    private static List<EmissionResult.Vertex> smoothManaged(Flattened path,Smoother smoother,
+            LegacyEmissionDomain domain,OptionalEmissionContext context,EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner owner,ManagedOrdinaryAffinity classifier,
+            List<EmissionResult.ManagedSmoothingOutcome> outcomes){
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION,64L+8L*path.points().size());
+        owner.reserve(2048L+1024L*path.points().size());
+        var raw=path.points().stream().map(LegacyEmissionKernel::vertex).toList();
+        var actual=new ArrayList<>(smooth(path,smoother,domain,context,budget,owner,null,List.of()));
+        int start=0;
+        while(start<path.points().size()){
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,1);
+            if(path.points().get(start).state()==null){start++;continue;}
+            int end=start;
+            while(end+1<path.points().size()&&path.points().get(end+1).state()!=null
+                    &&path.points().get(end+1).state().originalRow()==path.points().get(end).state().originalRow()+1)end++;
+            if(end-start>=2){
+                budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);budget.charge(EmissionWorkBudget.Operation.PREPARATION,end-start+1L);
+                owner.reserve(64L+16L*(end-start+1L));
+                var states=path.points().subList(start,end+1).stream().map(PointDraft::state).toList();
+                outcomes.add(classifier.certifyRun(states,raw.subList(start,end+1),actual.subList(start,end+1),start));
+            }start=end+1;
+        }return List.copyOf(actual);
     }
 
     private static List<EmissionResult.Vertex> smooth(Flattened path, Smoother smoother,

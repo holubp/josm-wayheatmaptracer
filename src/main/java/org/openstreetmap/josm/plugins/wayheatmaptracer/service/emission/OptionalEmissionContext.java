@@ -235,6 +235,11 @@ public final class OptionalEmissionContext {
         if(managed==null)throw new IllegalArgumentException("No captured managed family inverse");
         return managed.groundTransform().orElseThrow().metricFamilyBounds(origin,direction,normal,firstS,lastS,firstU,lastU,budget);
     }
+    public org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedGroundTransform.ContinuousMetricBounds nativeSegmentContinuousMetricBounds(
+            RasterPoint from,RasterPoint to,double first,double last,EmissionWorkBudget budget) {
+        if(managed==null)throw new IllegalArgumentException("No captured managed continuous inverse");
+        return managed.groundTransform().orElseThrow().nativeSegmentContinuousMetricBounds(from,to,first,last,budget);
+    }
     /** Factual source-pitch lookup in the source chainage measure. */
     public double nativePitchAtSourceChainage(double sourceMeters) {
         // A certified whole-domain upper bound remains valid at every source position.

@@ -20,6 +20,60 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 class ManagedGroundTransformTest {
+    @Test void nativeSegmentContinuousInverseEnclosesIndependentReferenceWithoutUsingRoundedForwardMap() {
+        for(double latitude:new double[]{0,49.44,-49.44,80})withTransform(latitude,(transform,mosaic,request,budget,owner)->{
+            var a=new RasterPoint(20.125,30.75);var b=new RasterPoint(90.875,100.25);
+            boolean differsFromForward=false;
+            for(int piece=0;piece<8;piece++){
+                double first=piece/8.0,last=(piece+1)/8.0;
+                Object bounds;
+                try{bounds=transform.getClass().getMethod("nativeSegmentContinuousMetricBounds",RasterPoint.class,RasterPoint.class,double.class,double.class,EmissionWorkBudget.class)
+                    .invoke(transform,a,b,first,last,budget);}
+                catch(ReflectiveOperationException missing){throw new AssertionError("M2 requires an actual native-piece continuous inverse certificate",missing);}
+                for(double t:new double[]{first,(first+last)*.5,last}){
+                    var expected=referenceContinuousInverse(transform,mosaic,a,b,t);
+                    try{
+                        double x0=(double)bounds.getClass().getMethod("minimumEast").invoke(bounds),x1=(double)bounds.getClass().getMethod("maximumEast").invoke(bounds);
+                        double y0=(double)bounds.getClass().getMethod("minimumNorth").invoke(bounds),y1=(double)bounds.getClass().getMethod("maximumNorth").invoke(bounds);
+                        assertTrue(x0<=expected.xMeters()&&expected.xMeters()<=x1);
+                        assertTrue(y0<=expected.yMeters()&&expected.yMeters()<=y1);
+                    }catch(ReflectiveOperationException malformed){throw new AssertionError(malformed);}
+                    var p=new RasterPoint((a.x()+t*(b.x()-a.x()))*mosaic.virtualRasterScale(),(a.y()+t*(b.y()-a.y()))*mosaic.virtualRasterScale());
+                    differsFromForward |= !expected.equals(transform.metricAt(p));
+                }
+            }
+            assertTrue(differsFromForward,"Continuous inverse and rounded G facts must remain distinct");
+        });
+    }
+
+    private static BigDecimal expReference(BigDecimal x){
+        var term=BigDecimal.ONE;var sum=term;
+        for(int k=1;k<200;k++){term=term.multiply(x,REFERENCE).divide(BigDecimal.valueOf(k),REFERENCE);sum=sum.add(term,REFERENCE);}
+        return sum;
+    }
+    private static BigDecimal atanReference(BigDecimal x){
+        for(int i=0;i<8;i++)x=x.divide(BigDecimal.ONE.add(BigDecimal.ONE.add(x.multiply(x,REFERENCE),REFERENCE).sqrt(REFERENCE),REFERENCE),REFERENCE);
+        var xx=x.multiply(x,REFERENCE);var term=x;var sum=x;
+        for(int k=1;k<100;k++){term=term.multiply(xx,REFERENCE).negate();sum=sum.add(term.divide(BigDecimal.valueOf(2L*k+1),REFERENCE),REFERENCE);}
+        return sum.multiply(BigDecimal.valueOf(256),REFERENCE);
+    }
+    /** 90-digit independent exp/atan/sqrt reference, preserving captured D/R/K independently. */
+    private static org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint referenceContinuousInverse(
+            ManagedGroundTransform transform,TileHeatmapSampler.TileMosaic mosaic,RasterPoint a,RasterPoint b,double t){
+        var frame=transform.frame();var cert=frame.distortionCertificate();var size=bd(TileHeatmapSampler.TILE_SIZE*Math.scalb(1.0,mosaic.zoom()));
+        var x=bd(a.x()).add(bd(t).multiply(bd(b.x()).subtract(bd(a.x())),REFERENCE),REFERENCE);
+        var y=bd(a.y()).add(bd(t).multiply(bd(b.y()).subtract(bd(a.y())),REFERENCE),REFERENCE);
+        var wx=bd(mosaic.originWorldPxX()).add(x,REFERENCE).add(bd(.5),REFERENCE);
+        var wy=bd(mosaic.originWorldPxY()).add(y,REFERENCE).add(bd(.5),REFERENCE);
+        var lon=bd(360).multiply(wx.divide(size,REFERENCE),REFERENCE).subtract(bd(180),REFERENCE);
+        var z=bd(4*Math.PI).multiply(bd(.5).subtract(wy.divide(size,REFERENCE),REFERENCE),REFERENCE);
+        var e=expReference(z);var sine=e.subtract(BigDecimal.ONE,REFERENCE).divide(e.add(BigDecimal.ONE,REFERENCE),REFERENCE);
+        var theta=atanReference(sine.divide(BigDecimal.ONE.add(BigDecimal.ONE.subtract(sine.multiply(sine,REFERENCE),REFERENCE).sqrt(REFERENCE),REFERENCE),REFERENCE)).multiply(bd(2),REFERENCE);
+        var lat=theta.divide(bd(0x1.1df46a2529d39p-6),REFERENCE);
+        var east=lon.subtract(bd(frame.origin().longitudeDegrees()),REFERENCE).divide(bd(0x1.ca5dc1a63c1f8p5),REFERENCE).multiply(bd(cert.eastMetersPerRadian()),REFERENCE);
+        var north=lat.subtract(bd(frame.origin().latitudeDegrees()),REFERENCE).divide(bd(0x1.ca5dc1a63c1f8p5),REFERENCE).multiply(bd(cert.northMetersPerRadian()),REFERENCE);
+        return new org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint(east.doubleValue(),north.doubleValue());
+    }
     @Test void metricLineEnclosesActualRoundedAndIndependentHighPrecisionInverse() {
         for(double latitude:new double[]{0,49.44,-49.44,80})withTransform(latitude,(transform,mosaic,request,budget,owner)->{
             var center=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint(0,0);

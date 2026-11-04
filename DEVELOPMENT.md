@@ -908,7 +908,7 @@ remain `UNKNOWN`, retain old ordinary eligibility, and make the exported
 metadata and adds no public Apply gate.
 
 The integrated managed-v3 context retains its nonlinear ground mapping and
-native-A endpoint ownership. The first affinity implementation issues no
+native-A endpoint ownership. The affine measured-affinity entry issues no
 measured owners for managed captures and returns `UNKNOWN/UNSUPPORTED_CHART`
 before preparing stations. Its named solver remains usable with that explicit
 incomplete diagnostic; newly proposed smoothing without final-point proof
@@ -974,11 +974,12 @@ pair 0 with the total unavailable until the first source-validation boundary pas
 Private replay/census invocation requires its separately reviewed
 source packet; this diagnostic implementation alone does not qualify Drasov.
 
-### Managed actual-profile receipts (M1, consumer disabled)
+### Managed actual-profile receipts (M1, default consumer disabled)
 
 `NativeConnectorEvaluator.openAffinityProfiles(input)` is an explicit receipt-only
-service. No tracker, classifier, solver or Apply path invokes it. Public Legacy,
-v2 and affine measured-affinity defaults retain their numerical/work paths.
+service. Default tracking and Apply paths do not invoke it; the explicit M2
+experiment below consumes its receipts. Public Legacy, v2 and affine
+measured-affinity defaults retain their numerical/work paths.
 The service reuses the evaluator's full-window metric-line query and unchanged
 extractor, capturing the actual scalar-query raster bits inside the evaluator.
 Queried/unqueried acquisition and scalar flags remain distinct from invalid
@@ -1009,9 +1010,54 @@ Component curve boxes use original-capsule authority separately from acquired
 grid/cell validity. Conservative refusal is unavailable evidence, never a proved
 conflict or a whole-cell decision-area requirement. Unqueried cell totals are
 absent, not measured zero. Missing/ambiguous components, duplicate query points,
-unsupported enclosures and partial queries issue no usable point ownership.
+unsupported required enclosures and unqueried support entering the selected
+component issue no usable point ownership. Outside unavailable facts remain
+recorded and do not establish whole-window or global-family completeness.
 All profile/cache/geometry/support work and retained storage share the input's
 existing budget/owner tree. Sticky resource/cancellation failures retain their
-original exception and close the partial session. No supplementary state,
-future-state-family completeness, managed classifier, cut, arclength table,
-private replay, widened source acquisition or Drasov geometry result is supplied.
+original exception and close the partial session. M1 alone supplies no
+supplementary state, future-state-family completeness, classifier, cut,
+arclength table, private replay, widened acquisition or geometry result.
+
+### Experimental managed local connector affinity (M2)
+
+`LegacyEmissionKernel.solveManagedChartAffinity` explicitly selects
+`LEGACY_OPTIONAL_MANAGED_LOCAL_CONNECTOR_V1` and
+`legacy-managed-local-connector-affinity-v1`. It overlays the existing v2
+solver; it does not select the separately developed full-grouped solver.
+`EmissionResult.managedAffinity()` is separate from affine slab diagnostics.
+No managed supplementary state, optimizer term, threshold, search width or
+source request is added.
+
+Actual native state identity and fresh actual-P raw-core membership come from
+M1. GAP, CENSORED, synthetic-center, carry and interval-target facts retain
+their native classes and UNKNOWN eligibility. A fixed physical H(s,u) family,
+inner separation domain, outer proof guard, local transverse domain and native
+cell partition are frozen before extraction. The unchanged full discovery
+query retains refused tails as unqueried. Complete known footprints wholly
+outside the local domain remain diagnostic facts; intersecting or unresolved
+required support prevents a positive proof. Global/future Mode-family
+availability remains UNAVAILABLE even when a local connector is classified.
+
+INCOMPATIBLE requires opposite actual owned ports, a simple longitudinal cut
+overhanging both inner boundaries, strict closed-cell darkness below all four
+actual adjacent owner shoulder thresholds, and the entire actual connector
+inside the inner domain. Every required query, footprint, link, cut and corner
+has original-route and acquired support separately. Native subsegment bounds
+use the continuous captured F inverse with distinct D/R/K constants and
+exp/asin enclosures; rounded G and metric endpoint chords are not substitutes.
+COMPATIBLE requires its own actual continuation/core/scalar witness.
+
+One unchanged smoothing proposal is checked using actual original-row/offset
+raster construction and fresh moved-point ownership. Any uncertified incident
+edge restores the complete raw consecutive run, retaining proposed evidence;
+there is no second solve or smoother. Original N row ownership stays separate
+from emitted M vertex indices. All work, storage and terminal cleanup share
+the same existing attempt caps.
+
+This is a synthetic-tested experimental component, not general managed or
+Drasov qualification. Exact .30/.60 native swap controls with P below the
+owned raw-core threshold remain UNKNOWN; separate Mode-centre final-point
+proofs do not fix those native geometries. A real capped solver experiment
+and separately reviewed grouped composition remain required after source
+review. No private run, default adoption or Apply/release gate is closed here.

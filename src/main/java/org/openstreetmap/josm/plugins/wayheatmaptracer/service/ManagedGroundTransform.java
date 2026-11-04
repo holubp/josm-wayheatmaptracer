@@ -210,6 +210,48 @@ public final class ManagedGroundTransform {
         }
     }
 
+    /** Geometry only: the continuous inverse of captured F_N, distinct from rounded metricAt. */
+    public record ContinuousMetricBounds(double minimumEast,double maximumEast,double minimumNorth,double maximumNorth) {
+        public ContinuousMetricBounds {
+            if(!Double.isFinite(minimumEast)||!Double.isFinite(maximumEast)||!Double.isFinite(minimumNorth)
+                    ||!Double.isFinite(maximumNorth)||minimumEast>maximumEast||minimumNorth>maximumNorth)
+                throw new IllegalArgumentException("Unresolved continuous native inverse");
+        }
+    }
+
+    /**
+     * Encloses F_N^-1(a+t(b-a)) for actual native-grid endpoint bits and closed t interval.
+     * F_N composes the continuous captured inverse with positive virtual-to-native division;
+     * its virtual scale cancels exactly as real algebra, never as a rounded point round trip.
+     * D/R/K remain the distinct captured binary64 constants. Math exp/asin each permit one
+     * ulp error; I expands by two ulps and directed endpoint rounding. This is no authority.
+     */
+    public ContinuousMetricBounds nativeSegmentContinuousMetricBounds(RasterPoint a,RasterPoint b,
+            double first,double last,EmissionWorkBudget budget) {
+        requireOpen();budget.charge(EmissionWorkBudget.Operation.PREPARATION,256);
+        if(!inverseNumericalIdentitySupported()||first<0||last>1||first>last)
+            throw new IllegalArgumentException("Unsupported native continuous inverse domain");
+        I t=new I(first,last);
+        I x=I.point(a.x()).add(t.mul(I.point(b.x()).subtract(I.point(a.x()))));
+        I y=I.point(a.y()).add(t.mul(I.point(b.y()).subtract(I.point(a.y()))));
+        I wx=I.point(mosaic.originWorldPxX()).add(x).add(I.point(.5));
+        I wy=I.point(mosaic.originWorldPxY()).add(y).add(I.point(.5));
+        I longitude=wx.div(worldSize).mul(I.point(360)).subtract(I.point(180));
+        I z=I.point(.5).subtract(wy.div(worldSize)).mul(I.point(4*Math.PI));
+        I sine=z.inverseMercatorSine();
+        I latitude=sine.asin().div(0x1.1df46a2529d39p-6);
+        var certificate=frame.distortionCertificate();
+        if(longitude.lo<=-180||longitude.hi>=180
+                ||longitude.lo<certificate.southWest().longitudeDegrees()||longitude.hi>certificate.northEast().longitudeDegrees()
+                ||latitude.lo<certificate.southWest().latitudeDegrees()||latitude.hi>certificate.northEast().latitudeDegrees())
+            throw new IllegalArgumentException("Continuous inverse leaves captured frame");
+        I east=longitude.subtract(I.point(frame.origin().longitudeDegrees())).div(0x1.ca5dc1a63c1f8p5)
+            .mul(I.point(certificate.eastMetersPerRadian()));
+        I north=latitude.subtract(I.point(frame.origin().latitudeDegrees())).div(0x1.ca5dc1a63c1f8p5)
+            .mul(I.point(certificate.northMetersPerRadian()));
+        return new ContinuousMetricBounds(east.lo,east.hi,north.lo,north.hi);
+    }
+
     /**
      * Encloses the actual Java17 inverse chain for M(u)=center+u*normal. Each binary operation
      * rounds outward by one adjacent value. sin/log are monotone on the admitted domain;
@@ -278,6 +320,19 @@ public final class ManagedGroundTransform {
             return mul(new I(Math.nextDown(1 / positive.hi), Math.nextUp(1 / positive.lo)));
         }
         I sin() { return new I(down(Math.sin(lo)), up(Math.sin(hi))); }
+        I exp() { return new I(down(Math.exp(lo)),up(Math.exp(hi))); }
+        I inverseMercatorSine() {
+            // (exp(z)-1)/(exp(z)+1) is strictly increasing. Evaluate each endpoint
+            // with its own exp enclosure instead of losing that shared dependency.
+            I a=point(lo).exp(),b=point(hi).exp();
+            I lower=a.subtract(point(1)).divide(a.add(point(1)));
+            I upper=b.subtract(point(1)).divide(b.add(point(1)));
+            return new I(lower.lo,upper.hi);
+        }
+        I asin() {
+            if(!(lo>-1&&hi<1))throw new IllegalArgumentException("Continuous inverse meets unresolved asin boundary");
+            return new I(down(Math.asin(lo)),up(Math.asin(hi)));
+        }
         I log() {
             if (!(lo > 0)) throw new IllegalArgumentException("Inverse log interval is not positive");
             return new I(down(Math.log(lo)), up(Math.log(hi)));
