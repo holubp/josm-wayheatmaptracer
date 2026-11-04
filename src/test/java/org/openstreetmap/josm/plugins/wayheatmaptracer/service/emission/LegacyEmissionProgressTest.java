@@ -11,6 +11,53 @@ import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.N
 import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.LegacyEmissionProgress.*;
 
 class LegacyEmissionProgressTest {
+    @Test void foreignInputSharingBudgetCannotConsumeAnotherInputsProgress() {
+        for(boolean sameLedger:new boolean[]{false,true}) {
+            var work=new EmissionWorkBudget(TraceBudgets.defaults(),CancellationProbe.NONE);
+            var ledgerA=AttemptMemoryLedger.production();
+            var ledgerB=sameLedger?ledgerA:AttemptMemoryLedger.production();
+            try(var rootA=ledgerA.rootOwner();var rootB=sameLedger?rootA:ledgerB.rootOwner();
+                var ownerA=rootA.child("input-a");var ownerB=rootB.child("input-b")) {
+                var a=fixture(work,false,ledgerA,ownerA);var b=fixture(work,false,ledgerB,ownerB);
+                try(var inputA=a.input();var inputB=b.input();
+                    var p=LegacyEmissionProgress.open(inputA,QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1)) {
+                    var before=work.snapshot();long bytesA=ledgerA.currentBytes(),bytesB=ledgerB.currentBytes();
+                    long peakA=ledgerA.peakBytes(),peakB=ledgerB.peakBytes();
+                    assertThrows(IllegalArgumentException.class,()->p.begin(inputB,QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1));
+                    assertThrows(IllegalArgumentException.class,()->NativeConnectorEvaluator.forLegacyProgress(inputB,new Domain(b.states(),List.of()),
+                        QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1,p));
+                    assertThrows(IllegalArgumentException.class,()->new RidgeTracker().trackEmission(inputB,CancellationProbe.NONE,
+                        QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1,p));
+                    assertThrows(IllegalArgumentException.class,()->new LegacyEmissionKernel().solve(inputB,List.of(),List.of(),List.of(),(profiles,offsets,intensities)->offsets,CancellationProbe.NONE,
+                        QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1,p));
+                    assertEquals(before,work.snapshot());assertEquals(bytesA,ledgerA.currentBytes());assertEquals(bytesB,ledgerB.currentBytes());
+                    assertEquals(peakA,ledgerA.peakBytes());assertEquals(peakB,ledgerB.peakBytes());
+                    assertEquals(Phase.NOT_ENTERED,p.currentPhase());assertThrows(IllegalStateException.class,p::view);
+                    inputB.requireOpenAndUnchanged();p.begin(inputA,QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1);
+                    try(var e=evaluator(a,p)){assertEquals(Status.ADMITTED,e.evaluate(a.states().get(0),a.states().get(1)).status());}
+                    p.seal(null);assertEquals(Termination.SUCCESS,p.view().termination());
+                }
+            }
+            assertEquals(0,ledgerA.currentBytes());assertEquals(0,ledgerB.currentBytes());
+        }
+    }
+
+    @Test void terminalProgressClearsItsTransientInputBinding() throws ReflectiveOperationException {
+        for(boolean seal:new boolean[]{false,true})try(var a=fixture();var foreign=fixture();
+            var p=LegacyEmissionProgress.open(a.input(),QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1)) {
+            var inputFields=Arrays.stream(LegacyEmissionProgress.class.getDeclaredFields())
+                .filter(f->f.getType()==SampledEmissionInput.class).toList();
+            assertEquals(1,inputFields.size());var binding=inputFields.get(0);binding.setAccessible(true);
+            assertSame(a.input(),binding.get(p));
+            assertThrows(IllegalArgumentException.class,()->p.begin(foreign.input(),QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1));
+            var before=a.input().workBudget().snapshot();long bytes=a.ledger().currentBytes();
+            if(seal){p.seal(null);assertEquals(bytes,a.ledger().currentBytes());}else p.close();
+            assertEquals(before,a.input().workBudget().snapshot());assertNull(binding.get(p));
+            assertThrows(IllegalArgumentException.class,()->p.begin(a.input(),QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1));
+            assertThrows(IllegalArgumentException.class,()->p.begin(foreign.input(),QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1));
+        }
+    }
+
     @Test void nativeStateFamilyCannotPublishAnInferredUsedQuantity() {
         try(var f=fixture();var p=LegacyEmissionProgress.open(f.input(),QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1);
             var e=NativeConnectorEvaluator.forLegacyProgress(f.input(),new Domain(List.of(),List.of(),List.of(),Map.of(0,0)),
@@ -257,6 +304,10 @@ class LegacyEmissionProgressTest {
         return fixture(work,false);
     }
     static Fixture fixture(EmissionWorkBudget work,boolean zero) {
+        var ledger=AttemptMemoryLedger.production();
+        return fixture(work,zero,ledger,ledger.rootOwner());
+    }
+    private static Fixture fixture(EmissionWorkBudget work,boolean zero,AttemptMemoryLedger ledger,AttemptMemoryLedger.Owner owner) {
         int size=48;double[] values=new double[size*size];boolean[] valid=new boolean[values.length];Arrays.fill(valid,true);
         for(int y=0;y<size;y++)for(int x=0;x<size;x++)values[y*size+x]=zero?0:Math.exp(-.5*Math.pow((y-24)/2,2));
         var frame=LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0,0),new GeographicPoint(-.01,-.01),new GeographicPoint(.01,.01));
@@ -266,7 +317,6 @@ class LegacyEmissionProgressTest {
         var region=MetricRegion.rectangle(0,0,47,47);var evidence=new EvidenceSnapshot("progress",frame,transform,EvidenceResolution.nativeSource(1,1),region,region,Map.of("ridge",field),"progress");
         var locations=new ArrayList<DetachedProfileSamplingLocation>();
         for(int x:new int[]{12,20}){var m=new MetricPoint(x,24);locations.add(new DetachedProfileSamplingLocation(frame.toGeographic(m),m,new RasterPoint(x,24),frame,transform,x-12));}
-        var ledger=AttemptMemoryLedger.production();var owner=ledger.rootOwner();
         try {return new Fixture(new DetachedScalarProfileSampler().sampleDeclaredSyntheticForEmission(evidence,"ridge",new CorridorTraceInput(locations,1),
             new ProfileChainage(List.of(0.0,8.0),8),8,work,owner),owner,ledger,
             List.of(new RowState(0,0,0,SourceClass.GAP,null),new RowState(1,0,0,SourceClass.GAP,null)));}catch(RuntimeException e){owner.close();throw e;}

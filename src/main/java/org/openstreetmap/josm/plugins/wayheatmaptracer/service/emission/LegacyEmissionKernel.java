@@ -142,6 +142,7 @@ public final class LegacyEmissionKernel {
             NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
             LegacyEmissionProgress progress) {
         if(progress==null)return solveBody(input,suppressed,seeds,proposals,smoother,cancellation,queryPolicy,executionPolicy,false,null);
+        progress.requireCompatible(input,queryPolicy,executionPolicy);
         try {
             progress.begin(input,queryPolicy,executionPolicy);
             var result=solveBody(input,suppressed,seeds,proposals,smoother,cancellation,queryPolicy,executionPolicy,false,progress);

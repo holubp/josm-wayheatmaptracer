@@ -35,6 +35,8 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     private static final Operation[] OPERATIONS=Operation.values();
     private static final int REASONS=Reason.values().length;
     private final EmissionWorkBudget budget;
+    /** Live admission identity only; terminal diagnostics must not retain the source input. */
+    private SampledEmissionInput boundInput;
     private final AttemptMemoryLedger.Owner owner;
     private final QueryPolicy query;
     private final ExecutionPolicy execution;
@@ -74,8 +76,8 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     private boolean firstStageComplete;
     private boolean localActive,identitySet,eligible,repeated;
 
-    private LegacyEmissionProgress(EmissionWorkBudget budget,AttemptMemoryLedger.Owner owner,QueryPolicy query,ExecutionPolicy execution,long attemptOrdinal) {
-        this.budget=budget;this.owner=owner;this.query=query;this.execution=execution;this.attemptOrdinal=attemptOrdinal;
+    private LegacyEmissionProgress(SampledEmissionInput input,EmissionWorkBudget budget,AttemptMemoryLedger.Owner owner,QueryPolicy query,ExecutionPolicy execution,long attemptOrdinal) {
+        this.boundInput=input;this.budget=budget;this.owner=owner;this.query=query;this.execution=execution;this.attemptOrdinal=attemptOrdinal;
         Arrays.fill(seedIds,-1);Arrays.fill(stageOrdinals,-1);
     }
 
@@ -101,7 +103,7 @@ public final class LegacyEmissionProgress implements AutoCloseable {
             t=b.operationUnits(Operation.TRANSPORT),tc=b.operationUnits(Operation.TIE_COMPARISON),bp=b.operationUnits(Operation.BACKPOINTER_VISIT);
             scope=input.openExecutionOwner("legacy-progress");b.charge(Operation.ALLOCATION,1);
             var memory=scope.reserve(STORAGE_BYTES);
-            var p=new LegacyEmissionProgress(b,scope,query,execution,attemptOrdinal);memory.adopt(p);
+            var p=new LegacyEmissionProgress(input,b,scope,query,execution,attemptOrdinal);memory.adopt(p);
             p.tax[Operation.PREPARATION.ordinal()]=b.operationUnits(Operation.PREPARATION)-a;p.tax[Operation.CELL_QUERY.ordinal()]=b.operationUnits(Operation.CELL_QUERY)-c;
             p.tax[Operation.NODE_READ.ordinal()]=b.operationUnits(Operation.NODE_READ)-n;p.tax[Operation.MODE_EXTRACTION.ordinal()]=b.operationUnits(Operation.MODE_EXTRACTION)-m;
             p.tax[Operation.REGION_QUERY.ordinal()]=b.operationUnits(Operation.REGION_QUERY)-r;p.tax[Operation.ALLOCATION.ordinal()]=b.operationUnits(Operation.ALLOCATION)-al;
@@ -114,8 +116,9 @@ public final class LegacyEmissionProgress implements AutoCloseable {
         }
     }
 
-    void requireCompatible(SampledEmissionInput input,QueryPolicy query,ExecutionPolicy execution) {
-        if(sealed||owner.isClosed()||budget!=input.workBudget()||this.query!=query||this.execution!=execution)
+    /** Charge-free entry validation, before a caller may consume or seal this input-owned observer. */
+    public void requireCompatible(SampledEmissionInput input,QueryPolicy query,ExecutionPolicy execution) {
+        if(input!=boundInput||sealed||owner.isClosed()||budget!=input.workBudget()||this.query!=query||this.execution!=execution)
             throw new IllegalArgumentException("Progress lifetime or execution identity differs");
     }
     /** Explicit diagnostic entry; never called by the default numerical overload. */
@@ -276,7 +279,7 @@ public final class LegacyEmissionProgress implements AutoCloseable {
         else if(failure instanceof NativeConnectorEvaluator.StateFamilyLimitException e){termination=Termination.STATE_FAMILY;failureOriginalOrdinal=e.originalOrdinal();failureLimit=e.limit();failureFields=LIMIT_AVAILABLE|ORDINAL_AVAILABLE;}
         else if(failure instanceof LegacyEmissionKernel.UnavailableException e){termination=Termination.UNAVAILABLE;unavailableReason=e.reason();}
         else termination=failure instanceof CancellationException?Termination.CANCELLED:Termination.OTHER;
-        localEnd();sealed=true;
+        localEnd();boundInput=null;sealed=true;
     }
     public View view(){if(!sealed)throw new IllegalStateException("Progress is not sealed");return view;}
     /** Primitive live milestones for a same-worker diagnostic/cancellation observer; no source data. */
@@ -286,7 +289,7 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     public boolean extractionInFlight(){return extractionInFlight;}
     public boolean samplingFinished(){return samplingFinished;}
     public long currentCount(Counter counter){return counts[counter.ordinal()];}
-    @Override public void close(){owner.close();}
+    @Override public void close(){boundInput=null;owner.close();}
 
     /** Preallocated immutable-after-seal view; numeric/enumerated only. No arrays are exposed. */
     public static final class View {

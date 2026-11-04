@@ -63,6 +63,7 @@ public final class RidgeTracker {
             NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
             LegacyEmissionProgress progress) {
         if(progress==null)return trackEmissionBody(input,cancellation,queryPolicy,executionPolicy,false,null);
+        progress.requireCompatible(input,queryPolicy,executionPolicy);
         try {
             progress.begin(input,queryPolicy,executionPolicy);
             var result=trackEmissionBody(input,cancellation,queryPolicy,executionPolicy,false,progress);progress.seal(null);return result;
