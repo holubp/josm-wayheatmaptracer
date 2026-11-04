@@ -202,6 +202,11 @@ public final class OptionalEmissionContext {
     /** Maximum factual native pitch on the bound source interval; rendered fallback is never called native. */
     public OptionalDouble nativePitchMeters() { return nativePitchMeters; }
     public double outputRasterPitchMeters() { return resolution.outputRasterPitchMeters(); }
+    /** Captured native tracker input, kept separate from physical pitch and profile-coordinate scale. */
+    public double trackerNormalizationRasterPx() {
+        return managedBinding == null ? nativePitchMeters.orElseThrow() / outputRasterPitchMeters()
+            : managedBinding.capture().trackerNormalizationRasterPx();
+    }
     /** Detached producer coordinates already use the L0 raster frame. */
     public double profileCoordinateScale() { return managed == null ? 1.0 : managed.sourceMosaic().virtualRasterScale(); }
     /** Maps original producer raster coordinates, including its normal/offset units. */

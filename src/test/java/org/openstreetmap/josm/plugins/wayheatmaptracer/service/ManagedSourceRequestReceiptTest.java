@@ -109,6 +109,16 @@ class ManagedSourceRequestReceiptTest {
                     assertTrue(input.legacyBinding().orElseThrow().productionEligible());
                     assertEquals(capture.trackerNormalizationRasterPx(),
                             input.legacyBinding().orElseThrow().trackerNormalizationRasterPx());
+                    assertEquals(Double.doubleToLongBits(capture.trackerNormalizationRasterPx()),
+                            Double.doubleToLongBits(input.context().trackerNormalizationRasterPx()));
+                    assertEquals(Double.doubleToLongBits(input.legacyBinding().orElseThrow().trackerNormalizationRasterPx()),
+                            Double.doubleToLongBits(input.context().trackerNormalizationRasterPx()));
+                    var firstRaster = input.context().observations().get(0).location().rasterPoint();
+                    double reconstructedFromPhysicalBounds = input.context().nativePitchMeters().orElseThrow()
+                            / input.context().outputPitchAt(input.context().metricAt(firstRaster));
+                    assertNotEquals(Double.doubleToLongBits(reconstructedFromPhysicalBounds),
+                            Double.doubleToLongBits(input.context().trackerNormalizationRasterPx()),
+                            "Captured tracker normalization must not be reconstructed from physical pitch bounds");
                     for (int row = 0; row < nativeProfiles.size(); row++) {
                         var actual = input.profiles().levelZeroProfiles().get(row);
                         var expected = nativeProfiles.get(row);
