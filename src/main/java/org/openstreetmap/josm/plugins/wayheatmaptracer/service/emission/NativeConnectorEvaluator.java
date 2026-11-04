@@ -12,7 +12,6 @@ import java.util.concurrent.CancellationException;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionPeak;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ScalarFieldGridView;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor.AcceptedModeThresholdReceipt;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor.AcceptedThresholdExtraction;
@@ -568,7 +567,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                 return receipt(Status.UNAVAILABLE, Reason.FOREIGN_STATE, from, to, 0, 0, 0, null, false, false, List.of(), null);
             double span = chainage(to.row()) - chainage(from.row());
             if (to.row() <= from.row() || originalOrdinal(to.row()) - originalOrdinal(from.row()) - 1 > 16
-                    || span > 20 || span < 0)
+                    || span < 0 || context.sourceSpanUpperMeters(from.row(), to.row()) > 20)
                 return receipt(Status.REJECTED, Reason.SPAN, from, to, span, 0, 0, null, false, false, List.of(), null);
             if (barrierBetween(from.row(), to.row()))
                 return receipt(Status.REJECTED, Reason.MANDATORY_BARRIER, from, to, span, 0, 0, null, false, false, List.of(), null);
@@ -577,16 +576,16 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             RasterPoint a = point(from), b = point(to);
             MetricPoint ma = metric(a), mb = metric(b);
             double length = ma.distanceTo(mb);
-            if (context.eligibility() != OptionalEmissionContext.Eligibility.FACTUAL_DETACHED
+            if (!context.productionEligible()
                     && context.eligibility() != OptionalEmissionContext.Eligibility.DECLARED_SYNTHETIC)
                 return receipt(Status.UNAVAILABLE, Reason.SOURCE_INELIGIBLE, from, to, span, length, 0, null, false, false, List.of(), null);
             double pitch = minimumPitch();
             if (!(pitch > 0))
                 return receipt(Status.UNAVAILABLE, Reason.NATIVE_PITCH_UNAVAILABLE, from, to, span, length, 0, null, false, false, List.of(), null);
             try (var evaluation = owner.child("connector-receipt")) {
-                if (!authority(context.decisionRegion(), ma, mb, evaluation))
+                if (!context.routeSegmentAuthorized(a, b, budget, evaluation))
                     return receipt(Status.REJECTED, Reason.DECISION_AUTHORITY, from, to, span, length, pitch, null, false, false, List.of(), null);
-                if (!authority(context.evidenceRegion(), ma, mb, evaluation))
+                if (!context.evidenceSegmentAuthorized(a, b, budget, evaluation))
                     return receipt(Status.REJECTED, Reason.ACQUISITION_AUTHORITY, from, to, span, length, pitch, null, false, false, List.of(), null);
                 var scalar = integral(a, b, evaluation);
                 if (scalar.status() != BilinearSegmentIntegral.Status.COMPLETE)
@@ -594,6 +593,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                 Receipt transport = null;
                 OrdinaryPhysicalLeg ordinaryTransport = null;
                 MetricPoint directionStart = ma, directionEnd = mb;
+                RasterPoint directionRasterStart = a, directionRasterEnd = b;
                 if (length == 0) {
                     work(EmissionWorkBudget.Operation.TRANSPORT, 1);
                     if (incomingDirection != null) {
@@ -625,9 +625,13 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                                 span, length, pitch, scalar, false, false, List.of(), null);
                         directionStart = metric(point(transport.from()));
                         directionEnd = metric(point(transport.to()));
+                        directionRasterStart = point(transport.from());
+                        directionRasterEnd = point(transport.to());
                     } else {
                         directionStart = ordinaryTransport.fromMetric();
                         directionEnd = ordinaryTransport.toMetric();
+                        directionRasterStart = ordinaryTransport.fromRaster();
+                        directionRasterEnd = ordinaryTransport.toRaster();
                     }
                 } else if (incomingOrdinary != null || incomingDirection != null) {
                     return receipt(Status.UNAVAILABLE, Reason.INCOMING_DIRECTION_UNAVAILABLE, from, to,
@@ -636,14 +640,19 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                 double headingLength = directionStart.distanceTo(directionEnd);
                 MetricPoint normal = new MetricPoint(-(directionEnd.yMeters()-directionStart.yMeters())/headingLength,
                     (directionEnd.xMeters()-directionStart.xMeters())/headingLength);
-                double[] ts = probeParameters(a, b, length, pitch, evaluation);
+                double probeLength = context.origin() == OptionalEmissionContext.Origin.MANAGED_CAPTURE
+                    ? context.connectorProbeLengthUpper(a, b) : length;
+                double[] ts = probeParameters(a, b, probeLength, pitch, evaluation);
                 reserve(evaluation, AttemptMemoryLedger.referenceArrayBytes(ts.length) * 2);
                 var probes = new ArrayList<Probe>(ts.length);
                 if (queryPolicy == QueryPolicy.ZERO_GUARDED_LOCAL_V1) {
                     reserve(evaluation,Math.multiplyExact((long)ts.length,96));
                     var profileOwners=new IdentityHashMap<Probe,AttemptMemoryLedger.Owner>(ts.length);
                     for (double t : ts) {
-                        Probe probe=measureLocalOrDense(t,interpolate(a,b,t),normal,from,span,evaluation,profileOwners);
+                        RasterPoint probePoint = interpolate(a,b,t);
+                        MetricPoint probeNormal = probeNormal(probePoint, directionRasterStart,
+                            directionRasterEnd, normal);
+                        Probe probe=measureLocalOrDense(t,probePoint,probeNormal,from,span,evaluation,profileOwners);
                         probes.add(probe);
                         if(executionPolicy==ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1) {
                             boolean immutableFinalCandidate=probe.profileQuery().backend()==ProfileBackend.DENSE_FALLBACK
@@ -683,7 +692,10 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                     transferProfileOwners(profileOwners,evaluation);
                 } else {
                     for (double t : ts) {
-                        Probe probe=measure(t,interpolate(a,b,t),normal,from,span,evaluation);
+                        RasterPoint probePoint = interpolate(a,b,t);
+                        MetricPoint probeNormal = probeNormal(probePoint, directionRasterStart,
+                            directionRasterEnd, normal);
+                        Probe probe=measure(t,probePoint,probeNormal,from,span,evaluation);
                         probes.add(probe);
                         Reason reason=probeFailure(probe);
                         if(reason!=Reason.NONE) {
@@ -814,11 +826,11 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     private Probe measure(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
             AttemptMemoryLedger.Owner evaluation) {
-        double source=chainage(from.row())+span*t+context.profileChainage().sourceOriginGroundMeters();
+        double source=chainage(from.row())+span*t;
         work(EmissionWorkBudget.Operation.PREPARATION,context.resolution().spatialPitchSamples().size());
-        double pitch=context.resolution().effectivePitchMetersAt(source);
+        double pitch=context.nativePitchAtSourceChainage(source);
         double requestedStep = context.lateralStepMeters();
-        double outputPitch = context.resolution().outputRasterPitchMeters();
+        double outputPitch = outputPitch(point);
         double step = switch (queryPolicy) {
             case DENSE_EIGHTH_NATIVE_V1 -> Math.min(requestedStep, minimumPitch() / 8);
             case HALF_NATIVE_L0_V1 -> Math.min(requestedStep, Math.min(minimumPitch() / 2, outputPitch));
@@ -835,9 +847,9 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             work(EmissionWorkBudget.Operation.PREPARATION,1);
             double u=i==intervals?halfWidth:-halfWidth+2*halfWidth*i/intervals;
             var actual=new MetricPoint(center.xMeters()+u*normal.xMeters(),center.yMeters()+u*normal.yMeters());
-            boolean authorized=context.decisionRegion().containsConservatively(actual,CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.REGION_QUERY,n))
-                && context.evidenceRegion().containsConservatively(actual,CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.REGION_QUERY,n));
-            double value=authorized?strictValue(context.rasterTransform().metricToPixelCenter(actual)):Double.NaN;
+            boolean authorized=context.routePositionAuthorized(actual,budget,evaluation)
+                && context.evidencePositionAuthorized(actual,budget,evaluation);
+            double value=authorized?strictValue(context.rasterAt(actual)):Double.NaN;
             var sampleReservation=retainedSampleReservation(evaluation);
             var sample=new Sample(u,value,Double.isFinite(value));
             sampleReservation.adopt(sample);
@@ -864,10 +876,10 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     private Probe measureLocalOrDense(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
             AttemptMemoryLedger.Owner evaluation,IdentityHashMap<Probe,AttemptMemoryLedger.Owner> profileOwners) {
-        double source=chainage(from.row())+span*t+context.profileChainage().sourceOriginGroundMeters();
-        double pitch=context.resolution().effectivePitchMetersAt(source);
+        double source=chainage(from.row())+span*t;
+        double pitch=context.nativePitchAtSourceChainage(source);
         double delta=Math.min(context.lateralStepMeters(),Math.min(minimumPitch()/2,
-            context.resolution().outputRasterPitchMeters()));
+            outputPitch(point)));
         if (!(delta>0) || !Double.isFinite(delta))
             return denseFallback(t,point,normal,from,span,evaluation,FallbackCause.INITIAL_WINDOW_TOO_WIDE);
         int initialHalfIntervals=checkedCount(Math.ceil(Math.max(pitch+6*delta,2.5*pitch+2*delta)/delta));
@@ -993,8 +1005,8 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private Probe measureWindow(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
             AttemptMemoryLedger.Owner evaluation,double halfWidth,double step,ProfileBackend backend,
             int expansions,FallbackCause cause,boolean localNoMode,int previousQueries,int centeredHalfIntervals) {
-        double source=chainage(from.row())+span*t+context.profileChainage().sourceOriginGroundMeters();
-        double pitch=context.resolution().effectivePitchMetersAt(source);
+        double source=chainage(from.row())+span*t;
+        double pitch=context.nativePitchAtSourceChainage(source);
         int intervals=centeredHalfIntervals>=0?Math.multiplyExact(2,centeredHalfIntervals)
             :checkedCount(Math.ceil(2*halfWidth/step));
         int count=Math.addExact(intervals,1);
@@ -1006,11 +1018,9 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             double u=centeredHalfIntervals>=0?centeredLatticeOffset(i,centeredHalfIntervals,step)
                 :i==intervals?halfWidth:-halfWidth+2*halfWidth*i/intervals;
             var actual=new MetricPoint(center.xMeters()+u*normal.xMeters(),center.yMeters()+u*normal.yMeters());
-            boolean authorized=context.decisionRegion().containsConservatively(actual,CancellationProbe.NONE,
-                n->work(EmissionWorkBudget.Operation.REGION_QUERY,n))
-                && context.evidenceRegion().containsConservatively(actual,CancellationProbe.NONE,
-                    n->work(EmissionWorkBudget.Operation.REGION_QUERY,n));
-            double value=authorized?strictValue(context.rasterTransform().metricToPixelCenter(actual)):Double.NaN;
+            boolean authorized=context.routePositionAuthorized(actual,budget,evaluation)
+                && context.evidencePositionAuthorized(actual,budget,evaluation);
+            double value=authorized?strictValue(context.rasterAt(actual)):Double.NaN;
             var sampleReservation=retainedSampleReservation(evaluation);
             var sample=new Sample(u,value,Double.isFinite(value));
             sampleReservation.adopt(sample);
@@ -1219,18 +1229,10 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         return false;
     }
 
-    /** Captured affine displacement of one offset unit on this row's frozen raster normal. */
+    /** Captured displacement of one offset unit on this row's frozen raster normal. */
     private double metricNormalPitch(int row) {
         work(EmissionWorkBudget.Operation.PREPARATION, 1);
-        var normal = context.observations().get(row).normal();
-        var transform = context.rasterTransform();
-        double scale = transform.axisUnit()
-            == org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform.AxisUnit.SOURCE_PIXEL
-            ? transform.rasterPixelsPerSourcePixel() : 1;
-        return Math.hypot((normal.x() * transform.xAxisEastMetersPerSourcePixel()
-                + normal.y() * transform.yAxisEastMetersPerSourcePixel()) / scale,
-            (normal.x() * transform.xAxisNorthMetersPerSourcePixel()
-                + normal.y() * transform.yAxisNorthMetersPerSourcePixel()) / scale);
+        return context.metricNormalPitchAtRow(row);
     }
 
     private int barrierIndex(Barrier target) {
@@ -1276,7 +1278,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     private RasterPoint endpointRaster(PhysicalEndpoint endpoint) {
         return endpoint instanceof RowState row ? point(row)
-            : context.rasterTransform().metricToPixelCenter(((Barrier) endpoint).exactPosition());
+            : context.rasterAt(((Barrier) endpoint).exactPosition());
     }
 
     private MetricPoint endpointMetric(PhysicalEndpoint endpoint) {
@@ -1302,7 +1304,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         }
         return minimum;
     }
-    private double chainage(int row){return context.observations().get(row).location().cumulativeGroundDistanceMeters();}
+    private double chainage(int row){return context.sourceChainageMeters(row);}
     private int originalOrdinal(int row) {
         return originalOrdinalByContextRow.isEmpty() ? row : originalOrdinalByContextRow.get(row);
     }
@@ -1310,11 +1312,19 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         var fact=context.observations().get(state.row());var p=fact.location().rasterPoint();var n=fact.normal();
         return new RasterPoint(p.x()+n.x()*state.offsetRasterPixels(),p.y()+n.y()*state.offsetRasterPixels());
     }
-    private MetricPoint metric(RasterPoint point){work(EmissionWorkBudget.Operation.PREPARATION,1);return context.rasterTransform().pixelCenterToMetric(point.x(),point.y());}
+    private MetricPoint metric(RasterPoint point){work(EmissionWorkBudget.Operation.PREPARATION,1);return context.metricAt(point);}
     private static RasterPoint interpolate(RasterPoint a,RasterPoint b,double t){return new RasterPoint(a.x()+(b.x()-a.x())*t,a.y()+(b.y()-a.y())*t);}
-    private boolean authority(org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion region,
-            MetricPoint a,MetricPoint b,AttemptMemoryLedger.Owner evaluation) {
-        return region.containsSegmentWithConservativeEvents(a,b,CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.REGION_QUERY,n),evaluation);
+    private MetricPoint probeNormal(RasterPoint probe, RasterPoint from, RasterPoint to,
+            MetricPoint detachedNormal) {
+        if (context.origin() != OptionalEmissionContext.Origin.MANAGED_CAPTURE) return detachedNormal;
+        work(EmissionWorkBudget.Operation.PREPARATION, 1);
+        RasterPoint normal = context.normalAt(probe, from, to);
+        return new MetricPoint(normal.x(), normal.y());
+    }
+
+    private double outputPitch(RasterPoint point) {
+        return context.origin() == OptionalEmissionContext.Origin.MANAGED_CAPTURE
+            ? context.outputPitchAt(metric(point)) : context.outputRasterPitchMeters();
     }
 
     private double[] probeParameters(RasterPoint a,RasterPoint b,double length,double pitch,AttemptMemoryLedger.Owner evaluation) {
