@@ -595,10 +595,10 @@ class LegacyEmissionStagesTest {
         assertEquals(0, ledger.currentBytes());
     }
 
-    private record Fixture(EvidenceSnapshot evidence, CorridorTraceInput input,
+    record Fixture(EvidenceSnapshot evidence, CorridorTraceInput input,
             ProfileChainage chainage) { }
 
-    private static Fixture fixture() {
+    static Fixture fixture() {
         double[] values = new double[WIDTH * HEIGHT];
         boolean[] valid = new boolean[values.length];
         Arrays.fill(valid, true);

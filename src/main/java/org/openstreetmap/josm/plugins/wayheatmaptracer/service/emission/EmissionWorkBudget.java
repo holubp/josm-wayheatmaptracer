@@ -138,6 +138,13 @@ public final class EmissionWorkBudget {
         return new Snapshot(workLimit, pairLimit, workUsed, pairVisits, operationUnits);
     }
 
+    /** Allocation-free accepted counters for explicitly prepaid bounded diagnostics. */
+    public synchronized long operationUnits(Operation operation) { return operationUnits.get(operation); }
+    public synchronized long workUsed() { return workUsed; }
+    public synchronized long pairVisits() { return pairVisits; }
+    public long workLimit() { return workLimit; }
+    public long pairLimit() { return pairLimit; }
+
     /** Effective original-row state-family ceiling, including a stricter caller limit. */
     public int stateFamilyLimit() { return stateFamilyLimit; }
 

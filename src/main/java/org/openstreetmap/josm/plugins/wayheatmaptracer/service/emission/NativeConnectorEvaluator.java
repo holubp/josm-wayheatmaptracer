@@ -441,6 +441,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private final AttemptMemoryLedger.Owner owner;
     private final QueryPolicy queryPolicy;
     private final ExecutionPolicy executionPolicy;
+    private final LegacyEmissionProgress progress;
     private final IdentityHashMap<RowState, Boolean> states;
     private final ExperimentalMeasuredModeInventory measuredModes;
     private final List<Integer> mandatoryRows;
@@ -460,25 +461,38 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     public NativeConnectorEvaluator(SampledEmissionInput input, Domain domain, QueryPolicy queryPolicy,
             ExecutionPolicy executionPolicy) {
-        this(input,domain,queryPolicy,executionPolicy,null,null);
+        this(input,domain,queryPolicy,executionPolicy,null,null,null);
     }
 
     /** Uses opaque original-A state/core ownership, leaving the Legacy peak route unchanged. */
     public static NativeConnectorEvaluator forNativeA(SampledEmissionInput input,Domain domain,
             QueryPolicy queryPolicy,ExecutionPolicy executionPolicy,NativeEndpointInventory owners) {
         if(owners==null||!owners.belongsTo(input))throw new IllegalArgumentException("Native A endpoint inventory is foreign or closed");
-        return new NativeConnectorEvaluator(input,domain,queryPolicy,executionPolicy,owners,null);
+        return new NativeConnectorEvaluator(input,domain,queryPolicy,executionPolicy,owners,null,null);
     }
 
     /** Explicit accepted-mode ownership for the revised experimental policy only. */
     public NativeConnectorEvaluator(SampledEmissionInput input, Domain domain, QueryPolicy queryPolicy,
             ExecutionPolicy executionPolicy, ExperimentalMeasuredModeInventory measuredModes) {
-        this(input,domain,queryPolicy,executionPolicy,null,measuredModes);
+        this(input,domain,queryPolicy,executionPolicy,null,measuredModes,null);
+    }
+
+    /** Explicit Legacy diagnostics without an ambiguous nullable owner constructor overload. */
+    public static NativeConnectorEvaluator forLegacyProgress(SampledEmissionInput input, Domain domain,
+            QueryPolicy queryPolicy, ExecutionPolicy executionPolicy, LegacyEmissionProgress progress) {
+        return forLegacyProgress(input,domain,queryPolicy,executionPolicy,null,progress);
+    }
+
+    /** Preserves the explicit measured Legacy inventory when a diagnostic hook is supplied. */
+    static NativeConnectorEvaluator forLegacyProgress(SampledEmissionInput input, Domain domain,
+            QueryPolicy queryPolicy, ExecutionPolicy executionPolicy,
+            ExperimentalMeasuredModeInventory measuredModes, LegacyEmissionProgress progress) {
+        return new NativeConnectorEvaluator(input,domain,queryPolicy,executionPolicy,null,measuredModes,progress);
     }
 
     private NativeConnectorEvaluator(SampledEmissionInput input,Domain domain,QueryPolicy queryPolicy,
             ExecutionPolicy executionPolicy,NativeEndpointInventory nativeAOwners,
-            ExperimentalMeasuredModeInventory measuredModes) {
+            ExperimentalMeasuredModeInventory measuredModes, LegacyEmissionProgress progress) {
         this.input = Objects.requireNonNull(input);
         this.nativeAOwners=nativeAOwners;
         if (measuredModes != null && !measuredModes.belongsTo(input))
@@ -487,9 +501,11 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         Objects.requireNonNull(domain);
         this.queryPolicy = Objects.requireNonNull(queryPolicy, "queryPolicy");
         this.executionPolicy=Objects.requireNonNull(executionPolicy,"executionPolicy");
+        this.progress=progress;
         if(executionPolicy!=ExecutionPolicy.EAGER_ALL_PROBES_V1
                 && queryPolicy!=QueryPolicy.ZERO_GUARDED_LOCAL_V1)
             throw new IllegalArgumentException("Stop-on-final-mode-failure requires the zero-guarded local query policy");
+        if(progress!=null)progress.requireCompatible(input,queryPolicy,executionPolicy);
         owner = nativeAOwners==null?input.openExecutionOwner("native-connector"):nativeAOwners.openExecutionOwner("native-connector");
         context = input.context(); budget = input.workBudget();
         stateFamilyLimit = budget.stateFamilyLimit();
@@ -774,6 +790,36 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     }
 
     private Receipt evaluateInternal(RowState from, RowState to, Receipt incoming,
+            OrdinaryPhysicalLeg incomingOrdinary, PhysicalDirectionCursor incomingDirection) {
+        if(progress==null)return evaluateBody(from,to,incoming,incomingOrdinary,incomingDirection);
+        requireLive();Objects.requireNonNull(from);Objects.requireNonNull(to);
+        try {
+            Receipt origin=incoming;OrdinaryPhysicalLeg ordinary=incomingOrdinary;
+            if(incomingDirection!=null){origin=incomingDirection.optionalOrigin;ordinary=incomingDirection.ordinaryOrigin;}
+            if(origin!=null&&origin.transportedIncoming().isPresent())origin=origin.transportedIncoming().get();
+            if(origin!=null&&origin.transportedOrdinary().isPresent()){ordinary=origin.transportedOrdinary().get();origin=null;}
+            int kind=origin!=null?1:ordinary!=null?2:0;
+            PhysicalEndpoint a=origin!=null?origin.from():ordinary!=null?ordinary.from:null;
+            PhysicalEndpoint b=origin!=null?origin.to():ordinary!=null?ordinary.to:null;
+            progress.evaluationBegin(progressOrdinal(from.row()),progressOrdinal(to.row()),from.nativeStateId(),to.nativeStateId(),
+                incoming!=null||incomingOrdinary!=null||incomingDirection!=null,kind,progressEndpoint(a),progressEndpoint(b));
+            var result=evaluateBody(from,to,incoming,incomingOrdinary,incomingDirection);
+            progress.evaluationComplete(result);return result;
+        } catch(EmissionWorkBudget.LimitExceededException|AttemptMemoryLedger.ResourceLimitException
+                |LocalScalarProfileExtractor.ResourceLimitException|CancellationException failure) {
+            terminalFailure=failure;input.recordTerminalExecutionFailure(failure);throw failure;
+        }
+    }
+    private int progressOrdinal(int contextRow){return originalOrdinalByContextRow.getOrDefault(contextRow,contextRow);}
+    private long progressEndpoint(PhysicalEndpoint endpoint) {
+        if(endpoint instanceof RowState r)return ((long)progressOrdinal(r.row())<<32)^(r.nativeStateId()&0xffffffffL);
+        if(endpoint instanceof Barrier b)return 0x8000000000000000L^((long)b.occurrenceId().hashCode()<<32)
+            ^b.occurrenceId().length()^((long)progressOrdinal(b.leftRow())<<16)^progressOrdinal(b.rightRow());
+        return 0;
+    }
+    LegacyEmissionProgress progress(){return progress;}
+
+    private Receipt evaluateBody(RowState from, RowState to, Receipt incoming,
             OrdinaryPhysicalLeg incomingOrdinary, PhysicalDirectionCursor incomingDirection) {
         requireLive();
         Objects.requireNonNull(from); Objects.requireNonNull(to);
@@ -1089,6 +1135,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     private Probe measure(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
             AttemptMemoryLedger.Owner evaluation) {
+        if(progress!=null){progress.profileBegin();progress.windowBegin(ProfileBackend.FULL_WINDOW,-1,0);}
         double source=chainage(from.row())+span*t;
         work(EmissionWorkBudget.Operation.PREPARATION,context.resolution().spatialPitchSamples().size());
         double pitch=context.nativePitchAt(point,source);
@@ -1110,16 +1157,20 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             work(EmissionWorkBudget.Operation.PREPARATION,1);
             double u=i==intervals?halfWidth:-halfWidth+2*halfWidth*i/intervals;
             var actual=new MetricPoint(center.xMeters()+u*normal.xMeters(),center.yMeters()+u*normal.yMeters());
+            if(progress!=null)progress.sampleBegin(0);
             boolean authorized=context.routePositionAuthorized(actual,budget,evaluation)
                 && context.evidencePositionAuthorized(actual,budget,evaluation);
             double value=authorized?strictValue(context.rasterAt(actual)):Double.NaN;
+            if(progress!=null)progress.sampleComplete();
             var sampleReservation=retainedSampleReservation(evaluation);
             var sample=new Sample(u,value,Double.isFinite(value));
             sampleReservation.adopt(sample);
             samples.add(sample);
         }
+        if(progress!=null){progress.samplingComplete();progress.extractionBegin();}
         var extraction=extractor.extractDetailedWithAcceptedThresholds(samples,pitch,parameters.localization(),evaluation,
             CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.MODE_EXTRACTION,n));
+        if(progress!=null)progress.extractionComplete(extraction.result().baseline().modes().size(),extraction.acceptedReceipts().size());
         Mode selected=null; int compatible=0;
         for(Mode mode:extraction.result().baseline().modes()) {
             work(EmissionWorkBudget.Operation.PREPARATION,1);
@@ -1134,11 +1185,23 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         work(EmissionWorkBudget.Operation.PREPARATION,samples.size());
         var evidence = new ProfileQueryEvidence(ProfileBackend.FULL_WINDOW, halfWidth,
             samples.size(), 0, FallbackCause.NONE, samples.size(), false);
-        return new Probe(t,point,center,normal,pitch,samples,extraction,selected,threshold,evidence);
+        var result=new Probe(t,point,center,normal,pitch,samples,extraction,selected,threshold,evidence);
+        if(progress!=null){progress.windowComplete();progress.profileComplete();}
+        return result;
     }
 
     private Probe measureLocalOrDense(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
             AttemptMemoryLedger.Owner evaluation,IdentityHashMap<Probe,AttemptMemoryLedger.Owner> profileOwners) {
+        if(progress==null)return measureLocalBody(t,point,normal,from,span,evaluation,profileOwners);
+        progress.profileBegin();progress.localBegin();
+        try {
+            var result=measureLocalBody(t,point,normal,from,span,evaluation,profileOwners);
+            progress.profileComplete();return result;
+        } finally {progress.localEnd();}
+    }
+    private Probe measureLocalBody(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
+            AttemptMemoryLedger.Owner evaluation,IdentityHashMap<Probe,AttemptMemoryLedger.Owner> profileOwners) {
+        var frozenInput=input;var frozenGrid=context.nativeGrid();var frozenParameters=parameters;
         double source=chainage(from.row())+span*t;
         double pitch=context.nativePitchAt(point,source);
         double delta=Math.min(context.lateralStepMeters(),Math.min(minimumPitch()/2,
@@ -1168,7 +1231,8 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             var local=evidenceOwner.child("connector-local-probe");
             try {
                 Probe probe=measureWindow(t,point,normal,from,span,local,window,delta,ProfileBackend.LOCAL,
-                    expansions,FallbackCause.NONE,false,totalSampleQueries,halfIntervals);
+                    expansions,FallbackCause.NONE,false,totalSampleQueries,halfIntervals,
+                    input==frozenInput&&context.nativeGrid()==frozenGrid&&parameters==frozenParameters);
                 totalSampleQueries=Math.addExact(totalSampleQueries,probe.samples().size());
                 boolean allZero=true;
                 for(var sample:probe.samples()) {
@@ -1206,12 +1270,14 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private Probe replaceWithDenseFallback(Probe old,RowState from,double span,
             AttemptMemoryLedger.Owner evaluation,IdentityHashMap<Probe,AttemptMemoryLedger.Owner> profileOwners,
             FallbackCause cause) {
+        if(progress!=null){progress.event(LegacyEmissionProgress.Counter.CROSS_REPLACEMENT);progress.profileBegin();}
         var oldOwner=profileOwners.get(old);
         if(oldOwner==null)throw new IllegalStateException("Settled local profile has no evidence owner");
         var replacementOwner=evaluation.child("connector-profile-fallback");
         try {
             Probe replacement=denseFallback(old.parameter(),old.rasterPosition(),old.metricNormal(),from,span,
                 replacementOwner,cause,old.profileQuery().expansionCount(),old.profileQuery().totalSampleQueries());
+            if(progress!=null)progress.profileComplete();
             profileOwners.put(replacement,replacementOwner);
             profileOwners.remove(old);
             // The caller still references old until probes.set returns. Nothing allocates
@@ -1252,11 +1318,12 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     private Probe denseFallback(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
             AttemptMemoryLedger.Owner evaluation,FallbackCause cause,int expansions,int previousQueries) {
+        if(progress!=null)progress.fallback(cause);
         double step=Math.min(context.lateralStepMeters(),minimumPitch()/8);
         int intervals=checkedCount(Math.ceil(2*context.searchHalfWidthMeters()/step));
         double actualStep=2*context.searchHalfWidthMeters()/intervals;
         return measureWindow(t,point,normal,from,span,evaluation,context.searchHalfWidthMeters(),actualStep,
-            ProfileBackend.DENSE_FALLBACK,expansions,cause,false,previousQueries,-1);
+            ProfileBackend.DENSE_FALLBACK,expansions,cause,false,previousQueries,-1,false);
     }
 
     private Probe denseFallback(Probe old,RowState from,double span,AttemptMemoryLedger.Owner evaluation,
@@ -1267,7 +1334,8 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     private Probe measureWindow(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
             AttemptMemoryLedger.Owner evaluation,double halfWidth,double step,ProfileBackend backend,
-            int expansions,FallbackCause cause,boolean localNoMode,int previousQueries,int centeredHalfIntervals) {
+            int expansions,FallbackCause cause,boolean localNoMode,int previousQueries,int centeredHalfIntervals,boolean sourceSame) {
+        if(progress!=null)progress.windowBegin(backend,centeredHalfIntervals,expansions);
         double source=chainage(from.row())+span*t;
         double pitch=context.nativePitchAt(point,source);
         int intervals=centeredHalfIntervals>=0?Math.multiplyExact(2,centeredHalfIntervals)
@@ -1276,21 +1344,27 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         reserve(evaluation,Math.addExact(512,Math.multiplyExact((long)count,88)));
         var samples=new ArrayList<Sample>(count);
         MetricPoint center=metric(point);
+        if(progress!=null)progress.windowIdentity(sourceSame,point.x(),point.y(),center.xMeters(),center.yMeters(),
+            normal.xMeters(),normal.yMeters(),step,source,pitch);
         for(int i=0;i<count;i++) {
             work(EmissionWorkBudget.Operation.PREPARATION,1);
             double u=centeredHalfIntervals>=0?centeredLatticeOffset(i,centeredHalfIntervals,step)
                 :i==intervals?halfWidth:-halfWidth+2*halfWidth*i/intervals;
             var actual=new MetricPoint(center.xMeters()+u*normal.xMeters(),center.yMeters()+u*normal.yMeters());
+            if(progress!=null)progress.sampleBegin(centeredHalfIntervals>=0?i-centeredHalfIntervals:0);
             boolean authorized=context.routePositionAuthorized(actual,budget,evaluation)
                 && context.evidencePositionAuthorized(actual,budget,evaluation);
             double value=authorized?strictValue(context.rasterAt(actual)):Double.NaN;
+            if(progress!=null)progress.sampleComplete();
             var sampleReservation=retainedSampleReservation(evaluation);
             var sample=new Sample(u,value,Double.isFinite(value));
             sampleReservation.adopt(sample);
             samples.add(sample);
         }
+        if(progress!=null){progress.samplingComplete();progress.extractionBegin();}
         var extraction=extractor.extractDetailedWithAcceptedThresholds(samples,pitch,parameters.localization(),evaluation,
             CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.MODE_EXTRACTION,n));
+        if(progress!=null)progress.extractionComplete(extraction.result().baseline().modes().size(),extraction.acceptedReceipts().size());
         Mode selected=null; int compatible=0;
         for(Mode mode:extraction.result().baseline().modes()) {
             work(EmissionWorkBudget.Operation.PREPARATION,1);
@@ -1305,7 +1379,9 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         work(EmissionWorkBudget.Operation.PREPARATION,samples.size());
         var evidence=new ProfileQueryEvidence(backend,halfWidth,samples.size(),expansions,cause,
             Math.addExact(previousQueries,samples.size()),localNoMode);
-        return new Probe(t,point,center,normal,pitch,samples,extraction,selected,threshold,evidence);
+        var result=new Probe(t,point,center,normal,pitch,samples,extraction,selected,threshold,evidence);
+        if(progress!=null)progress.windowComplete();
+        return result;
     }
 
     private static double centeredLatticeOffset(int sampleIndex,int halfIntervals,double step) {
@@ -1684,12 +1760,14 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     }
 
     private BilinearSegmentIntegral.Result integral(RasterPoint a,RasterPoint b,AttemptMemoryLedger.Owner evaluation) {
+        if(progress!=null)progress.integralBegin();
         var grid=context.nativeGrid();var ga=grid.toGrid(a);var gb=grid.toGrid(b);
         long bound=checkedCount(Math.ceil(Math.abs(gb.x()-ga.x())+Math.abs(gb.y()-ga.y()))+16);
         work(EmissionWorkBudget.Operation.ALLOCATION,1);
         try(var scratch=evaluation.reserve(Math.addExact(4096,Math.multiplyExact(bound,2048)))) {
-            return BilinearSegmentIntegral.evaluate(grid,ga,gb,CancellationProbe.NONE,
+            var result=BilinearSegmentIntegral.evaluate(grid,ga,gb,CancellationProbe.NONE,
                 ()->work(EmissionWorkBudget.Operation.CELL_QUERY,1));
+            if(progress!=null)progress.integralComplete();return result;
         }
     }
 

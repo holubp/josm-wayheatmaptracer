@@ -118,7 +118,7 @@ public final class LegacyEmissionKernel {
             List<Double> seeds, List<AnchorProposal> proposals, Smoother smoother,
             CancellationProbe cancellation, NativeConnectorEvaluator.QueryPolicy queryPolicy,
             NativeConnectorEvaluator.ExecutionPolicy executionPolicy) {
-        return solve(input, suppressed, seeds, proposals, smoother, cancellation, queryPolicy, executionPolicy, false);
+        return solveBody(input, suppressed, seeds, proposals, smoother, cancellation, queryPolicy, executionPolicy, false, null);
     }
 
     /** Versioned measured-mode affinity experiment; original v2 solve remains unchanged. */
@@ -127,13 +127,31 @@ public final class LegacyEmissionKernel {
             CancellationProbe cancellation) {
         return solve(input, suppressed, seeds, proposals, smoother, cancellation,
             NativeConnectorEvaluator.QueryPolicy.DENSE_EIGHTH_NATIVE_V1,
-            NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1, true);
+            NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1, true, null);
     }
 
     private EmissionResult solve(SampledEmissionInput input, List<CrossSectionProfile> suppressed,
             List<Double> seeds, List<AnchorProposal> proposals, Smoother smoother,
             CancellationProbe cancellation, NativeConnectorEvaluator.QueryPolicy queryPolicy,
-            NativeConnectorEvaluator.ExecutionPolicy executionPolicy, boolean measuredAffinity) {
+            NativeConnectorEvaluator.ExecutionPolicy executionPolicy, boolean measuredAffinity, LegacyEmissionProgress progress) {
+        return solveBody(input,suppressed,seeds,proposals,smoother,cancellation,queryPolicy,executionPolicy,measuredAffinity,progress);
+    }
+    /** Explicit bounded diagnostics; null preserves the original work and allocation path. */
+    public EmissionResult solve(SampledEmissionInput input,List<CrossSectionProfile> suppressed,
+            List<Double> seeds,List<AnchorProposal> proposals,Smoother smoother,CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
+            LegacyEmissionProgress progress) {
+        if(progress==null)return solveBody(input,suppressed,seeds,proposals,smoother,cancellation,queryPolicy,executionPolicy,false,null);
+        try {
+            progress.begin(input,queryPolicy,executionPolicy);
+            var result=solveBody(input,suppressed,seeds,proposals,smoother,cancellation,queryPolicy,executionPolicy,false,progress);
+            progress.seal(null);return result;
+        } catch(RuntimeException failure){progress.seal(failure);throw failure;}
+    }
+    private EmissionResult solveBody(SampledEmissionInput input,List<CrossSectionProfile> suppressed,
+            List<Double> seeds,List<AnchorProposal> proposals,Smoother smoother,CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
+            boolean measuredAffinity, LegacyEmissionProgress progress) {
         Objects.requireNonNull(input); Objects.requireNonNull(suppressed); Objects.requireNonNull(seeds);
         Objects.requireNonNull(proposals); Objects.requireNonNull(smoother); Objects.requireNonNull(cancellation);
         Objects.requireNonNull(queryPolicy); Objects.requireNonNull(executionPolicy);
@@ -163,17 +181,21 @@ public final class LegacyEmissionKernel {
             var domain = new LegacyEmissionDomain(binding, suppressed, seeds, budget, owner,
                 measuredAffinity ? input.experimentalMeasuredModes() : null);
             var affinity = measuredAffinity ? new OrdinaryAffinityClassifier(input, domain, owner) : null;
+            if(progress!=null)progress.domainComplete(domain.seeds().size());
             Node best = null;
             Inventory bestInventory = null;
             for (var seed : domain.seeds()) {
+                if(progress!=null){progress.seedBegin(seed.id());progress.phase(LegacyEmissionProgress.Phase.BASE,0,-1,-1);}
                 budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
                 cancellation.checkpoint();
                 var seedOwner = owner.child("seed-" + seed.id());
                 NativeConnectorEvaluator evaluator = null;
                 boolean retained = false;
                 try {
+                    if(progress!=null)progress.prepareMutation();
                     var inventory = inventory(domain, budget, seedOwner, affinity);
-                    evaluator = evaluator(input, domain, inventory, queryPolicy, executionPolicy);
+                    if(progress!=null)progress.inventoryComplete(inventory.evaluatorStates().size());
+                    evaluator = evaluator(input, domain, inventory, queryPolicy, executionPolicy,progress);
                     Node candidate = solveBase(input, domain, seed, inventory, evaluator,
                         seedOwner, cancellation, pitch);
                     if (candidate != null && better(candidate, best, budget, seedOwner)) {
@@ -182,6 +204,7 @@ public final class LegacyEmissionKernel {
                         best = candidate; bestInventory = inventory; bestEvaluator = evaluator;
                         bestSeedOwner = seedOwner; retained = true;
                     }
+                    if(progress!=null){progress.seedComplete();progress.phaseComplete();}
                 } finally {
                     if (!retained) {
                         if (evaluator != null) evaluator.close();
@@ -199,9 +222,11 @@ public final class LegacyEmissionKernel {
             pinChain(firstStage, budget);
             try (var path = flatten(firstStage, budget, bestSeedOwner)) {
             verifyCosts(path.arcs(), firstStage, budget);
+            if(progress!=null)progress.firstStageComplete();
             // Anchors are computed on the unchanged original N profiles. A proposal is eligible only
             // when its first-stage emitted state owns the exact proposed native peak object.
             var eligible = new ArrayList<AnchorProposal>();
+            if(progress!=null){progress.seedSelect(best.seedId);progress.phase(LegacyEmissionProgress.Phase.ANCHOR_ELIGIBILITY,0,-1,-1);}
             for (var proposal : proposals) {
                 budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
                 for (var point : path.points()) {
@@ -213,8 +238,11 @@ public final class LegacyEmissionKernel {
                 }
             }
             var intervalCosts = new ArrayList<EmissionResult.Costs>();
+            if(progress!=null)progress.phaseComplete();
             var intervalReferences = new ArrayList<EmissionResult.IntervalStageReference>();
             for (int index = 0; index + 1 < eligible.size(); index++) {
+                if(progress!=null)progress.phase(LegacyEmissionProgress.Phase.INTERVAL,index+1,
+                    eligible.get(index).originalRow(),eligible.get(index+1).originalRow());
                 cancellation.checkpoint();
                 var left = eligible.get(index); var right = eligible.get(index + 1);
                 var chain = chain(best, budget);
@@ -227,6 +255,7 @@ public final class LegacyEmissionKernel {
                 Node previousBest = best;
                 Node intervalWinner = solveInterval(input, domain, prefix, rightState, left, right,
                     index + 1, bestInventory, bestEvaluator, bestSeedOwner, cancellation, pitch);
+                if(progress!=null)progress.phaseComplete();
                 if (intervalWinner == null) throw new UnavailableException(UnavailableReason.NO_ADMITTED_PATH);
                 Node interval = intervalWinner;
                 var intervalCost = intervalIncrement(prefix, interval, budget);
@@ -234,6 +263,7 @@ public final class LegacyEmissionKernel {
                 intervalReferences.add(intervalStage(prefix, interval, left, right,
                     index + 1, intervalCost, domain, input, budget));
                 boolean suffix = false;
+                if(progress!=null)progress.phase(LegacyEmissionProgress.Phase.STITCH,index+1,left.originalRow(),right.originalRow());
                 for (Node node : chain) {
                     int row = node.key.last().originalRow();
                     if (row == right.originalRow()) { suffix = true; continue; }
@@ -251,14 +281,18 @@ public final class LegacyEmissionKernel {
                 unpinChain(intervalWinner, budget);
                 unpinChain(previousBest, budget);
                 best = interval;
+                if(progress!=null)progress.phaseComplete();
             }
             try (var stitchedPath = flatten(best, budget, bestSeedOwner)) {
             verifyCosts(stitchedPath.arcs(), best, budget);
             if (best.key.lastPositive() == null)
                 throw new UnavailableException(UnavailableReason.NO_POSITIVE_PHYSICAL_LEG);
-            return result(input, domain, stitchedPath, path, firstStage, best, intervalCosts,
+            if(progress!=null)progress.phase(LegacyEmissionProgress.Phase.RESULT,0,-1,-1);
+            var result = result(input, domain, stitchedPath, path, firstStage, best, intervalCosts,
                 intervalReferences, eligible, bestInventory,
-                smoother, bestSeedOwner, owner, bestEvaluator, budget, cancellation, resultLease, queryPolicy, executionPolicy);
+                smoother, bestSeedOwner, owner, bestEvaluator, budget, cancellation, resultLease, queryPolicy, executionPolicy,progress);
+            if(progress!=null)progress.phaseComplete();
+            return result;
             }
             }
         } catch (RuntimeException failure) {
@@ -329,7 +363,9 @@ public final class LegacyEmissionKernel {
         owner.reserve(160);
         var state = domain.carry(row, originId, offset, budget);
         evaluator.registerState(state.evaluatorState(), row);
+        if(evaluator.progress()!=null)evaluator.progress().prepareMutation();
         inventory.reachedCarries().put(key, state);
+        if(evaluator.progress()!=null)evaluator.progress().mutation(LegacyEmissionProgress.Counter.CARRIES);
         inventory.familySizes()[row]++;
         return state;
     }
@@ -348,7 +384,9 @@ public final class LegacyEmissionKernel {
         var state = domain.intervalTarget(row, left.originalRow(), right.originalRow(), left, right,
             budget);
         evaluator.registerState(state.evaluatorState(), row);
+        if(evaluator.progress()!=null)evaluator.progress().prepareMutation();
         inventory.intervalTargets().put(key, state);
+        if(evaluator.progress()!=null)evaluator.progress().mutation(LegacyEmissionProgress.Counter.TARGETS);
         inventory.familySizes()[row]++;
         return state;
     }
@@ -449,6 +487,7 @@ public final class LegacyEmissionKernel {
         firstLayer.put(prefix.key, prefix);
         layers.put(left.originalRow(), firstLayer);
         for (int row = left.originalRow(); row < right.originalRow(); row++) {
+            if(evaluator.progress()!=null)evaluator.progress().row(row);
             var current = layers.get(row);
             if (current == null) continue;
             for (Node from : List.copyOf(current.values())) {
@@ -494,7 +533,7 @@ public final class LegacyEmissionKernel {
 
     private NativeConnectorEvaluator evaluator(SampledEmissionInput input, LegacyEmissionDomain domain,
             Inventory inventory, NativeConnectorEvaluator.QueryPolicy queryPolicy,
-            NativeConnectorEvaluator.ExecutionPolicy executionPolicy) {
+            NativeConnectorEvaluator.ExecutionPolicy executionPolicy,LegacyEmissionProgress progress) {
         var binding = domain.binding();
         var mapping = binding.originalRowToRetainedObservation();
         var ordinals = new HashMap<Integer, Integer>();
@@ -513,9 +552,9 @@ public final class LegacyEmissionKernel {
                 event.exactPosition()));
             inventory.barriersById().put(event.occurrenceId(), barriers.get(barriers.size() - 1));
         }
-        return new NativeConnectorEvaluator(input,
+        return NativeConnectorEvaluator.forLegacyProgress(input,
             new NativeConnectorEvaluator.Domain(inventory.evaluatorStates(), mandatory, barriers,
-                ordinals), queryPolicy, executionPolicy, domain.measuredModes());
+                ordinals), queryPolicy, executionPolicy, domain.measuredModes(),progress);
     }
 
     private Node solveBase(SampledEmissionInput input, LegacyEmissionDomain domain,
@@ -546,6 +585,7 @@ public final class LegacyEmissionKernel {
             insert(layers.get(0), node, budget, owner);
         }
         for (int row = 0; row < n - 1; row++) {
+            if(evaluator.progress()!=null)evaluator.progress().row(row);
             for (Node from : List.copyOf(layers.get(row).values())) {
                 budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
                 cancellation.checkpoint();
@@ -596,6 +636,11 @@ public final class LegacyEmissionKernel {
             int stageOrdinal, double pitch) {
         var budget = input.workBudget();
         var a = from.key.last(); int rowA = a.originalRow(), rowB = to.originalRow();
+        var progress=evaluator.progress();
+        if(progress!=null)progress.edge(rowA,rowB,a.nativeStateId(),to.nativeStateId());
+        if(progress!=null)progress.inventorySizes(inventory.evaluatorStates().size(),inventory.reachedCarries().size(),
+            inventory.intervalTargets().size(),inventory.positiveReceipts().size(),inventory.zeroReceipts().size(),
+            inventory.ordinaryLegs().size(),inventory.zeroCursors().size());
         boolean optional = rowB > rowA + 1;
         MetricPoint pa = domain.metricPoint(a, input.context()), pb = domain.metricPoint(to, input.context());
         double sourceSpan = sourceChainage(domain, input.context(), rowB)
@@ -638,7 +683,9 @@ public final class LegacyEmissionKernel {
                 if (origin == null) return null;
                 budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
                 var edge = new ZeroConnectorIdentity(new ConnectorIdentity(a, to), origin);
+                if(progress!=null)progress.cacheLookup(true);
                 receipt = inventory.zeroReceipts().get(edge);
+                if(progress!=null)progress.cacheResult(true,receipt!=null);
                 if (receipt == null) {
                     if (incoming instanceof NativeConnectorEvaluator.OrdinaryPhysicalLeg leg)
                         receipt = evaluator.evaluateWithOrdinaryIncoming(a.evaluatorState(),
@@ -650,17 +697,23 @@ public final class LegacyEmissionKernel {
                         (NativeConnectorEvaluator.Receipt) incoming);
                     budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
                     owner.reserve(96);
+                    if(progress!=null)progress.prepareMutation();
                     inventory.zeroReceipts().put(edge, receipt);
+                    if(progress!=null)progress.mutation(LegacyEmissionProgress.Counter.ZERO_INSERT);
                 }
             } else {
                 budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
                 var edge = new ConnectorIdentity(a, to);
+                if(progress!=null)progress.cacheLookup(false);
                 receipt = inventory.positiveReceipts().get(edge);
+                if(progress!=null)progress.cacheResult(false,receipt!=null);
                 if (receipt == null) {
                     receipt = evaluator.evaluate(a.evaluatorState(), to.evaluatorState());
                     budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
                     owner.reserve(96);
+                    if(progress!=null)progress.prepareMutation();
                     inventory.positiveReceipts().put(edge, receipt);
+                    if(progress!=null)progress.mutation(LegacyEmissionProgress.Counter.POSITIVE_INSERT);
                 }
             }
             if (receipt.status() != NativeConnectorEvaluator.Status.ADMITTED) return null;
@@ -769,7 +822,9 @@ public final class LegacyEmissionKernel {
             else throw new IllegalArgumentException("Unknown ordinary physical endpoint type");
             budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
             owner.reserve(96);
+            if(evaluator.progress()!=null)evaluator.progress().prepareMutation();
             inventory.ordinaryLegs().put(edge, leg);
+            if(evaluator.progress()!=null)evaluator.progress().mutation(LegacyEmissionProgress.Counter.ORDINARY_LEGS);
             return leg;
         }
         var origin = directionOrigin(incoming);
@@ -788,7 +843,9 @@ public final class LegacyEmissionKernel {
         else throw new IllegalArgumentException("Unknown ordinary incoming cursor type");
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
         owner.reserve(96);
+        if(evaluator.progress()!=null)evaluator.progress().prepareMutation();
         inventory.zeroCursors().put(edge, cursor);
+        if(evaluator.progress()!=null)evaluator.progress().mutation(LegacyEmissionProgress.Counter.ZERO_CURSORS);
         return cursor;
     }
 
@@ -977,7 +1034,8 @@ public final class LegacyEmissionKernel {
             AttemptMemoryLedger.Owner kernelOwner,
             NativeConnectorEvaluator evaluator, EmissionWorkBudget budget,
             CancellationProbe cancellation, SampledEmissionInput.ResultLease resultLease,
-            NativeConnectorEvaluator.QueryPolicy queryPolicy, NativeConnectorEvaluator.ExecutionPolicy executionPolicy) {
+            NativeConnectorEvaluator.QueryPolicy queryPolicy, NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
+            LegacyEmissionProgress progress) {
         if (domain.measuredModes() != null) input.requireOpenAndUnchanged();
         int n = domain.rowCount();
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 6);
@@ -1010,11 +1068,13 @@ public final class LegacyEmissionKernel {
         }
         var mapping = EmissionMapping.create(n, vertexOwners, observationOwners, mandatory);
         var arcs = arcResults(path.arcs());
+        if(progress!=null)progress.phase(LegacyEmissionProgress.Phase.SMOOTH,0,-1,-1);
         List<EmissionResult.SmoothingOutcome> smoothingOutcomes = inventory.affinity() == null
             ? List.of() : new ArrayList<>();
         var smoothed = smooth(path, smoother, domain, input.context(), budget, owner, inventory.affinity(), smoothingOutcomes);
         var smoothedArcs = arcResults(remeasure(input, path, smoothed, best.seedOffset,
             owner, budget, cancellation));
+        if(progress!=null){progress.phaseComplete();progress.phase(LegacyEmissionProgress.Phase.RESULT,0,-1,-1);}
         if (smoothedArcs.stream().noneMatch(arc -> arc.lengthMeters() > 0))
             throw new UnavailableException(UnavailableReason.NO_POSITIVE_PHYSICAL_LEG);
         var first = new EmissionResult.Costs(firstNode.q, firstNode.c, firstNode.t, firstNode.k);

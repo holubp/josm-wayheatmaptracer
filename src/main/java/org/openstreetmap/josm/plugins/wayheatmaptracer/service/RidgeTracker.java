@@ -14,6 +14,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.LegacyEm
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.LegacyEmissionProgress;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /**
@@ -42,18 +43,34 @@ public final class RidgeTracker {
     /** Runs one explicit existing evaluator policy without changing stored settings or the default entry. */
     public EmissionResult trackEmission(SampledEmissionInput input, CancellationProbe cancellation,
             NativeConnectorEvaluator.QueryPolicy queryPolicy, NativeConnectorEvaluator.ExecutionPolicy executionPolicy) {
-        return trackEmission(input,cancellation,queryPolicy,executionPolicy,false);
+        return trackEmissionBody(input,cancellation,queryPolicy,executionPolicy,false,null);
     }
 
     /** Explicit revised measured-mode/ordinary-affinity experiment; native v2 stays separately callable. */
     public EmissionResult trackEmissionMeasuredAffinity(SampledEmissionInput input, CancellationProbe cancellation) {
         return trackEmission(input, cancellation, NativeConnectorEvaluator.QueryPolicy.DENSE_EIGHTH_NATIVE_V1,
-            NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1, true);
+            NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1, true, null);
     }
 
     private EmissionResult trackEmission(SampledEmissionInput input, CancellationProbe cancellation,
             NativeConnectorEvaluator.QueryPolicy queryPolicy, NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
-            boolean measuredAffinity) {
+            boolean measuredAffinity, LegacyEmissionProgress progress) {
+        return trackEmissionBody(input,cancellation,queryPolicy,executionPolicy,measuredAffinity,progress);
+    }
+
+    /** Caller-owned bounded diagnostics, read after return/refusal and before its input lifetime closes. */
+    public EmissionResult trackEmission(SampledEmissionInput input,CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
+            LegacyEmissionProgress progress) {
+        if(progress==null)return trackEmissionBody(input,cancellation,queryPolicy,executionPolicy,false,null);
+        try {
+            progress.begin(input,queryPolicy,executionPolicy);
+            var result=trackEmissionBody(input,cancellation,queryPolicy,executionPolicy,false,progress);progress.seal(null);return result;
+        } catch(RuntimeException failure){progress.seal(failure);throw failure;}
+    }
+    private EmissionResult trackEmissionBody(SampledEmissionInput input,CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
+            boolean measuredAffinity, LegacyEmissionProgress progress) {
         java.util.Objects.requireNonNull(input, "retained emission input");
         java.util.Objects.requireNonNull(cancellation, "cancellation probe");
         java.util.Objects.requireNonNull(queryPolicy, "query policy");
@@ -84,7 +101,7 @@ public final class RidgeTracker {
             smoothOffsets(runProfiles, offsets, intensities, normalization, cancellation, budget);
         var kernel = new LegacyEmissionKernel();
         return measuredAffinity ? kernel.solveMeasuredAffinity(input, suppressed, seeds, proposals, smoother, cancellation)
-            : kernel.solve(input, suppressed, seeds, proposals, smoother, cancellation, queryPolicy, executionPolicy);
+            : kernel.solve(input, suppressed, seeds, proposals, smoother, cancellation, queryPolicy, executionPolicy,progress);
     }
 
     /**

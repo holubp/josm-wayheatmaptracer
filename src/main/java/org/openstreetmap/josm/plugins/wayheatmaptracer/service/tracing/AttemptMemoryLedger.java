@@ -356,6 +356,9 @@ public final class AttemptMemoryLedger {
             return ledger.peakBytes();
         }
 
+        /** Actual attempt-wide ceiling, including a stricter caller ledger. */
+        public long limitBytes() { return ledger.limitBytes(); }
+
         /** Atomically moves all retained identities to another owner in the same attempt. */
         public void transferTo(Owner destination) {
             ledger.transfer(this, Objects.requireNonNull(destination, "destination"));

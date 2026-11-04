@@ -1978,7 +1978,7 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    private record Straight(AttemptMemoryLedger ledger,AttemptMemoryLedger.Owner owner,
+    record Straight(AttemptMemoryLedger ledger,AttemptMemoryLedger.Owner owner,
             SampledEmissionInput input,List<RowState> states) implements AutoCloseable {
         @Override public void close(){ input.close(); owner.close(); assertEquals(0,ledger.currentBytes()); }
     }
@@ -2030,7 +2030,7 @@ class NativeConnectorEvaluatorTest {
             EmissionWorkBudget work, double requestedStep, EvidenceResolution resolution) {
         return scene(intensity,validity,decision,sourceClass,rows,span,transform,work,requestedStep,resolution,8);
     }
-    private static Straight scene(java.util.function.DoubleBinaryOperator intensity,
+    static Straight scene(java.util.function.DoubleBinaryOperator intensity,
             java.util.function.BiPredicate<Integer, Integer> validity, MetricRegion decision,
             SourceClass sourceClass, int rows, double span, RasterMetricTransform transform,
             EmissionWorkBudget work, double requestedStep, EvidenceResolution resolution,double searchHalfWidth) {
