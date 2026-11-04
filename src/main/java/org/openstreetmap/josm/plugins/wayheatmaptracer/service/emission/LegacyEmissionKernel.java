@@ -95,7 +95,7 @@ public final class LegacyEmissionKernel {
             if(domain.unsupported(0)||paths*(domain.rowCount()==3?2:1)>4)
                 throw new IllegalArgumentException("Proof slice has more than four structural paths");
             if(progress!=null){progress.seedBegin(0);progress.phase(LegacyEmissionProgress.Phase.BASE,0,-1,-1);progress.prepareMutation();}
-            var inventory=inventory(domain,budget,owner);
+            var inventory=inventory(domain,budget,owner,null);
             if(progress!=null)progress.inventoryComplete(inventory.evaluatorStates().size());
             evaluator=evaluator(input,domain,inventory,query,nativeExecution,progress);
             double pitch=input.context().nativePitchMeters().orElseThrow(()->new UnavailableException(UnavailableReason.NATIVE_PITCH));
