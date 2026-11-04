@@ -33,10 +33,11 @@
   from435.315broad/18XML then67current/5XML=316unique0f/e/s. Source review active;
   new ONE32M R4 helper preparation assigned, no invocation yet. Same native
   scalar Result/Qbits, Pending/Prefix/serial/lease and old paths retained by tests.
-  Source review NOT PASS solely foreign/reused census poisoning and terminal
-  strong-Input retention. Native-Q/sameResult/PendingPrefixseriallease proofs
-  CLOSED. Fixround1/5 assigned original implementer; scoped covering tests, no
-  repeated broad315matrix. Helper fingerprint held until corrected reviewedHEAD.
+  Source fixround1/5 CLOSED at8d65c891:2addressed/0open foreign/reused census
+  poisoning and terminal strong-Input retention,77affectedtests/6XML0f/e/s.
+  Native-Q/sameResult/PendingPrefixseriallease proofs CLOSED. Whole-source review
+  drasov-a-scalar-refinement-review.md PASS. No repeated broad315matrix.
+  Helper finalsameHEAD controls/fingerprint nowallowed; no actualR4 invocation yet.
   R4 helper ruling: no duplicate unbudgeted trackDetailed/nativeStateDomain
   reference solve. Charge fresh pixels/sourceS/scalaridentity/original17binding
   checks;239states/26098pairs/statehash/strand-3 are labelled HISTORICAL expected
@@ -81,8 +82,8 @@
   Implementer affinity_contract_probe assigned new isolated ee94-based worktree.
   M2 remains conditional on independently reviewed M1; no user approval needed
   for this authorized experiment follow-on. Roundtrip differences remain factual.
-- Active owners: kernel_memory_audit reviews frozenA af233c64;
-  managed_context_closure prepares its ONE32M R4 helper;
+- Active owners: a_native_integration integrates closedA8d onto9832 in newtree;
+  managed_context_closure finalizes its ONE32M R4 helper at8d;
   affinity_contract_probe implements reviewed M1 actual-Mode ownership with
   consumer disabled; kernel_memory_closure implements a reviewed Legacy one-seed
   cutoff proof slice from678. Ruling: exact grouped objective governs, do not
@@ -103,9 +104,9 @@ Gradle uses the shared Termux tmp flock; full suites run in GitHub CI.
 | Remaining step | Current disposition |
 | --- | --- |
 | 1: reviewed evaluator defects | CLOSED; source integration additionally reviewed/tested. |
-| 2: Legacy solver/integration | Core + managed capture/transport CLOSED; real-image work-cap failure remains; consumers/Apply qualification incomplete. |
-| 3: actual fitting improvement | Revised two-strand synthetic regressions and classifier/oracle review CLOSED atc8bb6460 (194tests); combined managed API integration and actual Drasov/Omice quality still open. |
-| 4: native Corridor A | Native component and original R4 alias/integration reviews CLOSED at88d4fa28 (239focused tests). Original R4 screen reached128M work/no geometry; exact positive-refusal reuse fix active. Managed-A producer/consumers remain open. |
+| 2: Legacy solver/integration | Core + managed capture/transport CLOSED; reviewed noise shortcut measured13.83% production saving at matched prefix, still caps/no geometry. New exact-cutoff proof slice in progress; consumers/Apply qualification incomplete. |
+| 3: actual fitting improvement | Revised two-strand regressions/classifier/oracle CLOSED atc8bb6460, combined managed API verified at full-CI ee94. Actual managed classifier M1 ownership in progress with consumer disabled; Drasov/Omice geometry improvement still open. |
+| 4: native Corridor A | Native/original R4 binding CLOSED, two128M screens no geometry. Refusal reuse and scalar-refinement source8d independently CLOSED; one32M R4 helper finalizing. Managed-A producer/consumers remain open. |
 
 ### Verified integrated evidence
 
