@@ -21,13 +21,13 @@ Gradle uses the shared Termux tmp flock; full suites run in GitHub CI.
 | --- | --- |
 | 1: reviewed evaluator defects | CLOSED; source integration additionally reviewed/tested. |
 | 2: Legacy solver/integration | Core + managed capture/transport CLOSED; real-image work-cap failure remains; consumers/Apply qualification incomplete. |
-| 3: actual fitting improvement | Revised two-strand synthetic regressions GREEN; full classifier/oracle review and actual Drasov/Omice quality still open. |
+| 3: actual fitting improvement | Revised two-strand synthetic regressions and classifier/oracle review CLOSED atc8bb6460 (194tests); combined managed API integration and actual Drasov/Omice quality still open. |
 | 4: native Corridor A | Both native component review blockers CLOSED at4fcb7a9d; integrated185101bf passes180 focused tests. Original R4 binding/screen and actual managed-A producer/consumer gates not done. |
 
 ### Verified integrated evidence
 
 Experimental worktree `/data/data/com.termux/files/usr/tmp/josm-drasov-optional-emission-experiment`,
-branch `codex/drasov-optional-emission-experiment`: local HEAD185101bf (native-A
+branch `codex/drasov-optional-emission-experiment`: stable pre-affinity HEAD836b07ee (native-A
 core/review repairs, scale API29bc1323 and explicit-policy721a3717 above remotea71708d3). Clean last
 checked. Source snapshot91dee0d8 and kernel transportffeae28f are integrated.
 Their independent reports close source, memory, coordinate, source-S, nonlinear
@@ -112,7 +112,11 @@ this is preferable to introducing the proved cross-branch kink after a valid sol
 ### Resume discipline / next gates
 
 Current continuation: affinity fix round1 committed a6690efe/c8bb6460,194 tests
-across13classes pass; frozen for independent P1/P2 re-review. Native-A4fcb7a9d
+across13classes pass; independent P1/P2 re-review CLOSED, no new blocker.
+Actor affinity_contract_probe now owns integrated experimental worktree from836b
+to merge the reviewed affine classifier with managed v3 and native-A owner APIs;
+controller must not write there until handoff. Affine-only qualification remains.
+Native-A4fcb7a9d
 independently CLOSED (296tests/17XML); integrated185101bf passes180tests/6XML.
 Original-A17/retained19 binding implementation now isolated in
 `josm-drasov-a-r4-binding` at185101bf; no R4 graph run before binding review.
@@ -127,6 +131,8 @@ is active (`legacy_exact_execution_design`); justification: three capped failure
 require a changed exact strategy, not more parameter/policy retries. No Astra.
 No fourth private run or cap increase authorized by this checkpoint; first prove
 and review the next execution contract and common-progress measurement.
+Reviewed slab integrated836b07ee passes166focusedtests/5XML (native A and evaluator
+neighbors included),0failure/error/skip. Log drasov-integrated-exact-slab-test.log.
 
 Use existing actors/reports; one writer per isolated worktree. No recursive agents.
 `managed_source_audit` performs source/A/proof reviews; `kernel_memory_audit` closed
