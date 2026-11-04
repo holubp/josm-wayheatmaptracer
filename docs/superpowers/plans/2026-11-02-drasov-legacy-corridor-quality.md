@@ -22,13 +22,14 @@ Gradle uses the shared Termux tmp flock; full suites run in GitHub CI.
 | 1: reviewed evaluator defects | CLOSED; source integration additionally reviewed/tested. |
 | 2: Legacy solver/integration | Core + managed capture/transport CLOSED; real-image work-cap failure remains; consumers/Apply qualification incomplete. |
 | 3: actual fitting improvement | Revised two-strand synthetic regressions and classifier/oracle review CLOSED atc8bb6460 (194tests); combined managed API integration and actual Drasov/Omice quality still open. |
-| 4: native Corridor A | Both native component review blockers CLOSED at4fcb7a9d; integrated185101bf passes180 focused tests. Original R4 binding/screen and actual managed-A producer/consumer gates not done. |
+| 4: native Corridor A | Native component and original R4 alias/integration reviews CLOSED at88d4fa28 (239focused tests). Original R4 graph screen under preparation; actual managed-A producer/consumer gates not done. |
 
 ### Verified integrated evidence
 
 Experimental worktree `/data/data/com.termux/files/usr/tmp/josm-drasov-optional-emission-experiment`,
-branch `codex/drasov-optional-emission-experiment`: stable pre-affinity HEAD836b07ee (native-A
-core/review repairs, scale API29bc1323 and explicit-policy721a3717 above remotea71708d3). Clean last
+branch `codex/drasov-optional-emission-experiment`: stable HEAD88d4fa28 (reviewed
+native-A original-row binding, affine affinity, source and explicit-policy work).
+Remotea8c098fc has full CI41826880110 IN_PROGRESS; it excludes88 binding changes. Clean last
 checked. Source snapshot91dee0d8 and kernel transportffeae28f are integrated.
 Their independent reports close source, memory, coordinate, source-S, nonlinear
 probe, freshness, ownership, endpoint-roundoff and transport findings. Focused
@@ -194,6 +195,15 @@ It must distinguish actual ports, conservative possible centers and UNAVAILABLE
 support/generated/final domains, preserve all184/21 accounting, and stop at one
 eventual reviewed census. Report `drasov-curved-affinity-design-review.md` is the
 task brief; source-grid/private census execution requires a later root packet.
+Native-A binding integration88d4fa28 now independently CLOSED by
+`drasov-a-r4-integration-review.md`, all15XML/239tests and6imported file identities
+verified. kernel_memory_audit prepares a metadata-only public-synthetic R4 helper
+and exact source/class/policy fingerprint in `drasov-a-r4-execution/` against88.
+Requested ZERO_GUARDED_LOCAL_V1 + EXACT_SLAB_PREFLIGHT_V1; no substitution if class
+enum missing. Original e1 classes lack EXACT_SLAB, integrated88 classes supply it.
+One future128M/8M/256MiB/512MiB-host graph requires independent helper/run review
+and root go. Typed terminal failure has no winner; partial metrics unavailable
+unless exposed factually. No R4 graph has run by this checkpoint.
 
 Use existing actors/reports; one writer per isolated worktree. No recursive agents.
 `managed_source_audit` performs source/A/proof reviews; `kernel_memory_audit` closed
