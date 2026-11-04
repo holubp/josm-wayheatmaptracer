@@ -286,7 +286,9 @@ public final class OptionalEmissionContext {
     public boolean routePositionAuthorized(MetricPoint point, EmissionWorkBudget budget,
             AttemptMemoryLedger.Owner scratchOwner) {
         if (managed != null) {
-            RasterPoint raster = rasterAt(point);
+            final RasterPoint raster;
+            try { raster = rasterAt(point); }
+            catch (IllegalArgumentException outsideInverseDomain) { return false; }
             return routeSegmentAuthorized(raster, raster, budget, scratchOwner);
         }
         return decisionRegion.containsConservatively(point, CancellationProbe.NONE,
@@ -294,7 +296,12 @@ public final class OptionalEmissionContext {
     }
     public boolean evidencePositionAuthorized(MetricPoint point, EmissionWorkBudget budget,
             AttemptMemoryLedger.Owner scratchOwner) {
-        if (managed != null) return acquiredPosition(rasterAt(point), budget);
+        if (managed != null) {
+            final RasterPoint raster;
+            try { raster = rasterAt(point); }
+            catch (IllegalArgumentException outsideInverseDomain) { return false; }
+            return acquiredPosition(raster, budget);
+        }
         return evidenceRegion.containsConservatively(point, CancellationProbe.NONE,
             units -> budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, units));
     }

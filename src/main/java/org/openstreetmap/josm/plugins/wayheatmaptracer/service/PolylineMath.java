@@ -13,6 +13,14 @@ import org.openstreetmap.josm.data.coor.EastNorth;
  * Geometry helpers for resampling, interpolating, and projecting points along polylines.
  */
 public final class PolylineMath {
+    /**
+     * Caller-admitted capacity for one endpoint arithmetic proof. A finite binary64 exact
+     * decimal has at most 1075 coefficient digits; two-operand products have at most 2150.
+     * Divisions retain 80 digits. The fixed straight-line proof has fewer than 24 live
+     * operands/results; 64 KiB includes their magnitude arrays and temporary arithmetic.
+     * This is an attempt-ledger scratch declaration, not a whole-JVM heap measurement.
+     */
+    static final long ENDPOINT_ARITHMETIC_SCRATCH_BYTES = 64L * 1024L;
     private PolylineMath() {
     }
 
@@ -210,7 +218,7 @@ public final class PolylineMath {
                         start.north() + (end.north() - start.north()) * fraction);
                     EndpointArithmeticEnclosure endpoint = null;
                     if (row == count - 1 && segmentIndex == polyline.size() - 1) {
-                        work.accept(64);
+                        work.accept(256);
                         endpoint = EndpointArithmeticEnclosure.finalRow(segmentIndex - 1, start, end, walked,
                             segment, total, count - 1, target, fraction, point);
                     }

@@ -578,8 +578,7 @@ public final class TileHeatmapSampler {
             var grid = ManagedScalarGrid.fromManagedMosaic(mosaic, detectorMode,
                     intensityMode, budget, owner);
             List<PolylineMath.SourceParameter> sourceParameters = capture == null ? null
-                    : PolylineMath.resampleByCountWithParameters(sourcePolyline, shape.profiles(),
-                            units -> budget.charge(EmissionWorkBudget.Operation.PREPARATION, units));
+                    : resampleManagedSourceParameters(sourcePolyline, shape.profiles(), budget, owner);
             List<EastNorth> dense = sourceParameters == null
                     ? PolylineMath.resampleByCount(sourcePolyline, shape.profiles())
                     : sourceParameters.stream().map(PolylineMath.SourceParameter::point).toList();
@@ -625,6 +624,17 @@ public final class TileHeatmapSampler {
             bytes = Math.addExact(bytes, retainedImageBytes(tile));
         }
         return bytes;
+    }
+
+    private static List<PolylineMath.SourceParameter> resampleManagedSourceParameters(
+            List<EastNorth> source, int count, EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner parent) {
+        try (var scratch = parent.child("managed-endpoint-arithmetic")) {
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+            scratch.reserve(PolylineMath.ENDPOINT_ARITHMETIC_SCRATCH_BYTES);
+            return PolylineMath.resampleByCountWithParameters(source, count,
+                    units -> budget.charge(EmissionWorkBudget.Operation.PREPARATION, units));
+        }
     }
 
     private static long retainedImageBytes(BufferedImage image) {

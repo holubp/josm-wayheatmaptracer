@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -53,14 +54,14 @@ class ManagedSelectionWitnessTest {
         try (var owner = AttemptMemoryLedger.production().rootOwner()) {
             ManagedSelectionWitness witness = ManagedSelectionWitness.capture(fixture.dataSet,
                     selection, ProjectionRegistry.getProjection(), source(selection),
-                    budget(), owner);
+                    fixture.budget(), owner);
             assertEquals(selection.segmentNodes(), witness.selectedOccurrences());
             assertTrue(witness.isProtected(fixture.middle));
             assertFalse(witness.isProtected(unrelated));
-            witness.requireCurrent(budget(), owner);
+            witness.requireCurrent(fixture.budget(), owner);
             branch.getNode(1).setCoor(new LatLon(0.0, 0.004));
             assertThrows(IllegalStateException.class,
-                    () -> witness.requireCurrent(budget(), owner));
+                    () -> witness.requireCurrent(fixture.budget(), owner));
         }
     }
 
@@ -77,18 +78,18 @@ class ManagedSelectionWitnessTest {
         try (var owner = AttemptMemoryLedger.production().rootOwner()) {
             ManagedSelectionWitness witness = ManagedSelectionWitness.capture(
                     fixture.dataSet, selection, ProjectionRegistry.getProjection(),
-                    source(selection), budget(), owner);
-            witness.requireCurrent(budget(), owner);
+                    source(selection), fixture.budget(), owner);
+            witness.requireCurrent(fixture.budget(), owner);
             route.setMembers(List.of(new RelationMember("changed", selection.way()),
                     new RelationMember("distant", unloaded)));
             assertThrows(IllegalStateException.class,
-                    () -> witness.requireCurrent(budget(), owner));
+                    () -> witness.requireCurrent(fixture.budget(), owner));
             Way otherUnloaded = new Way(102);
             fixture.dataSet.addPrimitive(otherUnloaded);
             route.setMembers(List.of(new RelationMember("selected", selection.way()),
                     new RelationMember("distant", otherUnloaded)));
             assertThrows(IllegalStateException.class,
-                    () -> witness.requireCurrent(budget(), owner));
+                    () -> witness.requireCurrent(fixture.budget(), owner));
         }
     }
 
@@ -103,7 +104,7 @@ class ManagedSelectionWitnessTest {
         try (var owner = AttemptMemoryLedger.production().rootOwner()) {
             assertThrows(IllegalStateException.class, () -> ManagedSelectionWitness.capture(
                     fixture.dataSet, selection, ProjectionRegistry.getProjection(),
-                    source(selection), budget(), owner));
+                    source(selection), fixture.budget(), owner));
         }
     }
 
@@ -114,21 +115,21 @@ class ManagedSelectionWitnessTest {
         try (var owner = AttemptMemoryLedger.production().rootOwner()) {
             ManagedSelectionWitness witness = ManagedSelectionWitness.capture(fixture.dataSet,
                     selection, ProjectionRegistry.getProjection(), source(selection),
-                    budget(), owner);
+                    fixture.budget(), owner);
             fixture.middle.setCoor(new LatLon(0.0, 0.008));
             assertThrows(IllegalStateException.class,
-                    () -> witness.requireCurrent(budget(), owner));
+                    () -> witness.requireCurrent(fixture.budget(), owner));
         }
         Fixture changedReferrer = fixture();
         SelectionContext secondSelection = SelectionResolver.resolve(changedReferrer.dataSet, false);
         try (var owner = AttemptMemoryLedger.production().rootOwner()) {
             ManagedSelectionWitness witness = ManagedSelectionWitness.capture(changedReferrer.dataSet,
                     secondSelection, ProjectionRegistry.getProjection(), source(secondSelection),
-                    budget(), owner);
+                    changedReferrer.budget(), owner);
             Relation incoming = relation(changedReferrer.middle);
             changedReferrer.dataSet.addPrimitive(incoming);
             assertThrows(IllegalStateException.class,
-                    () -> witness.requireCurrent(budget(), owner));
+                    () -> witness.requireCurrent(changedReferrer.budget(), owner));
         }
     }
 
@@ -142,7 +143,7 @@ class ManagedSelectionWitnessTest {
         try (var owner = AttemptMemoryLedger.production().rootOwner()) {
             ManagedSelectionWitness witness = ManagedSelectionWitness.capture(fixture.dataSet,
                     noFixedClaim, ProjectionRegistry.getProjection(), source(noFixedClaim),
-                    budget(), owner);
+                    fixture.budget(), owner);
             assertTrue(witness.isProtected(fixture.middle));
         }
     }
@@ -153,10 +154,12 @@ class ManagedSelectionWitnessTest {
         SelectionContext selection = SelectionResolver.resolve(fixture.dataSet, false);
         AttemptMemoryLedger memory = new AttemptMemoryLedger(1024);
         try (var owner = memory.rootOwner()) {
-            assertThrows(ResourceLimitException.class, () -> ManagedSelectionWitness.capture(
+            var failure = assertThrows(ResourceLimitException.class, () -> ManagedSelectionWitness.capture(
                     fixture.dataSet, selection, ProjectionRegistry.getProjection(),
-                    source(selection), budget(), owner));
+                    source(selection), fixture.budget(), owner));
             assertEquals(0, memory.currentBytes());
+            assertSame(failure, assertThrows(ResourceLimitException.class,
+                    () -> fixture.budget().charge(EmissionWorkBudget.Operation.PREPARATION, 0)));
         }
         try (var owner = AttemptMemoryLedger.production().rootOwner()) {
             EmissionWorkBudget cancelled = new EmissionWorkBudget(TraceBudgets.defaults(), () -> true);
@@ -176,12 +179,30 @@ class ManagedSelectionWitnessTest {
         try (var owner = AttemptMemoryLedger.production().rootOwner()) {
             ManagedSelectionWitness witness = ManagedSelectionWitness.capture(fixture.dataSet,
                     mutableCaller, ProjectionRegistry.getProjection(), source(mutableCaller),
-                    budget(), owner);
+                    fixture.budget(), owner);
             callerList.set(1, fixture.before);
             assertEquals(fixture.middle, witness.selectedOccurrences().get(1));
             assertThrows(IllegalStateException.class,
-                    () -> witness.requireCurrent(budget(), owner));
+                    () -> witness.requireCurrent(fixture.budget(), owner));
         }
+    }
+
+    @Test
+    void recheckScratchMemoryFailureRemainsTerminalAfterPressureRelief() {
+        Fixture fixture = fixture();
+        var selection = SelectionResolver.resolve(fixture.dataSet, false);
+        var ledger = AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            var witness = ManagedSelectionWitness.capture(fixture.dataSet, selection,
+                    ProjectionRegistry.getProjection(), source(selection), fixture.budget(), owner);
+            var pressure = owner.reserve(ledger.limitBytes() - ledger.currentBytes() - 1);
+            var failure = assertThrows(ResourceLimitException.class,
+                    () -> witness.requireCurrent(fixture.budget(), owner));
+            pressure.close();
+            assertSame(failure, assertThrows(ResourceLimitException.class,
+                    () -> witness.requireCurrent(fixture.budget(), owner)));
+        }
+        assertEquals(0, ledger.currentBytes());
     }
 
     @Test
@@ -192,7 +213,7 @@ class ManagedSelectionWitnessTest {
         try (var owner = AttemptMemoryLedger.production().rootOwner()) {
             ManagedSelectionWitness witness = ManagedSelectionWitness.capture(fixture.dataSet,
                     selection, ProjectionRegistry.getProjection(), source(selection),
-                    budget(), owner);
+                    fixture.budget(), owner);
             var fact = witness.frozenSelectedFacts().get(1);
             assertTrue(fact.protectedOccurrence());
             assertEquals("before", fact.tags().get("name"));
@@ -202,7 +223,7 @@ class ManagedSelectionWitnessTest {
             assertEquals(original, fact.coordinate());
             assertEquals("before", witness.frozenSelectedFacts().get(1).tags().get("name"));
             assertThrows(IllegalStateException.class,
-                    () -> witness.requireCurrent(budget(), owner));
+                    () -> witness.requireCurrent(fixture.budget(), owner));
         }
     }
 
@@ -215,11 +236,13 @@ class ManagedSelectionWitnessTest {
                 var foreign = otherLedger.rootOwner()) {
             ManagedSelectionWitness witness = ManagedSelectionWitness.capture(fixture.dataSet,
                     selection, ProjectionRegistry.getProjection(), source(selection),
-                    budget(), owner);
+                    fixture.budget(), owner);
             assertThrows(IllegalArgumentException.class,
-                    () -> witness.requireCurrent(budget(), foreign));
+                    () -> witness.requireCurrent(fixture.budget(), foreign));
+            assertThrows(IllegalArgumentException.class,
+                    () -> witness.requireCurrent(budget(), owner), "A fresh work budget is foreign even on the same memory ledger");
             assertEquals(0L, otherLedger.currentBytes());
-            witness.requireCurrent(budget(), owner);
+            witness.requireCurrent(fixture.budget(), owner);
         }
     }
 
@@ -230,10 +253,10 @@ class ManagedSelectionWitnessTest {
         Way selected = way(before, middle, after);
         dataSet.addPrimitive(selected);
         dataSet.setSelected(List.of(selected));
-        return new Fixture(dataSet, before, middle);
+        return new Fixture(dataSet, before, middle, budget());
     }
 
-    private record Fixture(DataSet dataSet, Node before, Node middle) { }
+    private record Fixture(DataSet dataSet, Node before, Node middle, EmissionWorkBudget budget) { }
 
     private static Node node(double lon) { return new Node(new LatLon(0, lon)); }
 

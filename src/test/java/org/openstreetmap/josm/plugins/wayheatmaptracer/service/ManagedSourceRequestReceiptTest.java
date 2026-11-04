@@ -192,6 +192,11 @@ class ManagedSourceRequestReceiptTest {
         var outside = new RasterPoint(-context.profileCoordinateScale(), -context.profileCoordinateScale());
         assertFalse(context.evidenceSegmentAuthorized(first, outside, budget, owner));
         assertFalse(context.routeSegmentAuthorized(first, outside, budget, owner));
+        var frameCorner = context.coordinateFrame().toMetric(context.coordinateFrame().distortionCertificate().northEast());
+        var beyondFrame = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint(
+                frameCorner.xMeters() + 1, frameCorner.yMeters() + 1);
+        assertFalse(context.routePositionAuthorized(beyondFrame, budget, owner));
+        assertFalse(context.evidencePositionAuthorized(beyondFrame, budget, owner));
         // A diagonal segment exposes non-affine north scale and its physical local normal.
         var diagonal = new RasterPoint(first.x() + context.profileCoordinateScale() * 4,
                 first.y() + context.profileCoordinateScale() * 5);
@@ -227,6 +232,53 @@ class ManagedSourceRequestReceiptTest {
             assertEquals(0, ledger.currentBytes());
             assertSame(failure, assertThrows(AttemptMemoryLedger.ResourceLimitException.class,
                     () -> budget.charge(EmissionWorkBudget.Operation.PREPARATION, 0)));
+        }
+    }
+
+    @Test void endpointArithmeticScratchRefusalAndCancellationAreTerminalForTheSameAttempt() throws Exception {
+        var projection = Projections.getProjectionByCode("EPSG:3857");
+        var first = projection.latlon2eastNorth(new LatLon(49.44, 14));
+        var source = List.of(first, new EastNorth(first.east() + 100, first.north() + 100),
+                new EastNorth(first.east() + 101, first.north() + 101));
+        for (boolean cancellation : List.of(false, true)) {
+            var ledger = AttemptMemoryLedger.production();
+            var owner = ledger.rootOwner();
+            var pressure = owner.child("test-arithmetic-pressure");
+            var reached = new AtomicBoolean();
+            var cancellationChecks = new AtomicInteger();
+            var inspectAfter = new AtomicInteger(Integer.MAX_VALUE);
+            var budget = new EmissionWorkBudget(TraceBudgets.defaults(), () -> {
+                if (cancellationChecks.incrementAndGet() < inspectAfter.get()) return false;
+                boolean arithmetic = StackWalker.getInstance().walk(frames -> frames.anyMatch(
+                        frame -> frame.getMethodName().equals("resampleManagedSourceParameters")));
+                if (!arithmetic || !reached.compareAndSet(false, true)) return false;
+                if (cancellation) return true;
+                pressure.reserve(ledger.limitBytes() - ledger.currentBytes() - 32 * 1024);
+                return false;
+            });
+            var decoder = new TileDecoderClassifier(); byte[] png = colorRoutePng();
+            try (owner; var coordinator = new TileFetchCoordinator((request, credentials) ->
+                        new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                                png, null, Duration.ZERO, ""),
+                    new ManagedTileCache(cache.resolve(cancellation ? "cancel" : "pressure"), decoder),
+                    decoder, TileReliabilityPolicy.defaults())) {
+                var sampler = new TileHeatmapSampler(coordinator);
+                try (var capture = sampler.prepareForEmission(managedSettings(), source, List.of("hot"),
+                        "hot", false, projection, budget, owner)) {
+                    cancellationChecks.set(0);
+                    inspectAfter.set(Math.multiplyExact(capture.selectedMosaic().image().getWidth(),
+                            capture.selectedMosaic().image().getHeight()));
+                    var failure = assertThrows(RuntimeException.class, () -> sampler.sampleProfilesRetainingL0(
+                            capture, "hot", IntensitySamplingMode.COLOR_MAPPING, budget, owner, CancellationProbe.NONE));
+                    assertTrue(reached.get(), "Failure must occur at the admitted arithmetic phase");
+                    if (cancellation) assertInstanceOf(CancellationException.class, failure);
+                    else assertInstanceOf(AttemptMemoryLedger.ResourceLimitException.class, failure);
+                    pressure.close();
+                    assertSame(failure, assertThrows(RuntimeException.class,
+                            () -> budget.charge(EmissionWorkBudget.Operation.PREPARATION, 0)));
+                }
+            }
+            assertEquals(0, ledger.currentBytes());
         }
     }
 

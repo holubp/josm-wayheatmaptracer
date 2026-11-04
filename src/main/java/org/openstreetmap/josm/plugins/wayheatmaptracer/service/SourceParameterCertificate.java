@@ -93,7 +93,9 @@ public final class SourceParameterCertificate {
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
         var owner = parent.child("managed-source-parameter-certificate");
         boolean complete = false;
-        try {
+        try (var arithmeticScratch = owner.child("managed-source-alias-arithmetic")) {
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+            arithmeticScratch.reserve(PolylineMath.ENDPOINT_ARITHMETIC_SCRATCH_BYTES);
             long bytes = Math.addExact(4096L, Math.addExact(
                     Math.multiplyExact((long) producedRows.size(), 384L),
                     Math.multiplyExact((long) original.size(), 512L)));
@@ -225,7 +227,7 @@ public final class SourceParameterCertificate {
     private static SourceAlias certifyAlias(int row, int vertex, PolylineMath.SourceParameter parameter,
             List<EastNorth> original, RasterPoint actualRaster, ManagedGroundTransform ground,
             TileHeatmapSampler.PreparedManagedCapture capture, EmissionWorkBudget budget) {
-        budget.charge(EmissionWorkBudget.Operation.PREPARATION, 64);
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION, 256);
         EastNorth target = original.get(vertex), point = parameter.point();
         double projectedUpper = PolylineMath.boundaryProjectedErrorUpper(original, parameter, vertex);
         if (point.distance(target) > projectedUpper) {

@@ -134,6 +134,9 @@ public final class ManagedSelectionWitness implements AutoCloseable {
             if (!sameSnapshot(frozen, current)) {
                 throw new IllegalStateException("Managed selected source or relevant referrers changed");
             }
+        } catch (AttemptMemoryLedger.ResourceLimitException failure) {
+            budget.failTerminally(failure);
+            throw failure;
         }
     }
 
