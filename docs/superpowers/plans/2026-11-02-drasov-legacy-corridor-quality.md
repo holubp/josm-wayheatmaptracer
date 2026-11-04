@@ -247,6 +247,38 @@ notretained; exactaffectedcommand and allXML/log/manifests are available; do not
 invent unavailable execution evidence. Current row-pair census remains synthetic
 tested only; no actual184/21 private invocation has occurred.
 
+Latest verified continuation: Legacy P0R1 independently CLOSED at6d6bd8ec,
+manifest713cea59; root ran ONE32Mcache-only diagnostic screen. TypedTOTAL_WORK
+31998286,next2304,seed0/3 BASErow11→16,firststagefalse;63completed queries
+(13admitted/50rejected),64thunfinished. Tax10613495 included;production21384791.
+All852LOCAL invocations used ONE local window then DENSEfallback for
+NOISE_FLOOR_NONZERO;0expansions/repeats. Thus proposed P1overlapcache is REJECTED
+for this measured prefix. Mode8989266/region5579401/node4709492;kernel4.556s,
+peak53176224B/final0,network0,fresh185/301 numericdelta0 underexisting5e-7.
+TaskBUILD SUCCESS is harness success only: no M/QCTK/fitting result. Original OSM
+authority still unavailable. Receipthashes/analysis: drasov-legacy-p0-result-analysis.md.
+Smallest proved next exact optimization counts actual valid/zero samples and
+tests Z<=floor(0.2*(V-1)),V>0 to skip doomed LOCAL mode extraction, retaining
+SAME denseFallback incl interval-rounding. No positive-global-floor assumption,
+policy substitution, cache or new numerical model. kernel_memory_closure owns
+new josm-drasov-local-noise-precheck,base6d6,explicitopt-in/TDD; no private rerun.
+
+A refusal-reuse source435466dc independently CLOSED,239tests incl20focused,
+no default change. kernel_memory_audit prepares NEW R4 helper/fingerprint/claim in
+drasov-a-r4-refusal-reuse-execution/ bound435; old88measurement/claim immutable.
+Curved-census sourceR1 dc1bd5c6 independently CLOSED (24affected tests); bounded
+identity andinitial-stop fixes+index-only rounding clarification verified. Its
+standalone32Mprivate-census helper is under preparation by affinity_contract_probe,
+defaultmetadata-only/no capture; no actual184/21 run. Savedfoldreference JSON7883edd1
+reproduces21 archived folds and lists distinct21bit-equal-normal pairs; no gridquery.
+
+New integration tree josm-drasov-reviewed-followups,branchcodex/drasov-reviewed-followups,
+preserves old88baseline. ReviewedA435→3832851c,census304/dc→9734d610/2d3a18f7;
+managed_context_closure mergedP06586/6d→deddcdaf/4e447884 (3actualconflicts).
+NamedforLegacyProgress avoidsnull5argambiguity; private7tuple preservesA/measured/
+progress ande1freshness.30namedcombinedtest suites running; sourcefrozen4e447884
+pendingresults/independentintegrationaudit. No private files imported/new release.
+
 Use existing actors/reports; one writer per isolated worktree. No recursive agents.
 `managed_source_audit` performs source/A/proof reviews; `kernel_memory_audit` closed
 pin/transport/owner/policy reviews. Pause writers for review snapshots. Exact
