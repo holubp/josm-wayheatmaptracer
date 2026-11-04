@@ -37,9 +37,13 @@
   41probes preserve5986samples and settled evidence, skip41doomedextractions;
   MODE153709→136325. Source/helper reviews CLOSED. Root ONE actual32M invocation
   initial-noise-67856654-32m-001 completed as typedTOTAL_WORK31999991,next32,
-  seed0BASErow12 vs oldrow11,409pairs,4.382skernel,noM/QCTK. Not practical
-  geometry improvement. Owner analyzes exact work/progress. Integration9832f7df
-  on ee94 clean,317tests26XML PASS; independent merge audit underway.
+  seed0BASErow12 vs oldrow11,409pairs,4.382skernel,noM/QCTK.947skips,
+  68completed evaluations vs63. Same first63 descriptors (all12words) prove
+  production20,905,098→18,014,072(-13.83%); diagnostic10,339,711→10,333,071.
+  Not practical geometry improvement. Result drasov-local-noise-precheck-result-analysis.md.
+  Integration9832f7df on ee94 clean,317tests26XML PASS; independent merge audit
+  CLOSED drasov-noise-integration-review.md. Focused strong Legacy execution
+  diagnosis assigned; no cap increase or automatic retry.
 - Curved-census source dc1bd5c6 and helper R1 independently CLOSED. Root's ONE
   fad79c35 replacement invocation completed184/184 pairs:7,870,402work,
   41,129,312Bpeak/0after,4.915s,0network,all24hashes unchanged. Fresh21folds
