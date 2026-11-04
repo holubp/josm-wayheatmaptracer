@@ -510,7 +510,15 @@ public final class LegacyEmissionKernel {
             if(emission!=null)emission.close();if(factsOwner!=null)factsOwner.close();
             if(failure instanceof CancellationException||failure instanceof EmissionWorkBudget.LimitExceededException
                     ||failure instanceof AttemptMemoryLedger.ResourceLimitException)input.recordTerminalExecutionFailure(failure);
-            if(progress!=null)progress.seal(failure);throw failure;
+            if(progress!=null) {
+                boolean seal=true;
+                if(grouped==GroupedExecution.EXACT_Q0_CEILING_CENSUS_V1) {
+                    try {progress.requireCompatible(input,queryPolicy,executionPolicy);}
+                    catch(IllegalArgumentException revoked){seal=false;}
+                }
+                if(seal)progress.seal(failure);
+            }
+            throw failure;
         }
     }
     private EmissionResult solveBody(SampledEmissionInput input,List<CrossSectionProfile> suppressed,

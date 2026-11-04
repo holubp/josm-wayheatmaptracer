@@ -35,18 +35,20 @@ class LegacyCeilingCensusTest {
         }
     }
 
-    record Paid(Map<EmissionWorkBudget.Operation,Long> production,Map<Counter,Long> events,long totalTax,long candidates,long witnesses,long freshnessCost,boolean census) { }
+    record Paid(Map<EmissionWorkBudget.Operation,Long> production,Map<Counter,Long> events,Map<EmissionWorkBudget.Operation,Long> tax,
+            long candidates,long witnesses,Map<EmissionWorkBudget.Operation,Long> ticketWork,boolean census) { }
     static Paid paid(String policy) throws Exception {
         var budget=new EmissionWorkBudget(TraceBudgets.defaults(),CancellationProbe.NONE);
         try(var f=LegacyCompetitiveProofTest.fixture(false,budget)) {
-            long before=budget.workUsed();f.input().requireOpenAndUnchanged();long freshnessCost=budget.workUsed()-before;
+            var ticketWork=LegacyCeilingTicketFixture.publicationWork(f.input(),f.owner());
             try(var p=LegacyEmissionProgress.open(f.input(),LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC);
             var result=LegacyGroupedAllStageTest.solve(f.input(),f.profiles(),List.of(0.0,.25),List.of(),(a,b,c)->b,policy,p)) {
-            var v=p.view();var production=new EnumMap<EmissionWorkBudget.Operation,Long>(EmissionWorkBudget.Operation.class);long tax=0;
-            for(var op:EmissionWorkBudget.Operation.values()){production.put(op,v.productionUnits(op));tax+=v.diagnosticUnits(op);}
+            var v=p.view();var production=new EnumMap<EmissionWorkBudget.Operation,Long>(EmissionWorkBudget.Operation.class);
+            var tax=new EnumMap<EmissionWorkBudget.Operation,Long>(EmissionWorkBudget.Operation.class);
+            for(var op:EmissionWorkBudget.Operation.values()){production.put(op,v.productionUnits(op));tax.put(op,v.diagnosticUnits(op));}
             var events=new EnumMap<Counter,Long>(Counter.class);for(var counter:Counter.values())events.put(counter,v.count(counter));
             assertEquals(budget.snapshot(),result.work());
-            return new Paid(production,events,tax,v.count(Counter.COMPONENT_BOUND_PREPARATIONS),v.count(Counter.WITNESS_CERTIFIED),freshnessCost,v.hasCeilingCensus());
+            return new Paid(production,events,tax,v.count(Counter.COMPONENT_BOUND_PREPARATIONS),v.count(Counter.WITNESS_CERTIFIED),ticketWork,v.hasCeilingCensus());
             }
         }
     }
@@ -54,9 +56,12 @@ class LegacyCeilingCensusTest {
         var off=paid("EXACT_Q0_CUTOFF_V1");var on=paid(CENSUS);
         assertEquals(off.production(),on.production());assertEquals(off.events(),on.events());
         assertFalse(off.census());assertTrue(on.census());
-        // Constant census arithmetic/allocation PLUS the measured cost of each extra source-publication check.
-        assertEquals(off.freshnessCost(),on.freshnessCost());
-        assertEquals(65+64*on.witnesses()+128*on.candidates()+on.freshnessCost()*(1+on.witnesses()+on.candidates()),on.totalTax()-off.totalTax());
+        // Existing independently prepared tickets supply the complete check's actual per-operation price.
+        assertEquals(off.ticketWork(),on.ticketWork());long checks=1+on.witnesses()+on.candidates();
+        for(var op:EmissionWorkBudget.Operation.values()) {
+            long own=op==EmissionWorkBudget.Operation.PREPARATION?64+64*on.witnesses()+128*on.candidates():op==EmissionWorkBudget.Operation.ALLOCATION?1:0;
+            assertEquals(own+checks*on.ticketWork().get(op),on.tax().get(op)-off.tax().get(op),op.name());
+        }
         assertTrue(on.candidates()>0);assertTrue(on.events().get(Counter.STRICT_CERTIFICATE_DEFERRALS)>0);
     }
 

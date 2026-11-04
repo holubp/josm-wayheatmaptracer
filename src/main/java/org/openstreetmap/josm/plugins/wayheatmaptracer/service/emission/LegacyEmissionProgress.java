@@ -290,16 +290,17 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     void competitiveBegin(LegacyEmissionKernel.CompetitiveExecution execution){pay(8);competitiveExecution=execution;}
     void witnessBegin(){event(Counter.WITNESS_ATTEMPTED);}
     void groupedBegin(LegacyEmissionKernel.GroupedExecution execution){
-        pay(8);groupedExecution=execution;
-        if(execution==LegacyEmissionKernel.GroupedExecution.EXACT_Q0_CEILING_CENSUS_V1) {
-            pay(64);budget.charge(Operation.ALLOCATION,1);tax[Operation.ALLOCATION.ordinal()]++;
-            ceilingRequireFresh(boundInput);ceiling=new long[CEILING_STAGE_WORDS+CEILING_TOTAL_WORDS];
+        if(execution!=LegacyEmissionKernel.GroupedExecution.EXACT_Q0_CEILING_CENSUS_V1){pay(8);groupedExecution=execution;return;}
+        var input=boundInput;ceilingCharge(Operation.PREPARATION,72);ceilingCharge(Operation.ALLOCATION,1);
+        try(var publication=ceilingRequireFresh(input)) {
+            groupedExecution=execution;ceiling=new long[CEILING_STAGE_WORDS+CEILING_TOTAL_WORDS];
         }
     }
     boolean ceilingEnabled(){return ceiling!=null;}
     /** Actual already-stored absolute witness, with all observation work prepaid before publication. */
     void ceilingWitness(SampledEmissionInput input,java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.model.EmissionResult.Costs> costs) {
-        pay(costs.isPresent()?72:64);ceilingRequireFresh(input);
+        ceilingCharge(Operation.PREPARATION,costs.isPresent()?72:64);
+        try(var publication=ceilingRequireFresh(input)) {
         Arrays.fill(ceiling,0,CEILING_STAGE_WORDS,0);ceiling[0]=seed;ceiling[1]=stage;
         if(costs.isPresent()) {
             var c=costs.orElseThrow();ceiling[2]=1;
@@ -309,11 +310,12 @@ public final class LegacyEmissionProgress implements AutoCloseable {
             currentWitnessAvailable=true;add(Counter.WITNESS_CERTIFIED,1);
         }
         ceilingStageAvailable=true;
+        }
     }
-    void prepareCeilingObservation(){pay(128);}
-    /** Charge-free mutation after the caller's last cancellation checkpoint; no source/query is retained. */
+    void prepareCeilingObservation(){ceilingCharge(Operation.PREPARATION,128);}
+    /** Complete owned final check, followed only by prepaid callback-free census writes. */
     void ceilingObservation(SampledEmissionInput input,boolean zero,double l0,double cap,boolean q0Strict) {
-        ceilingRequireFresh(input);
+        try(var publication=ceilingRequireFresh(input)) {
         if(!ceilingStageAvailable)throw new IllegalStateException("Ceiling stage is unavailable");
         ceilingIncrement(CeilingCounter.CANDIDATES);
         if(zero){ceilingIncrement(CeilingCounter.ZERO_DIRECTION);return;}
@@ -329,24 +331,50 @@ public final class LegacyEmissionProgress implements AutoCloseable {
             ceilingIncrement(CeilingCounter.CAP_CROSSINGS);
             if(!q0Strict)ceilingIncrement(CeilingCounter.Q0_SURVIVOR_CROSSINGS);
         }
+        }
     }
-    /** Includes actual managed witness scratch work; primitive accounting also preserves partial failures. */
-    private void ceilingRequireFresh(SampledEmissionInput input) {
+    /** Same exact live-owner identity as requireCompatible for this buffer's immutable policies. */
+    private boolean ceilingAuthority(SampledEmissionInput input) {
+        return input!=null&&input==boundInput&&!sealed&&!owner.isClosed()&&budget==input.workBudget();
+    }
+    /** New-mode prepayment cannot mutate a buffer revoked by its own charge callback. */
+    private void ceilingCharge(Operation operation,long units) {
+        var input=boundInput;requireCompatible(input,query,execution);long before=budget.operationUnits(operation);
+        try {budget.charge(operation,units);budget.requireActiveForFinalPublication();}
+        finally {if(ceilingAuthority(input))tax[operation.ordinal()]+=budget.operationUnits(operation)-before;}
+        requireCompatible(input,query,execution);
+    }
+    /** Ticket owns all source/preparation scratch through the caller's actual numeric publication. */
+    private SampledEmissionInput.FinalPublication ceilingRequireFresh(SampledEmissionInput input) {
         requireCompatible(input,query,execution);
         long a=budget.operationUnits(Operation.PREPARATION),c=budget.operationUnits(Operation.CELL_QUERY),n=budget.operationUnits(Operation.NODE_READ),
             m=budget.operationUnits(Operation.MODE_EXTRACTION),r=budget.operationUnits(Operation.REGION_QUERY),al=budget.operationUnits(Operation.ALLOCATION),
             pi=budget.operationUnits(Operation.PAIR_INITIALIZATION),pl=budget.operationUnits(Operation.PAIR_LOOKUP),tr=budget.operationUnits(Operation.TRANSITION),
             t=budget.operationUnits(Operation.TRANSPORT),tc=budget.operationUnits(Operation.TIE_COMPARISON),bp=budget.operationUnits(Operation.BACKPOINTER_VISIT);
-        try {input.requireOpenAndUnchanged();}
+        SampledEmissionInput.FinalPublication publication=null;
+        try {
+            publication=input.prepareManagedFinalPublication(owner,64,256);
+            publication.validate();requireCompatible(input,query,execution);return publication;
+        } catch(RuntimeException failure) {
+            RuntimeException primary=failure;
+            // A supplier may revoke the observer and also fail the attempt. The already
+            // sticky failure takes priority over the consequent closed-ticket rejection.
+            try {budget.requireActiveForFinalPublication();}catch(RuntimeException terminal){primary=terminal;}
+            if(publication!=null)try{publication.close();}catch(RuntimeException cleanup){if(cleanup!=primary)primary.addSuppressed(cleanup);}
+            throw primary;
+        }
         finally {
+            // No exception-producing guard in finally: a revoked snapshot stays unchanged,
+            // and an already thrown source/cap/cancellation remains the primary exception.
+            if(ceilingAuthority(input)) {
             tax[Operation.PREPARATION.ordinal()]+=budget.operationUnits(Operation.PREPARATION)-a;tax[Operation.CELL_QUERY.ordinal()]+=budget.operationUnits(Operation.CELL_QUERY)-c;
             tax[Operation.NODE_READ.ordinal()]+=budget.operationUnits(Operation.NODE_READ)-n;tax[Operation.MODE_EXTRACTION.ordinal()]+=budget.operationUnits(Operation.MODE_EXTRACTION)-m;
             tax[Operation.REGION_QUERY.ordinal()]+=budget.operationUnits(Operation.REGION_QUERY)-r;tax[Operation.ALLOCATION.ordinal()]+=budget.operationUnits(Operation.ALLOCATION)-al;
             tax[Operation.PAIR_INITIALIZATION.ordinal()]+=budget.operationUnits(Operation.PAIR_INITIALIZATION)-pi;tax[Operation.PAIR_LOOKUP.ordinal()]+=budget.operationUnits(Operation.PAIR_LOOKUP)-pl;
             tax[Operation.TRANSITION.ordinal()]+=budget.operationUnits(Operation.TRANSITION)-tr;tax[Operation.TRANSPORT.ordinal()]+=budget.operationUnits(Operation.TRANSPORT)-t;
             tax[Operation.TIE_COMPARISON.ordinal()]+=budget.operationUnits(Operation.TIE_COMPARISON)-tc;tax[Operation.BACKPOINTER_VISIT.ordinal()]+=budget.operationUnits(Operation.BACKPOINTER_VISIT)-bp;
+            }
         }
-        requireCompatible(input,query,execution);
     }
     private void ceilingIncrement(CeilingCounter counter) {
         int total=CEILING_STAGE_WORDS+counter.ordinal();

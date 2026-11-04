@@ -165,12 +165,12 @@ class LegacyCeilingArithmeticTest {
                 try(var p=LegacyEmissionProgress.open(input,QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1)) {
                 long openAllocation=budget.operationUnits(EmissionWorkBudget.Operation.ALLOCATION)-beforeOpen;
                 p.begin(input,QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1);
-                long beforeFresh=budget.operationUnits(EmissionWorkBudget.Operation.ALLOCATION);input.requireOpenAndUnchanged();
-                long nativeFreshAllocation=budget.operationUnits(EmissionWorkBudget.Operation.ALLOCATION)-beforeFresh;assertTrue(nativeFreshAllocation>0);
+                var ticketWork=LegacyCeilingTicketFixture.publicationWork(input,owner);
+                long ticketAllocation=ticketWork.get(EmissionWorkBudget.Operation.ALLOCATION);assertTrue(ticketAllocation>0);
                 long allocation=budget.operationUnits(EmissionWorkBudget.Operation.ALLOCATION);
                 p.groupedBegin(LegacyEmissionKernel.GroupedExecution.EXACT_Q0_CEILING_CENSUS_V1);p.seal(null);
-                // Independently measured original validation plus one census array; every admitted unit is tax.
-                assertEquals(1+nativeFreshAllocation,budget.operationUnits(EmissionWorkBudget.Operation.ALLOCATION)-allocation);
+                // Independently prepared complete ticket plus one census array; every admitted unit is tax.
+                assertEquals(1+ticketAllocation,budget.operationUnits(EmissionWorkBudget.Operation.ALLOCATION)-allocation);
                 assertEquals(budget.operationUnits(EmissionWorkBudget.Operation.ALLOCATION)-allocation,
                     p.view().diagnosticUnits(EmissionWorkBudget.Operation.ALLOCATION)-openAllocation);
                 assertTrue(p.view().hasCeilingCensus());
@@ -178,5 +178,21 @@ class LegacyCeilingArithmeticTest {
             }
         } finally {MainApplication.getLayerManager().removeLayer(layer);}
         assertEquals(0,ledger.currentBytes());
+    }
+
+    @Test void syntheticFinalTicketHasNoCallbackOrChargeAtItsCompleteScanAndOwnsItsScratch() {
+        try(var f=LegacyEmissionProgressTest.fixture()) {
+            var budget=f.input().workBudget();long bytes=f.ledger().currentBytes();
+            try(var publication=f.input().prepareManagedFinalPublication(f.owner(),64,256)) {
+                var before=budget.snapshot();publication.validate();assertEquals(before,budget.snapshot());
+                assertThrows(IllegalStateException.class,publication::validate);
+            }
+            assertEquals(bytes,f.ledger().currentBytes());
+            try(var publication=f.input().prepareManagedFinalPublication(f.owner(),64,256)) {
+                var normal=f.input().profiles().levelZeroProfiles().get(0).normalScreen();normal.x=Math.nextUp(normal.x);
+                assertThrows(IllegalStateException.class,publication::validate);
+            }
+            assertEquals(bytes,f.ledger().currentBytes());
+        }
     }
 }
