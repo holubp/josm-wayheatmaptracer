@@ -914,6 +914,12 @@ consecutive run and records its outcome; safe measured proposals remain usable.
 This performs no second solve or refinement, and unchanged raw UNKNOWN geometry
 keeps the existing eligibility.
 
+Source-slab diagnostics retain the immutable station plan, every measured station
+including a failed prefix endpoint, and every directed mode-link attempt with a
+typed outcome/reason. Unavailable scalar query results remain distinct from
+unqueried station/link work; neither is reported as measured zero. These caches
+and their diagnostic payloads are pre-admitted under the same attempt caps.
+
 Original native owners, newly measured owners and carry origins remain
 distinct in the additive diagnostics. Search width, source acquisition,
 Q/C/T/K arithmetic, the exact pair-state solve and caller/production caps

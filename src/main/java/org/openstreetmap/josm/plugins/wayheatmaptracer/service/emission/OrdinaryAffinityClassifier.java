@@ -27,14 +27,43 @@ public final class OrdinaryAffinityClassifier {
         double threshold, List<CellEvidence> cells) {
         public CrosscutPiece { cells = List.copyOf(cells); }
     }
+    public record StationPlan(int index, double parameter, MetricPoint anchor, double nativePitchMeters,
+        MetricPoint lower, MetricPoint upper, int sampleCount) { }
+    public enum QueryStatus { COMPLETE, PARTIAL_UNAVAILABLE }
     public record Station(double parameter, MetricPoint anchor, double nativePitchMeters,
         List<Sample> samples, AcceptedThresholdExtraction extraction,
-        List<AcceptedModeThresholdReceipt> modes) {
-        public Station { samples = List.copyOf(samples); modes = List.copyOf(modes); }
+        List<AcceptedModeThresholdReceipt> modes, List<BilinearSegmentIntegral.Result> sampleQueries,
+        QueryStatus queryStatus) {
+        public Station { samples = List.copyOf(samples); modes = List.copyOf(modes);
+            sampleQueries = List.copyOf(sampleQueries); }
     }
-    public record DirectLink(int piece, int lowerModeIndex, int upperModeIndex,
+    public enum LinkStatus { NOT_QUERIED, ADMITTED, REJECTED, UNAVAILABLE }
+    public enum LinkReason { NONE, CONTINUATION_BOUND, SOURCE_AUTHORITY, SCALAR_SUPPORT, BELOW_THRESHOLD,
+        MODE_COUNT_MISMATCH, MODE_INCOMPLETE }
+    public record DirectLink(int piece, int fromModeIndex, int toModeIndex,
         AcceptedModeThresholdReceipt from, AcceptedModeThresholdReceipt to,
-        BilinearSegmentIntegral.Result scalar, double threshold) { }
+        java.util.Optional<BilinearSegmentIntegral.Result> scalar, double threshold,
+        LinkStatus status, LinkReason reason) {
+        public DirectLink {
+            Objects.requireNonNull(from); Objects.requireNonNull(to); Objects.requireNonNull(scalar);
+            Objects.requireNonNull(status); Objects.requireNonNull(reason);
+            if (piece < 0 || fromModeIndex < 0 || toModeIndex < 0 || !Double.isFinite(threshold)
+                    || threshold < 0 || threshold > 1
+                    || status == LinkStatus.ADMITTED && (reason != LinkReason.NONE || scalar.isEmpty()
+                        || scalar.orElseThrow().status() != BilinearSegmentIntegral.Status.COMPLETE
+                        || scalar.orElseThrow().minimum().orElseThrow() < threshold)
+                    || status == LinkStatus.UNAVAILABLE && (reason != LinkReason.SCALAR_SUPPORT || scalar.isEmpty()
+                        || scalar.orElseThrow().status() != BilinearSegmentIntegral.Status.UNAVAILABLE)
+                    || status == LinkStatus.NOT_QUERIED && (scalar.isPresent()
+                        || reason != LinkReason.MODE_COUNT_MISMATCH && reason != LinkReason.MODE_INCOMPLETE)
+                    || status == LinkStatus.REJECTED && reason == LinkReason.BELOW_THRESHOLD && (scalar.isEmpty()
+                        || scalar.orElseThrow().status() != BilinearSegmentIntegral.Status.COMPLETE
+                        || !(scalar.orElseThrow().minimum().orElseThrow() < threshold))
+                    || status == LinkStatus.REJECTED && reason != LinkReason.BELOW_THRESHOLD
+                        && (scalar.isPresent() || reason != LinkReason.CONTINUATION_BOUND && reason != LinkReason.SOURCE_AUTHORITY))
+                throw new IllegalArgumentException("Directed link receipt contradicts its query status");
+        }
+    }
     public record ChainPair(int lowerChain, int upperChain, List<CrosscutPiece> crosscut) {
         public ChainPair { crosscut = List.copyOf(crosscut); }
     }
@@ -46,10 +75,20 @@ public final class OrdinaryAffinityClassifier {
         MetricPoint position, double rasterOffset, AcceptedModeThresholdReceipt sourceOwner,
         AcceptedModeThresholdReceipt stationOwner, int chain,
         java.util.Optional<BilinearSegmentIntegral.Result> pointScalar) { }
+    public enum PreparationPhase { CHART, STATION_AUTHORITY, MODES, MODE_COUNT, LINKS }
+    public record PreparationFailure(PreparationPhase phase, int stationIndex, int fromModeIndex,
+        int toModeIndex, Reason reason) { }
     public record Slab(int originalFrom, int originalTo, Reason reason, RasterPoint rasterNormal,
         MetricPoint metricNormal, List<Station> stations, List<DirectLink> links,
-        List<ChainPair> pairs, long stationExtractions) {
-        public Slab { stations = List.copyOf(stations); links = List.copyOf(links); pairs = List.copyOf(pairs); }
+        List<ChainPair> pairs, long stationExtractions, List<StationPlan> plan,
+        java.util.Optional<PreparationFailure> failure) {
+        public Slab { stations = List.copyOf(stations); links = List.copyOf(links); pairs = List.copyOf(pairs);
+            plan = List.copyOf(plan); failure = Objects.requireNonNull(failure); }
+        /** Absent planned station data is unqueried, not unavailable scalar data or measured zero. */
+        public java.util.Optional<Station> availableStation(int index) {
+            if (index < 0 || index >= plan.size()) throw new IndexOutOfBoundsException("Station is not in the frozen plan");
+            return index >= stations.size() ? java.util.Optional.empty() : java.util.Optional.of(stations.get(index));
+        }
     }
     public record Receipt(Status status, Reason reason, NativeConnectorEvaluator.RowState from,
         NativeConnectorEvaluator.RowState to, MetricPoint actualFrom, MetricPoint actualTo,
@@ -216,108 +255,161 @@ public final class OrdinaryAffinityClassifier {
         return unknown(from, to, a, b, slab, Reason.NO_CERTIFIED_CROSSCUT, scalar);
     }
 
-    private Slab prepare(RowPair pair) {
-        long before = stationExtractions;
-        var slab = prepareRows(pair);
-        return new Slab(slab.originalFrom(), slab.originalTo(), slab.reason(), slab.rasterNormal(),
-            slab.metricNormal(), slab.stations(), slab.links(), slab.pairs(), stationExtractions - before);
+    /** Available prefix plus an exact immutable plan: no failed query is erased or invented. */
+    private final class Preparation {
+        private final RowPair pair;
+        private final long beforeExtractions;
+        private RasterPoint normal;
+        private MetricPoint metricNormal;
+        private final List<StationPlan> plan;
+        private final List<Station> stations;
+        private final List<DirectLink> links;
+        private final List<ChainPair> pairs;
+        Preparation(RowPair pair) {
+            reserve(512);
+            this.pair = pair; beforeExtractions = stationExtractions;
+            normal = new RasterPoint(0, 0); metricNormal = new MetricPoint(0, 0);
+            plan = new ArrayList<>(); stations = new ArrayList<>();
+            links = new ArrayList<>(); pairs = new ArrayList<>();
+        }
+        Slab fail(Reason reason, PreparationPhase phase, int station, int from, int to) {
+            return finish(reason, java.util.Optional.of(new PreparationFailure(phase, station, from, to, reason)));
+        }
+        Slab finish(Reason reason, java.util.Optional<PreparationFailure> failure) {
+            long entries = (long) plan.size() + stations.size() + links.size() + pairs.size();
+            work(entries); reserve(256 + 16 * entries);
+            return new Slab(pair.from(), pair.to(), reason, normal, metricNormal, stations, links, pairs,
+                stationExtractions - beforeExtractions, plan, failure);
+        }
     }
 
-    private Slab prepareRows(RowPair pair) {
+    private Slab prepare(RowPair pair) {
+        var evidence = new Preparation(pair);
         var context = input.context();
-        if (pair.to() != pair.from() + 1) return empty(pair, Reason.UNSUPPORTED_CHART);
+        if (pair.to() != pair.from() + 1)
+            return evidence.fail(Reason.UNSUPPORTED_CHART, PreparationPhase.CHART, -1, -1, -1);
         var left = domain.binding().observations().get(pair.from());
         var right = domain.binding().observations().get(pair.to());
         if (left.sourceClass() != NativeConnectorEvaluator.SourceClass.OBSERVED
                 || right.sourceClass() != NativeConnectorEvaluator.SourceClass.OBSERVED)
-            return empty(pair, Reason.SOURCE_OWNERSHIP);
+            return evidence.fail(Reason.SOURCE_OWNERSHIP, PreparationPhase.CHART, -1, -1, -1);
         var fa = context.observations().get(left.retainedObservationIndex());
         var fb = context.observations().get(right.retainedObservationIndex());
-        var normal = fa.normal();
+        var normal = fa.normal(); evidence.normal = normal;
         if (!ExperimentalMeasuredModeInventory.same(normal.x(), fb.normal().x())
                 || !ExperimentalMeasuredModeInventory.same(normal.y(), fb.normal().y()))
-            return empty(pair, Reason.UNSUPPORTED_CHART);
+            return evidence.fail(Reason.UNSUPPORTED_CHART, PreparationPhase.CHART, -1, -1, -1);
         var ar = fa.location().rasterPoint(); var br = fb.location().rasterPoint();
         double determinant = (br.x() - ar.x()) * normal.y() - (br.y() - ar.y()) * normal.x();
-        if (!Double.isFinite(determinant) || determinant == 0) return empty(pair, Reason.UNSUPPORTED_CHART);
+        if (!Double.isFinite(determinant) || determinant == 0)
+            return evidence.fail(Reason.UNSUPPORTED_CHART, PreparationPhase.CHART, -1, -1, -1);
         var a = context.rasterTransform().pixelCenterToMetric(ar.x(), ar.y());
         var b = context.rasterTransform().pixelCenterToMetric(br.x(), br.y());
         var unitEnd = context.rasterTransform().pixelCenterToMetric(ar.x() + normal.x(), ar.y() + normal.y());
         double normalPitch = ExperimentalMeasuredModeInventory.normalPitch(context, left.retainedObservationIndex());
         var metricNormal = new MetricPoint((unitEnd.xMeters() - a.xMeters()) / normalPitch,
             (unitEnd.yMeters() - a.yMeters()) / normalPitch);
+        evidence.metricNormal = metricNormal;
         double nativePitch = minimumNativePitch();
-        if (!Double.isFinite(nativePitch) || nativePitch <= 0) return empty(pair, Reason.NATIVE_PITCH_UNAVAILABLE);
+        if (!Double.isFinite(nativePitch) || nativePitch <= 0)
+            return evidence.fail(Reason.NATIVE_PITCH_UNAVAILABLE, PreparationPhase.CHART, -1, -1, -1);
         long segmentCount = (long) Math.ceil(a.distanceTo(b) / (.5 * nativePitch));
         int segments = checkedCount(Math.max(1, segmentCount));
         int halfSamples = checkedCount((long) Math.ceil(context.searchHalfWidthMeters() / (.5 * nativePitch)));
         int sampleCount = checkedCount(Math.addExact(Math.multiplyExact((long) halfSamples, 2), 1));
-        reserve(Math.addExact(1024L, Math.multiplyExact(segments + 1L, 256L + 96L * sampleCount)));
-        var stations = new ArrayList<Station>(segments + 1);
-        var links = new ArrayList<DirectLink>();
+        reserve(Math.addExact(1024L, Math.multiplyExact(segments + 1L, 512L + 256L * sampleCount)));
         for (int station = 0; station <= segments; station++) {
+            work(1);
             double t = (double) station / segments;
-            double stationChainage = left.profile().cumulativeGroundDistanceMeters()
+            double sourceChainage = left.profile().cumulativeGroundDistanceMeters()
                 + t * (right.profile().cumulativeGroundDistanceMeters() - left.profile().cumulativeGroundDistanceMeters());
-            double stationPitch = context.resolution().effectivePitchMetersAt(
-                context.profileChainage().sourceOriginGroundMeters() + stationChainage);
+            double pitch = context.resolution().effectivePitchMetersAt(context.profileChainage().sourceOriginGroundMeters() + sourceChainage);
             var anchor = interpolate(a, b, t);
-            var lower = displaced(anchor, metricNormal, -context.searchHalfWidthMeters());
-            var upper = displaced(anchor, metricNormal, context.searchHalfWidthMeters());
-            if (!authority(lower, upper)) return empty(pair, Reason.SOURCE_AUTHORITY);
+            evidence.plan.add(new StationPlan(station, t, anchor, pitch,
+                displaced(anchor, metricNormal, -context.searchHalfWidthMeters()),
+                displaced(anchor, metricNormal, context.searchHalfWidthMeters()), sampleCount));
+        }
+        for (var planned : evidence.plan) {
+            int station = planned.index();
+            if (!authority(planned.lower(), planned.upper()))
+                return evidence.fail(Reason.SOURCE_AUTHORITY, PreparationPhase.STATION_AUTHORITY, station, -1, -1);
             var samples = new ArrayList<Sample>(sampleCount);
+            var queries = new ArrayList<BilinearSegmentIntegral.Result>(sampleCount);
+            boolean unavailable = false;
             for (int sample = -halfSamples; sample <= halfSamples; sample++) {
                 work(1);
                 double offset = sample * (context.searchHalfWidthMeters() / halfSamples);
-                var point = displaced(anchor, metricNormal, offset);
+                var point = displaced(planned.anchor(), metricNormal, offset);
                 var value = integral(point, point);
-                samples.add(new Sample(offset, value.mean().orElse(Double.NaN),
-                    value.status() == BilinearSegmentIntegral.Status.COMPLETE));
+                queries.add(value);
+                boolean complete = value.status() == BilinearSegmentIntegral.Status.COMPLETE;
+                unavailable |= !complete;
+                samples.add(new Sample(offset, value.mean().orElse(Double.NaN), complete));
             }
             var frozenSamples = List.copyOf(samples);
             var extraction = new LocalScalarProfileExtractor().extractDetailedWithAcceptedThresholds(frozenSamples,
-                stationPitch, EvidenceModelParameters.Localization.defaults(), memory, CancellationProbe.NONE,
+                planned.nativePitchMeters(), EvidenceModelParameters.Localization.defaults(), memory, CancellationProbe.NONE,
                 count -> budget.charge(EmissionWorkBudget.Operation.MODE_EXTRACTION, count));
             stationExtractions++;
             var accepted = extraction.acceptedReceipts();
+            var current = new Station(planned.parameter(), planned.anchor(), planned.nativePitchMeters(),
+                frozenSamples, extraction, accepted, queries, unavailable ? QueryStatus.PARTIAL_UNAVAILABLE : QueryStatus.COMPLETE);
+            var previous = evidence.stations.isEmpty() ? null : evidence.stations.get(evidence.stations.size() - 1);
+            evidence.stations.add(current); // Includes the actual failing station and its exact sample queries.
             if (accepted.isEmpty() || accepted.size() != extraction.result().rawPeaks().size()
                     || !extraction.result().suppressedModes().isEmpty()
-                    || !extraction.result().baseline().censoredModes().isEmpty())
-                return empty(pair, Reason.UNRESOLVED_MODES);
-            for (var receipt : accepted) if (!complete(extraction, receipt))
-                return empty(pair, Reason.UNRESOLVED_MODES);
-            if (!stations.isEmpty()) {
-                var previous = stations.get(stations.size() - 1);
-                if (previous.modes().size() != accepted.size()) return empty(pair, Reason.UNRESOLVED_LINKS);
-                reserve(128L * accepted.size());
-                for (int i = 0; i < accepted.size(); i++) {
-                    int forward = 0, backward = 0;
-                    BilinearSegmentIntegral.Result selected = null;
-                    for (int j = 0; j < accepted.size(); j++) {
-                        work(1);
-                        var forwardLink = link(previous, previous.modes().get(i), anchor, accepted.get(j), stationPitch, metricNormal);
-                        if (forwardLink != null) { forward++; if (i == j) selected = forwardLink; }
-                        if (i != j && link(previous, previous.modes().get(j), anchor, accepted.get(i), stationPitch, metricNormal) != null)
-                            backward++;
+                    || !extraction.result().baseline().censoredModes().isEmpty()) {
+                unqueriedLinks(evidence, previous, current, station, LinkReason.MODE_INCOMPLETE);
+                return evidence.fail(Reason.UNRESOLVED_MODES, PreparationPhase.MODES, station, -1, -1);
+            }
+            for (int index = 0; index < accepted.size(); index++) if (!complete(extraction, accepted.get(index))) {
+                unqueriedLinks(evidence, previous, current, station, LinkReason.MODE_INCOMPLETE);
+                return evidence.fail(Reason.UNRESOLVED_MODES, PreparationPhase.MODES, station, -1, index);
+            }
+            if (previous != null) {
+                if (previous.modes().size() != accepted.size()) {
+                    unqueriedLinks(evidence, previous, current, station, LinkReason.MODE_COUNT_MISMATCH);
+                    return evidence.fail(Reason.UNRESOLVED_LINKS, PreparationPhase.MODE_COUNT, station, -1, -1);
+                }
+                int count = accepted.size(), base = evidence.links.size();
+                reserve(256L * count * count);
+                // Each directed pair is tested once. Incoming/outgoing uniqueness reads this same matrix.
+                for (int from = 0; from < count; from++) for (int to = 0; to < count; to++) {
+                    work(1);
+                    evidence.links.add(link(station - 1, from, to, previous, current, metricNormal));
+                }
+                for (int mode = 0; mode < count; mode++) {
+                    int outgoing = 0, incoming = 0;
+                    for (int other = 0; other < count; other++) {
+                        work(2);
+                        if (evidence.links.get(base + mode * count + other).status() == LinkStatus.ADMITTED) outgoing++;
+                        if (evidence.links.get(base + other * count + mode).status() == LinkStatus.ADMITTED) incoming++;
                     }
-                    if (forward != 1 || backward != 0 || selected == null)
-                        return empty(pair, Reason.UNRESOLVED_LINKS);
-                    links.add(new DirectLink(station - 1, i, i, previous.modes().get(i), accepted.get(i), selected,
-                        Math.min(previous.modes().get(i).shoulderThreshold(), accepted.get(i).shoulderThreshold())));
+                    if (outgoing != 1 || incoming != 1
+                            || evidence.links.get(base + mode * count + mode).status() != LinkStatus.ADMITTED)
+                        return evidence.fail(Reason.UNRESOLVED_LINKS, PreparationPhase.LINKS, station, mode, mode);
                 }
             }
-            stations.add(new Station(t, anchor, stationPitch, frozenSamples, extraction, accepted));
         }
-        var pairs = new ArrayList<ChainPair>();
-        int count = stations.get(0).modes().size();
+        int count = evidence.stations.get(0).modes().size();
         reserve(128L * count * count);
         for (int lower = 0; lower < count; lower++) for (int upper = lower + 1; upper < count; upper++) {
             work(1);
-            var crosscut = crosscut(stations, lower, upper, metricNormal);
-            if (crosscut != null) pairs.add(new ChainPair(lower, upper, crosscut));
+            var crosscut = crosscut(evidence.stations, lower, upper, metricNormal);
+            if (crosscut != null) evidence.pairs.add(new ChainPair(lower, upper, crosscut));
         }
-        return new Slab(pair.from(), pair.to(), Reason.SLAB_PREPARED, normal, metricNormal,
-            stations, links, pairs, stations.size());
+        return evidence.finish(Reason.SLAB_PREPARED, java.util.Optional.empty());
+    }
+
+    private void unqueriedLinks(Preparation evidence, Station previous, Station current, int station, LinkReason reason) {
+        if (previous == null) return;
+        reserve(256L * previous.modes().size() * current.modes().size());
+        for (int from = 0; from < previous.modes().size(); from++) for (int to = 0; to < current.modes().size(); to++) {
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1); work(1);
+            var a = previous.modes().get(from); var b = current.modes().get(to);
+            evidence.links.add(new DirectLink(station - 1, from, to, a, b, java.util.Optional.empty(),
+                Math.min(a.shoulderThreshold(), b.shoulderThreshold()), LinkStatus.NOT_QUERIED, reason));
+        }
     }
 
     private List<CrosscutPiece> crosscut(List<Station> stations, int lower, int upper, MetricPoint normal) {
@@ -363,17 +455,26 @@ public final class OrdinaryAffinityClassifier {
         return List.copyOf(pieces);
     }
 
-    private BilinearSegmentIntegral.Result link(Station previous, AcceptedModeThresholdReceipt from,
-            MetricPoint anchor, AcceptedModeThresholdReceipt to, double pitch, MetricPoint normal) {
-        work(1);
+    private DirectLink link(int piece, int fromIndex, int toIndex, Station previous, Station current, MetricPoint normal) {
+        work(1); budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+        var from = previous.modes().get(fromIndex); var to = current.modes().get(toIndex);
+        double threshold = Math.min(from.shoulderThreshold(), to.shoulderThreshold());
         if (Math.abs(from.mode().centerMeters() - to.mode().centerMeters())
-                > 1.5 * Math.min(previous.nativePitchMeters(), pitch)) return null;
+                > 1.5 * Math.min(previous.nativePitchMeters(), current.nativePitchMeters()))
+            return new DirectLink(piece, fromIndex, toIndex, from, to, java.util.Optional.empty(), threshold,
+                LinkStatus.REJECTED, LinkReason.CONTINUATION_BOUND);
         var a = displaced(previous.anchor(), normal, from.mode().centerMeters());
-        var b = displaced(anchor, normal, to.mode().centerMeters());
-        if (!authority(a, b)) return null;
+        var b = displaced(current.anchor(), normal, to.mode().centerMeters());
+        if (!authority(a, b)) return new DirectLink(piece, fromIndex, toIndex, from, to,
+            java.util.Optional.empty(), threshold, LinkStatus.REJECTED, LinkReason.SOURCE_AUTHORITY);
         var scalar = integral(a, b);
-        return scalar.status() == BilinearSegmentIntegral.Status.COMPLETE
-            && scalar.minimum().orElseThrow() >= Math.min(from.shoulderThreshold(), to.shoulderThreshold()) ? scalar : null;
+        if (scalar.status() != BilinearSegmentIntegral.Status.COMPLETE)
+            return new DirectLink(piece, fromIndex, toIndex, from, to, java.util.Optional.of(scalar), threshold,
+                LinkStatus.UNAVAILABLE, LinkReason.SCALAR_SUPPORT);
+        boolean admitted = scalar.minimum().orElseThrow() >= threshold;
+        return new DirectLink(piece, fromIndex, toIndex, from, to, java.util.Optional.of(scalar), threshold,
+            admitted ? LinkStatus.ADMITTED : LinkStatus.REJECTED,
+            admitted ? LinkReason.NONE : LinkReason.BELOW_THRESHOLD);
     }
 
     private boolean complete(AcceptedThresholdExtraction extraction, AcceptedModeThresholdReceipt receipt) {
@@ -559,10 +660,6 @@ public final class OrdinaryAffinityClassifier {
     private int checkedCount(long count) {
         if (count <= 0 || count >= Integer.MAX_VALUE) budget.charge(EmissionWorkBudget.Operation.MODE_EXTRACTION, Long.MAX_VALUE);
         return Math.toIntExact(count);
-    }
-    private Slab empty(RowPair pair, Reason reason) {
-        return new Slab(pair.from(), pair.to(), reason, new RasterPoint(0, 0), new MetricPoint(0, 0),
-            List.of(), List.of(), List.of(), 0);
     }
     private Receipt unknown(LegacyEmissionDomain.State from, LegacyEmissionDomain.State to,
             MetricPoint a, MetricPoint b, Slab slab, Reason reason) {

@@ -10,6 +10,122 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 class ExperimentalOrdinaryAffinityTest {
     private static final String FIELD = "affinity-contract-probe";
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {0, 1, 2})
+    void sourceSlabsRetainEveryDirectedLinkAttemptAndActualUnknownPrefix(int variant) {
+        var fixture = LegacyAffinityContractProbeTest.fixture(.6, variant == 1, variant == 2);
+        withInput(fixture, (input, memory) -> {
+            var domain = new LegacyEmissionDomain(input.legacyBinding().orElseThrow(), input.profiles().levelZeroProfiles(),
+                List.of(-4.0, 4.0), input.workBudget(), memory, input.experimentalMeasuredModes());
+            var classifier = new OrdinaryAffinityClassifier(input, domain, memory);
+            var from = domain.observedAt(4).stream().filter(s -> s.offsetRasterPixels() < 0).findFirst().orElseThrow();
+            var to = domain.observedAt(5).stream().filter(s -> s.offsetRasterPixels() > 0).findFirst().orElseThrow();
+            var receipt = classifier.classify(from, to, domain.metricPoint(from, input.context()), domain.metricPoint(to, input.context()));
+            var slab = receipt.slab();
+            if (variant == 0) {
+                assertEquals(4 * (slab.stations().size() - 1), slab.links().size(),
+                    "All four directed previous/current mode pairs need retained outcomes");
+                assertTrue(slab.failure().isEmpty());
+                for (var link : slab.links()) {
+                    assertSame(slab.stations().get(link.piece()).modes().get(link.fromModeIndex()), link.from());
+                    assertSame(slab.stations().get(link.piece() + 1).modes().get(link.toModeIndex()), link.to());
+                    if (link.fromModeIndex() == link.toModeIndex()) {
+                        assertEquals(OrdinaryAffinityClassifier.LinkStatus.ADMITTED, link.status());
+                        assertEquals(BilinearSegmentIntegral.Status.COMPLETE, link.scalar().orElseThrow().status());
+                        assertTrue(link.scalar().orElseThrow().minimum().orElseThrow() >= link.threshold());
+                    } else {
+                        assertEquals(OrdinaryAffinityClassifier.LinkStatus.REJECTED, link.status());
+                        assertEquals(OrdinaryAffinityClassifier.LinkReason.CONTINUATION_BOUND, link.reason());
+                        assertTrue(link.scalar().isEmpty(), "Bound rejection does not invent a queried scalar");
+                    }
+                }
+            } else {
+                assertEquals(OrdinaryAffinityClassifier.Status.UNKNOWN, receipt.status());
+                assertFalse(slab.stations().isEmpty(), "UNKNOWN must retain its actual measured station prefix");
+                assertEquals(slab.stationExtractions(), slab.stations().size());
+                assertEquals(slab.stations().size() - 1, slab.failure().orElseThrow().stationIndex());
+                assertTrue(slab.plan().size() > slab.stations().size());
+                assertTrue(slab.availableStation(slab.stations().size()).isEmpty(), "The remaining plan is unqueried");
+                var failed = slab.stations().get(slab.stations().size() - 1);
+                assertEquals(failed.samples().size(), failed.sampleQueries().size());
+                if (variant == 1) {
+                    assertEquals(OrdinaryAffinityClassifier.QueryStatus.PARTIAL_UNAVAILABLE, failed.queryStatus());
+                    assertTrue(failed.sampleQueries().stream().anyMatch(q -> q.status() == BilinearSegmentIntegral.Status.UNAVAILABLE
+                        && q.mean().isEmpty() && q.reason() == BilinearSegmentIntegral.Reason.UNSUPPORTED_CELL));
+                } else {
+                    assertEquals(OrdinaryAffinityClassifier.QueryStatus.COMPLETE, failed.queryStatus());
+                    assertTrue(slab.links().stream().anyMatch(l -> l.status() == OrdinaryAffinityClassifier.LinkStatus.NOT_QUERIED
+                        && l.reason() == OrdinaryAffinityClassifier.LinkReason.MODE_INCOMPLETE && l.scalar().isEmpty()));
+                }
+            }
+            long before = classifier.stationExtractions();
+            var same = domain.observedAt(5).stream().filter(s -> s.offsetRasterPixels() < 0).findFirst().orElseThrow();
+            var next = classifier.classify(from, same, domain.metricPoint(from, input.context()), domain.metricPoint(same, input.context()));
+            assertSame(slab, next.slab());
+            assertEquals(before, classifier.stationExtractions());
+        });
+    }
+
+    @Test void unqueriedAuthorityStationRetainsItsPlanAndTheActuallyMeasuredPrefix() {
+        var base = scene(1, 1, 0, .6, 8, false, false);
+        var left = MetricRegion.rectangle(0, 0, 45, 127);
+        var right = MetricRegion.rectangle(47, 0, 127, 127);
+        var middle = MetricRegion.rectangle(45, 0, 47, 80);
+        var polygons = new java.util.ArrayList<List<MetricPoint>>();
+        polygons.addAll(left.polygons()); polygons.addAll(right.polygons()); polygons.addAll(middle.polygons());
+        var old = base.evidence();
+        var evidence = new EvidenceSnapshot("authority-gap", old.coordinateFrame(), old.transform(), old.resolution(),
+            new MetricRegion(polygons), old.evidenceRegion(), old.fields(), "authority-gap");
+        withInput(new LegacyAffinityContractProbeTest.Fixture(evidence, base.input(), base.chainage()), (input, memory) -> {
+            var domain = new LegacyEmissionDomain(input.legacyBinding().orElseThrow(), input.profiles().levelZeroProfiles(),
+                List.of(-4.0, 4.0), input.workBudget(), memory, input.experimentalMeasuredModes());
+            var classifier = new OrdinaryAffinityClassifier(input, domain, memory);
+            var a = domain.observedAt(4).get(0); var b = domain.observedAt(5).get(0);
+            var receipt = classifier.classify(a, b, domain.metricPoint(a, input.context()), domain.metricPoint(b, input.context()));
+            assertEquals(OrdinaryAffinityClassifier.Status.UNKNOWN, receipt.status());
+            var slab = receipt.slab();
+            assertEquals(OrdinaryAffinityClassifier.PreparationPhase.STATION_AUTHORITY, slab.failure().orElseThrow().phase());
+            int stopped = slab.failure().orElseThrow().stationIndex();
+            assertTrue(stopped > 0);
+            assertEquals(stopped, slab.stations().size());
+            assertTrue(slab.availableStation(stopped).isEmpty());
+            assertEquals(stopped, slab.stationExtractions());
+            assertTrue(slab.stations().stream().allMatch(s -> s.queryStatus() == OrdinaryAffinityClassifier.QueryStatus.COMPLETE));
+            long before = classifier.stationExtractions();
+            assertSame(slab, classifier.classify(a, b, domain.metricPoint(a, input.context()), domain.metricPoint(b, input.context())).slab());
+            assertEquals(before, classifier.stationExtractions());
+        });
+    }
+
+    @Test void unavailableActualLinkMeasureRemainsDistinctFromAnUnqueriedLink() {
+        var base = scene(1, 1, 0, .6, 8, false, false);
+        double[] values = new double[128 * 128]; boolean[] valid = new boolean[values.length];
+        java.util.Arrays.fill(valid, true);
+        for (int y = 0; y < 128; y++) for (int x = 10; x <= 90; x++)
+            values[y * 128 + x] = .9 * Math.max(Math.max(0, 1 - Math.abs(y - 60) / 8.0),
+                Math.max(0, 1 - Math.abs(y - 76) / 8.0));
+        valid[60 * 128 + 44] = false;
+        var field = new ScalarEvidenceField(128, 128, values, valid, base.evidence().fields().get(FIELD).lineage());
+        var old = base.evidence();
+        // Declared 8 m native uncertainty on a 1 m retained grid tests an inter-station support hole.
+        var evidence = new EvidenceSnapshot("link-hole", old.coordinateFrame(), old.transform(), EvidenceResolution.nativeSource(8, 1),
+            old.decisionRegion(), old.evidenceRegion(), java.util.Map.of(FIELD, field), "link-hole");
+        withInput(new LegacyAffinityContractProbeTest.Fixture(evidence, base.input(), base.chainage()), (input, memory) -> {
+            var domain = new LegacyEmissionDomain(input.legacyBinding().orElseThrow(), input.profiles().levelZeroProfiles(),
+                List.of(-4.0, 4.0), input.workBudget(), memory, input.experimentalMeasuredModes());
+            var classifier = new OrdinaryAffinityClassifier(input, domain, memory);
+            var a = domain.observedAt(4).get(0); var b = domain.observedAt(5).get(0);
+            var receipt = classifier.classify(a, b, domain.metricPoint(a, input.context()), domain.metricPoint(b, input.context()));
+            assertEquals(OrdinaryAffinityClassifier.Status.UNKNOWN, receipt.status());
+            assertTrue(receipt.slab().links().stream().anyMatch(l -> l.status() == OrdinaryAffinityClassifier.LinkStatus.UNAVAILABLE
+                && l.reason() == OrdinaryAffinityClassifier.LinkReason.SCALAR_SUPPORT && l.scalar().isPresent()
+                && l.scalar().orElseThrow().status() == BilinearSegmentIntegral.Status.UNAVAILABLE
+                && l.scalar().orElseThrow().mean().isEmpty()));
+            assertTrue(receipt.slab().links().stream().anyMatch(l -> l.status() == OrdinaryAffinityClassifier.LinkStatus.REJECTED
+                && l.reason() == OrdinaryAffinityClassifier.LinkReason.CONTINUATION_BOUND && l.scalar().isEmpty()));
+        });
+    }
+
     @Test void lowSignalFallbackNeverIssuesMeasuredOwnersEvenWhenOriginalClassIsObserved() {
         var base = scene(1, 1, 0, .3, 8, false, false);
         var old = base.evidence().fields().get(FIELD);
@@ -170,7 +286,8 @@ class ExperimentalOrdinaryAffinityTest {
                  fixture.input(), fixture.chainage(), 25, budget, root)) {
             double pitch = fixture.evidence().resolution().outputRasterPitchMeters();
             var retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(fixture.evidence(), FIELD,
-                fixture.input().profileLocations(), 25 / pitch, fixture.input().lateralStepMeters() / pitch, 1, budget, permit);
+                fixture.input().profileLocations(), 25 / pitch, fixture.input().lateralStepMeters() / pitch,
+                fixture.evidence().resolution().effectivePitchMeters() / pitch, budget, permit);
             var binding = OptionalEmissionContextFactory.createLegacyBinding(permit, retained,
                 java.util.stream.IntStream.range(0, fixture.input().profileLocations().size()).boxed().toList(), 1, List.of());
             try (var input = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit, retained, binding)) {
