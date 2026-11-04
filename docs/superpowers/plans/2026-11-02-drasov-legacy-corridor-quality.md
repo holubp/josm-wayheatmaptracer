@@ -10,7 +10,39 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-02-drasov-legacy-corridor-quality-design.md` (approved2026-11-02).
 
-## Current execution status — 2026-11-03
+## Resume checkpoint — 2026-11-04
+
+User renewed execution of remaining steps 1–4. Step 1 evaluator fixes are reviewed;
+steps 2–4 remain open. No release or production-default adoption follows from
+experimental component tests. Earlier CI at 9ca7b53 passes but does not qualify
+later kernel, managed-source or A additions.
+
+Stable resumed snapshots: Legacy kernel 5626a022 (inspect/preserve interrupted
+unstaged kernel/stage-test edits); managed source 9a06c5fe; A executor 9f557114;
+affinity regressions 5db51868. Four isolated Sol implementation/probe assignments
+resume these existing worktrees, without recursive delegation or Astra. All local
+Gradle executions use the shared flock; full suites belong in CI. Weekly telemetry
+is unavailable. Existing root dirty/private artifacts remain untouched.
+
+Blocking evidence: the .90/.60 two-continuous-strand regression retains both states
+but the exact objective still selects a dark cross-strand jump (J=17.497525,
+37.49M work, no cap). The .90/.30 case additionally drops the weak native peak.
+Do not declare step 3 complete on R4 solver optimality alone. Probe actual measured
+weak modes, then explicitly review a tri-state ordinary branch-affinity amendment;
+unknown evidence must never become a fabricated conflict or observed state.
+
+Step 2 remaining: release anchored-stage DP reservations, independently re-review;
+finish actual managed context/factory with separate original-source chainage and
+unchanged native sampling, source freshness and ownership. Step 4 remaining: bind
+the reviewed generic competitive executor to actual A graph/admission/costs and
+canonical DP, then real-data quality/work gates and independent review.
+
+Reports: task-local tmp files `drasov-kernel-memory-closure-report.md`,
+`drasov-managed-context-closure-report.md`, `drasov-affinity-contract-probe-report.md`,
+and `drasov-a-native-integration-report.md`. Update this checkpoint after the next
+coherent tested/reviewed batch; preserve the historical evidence below.
+
+## Prior execution evidence — 2026-11-03
 
 Execution resumed by explicit user instruction to finish remaining steps1–4.
 Step1 owners: connector_review implements the two independently confirmed native
