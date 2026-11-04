@@ -111,15 +111,15 @@ class LegacyProgressPolicyTest {
             assertThrows(IllegalStateException.class,()->p.view().failureUsed());
         }
     }
-    private static NativeConnectorEvaluatorTest.Straight fractional(EmissionWorkBudget work,EvidenceResolution resolution) {
+    static NativeConnectorEvaluatorTest.Straight fractional(EmissionWorkBudget work,EvidenceResolution resolution) {
         return NativeConnectorEvaluatorTest.scene((x,y)->{double u=Math.abs((y-32)*.2);return u==0?1:u<=.2?.5:0;},
             (x,y)->true,MetricRegion.rectangle(0,0,12.6,12.6),SourceClass.OBSERVED,2,.2,
             RasterMetricTransform.metricGrid(new MetricPoint(0,0),.2,0,0,.2),work,.01,resolution,6.2);
     }
-    private record StageInput(SampledEmissionInput input,AttemptMemoryLedger.Owner owner,AttemptMemoryLedger ledger) implements AutoCloseable {
+    record StageInput(SampledEmissionInput input,AttemptMemoryLedger.Owner owner,AttemptMemoryLedger ledger) implements AutoCloseable {
         @Override public void close(){input.close();owner.close();assertEquals(0,ledger.currentBytes());}
     }
-    private static StageInput stageInput(EmissionWorkBudget work) {
+    static StageInput stageInput(EmissionWorkBudget work) {
         return stageInput(work,false);
     }
     private static StageInput stageInput(EmissionWorkBudget work,boolean movableBoundary) {

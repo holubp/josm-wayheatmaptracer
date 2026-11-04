@@ -431,7 +431,8 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @Test void rightNeighborFallbackSettlesMiddleBeforeTheLeftSlabThresholdCheck() {
+    @ParameterizedTest @EnumSource(value=ExecutionPolicy.class,names={"EAGER_ALL_PROBES_V1","STOP_ON_FINAL_MODE_FAILURE_V1","INITIAL_LOCAL_NOISE_PRECHECK_V1"})
+    void rightNeighborFallbackSettlesMiddleBeforeTheLeftSlabThresholdCheck(ExecutionPolicy execution) {
         java.util.function.DoubleUnaryOperator profile=offset -> offset==0?1.0:offset<=0.5?0.85:
             offset<=1?0.55:offset<=1.5?0.2:offset<=4?0.0:0.3;
         var provisionalSamples=new ArrayList<LocalScalarProfileExtractor.Sample>();
@@ -456,7 +457,7 @@ class NativeConnectorEvaluatorTest {
                 },(x,y)->true,MetricRegion.rectangle(0,0,31.5,31.5),SourceClass.OBSERVED,2,1,
                 RasterMetricTransform.metricGrid(new MetricPoint(0,0),0.5,0,0,0.5),budget(),1,resolution,25);
              var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
-                 QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+                 QueryPolicy.ZERO_GUARDED_LOCAL_V1,execution)) {
             long evaluatorSetup=f.ledger().currentBytes();
             var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
             assertEquals(3,receipt.plannedProbeCount(),receipt::toString);
@@ -483,7 +484,8 @@ class NativeConnectorEvaluatorTest {
         }
     }
 
-    @Test void leftNeighborFallbackSettlesMiddleBeforeTheRightSlabThresholdCheck() {
+    @ParameterizedTest @EnumSource(value=ExecutionPolicy.class,names={"EAGER_ALL_PROBES_V1","STOP_ON_FINAL_MODE_FAILURE_V1","INITIAL_LOCAL_NOISE_PRECHECK_V1"})
+    void leftNeighborFallbackSettlesMiddleBeforeTheRightSlabThresholdCheck(ExecutionPolicy execution) {
         java.util.function.DoubleUnaryOperator profile=offset -> offset==0?1.0:offset<=0.5?0.85:
             offset<=1?0.55:offset<=1.5?0.2:offset<=4?0.0:0.3;
         var resolution=new EvidenceResolution(EvidenceResolution.Kind.NATIVE_SOURCE,
@@ -501,7 +503,7 @@ class NativeConnectorEvaluatorTest {
                 },(x,y)->true,MetricRegion.rectangle(0,0,31.5,31.5),SourceClass.OBSERVED,2,1,
                 RasterMetricTransform.metricGrid(new MetricPoint(0,0),0.5,0,0,0.5),budget(),1,resolution,25);
             var evaluator=new NativeConnectorEvaluator(f.input(),new Domain(f.states(),List.of()),
-                QueryPolicy.ZERO_GUARDED_LOCAL_V1)) {
+                QueryPolicy.ZERO_GUARDED_LOCAL_V1,execution)) {
             var receipt=evaluator.evaluate(f.states().get(0),f.states().get(1));
             assertEquals(3,receipt.plannedProbeCount(),receipt.toString());
             assertEquals(3,receipt.probes().size(),receipt.toString());
@@ -1588,6 +1590,15 @@ class NativeConnectorEvaluatorTest {
 
     @ParameterizedTest @EnumSource(value = QueryPolicy.class, names = {"DENSE_EIGHTH_NATIVE_V1", "HALF_NATIVE_L0_V1", "PIXEL_CAPPED_L0_V1", "ZERO_GUARDED_LOCAL_V1"})
     void zeroLengthEdgeRequiresAndTransportsAnActualIssuedIncomingArc(QueryPolicy policy) {
+        zeroLengthEdgeRequiresAndTransportsAnActualIssuedIncomingArc(policy,ExecutionPolicy.EAGER_ALL_PROBES_V1);
+    }
+
+    @ParameterizedTest @EnumSource(value=ExecutionPolicy.class,names={"STOP_ON_FINAL_MODE_FAILURE_V1","INITIAL_LOCAL_NOISE_PRECHECK_V1"})
+    void optedInZeroLengthEdgeKeepsIssuedIncomingAndOrdinaryTransport(ExecutionPolicy execution) {
+        zeroLengthEdgeRequiresAndTransportsAnActualIssuedIncomingArc(QueryPolicy.ZERO_GUARDED_LOCAL_V1,execution);
+    }
+
+    private void zeroLengthEdgeRequiresAndTransportsAnActualIssuedIncomingArc(QueryPolicy policy,ExecutionPolicy execution) {
         int w = 64, h = 64;
         double[] values = new double[w * h];
         for (int y = 0; y < h; y++) for (int x = 0; x < w; x++)
@@ -1615,7 +1626,7 @@ class NativeConnectorEvaluatorTest {
             double[] offsets = {-5 * Math.sqrt(2), 5, -5, 5 * Math.sqrt(2)};
             for (int row = 0; row < 4; row++) states.add(new RowState(row, 0, offsets[row],
                 SourceClass.OBSERVED, sampled.profiles().levelZeroProfiles().get(row).peaks().get(0)));
-            try (var evaluator = new NativeConnectorEvaluator(sampled, new Domain(states, List.of()), policy)) {
+            try (var evaluator = new NativeConnectorEvaluator(sampled, new Domain(states, List.of()), policy,execution)) {
                 assertEquals(Reason.INCOMING_DIRECTION_UNAVAILABLE,
                     evaluator.evaluate(states.get(1), states.get(2)).reason());
                 var incoming = evaluator.evaluate(states.get(0), states.get(1));

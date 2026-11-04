@@ -33,7 +33,11 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     public enum QueryPolicy {
         DENSE_EIGHTH_NATIVE_V1, HALF_NATIVE_L0_V1, PIXEL_CAPPED_L0_V1, ZERO_GUARDED_LOCAL_V1
     }
-    public enum ExecutionPolicy { EAGER_ALL_PROBES_V1, STOP_ON_FINAL_MODE_FAILURE_V1, EXACT_SLAB_PREFLIGHT_V1 }
+    public enum ExecutionPolicy {
+        EAGER_ALL_PROBES_V1, STOP_ON_FINAL_MODE_FAILURE_V1, EXACT_SLAB_PREFLIGHT_V1,
+        /** Existing local/stop execution with a sampled-only, initial-window noise-floor proof. */
+        INITIAL_LOCAL_NOISE_PRECHECK_V1
+    }
     public enum SourceClass { OBSERVED, GAP, CENSORED }
     /** Status of an ordinary leg's native geometric reference, not a claim of image support. */
     public enum NativeReferenceStatus { AVAILABLE, UNAVAILABLE }
@@ -178,11 +182,20 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         }
     }
 
+    private sealed interface WindowOutcome permits Probe, SampledNoiseProof { }
+    /** A completed sampled-only LOCAL outcome: no mode, position, threshold or admission evidence. */
+    private record SampledNoiseProof(int sampleCount,int validCount,int zeroCount,int rank) implements WindowOutcome {
+        private SampledNoiseProof {
+            if(sampleCount<validCount||validCount<=0||zeroCount<0||zeroCount>rank||rank>=validCount)
+                throw new IllegalArgumentException("Sampled noise proof counts are inconsistent");
+        }
+    }
+
     /** One actual transverse query; all accepted, censored and suppressed alternatives are retained. */
     public record Probe(double parameter, RasterPoint rasterPosition, MetricPoint metricPosition,
             MetricPoint metricNormal, double nativePitchMeters, List<Sample> samples,
             AcceptedThresholdExtraction extraction, Mode selectedMode,
-            AcceptedModeThresholdReceipt threshold, ProfileQueryEvidence profileQuery) {
+            AcceptedModeThresholdReceipt threshold, ProfileQueryEvidence profileQuery) implements WindowOutcome {
         public Probe {
             samples = List.copyOf(samples);
             Objects.requireNonNull(profileQuery);
@@ -1230,29 +1243,35 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             expansions=halfIntervals-initialHalfIntervals;
             var local=evidenceOwner.child("connector-local-probe");
             try {
-                Probe probe=measureWindow(t,point,normal,from,span,local,window,delta,ProfileBackend.LOCAL,
+                WindowOutcome measured=measureWindow(t,point,normal,from,span,local,window,delta,ProfileBackend.LOCAL,
                     expansions,FallbackCause.NONE,false,totalSampleQueries,halfIntervals,
                     input==frozenInput&&context.nativeGrid()==frozenGrid&&parameters==frozenParameters);
-                totalSampleQueries=Math.addExact(totalSampleQueries,probe.samples().size());
-                boolean allZero=true;
-                for(var sample:probe.samples()) {
-                    work(EmissionWorkBudget.Operation.PREPARATION,1);
-                    allZero &= sample.valid() && sample.intensity()==0.0;
+                if(measured instanceof SampledNoiseProof proof) {
+                    totalSampleQueries=Math.addExact(totalSampleQueries,proof.sampleCount());
+                    fallback=FallbackCause.NOISE_FLOOR_NONZERO;
+                } else {
+                    Probe probe=(Probe)measured;
+                    totalSampleQueries=Math.addExact(totalSampleQueries,probe.samples().size());
+                    boolean allZero=true;
+                    for(var sample:probe.samples()) {
+                        work(EmissionWorkBudget.Operation.PREPARATION,1);
+                        allZero &= sample.valid() && sample.intensity()==0.0;
+                    }
+                    if (allZero) {
+                        Probe noMode=new Probe(t,point,probe.metricPosition(),normal,pitch,probe.samples(),probe.extraction(),
+                            null,null,new ProfileQueryEvidence(ProfileBackend.LOCAL,window,probe.samples().size(),expansions,
+                                FallbackCause.NONE,totalSampleQueries,true));
+                        local.transferTo(evidenceOwner);
+                        profileOwners.put(noMode,evidenceOwner);
+                        return noMode;
+                    }
+                    if (localProof(probe) && probeFailure(probe)==Reason.NONE) {
+                        local.transferTo(evidenceOwner);
+                        profileOwners.put(probe,evidenceOwner);
+                        return probe;
+                    }
+                    fallback=localFailureCause(probe);
                 }
-                if (allZero) {
-                    Probe noMode=new Probe(t,point,probe.metricPosition(),normal,pitch,probe.samples(),probe.extraction(),
-                        null,null,new ProfileQueryEvidence(ProfileBackend.LOCAL,window,probe.samples().size(),expansions,
-                            FallbackCause.NONE,totalSampleQueries,true));
-                    local.transferTo(evidenceOwner);
-                    profileOwners.put(noMode,evidenceOwner);
-                    return noMode;
-                }
-                if (localProof(probe) && probeFailure(probe)==Reason.NONE) {
-                    local.transferTo(evidenceOwner);
-                    profileOwners.put(probe,evidenceOwner);
-                    return probe;
-                }
-                fallback=localFailureCause(probe);
             } finally {
                 local.close();
             }
@@ -1322,7 +1341,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         double step=Math.min(context.lateralStepMeters(),minimumPitch()/8);
         int intervals=checkedCount(Math.ceil(2*context.searchHalfWidthMeters()/step));
         double actualStep=2*context.searchHalfWidthMeters()/intervals;
-        return measureWindow(t,point,normal,from,span,evaluation,context.searchHalfWidthMeters(),actualStep,
+        return (Probe)measureWindow(t,point,normal,from,span,evaluation,context.searchHalfWidthMeters(),actualStep,
             ProfileBackend.DENSE_FALLBACK,expansions,cause,false,previousQueries,-1,false);
     }
 
@@ -1332,7 +1351,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             old.profileQuery().expansionCount(),old.profileQuery().totalSampleQueries());
     }
 
-    private Probe measureWindow(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
+    private WindowOutcome measureWindow(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
             AttemptMemoryLedger.Owner evaluation,double halfWidth,double step,ProfileBackend backend,
             int expansions,FallbackCause cause,boolean localNoMode,int previousQueries,int centeredHalfIntervals,boolean sourceSame) {
         if(progress!=null)progress.windowBegin(backend,centeredHalfIntervals,expansions);
@@ -1361,7 +1380,15 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             sampleReservation.adopt(sample);
             samples.add(sample);
         }
-        if(progress!=null){progress.samplingComplete();progress.extractionBegin();}
+        if(progress!=null)progress.samplingComplete();
+        if(executionPolicy==ExecutionPolicy.INITIAL_LOCAL_NOISE_PRECHECK_V1&&backend==ProfileBackend.LOCAL&&expansions==0) {
+            var proof=sampledNoiseProof(samples,evaluation);
+            if(proof!=null) {
+                if(progress!=null){progress.initialLocalNoiseSkipped(proof.sampleCount(),proof.validCount(),proof.zeroCount(),proof.rank());progress.windowComplete();}
+                return proof;
+            }
+        }
+        if(progress!=null)progress.extractionBegin();
         var extraction=extractor.extractDetailedWithAcceptedThresholds(samples,pitch,parameters.localization(),evaluation,
             CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.MODE_EXTRACTION,n));
         if(progress!=null)progress.extractionComplete(extraction.result().baseline().modes().size(),extraction.acceptedReceipts().size());
@@ -1387,6 +1414,30 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private static double centeredLatticeOffset(int sampleIndex,int halfIntervals,double step) {
         int centeredIndex=Math.subtractExact(sampleIndex,halfIntervals);
         return centeredIndex==0?0.0:centeredIndex*step;
+    }
+
+    /** Exact fallback witness rank, never a measured mode/threshold or source-wide bound. */
+    static int nonzeroNoiseFloorRank(int validCount,int zeroCount) {
+        if(validCount<0||zeroCount<0||zeroCount>validCount)throw new IllegalArgumentException("Noise sample counts are inconsistent");
+        int rank=LocalScalarProfileExtractor.rawNoiseFloorRank(validCount);
+        return validCount>0&&zeroCount<=rank?rank:-1;
+    }
+    private SampledNoiseProof sampledNoiseProof(List<Sample> samples,AttemptMemoryLedger.Owner owner) {
+        // Sample validates finite [0,1] values. Signed zeros occupy exactly the sorted zero
+        // prefix; a rank outside it selects a stored positive value, including subnormals.
+        // That is localFailureCause's first branch and also makes allZero impossible.
+        int valid=0,zeros=0;
+        for(int index=0;index<samples.size();index++) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            var sample=samples.get(index);
+            if(sample.valid()){valid++;if(sample.intensity()==0.0)zeros++;}
+        }
+        work(EmissionWorkBudget.Operation.PREPARATION,1);
+        int rank=nonzeroNoiseFloorRank(valid,zeros);
+        if(rank<0)return null;
+        work(EmissionWorkBudget.Operation.ALLOCATION,1);
+        var proofMemory=owner.reserve(AttemptMemoryLedger.objectBytes(16));
+        var proof=new SampledNoiseProof(samples.size(),valid,zeros,rank);proofMemory.adopt(proof);return proof;
     }
 
     private boolean localProof(Probe probe) {

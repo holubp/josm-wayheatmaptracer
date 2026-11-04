@@ -1000,6 +1000,15 @@ public final class LocalScalarProfileExtractor {
                 && Double.isFinite(values[inside]) && values[edge] > values[inside];
     }
 
+    /** Identity of the existing raw valid-sample rank expression, with no numerical tolerance. */
+    public static final String RAW_NOISE_RANK_POLICY="raw-valid-binary64-p20-rank-v1";
+
+    /** The unchanged raw valid-sample order statistic; -1 means there is no valid sample. */
+    public static int rawNoiseFloorRank(int validCount) {
+        if(validCount<0)throw new IllegalArgumentException("Valid sample count is negative");
+        return validCount==0?-1:(int)Math.floor(0.2*(validCount-1));
+    }
+
     private static double robustNoiseFloor(List<Sample> samples,
             AttemptMemoryLedger.Owner owner, WorkProbe work) {
         AttemptMemoryLedger.Owner helper = owner == null ? null : owner.child("noise-floor");
@@ -1019,7 +1028,7 @@ public final class LocalScalarProfileExtractor {
             if (sample.valid()) valid[index++] = sample.intensity();
         }
         work.sort(valid);
-        return valid.length == 0 ? 0.0 : valid[(int) Math.floor(0.2 * (valid.length - 1))];
+        return valid.length == 0 ? 0.0 : valid[rawNoiseFloorRank(valid.length)];
         } finally {
             if (helper != null) helper.close();
         }

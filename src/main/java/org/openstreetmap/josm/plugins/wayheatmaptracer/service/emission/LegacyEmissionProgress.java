@@ -28,7 +28,7 @@ public final class LegacyEmissionProgress implements AutoCloseable {
         DENSE_FALLBACK,CROSS_REPLACEMENT,SAMPLE_STARTED,SAMPLE_COMPLETED,SAMPLING_COMPLETED,
         EXTRACTION_STARTED,EXTRACTION_COMPLETED,MODES_RETURNED,ACCEPTED_THRESHOLDS,OPTIONAL_INTEGRAL_STARTED,OPTIONAL_INTEGRAL_COMPLETED,REPEAT_STARTED,REPEAT_COMPLETED,
         NEW_STARTED,NEW_COMPLETED,REPEAT_REGION_WORK,REPEAT_CELL_WORK,REPEAT_NODE_WORK,
-        CENSUS_INELIGIBLE,CENSUS_ELIGIBLE_WINDOWS,CENSUS_EXCLUDED_STARTED,CENSUS_EXCLUDED_COMPLETED,EXACT_ZERO_PROOFS,PREFLIGHT_RECEIPTS
+        CENSUS_INELIGIBLE,CENSUS_ELIGIBLE_WINDOWS,CENSUS_EXCLUDED_STARTED,CENSUS_EXCLUDED_COMPLETED,EXACT_ZERO_PROOFS,PREFLIGHT_RECEIPTS,INITIAL_LOCAL_NOISE_SKIPS
     }
     private static final Counter[] COUNTERS=Counter.values();
     private static final Phase[] PHASES=Phase.values();
@@ -68,6 +68,7 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     private int failureOriginalOrdinal=-1;
     private static final int REQUESTED_AVAILABLE=1,USED_AVAILABLE=2,LIMIT_AVAILABLE=4,ORDINAL_AVAILABLE=8;
     private int failureFields;
+    private int noiseSamples,noiseValid,noiseZeros,noiseRank;
     private ProfileBackend backend;
     private boolean sealed,evaluationInFlight,sampleInFlight,extractionInFlight,samplingFinished;
     private boolean profileInFlight,windowInFlight;
@@ -263,6 +264,9 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     void integralBegin(){pay(16);integralInFlight=true;add(Counter.OPTIONAL_INTEGRAL_STARTED,1);}
     void integralComplete(){integralInFlight=false;add(Counter.OPTIONAL_INTEGRAL_COMPLETED,1);}
     void windowComplete(){windowInFlight=false;add(Counter.WINDOW_COMPLETED,1);}
+    void initialLocalNoiseSkipped(int samples,int valid,int zeros,int rank) {
+        pay(8);add(Counter.INITIAL_LOCAL_NOISE_SKIPS,1);noiseSamples=samples;noiseValid=valid;noiseZeros=zeros;noiseRank=rank;
+    }
 
     /** Allocation/charge-free: only already prepaid primitive storage is sealed. Original error is not replaced. */
     public void seal(RuntimeException failure) {
@@ -306,6 +310,11 @@ public final class LegacyEmissionProgress implements AutoCloseable {
         public int fromOrdinal(){return p.from;}public int toOrdinal(){return p.to;}
         public int fromNativeId(){return p.fromId;}public int toNativeId(){return p.toId;}
         public long count(Counter c){return p.counts[c.ordinal()];}
+        public boolean hasInitialLocalNoiseProof(){return count(Counter.INITIAL_LOCAL_NOISE_SKIPS)>0;}
+        private void requireNoiseProof(){if(!hasInitialLocalNoiseProof())throw new IllegalStateException("Sampled noise proof is unavailable");}
+        public int lastNoiseSampleCount(){requireNoiseProof();return p.noiseSamples;}public int lastNoiseValidCount(){requireNoiseProof();return p.noiseValid;}
+        public int lastNoiseZeroCount(){requireNoiseProof();return p.noiseZeros;}public int lastNoiseRank(){requireNoiseProof();return p.noiseRank;}
+        public String localNoiseProofPolicy(){requireNoiseProof();return org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor.RAW_NOISE_RANK_POLICY;}
         public long seedStageCount(int slot,Phase phase,Counter c){Objects.checkIndex(slot,SEED_SLOTS+1);return p.scoped[(slot*PHASES.length+phase.ordinal())*COUNTERS.length+c.ordinal()];}
         public long reasonCount(int slot,Phase phase,Reason reason){Objects.checkIndex(slot,SEED_SLOTS+1);return p.reasons[(slot*PHASES.length+phase.ordinal())*REASONS+reason.ordinal()];}
         public int seedId(int slot){return p.seedIds[Objects.checkIndex(slot,SEED_SLOTS)];}
