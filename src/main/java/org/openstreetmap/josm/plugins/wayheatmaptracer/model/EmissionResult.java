@@ -241,13 +241,20 @@ public final class EmissionResult implements AutoCloseable {
                 : receipt.map(r -> r.reason().name()).orElse("BOUNDARY_ONLY_OWNER");
         }
     }
+    public enum SmoothingDisposition { UNCHANGED, ACCEPTED, RAW_RETAINED }
+    public enum SmoothingReason { NO_CHANGE, MEASURED_COMPATIBLE, FINAL_BRANCH_CONFLICT, FINAL_EVIDENCE_UNAVAILABLE }
+    public record SmoothingOutcome(int firstVertex, int lastVertex, SmoothingDisposition disposition,
+        SmoothingReason reason, List<OrdinaryAffinityClassifier.Receipt> proposedEdgeEvidence) {
+        public SmoothingOutcome { proposedEdgeEvidence = List.copyOf(proposedEdgeEvidence); }
+    }
     /** Diagnostic certification only: UNKNOWN adds no public Apply restriction or ranking bonus. */
     public record AffinityDiagnostics(String policyId, List<MeasuredStateReference> measuredStates,
         List<AffinityArcReference> inference, List<AffinityArcReference> finalGeometry,
-        int preparedSourcePairs, long stationExtractions) {
+        int preparedSourcePairs, long stationExtractions, List<SmoothingOutcome> smoothingOutcomes) {
         public AffinityDiagnostics {
             Objects.requireNonNull(policyId); measuredStates = List.copyOf(measuredStates);
             inference = List.copyOf(inference); finalGeometry = List.copyOf(finalGeometry);
+            smoothingOutcomes = List.copyOf(smoothingOutcomes);
             if (policyId.isBlank() || preparedSourcePairs < 0 || stationExtractions < 0)
                 throw new IllegalArgumentException("Affinity source-pair accounting is invalid");
         }

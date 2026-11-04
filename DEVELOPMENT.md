@@ -907,6 +907,13 @@ remain `UNKNOWN`, retain old ordinary eligibility, and make the exported
 `EmissionResult.affinity()` certification incomplete. This is diagnostic
 metadata and adds no public Apply gate.
 
+Optional smoothing measures the proposed final points and their changed incident
+edges against the frozen source. Newly moved points cannot inherit raw UNKNOWN
+eligibility. A conflicting or unproved proposal retains that entire valid raw
+consecutive run and records its outcome; safe measured proposals remain usable.
+This performs no second solve or refinement, and unchanged raw UNKNOWN geometry
+keeps the existing eligibility.
+
 Original native owners, newly measured owners and carry origins remain
 distinct in the additive diagnostics. Search width, source acquisition,
 Q/C/T/K arithmetic, the exact pair-state solve and caller/production caps

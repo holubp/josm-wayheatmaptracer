@@ -78,6 +78,49 @@ class MeasuredAffinityExhaustiveOracleTest {
                         assertEquals(0, expected.consumed(), "An exact tie keeps all original rows");
                     }
                     if (weak == .9) {
+                        try (var flipped = new LegacyEmissionKernel().solveMeasuredAffinity(input,
+                                retained.profiles().levelZeroProfiles(), List.of(-4.0, 4.0), List.of(),
+                                (profiles, offsets, strengths) -> {
+                                    var proposal = new ArrayList<>(offsets);
+                                    proposal.set(1, -offsets.get(1));
+                                    return proposal;
+                                }, CancellationProbe.NONE)) {
+                            assertEquals(flipped.inferenceVertices(), flipped.smoothedVertices(),
+                                "A smoother cannot publish a newly moved opposite-strand point as UNKNOWN");
+                            assertTrue(flipped.affinity().orElseThrow().fullyCertified());
+                            var outcome = flipped.affinity().orElseThrow().smoothingOutcomes().get(0);
+                            assertEquals(EmissionResult.SmoothingDisposition.RAW_RETAINED, outcome.disposition());
+                            assertEquals(EmissionResult.SmoothingReason.FINAL_BRANCH_CONFLICT, outcome.reason());
+                            var rejected = outcome.proposedEdgeEvidence().get(0);
+                            assertEquals(OrdinaryAffinityClassifier.Status.INCOMPATIBLE, rejected.status());
+                            assertNotEquals(rejected.fromChain(), rejected.toChain());
+                            assertEquals(OrdinaryAffinityClassifier.PointOwnerKind.MEASURED_FINAL_POINT,
+                                rejected.toOwnership().orElseThrow().kind());
+                        }
+                        try (var unsupported = new LegacyEmissionKernel().solveMeasuredAffinity(input,
+                                retained.profiles().levelZeroProfiles(), List.of(-4.0, 4.0), List.of(),
+                                (profiles, offsets, strengths) -> {
+                                    var proposal = new ArrayList<>(offsets); proposal.set(1, 0.0); return proposal;
+                                }, CancellationProbe.NONE)) {
+                            assertEquals(unsupported.inferenceVertices(), unsupported.smoothedVertices());
+                            assertEquals(EmissionResult.SmoothingReason.FINAL_EVIDENCE_UNAVAILABLE,
+                                unsupported.affinity().orElseThrow().smoothingOutcomes().get(0).reason());
+                        }
+                        try (var supported = new LegacyEmissionKernel().solveMeasuredAffinity(input,
+                                retained.profiles().levelZeroProfiles(), List.of(-4.0, 4.0), List.of(),
+                                (profiles, offsets, strengths) -> {
+                                    var proposal = new ArrayList<>(offsets); proposal.set(1, offsets.get(1) + .1); return proposal;
+                                }, CancellationProbe.NONE)) {
+                            assertNotEquals(supported.inferenceVertices(), supported.smoothedVertices());
+                            assertTrue(supported.affinity().orElseThrow().fullyCertified());
+                            assertEquals(EmissionResult.SmoothingDisposition.ACCEPTED,
+                                supported.affinity().orElseThrow().smoothingOutcomes().get(0).disposition());
+                            var fresh = supported.affinity().orElseThrow().finalGeometry().get(0).receipt().orElseThrow()
+                                .toOwnership().orElseThrow();
+                            assertEquals(supported.smoothedVertices().get(1).position(), fresh.position());
+                            assertEquals(OrdinaryAffinityClassifier.PointOwnerKind.MEASURED_FINAL_POINT, fresh.kind());
+                            assertTrue(fresh.pointScalar().orElseThrow().mean().orElseThrow() < fresh.sourceOwner().originPeak().value());
+                        }
                         var normal = input.profiles().levelZeroProfiles().get(0).normalScreen();
                         double originalNormal = normal.x;
                         try {

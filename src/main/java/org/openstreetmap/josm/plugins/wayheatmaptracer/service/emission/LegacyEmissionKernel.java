@@ -1010,7 +1010,9 @@ public final class LegacyEmissionKernel {
         }
         var mapping = EmissionMapping.create(n, vertexOwners, observationOwners, mandatory);
         var arcs = arcResults(path.arcs());
-        var smoothed = smooth(path, smoother, domain, input.context(), budget);
+        List<EmissionResult.SmoothingOutcome> smoothingOutcomes = inventory.affinity() == null
+            ? List.of() : new ArrayList<>();
+        var smoothed = smooth(path, smoother, domain, input.context(), budget, owner, inventory.affinity(), smoothingOutcomes);
         var smoothedArcs = arcResults(remeasure(input, path, smoothed, best.seedOffset,
             owner, budget, cancellation));
         if (smoothedArcs.stream().noneMatch(arc -> arc.lengthMeters() > 0))
@@ -1039,7 +1041,7 @@ public final class LegacyEmissionKernel {
         var provenance = provenance(input, domain, firstPath, firstNode, best,
             intervalReferences, eligible, inventory, owner, budget, queryPolicy, executionPolicy);
         var affinityDiagnostics = affinityDiagnostics(domain, inventory, path, vertices, smoothed,
-            owner, budget);
+            owner, budget, smoothingOutcomes);
         if (domain.measuredModes() != null) input.requireOpenAndUnchanged();
         // The result retains immutable vertex/arc values, never the DP predecessor graph.
         unpinChain(best, budget);
@@ -1065,7 +1067,8 @@ public final class LegacyEmissionKernel {
 
     private Optional<EmissionResult.AffinityDiagnostics> affinityDiagnostics(LegacyEmissionDomain domain,
             Inventory inventory, Flattened path, List<EmissionResult.Vertex> vertices,
-            List<EmissionResult.Vertex> smoothed, AttemptMemoryLedger.Owner owner, EmissionWorkBudget budget) {
+            List<EmissionResult.Vertex> smoothed, AttemptMemoryLedger.Owner owner, EmissionWorkBudget budget,
+            List<EmissionResult.SmoothingOutcome> smoothingOutcomes) {
         if (inventory.affinity() == null) return Optional.empty();
         long states = 0;
         for (int row = 0; row < domain.rowCount(); row++) states += domain.observedAt(row).size();
@@ -1085,7 +1088,7 @@ public final class LegacyEmissionKernel {
         var finalGeometry = affinityArcs(inventory.affinity(), path, smoothed, budget);
         return Optional.of(new EmissionResult.AffinityDiagnostics(ExperimentalMeasuredModeInventory.POLICY_ID,
             measured, inference, finalGeometry, inventory.affinity().preparedRowPairs(),
-            inventory.affinity().stationExtractions()));
+            inventory.affinity().stationExtractions(), smoothingOutcomes));
     }
 
     private List<EmissionResult.AffinityArcReference> affinityArcs(OrdinaryAffinityClassifier classifier,
@@ -1100,9 +1103,15 @@ public final class LegacyEmissionKernel {
             var from = path.points().get(i).state(); var to = path.points().get(i + 1).state();
             OrdinaryAffinityClassifier.Receipt receipt = null;
             if (from != null && to != null) {
-                receipt = classifier.classifyInValidatedExecution(from, to, geometry.get(i).position(),
-                    geometry.get(i + 1).position());
+                boolean moved = moved(geometry.get(i), path.points().get(i))
+                    || moved(geometry.get(i + 1), path.points().get(i + 1));
+                receipt = moved ? classifier.classifyFinalInValidatedExecution(from, to,
+                    geometry.get(i).position(), geometry.get(i).offsetRasterPixels().orElseThrow(),
+                    geometry.get(i + 1).position(), geometry.get(i + 1).offsetRasterPixels().orElseThrow())
+                    : classifier.classifyInValidatedExecution(from, to, geometry.get(i).position(), geometry.get(i + 1).position());
                 if (receipt.status() == OrdinaryAffinityClassifier.Status.INCOMPATIBLE)
+                    throw new UnavailableException(UnavailableReason.FINAL_AFFINITY_CONFLICT);
+                if (moved && receipt.status() != OrdinaryAffinityClassifier.Status.COMPATIBLE)
                     throw new UnavailableException(UnavailableReason.FINAL_AFFINITY_CONFLICT);
             }
             result.add(new EmissionResult.AffinityArcReference(i, false, Optional.ofNullable(receipt)));
@@ -1296,7 +1305,9 @@ public final class LegacyEmissionKernel {
     }
 
     private static List<EmissionResult.Vertex> smooth(Flattened path, Smoother smoother,
-            LegacyEmissionDomain domain, OptionalEmissionContext context, EmissionWorkBudget budget) {
+            LegacyEmissionDomain domain, OptionalEmissionContext context, EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner owner, OrdinaryAffinityClassifier affinity,
+            List<EmissionResult.SmoothingOutcome> outcomes) {
         var vertices = new ArrayList<EmissionResult.Vertex>();
         for (var point : path.points()) vertices.add(vertex(point));
         int start = 0;
@@ -1309,6 +1320,12 @@ public final class LegacyEmissionKernel {
                     && path.points().get(end + 1).state().originalRow()
                         == path.points().get(end).state().originalRow() + 1) end++;
             if (end - start >= 2) {
+                if (affinity != null) {
+                    budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+                    owner.reserve(256L + 512L * (end - start + 1));
+                }
+                var rawRun = affinity == null ? List.<EmissionResult.Vertex>of()
+                    : List.copyOf(vertices.subList(start, end + 1));
                 var profiles = new ArrayList<CrossSectionProfile>();
                 var offsets = new ArrayList<Double>(); var intensities = new ArrayList<Double>();
                 for (int i = start; i <= end; i++) {
@@ -1335,10 +1352,44 @@ public final class LegacyEmissionKernel {
                         path.points().get(i).owner(), vertices.get(i).kind(),
                         vertices.get(i).nativeStateId(), Optional.of(offset)));
                 }
+                if (affinity != null) {
+                    var evidence = new ArrayList<OrdinaryAffinityClassifier.Receipt>();
+                    boolean changed = false, safe = true;
+                    var reason = EmissionResult.SmoothingReason.NO_CHANGE;
+                    for (int edge = start; edge < end; edge++) {
+                        budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                        if (!moved(vertices.get(edge), path.points().get(edge))
+                                && !moved(vertices.get(edge + 1), path.points().get(edge + 1))) continue;
+                        changed = true;
+                        var receipt = affinity.classifyFinalInValidatedExecution(path.points().get(edge).state(),
+                            path.points().get(edge + 1).state(), vertices.get(edge).position(),
+                            vertices.get(edge).offsetRasterPixels().orElseThrow(), vertices.get(edge + 1).position(),
+                            vertices.get(edge + 1).offsetRasterPixels().orElseThrow());
+                        evidence.add(receipt);
+                        if (receipt.status() != OrdinaryAffinityClassifier.Status.COMPATIBLE) {
+                            safe = false;
+                            reason = receipt.status() == OrdinaryAffinityClassifier.Status.INCOMPATIBLE
+                                ? EmissionResult.SmoothingReason.FINAL_BRANCH_CONFLICT
+                                : EmissionResult.SmoothingReason.FINAL_EVIDENCE_UNAVAILABLE;
+                            break;
+                        }
+                    }
+                    if (!safe) for (int i = start; i <= end; i++) vertices.set(i, rawRun.get(i - start));
+                    if (changed && safe) reason = EmissionResult.SmoothingReason.MEASURED_COMPATIBLE;
+                    outcomes.add(new EmissionResult.SmoothingOutcome(start, end,
+                        !changed ? EmissionResult.SmoothingDisposition.UNCHANGED : safe
+                            ? EmissionResult.SmoothingDisposition.ACCEPTED : EmissionResult.SmoothingDisposition.RAW_RETAINED,
+                        reason, evidence));
+                }
             }
             start = end + 1;
         }
         return List.copyOf(vertices);
+    }
+
+    private static boolean moved(EmissionResult.Vertex actual, PointDraft raw) {
+        return !actual.position().equals(raw.position()) || raw.state() != null
+            && !ExperimentalMeasuredModeInventory.same(actual.offsetRasterPixels().orElseThrow(), raw.state().offsetRasterPixels());
     }
 
     private List<ArcDraft> remeasure(SampledEmissionInput input, Flattened path,

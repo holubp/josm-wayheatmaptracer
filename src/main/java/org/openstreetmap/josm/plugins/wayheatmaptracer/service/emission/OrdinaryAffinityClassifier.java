@@ -18,7 +18,7 @@ public final class OrdinaryAffinityClassifier {
     public enum Status { COMPATIBLE, INCOMPATIBLE, UNKNOWN }
     public enum Reason { SLAB_PREPARED, SAME_MEASURED_CHAIN, MEASURED_SEPARATING_CROSSCUT, UNSUPPORTED_CHART,
         SOURCE_OWNERSHIP, SOURCE_AUTHORITY, SCALAR_SUPPORT, UNRESOLVED_MODES, UNRESOLVED_LINKS,
-        NO_CERTIFIED_CROSSCUT, UNPROVED_CONNECTOR, NATIVE_PITCH_UNAVAILABLE }
+        NO_CERTIFIED_CROSSCUT, UNPROVED_CONNECTOR, NATIVE_PITCH_UNAVAILABLE, FINAL_POINT_OWNERSHIP }
     public record Cell(int x, int y) { }
     public record CellEvidence(Cell cell, double maximumNodeIntensity) { }
     public record CrosscutPiece(RasterPoint fromGrid, RasterPoint toGrid,
@@ -40,6 +40,12 @@ public final class OrdinaryAffinityClassifier {
     }
     public record ConnectorPiece(int piece, AcceptedModeThresholdReceipt from,
         AcceptedModeThresholdReceipt to, double threshold, BilinearSegmentIntegral.Result scalar) { }
+    public enum PointOwnerKind { RAW_STATE_ALIAS, MEASURED_FINAL_POINT }
+    /** Actual point evidence; final points borrow no native state position or invented mode. */
+    public record PointOwnership(PointOwnerKind kind, int originalRow, int retainedRow,
+        MetricPoint position, double rasterOffset, AcceptedModeThresholdReceipt sourceOwner,
+        AcceptedModeThresholdReceipt stationOwner, int chain,
+        java.util.Optional<BilinearSegmentIntegral.Result> pointScalar) { }
     public record Slab(int originalFrom, int originalTo, Reason reason, RasterPoint rasterNormal,
         MetricPoint metricNormal, List<Station> stations, List<DirectLink> links,
         List<ChainPair> pairs, long stationExtractions) {
@@ -48,9 +54,11 @@ public final class OrdinaryAffinityClassifier {
     public record Receipt(Status status, Reason reason, NativeConnectorEvaluator.RowState from,
         NativeConnectorEvaluator.RowState to, MetricPoint actualFrom, MetricPoint actualTo,
         Slab slab, int fromChain, int toChain, List<CrosscutPiece> crossed,
-        java.util.Optional<BilinearSegmentIntegral.Result> scalar, List<ConnectorPiece> continuation) {
+        java.util.Optional<BilinearSegmentIntegral.Result> scalar, List<ConnectorPiece> continuation,
+        java.util.Optional<PointOwnership> fromOwnership, java.util.Optional<PointOwnership> toOwnership) {
         public Receipt { crossed = List.copyOf(crossed); scalar = Objects.requireNonNull(scalar);
-            continuation = List.copyOf(continuation); }
+            continuation = List.copyOf(continuation); fromOwnership = Objects.requireNonNull(fromOwnership);
+            toOwnership = Objects.requireNonNull(toOwnership); }
         /** A hard graph admission decision, never a finite objective debit. */
         public boolean ordinaryEligible() { return status != Status.INCOMPATIBLE; }
     }
@@ -61,7 +69,8 @@ public final class OrdinaryAffinityClassifier {
         @Override public int hashCode() { return System.identityHashCode(value); }
         @Override public boolean equals(Object other) { return other instanceof Identity key && key.value == value; }
     }
-    private record Edge(Identity from, Identity to, MetricPoint a, MetricPoint b) { }
+    private record Edge(Identity from, Identity to, MetricPoint a, MetricPoint b,
+        boolean finalPoints, double offsetA, double offsetB) { }
 
     private final SampledEmissionInput input;
     private final LegacyEmissionDomain domain;
@@ -94,10 +103,28 @@ public final class OrdinaryAffinityClassifier {
     /** Numerical engine boundary already validated its frozen input; avoid rescanning profiles per DP edge. */
     Receipt classifyInValidatedExecution(LegacyEmissionDomain.State from, LegacyEmissionDomain.State to,
             MetricPoint actualFrom, MetricPoint actualTo) {
+        return classify(from, to, actualFrom, actualTo, false, from.offsetRasterPixels(), to.offsetRasterPixels());
+    }
+
+    /** Explicit final-position measurement, sharing only the immutable row-pair source slab. */
+    public Receipt classifyFinalGeometry(LegacyEmissionDomain.State from, LegacyEmissionDomain.State to,
+            MetricPoint actualFrom, double offsetFrom, MetricPoint actualTo, double offsetTo) {
+        input.requireOpenAndUnchanged();
+        return classifyFinalInValidatedExecution(from, to, actualFrom, offsetFrom, actualTo, offsetTo);
+    }
+
+    Receipt classifyFinalInValidatedExecution(LegacyEmissionDomain.State from, LegacyEmissionDomain.State to,
+            MetricPoint actualFrom, double offsetFrom, MetricPoint actualTo, double offsetTo) {
+        return classify(from, to, actualFrom, actualTo, true, offsetFrom, offsetTo);
+    }
+
+    private Receipt classify(LegacyEmissionDomain.State from, LegacyEmissionDomain.State to,
+            MetricPoint actualFrom, MetricPoint actualTo, boolean finalPoints, double offsetA, double offsetB) {
         live();
         try {
             work(1);
-            var key = new Edge(new Identity(from.evaluatorState()), new Identity(to.evaluatorState()), actualFrom, actualTo);
+            var key = new Edge(new Identity(from.evaluatorState()), new Identity(to.evaluatorState()),
+                actualFrom, actualTo, finalPoints, offsetA, offsetB);
             var cached = edges.get(key); if (cached != null) return cached;
             var rowPair = new RowPair(from.originalRow(), to.originalRow());
             Slab slab = slabs.get(rowPair);
@@ -106,8 +133,8 @@ public final class OrdinaryAffinityClassifier {
                 slab = prepare(rowPair);
                 slabs.put(rowPair, slab);
             }
-            reserve(512);
-            var result = classifyEdge(from, to, actualFrom, actualTo, slab);
+            reserve(1024);
+            var result = classifyEdge(from, to, actualFrom, actualTo, slab, finalPoints, offsetA, offsetB);
             edges.put(key, result);
             return result;
         } catch (RuntimeException failure) {
@@ -117,24 +144,27 @@ public final class OrdinaryAffinityClassifier {
     }
 
     private Receipt classifyEdge(LegacyEmissionDomain.State from, LegacyEmissionDomain.State to,
-            MetricPoint a, MetricPoint b, Slab slab) {
+            MetricPoint a, MetricPoint b, Slab slab, boolean finalPoints, double offsetA, double offsetB) {
         var ownerA = modes.ownerFor(from.evaluatorState()); var ownerB = modes.ownerFor(to.evaluatorState());
         if (ownerA != null && (ownerA.originalRow() != from.originalRow() || ownerA.retainedRow() != from.evaluatorState().row())
                 || ownerB != null && (ownerB.originalRow() != to.originalRow() || ownerB.retainedRow() != to.evaluatorState().row()))
             throw new IllegalArgumentException("Affinity endpoint owner belongs to another source row");
-        if (ownerA == null || ownerB == null) return unknown(from, to, a, b, slab, Reason.SOURCE_OWNERSHIP);
+        if (!finalPoints && (ownerA == null || ownerB == null)) return unknown(from, to, a, b, slab, Reason.SOURCE_OWNERSHIP);
         if (slab.reason() != Reason.SLAB_PREPARED)
             return unknown(from, to, a, b, slab, slab.reason());
         if (!authority(a, b)) return unknown(from, to, a, b, slab, Reason.SOURCE_AUTHORITY);
         var scalar = integral(a, b);
         if (scalar.status() != BilinearSegmentIntegral.Status.COMPLETE)
-            return unknown(from, to, a, b, slab, Reason.SCALAR_SUPPORT);
-        int ca = bind(ownerA, slab.stations().get(0));
-        int cb = bind(ownerB, slab.stations().get(slab.stations().size() - 1));
-        if (ca < 0 || cb < 0) return unknown(from, to, a, b, slab, Reason.SOURCE_OWNERSHIP);
-        if (!endpointFits(from, a, slab.stations().get(0), ca, slab.metricNormal())
-                || !endpointFits(to, b, slab.stations().get(slab.stations().size() - 1), cb, slab.metricNormal()))
-            return unknown(from, to, a, b, slab, Reason.SOURCE_OWNERSHIP);
+            return unknown(from, to, a, b, slab, Reason.SCALAR_SUPPORT, scalar);
+        PointOwnership ownershipA = finalPoints
+            ? finalPoint(from, a, offsetA, slab.stations().get(0), slab.metricNormal())
+            : rawPoint(from, a, ownerA, slab.stations().get(0), slab.metricNormal());
+        PointOwnership ownershipB = finalPoints
+            ? finalPoint(to, b, offsetB, slab.stations().get(slab.stations().size() - 1), slab.metricNormal())
+            : rawPoint(to, b, ownerB, slab.stations().get(slab.stations().size() - 1), slab.metricNormal());
+        if (ownershipA == null || ownershipB == null) return unknown(from, to, a, b, slab,
+            finalPoints ? Reason.FINAL_POINT_OWNERSHIP : Reason.SOURCE_OWNERSHIP, scalar);
+        int ca = ownershipA.chain(), cb = ownershipB.chain();
         if (ca == cb) {
             reserve(192L * slab.stations().size());
             var continuation = new ArrayList<ConnectorPiece>();
@@ -146,20 +176,21 @@ public final class OrdinaryAffinityClassifier {
                 double offset = dot(point, station.anchor(), slab.metricNormal());
                 // Each actual connector sample stays in that complete measured core/uncertainty support.
                 if (mode.mode().distanceToCenterSet(offset) > mode.mode().localizationSigmaMeters())
-                    return unknown(from, to, a, b, slab, Reason.UNPROVED_CONNECTOR);
+                    return unknown(from, to, a, b, slab, Reason.UNPROVED_CONNECTOR, scalar);
                 if (previous != null) {
                     var priorMode = previous.modes().get(ca);
                     double threshold = Math.min(priorMode.shoulderThreshold(), mode.shoulderThreshold());
                     var measured = integral(interpolate(a, b, previous.parameter()), point);
                     if (measured.status() != BilinearSegmentIntegral.Status.COMPLETE
                             || measured.minimum().orElseThrow() < threshold)
-                        return unknown(from, to, a, b, slab, Reason.UNPROVED_CONNECTOR);
+                        return unknown(from, to, a, b, slab, Reason.UNPROVED_CONNECTOR, scalar);
                     continuation.add(new ConnectorPiece(continuation.size(), priorMode, mode, threshold, measured));
                 }
                 previous = station;
             }
             return new Receipt(Status.COMPATIBLE, Reason.SAME_MEASURED_CHAIN, from.evaluatorState(),
-                to.evaluatorState(), a, b, slab, ca, cb, List.of(), java.util.Optional.of(scalar), continuation);
+                to.evaluatorState(), a, b, slab, ca, cb, List.of(), java.util.Optional.of(scalar), continuation,
+                java.util.Optional.of(ownershipA), java.util.Optional.of(ownershipB));
         } else {
             for (ChainPair pair : slab.pairs()) {
                 work(1);
@@ -178,10 +209,11 @@ public final class OrdinaryAffinityClassifier {
                     if (interior) crossed.add(piece);
                 }
                 if (!crossed.isEmpty()) return receipt(Status.INCOMPATIBLE,
-                    Reason.MEASURED_SEPARATING_CROSSCUT, from, to, a, b, slab, ca, cb, crossed, scalar);
+                    Reason.MEASURED_SEPARATING_CROSSCUT, from, to, a, b, slab, ca, cb, crossed, scalar,
+                    ownershipA, ownershipB);
             }
         }
-        return unknown(from, to, a, b, slab, Reason.NO_CERTIFIED_CROSSCUT);
+        return unknown(from, to, a, b, slab, Reason.NO_CERTIFIED_CROSSCUT, scalar);
     }
 
     private Slab prepare(RowPair pair) {
@@ -405,6 +437,48 @@ public final class OrdinaryAffinityClassifier {
         return match;
     }
 
+    private PointOwnership rawPoint(LegacyEmissionDomain.State state, MetricPoint actual,
+            ExperimentalMeasuredModeInventory.Owner owner, Station station, MetricPoint normal) {
+        if (owner == null || !actual.equals(domain.metricPoint(state, input.context()))) return null;
+        int chain = bind(owner, station);
+        if (chain < 0 || !endpointFits(state, actual, station, chain, normal)) return null;
+        return new PointOwnership(PointOwnerKind.RAW_STATE_ALIAS, state.originalRow(), state.evaluatorState().row(),
+            actual, state.offsetRasterPixels(), owner.receipt(), station.modes().get(chain), chain, java.util.Optional.empty());
+    }
+
+    private PointOwnership finalPoint(LegacyEmissionDomain.State state, MetricPoint actual, double rasterOffset,
+            Station station, MetricPoint normal) {
+        if (!Double.isFinite(rasterOffset)) return null;
+        var observation = domain.binding().observations().get(state.originalRow());
+        if (observation.sourceClass() != NativeConnectorEvaluator.SourceClass.OBSERVED
+                || observation.retainedObservationIndex() != state.evaluatorState().row()) return null;
+        var profile = observation.measurementProfile();
+        var raster = new RasterPoint(profile.anchorScreen().x + profile.normalScreen().x * rasterOffset,
+            profile.anchorScreen().y + profile.normalScreen().y * rasterOffset);
+        var expected = input.context().rasterTransform().pixelCenterToMetric(raster.x(), raster.y());
+        if (!actual.equals(expected)) return null;
+        double pitch = ExperimentalMeasuredModeInventory.normalPitch(input.context(), state.evaluatorState().row());
+        double physicalOffset = rasterOffset * pitch;
+        if (Math.abs(physicalOffset) > input.context().searchHalfWidthMeters()) return null;
+        var scalar = integral(actual, actual);
+        if (scalar.status() != BilinearSegmentIntegral.Status.COMPLETE) return null;
+        PointOwnership found = null;
+        for (var owner : modes.ownersAt(state.originalRow())) {
+            work(1);
+            if (owner.receipt().mode().distanceToCenterSet(physicalOffset) > owner.receipt().mode().localizationSigmaMeters()
+                    || scalar.mean().orElseThrow() < owner.receipt().shoulderThreshold()) continue;
+            int chain = bind(owner, station);
+            if (chain < 0 || station.modes().get(chain).mode().distanceToCenterSet(dot(actual, station.anchor(), normal))
+                    > station.modes().get(chain).mode().localizationSigmaMeters()
+                    || scalar.mean().orElseThrow() < station.modes().get(chain).shoulderThreshold()) continue;
+            if (found != null) return null;
+            found = new PointOwnership(PointOwnerKind.MEASURED_FINAL_POINT, state.originalRow(),
+                state.evaluatorState().row(), actual, rasterOffset, owner.receipt(), station.modes().get(chain),
+                chain, java.util.Optional.of(scalar));
+        }
+        return found;
+    }
+
     private boolean endpointFits(LegacyEmissionDomain.State state, MetricPoint actual, Station boundary,
             int chain, MetricPoint normal) {
         if (!actual.equals(domain.metricPoint(state, input.context()))) {
@@ -494,11 +568,21 @@ public final class OrdinaryAffinityClassifier {
             MetricPoint a, MetricPoint b, Slab slab, Reason reason) {
         return receipt(Status.UNKNOWN, reason, from, to, a, b, slab, -1, -1, List.of(), null);
     }
+    private Receipt unknown(LegacyEmissionDomain.State from, LegacyEmissionDomain.State to,
+            MetricPoint a, MetricPoint b, Slab slab, Reason reason, BilinearSegmentIntegral.Result scalar) {
+        return receipt(Status.UNKNOWN, reason, from, to, a, b, slab, -1, -1, List.of(), scalar);
+    }
     private Receipt receipt(Status status, Reason reason, LegacyEmissionDomain.State from,
             LegacyEmissionDomain.State to, MetricPoint a, MetricPoint b, Slab slab, int ca, int cb,
             List<CrosscutPiece> crossed, BilinearSegmentIntegral.Result scalar) {
+        return receipt(status, reason, from, to, a, b, slab, ca, cb, crossed, scalar, null, null);
+    }
+    private Receipt receipt(Status status, Reason reason, LegacyEmissionDomain.State from,
+            LegacyEmissionDomain.State to, MetricPoint a, MetricPoint b, Slab slab, int ca, int cb,
+            List<CrosscutPiece> crossed, BilinearSegmentIntegral.Result scalar, PointOwnership ownerA, PointOwnership ownerB) {
         return new Receipt(status, reason, from.evaluatorState(), to.evaluatorState(), a, b, slab, ca, cb,
-            crossed, java.util.Optional.ofNullable(scalar), List.of());
+            crossed, java.util.Optional.ofNullable(scalar), List.of(), java.util.Optional.ofNullable(ownerA),
+            java.util.Optional.ofNullable(ownerB));
     }
     private void live() { input.requireRetainedOpen(); if (memory.isClosed()) throw new IllegalStateException("Affinity classifier is closed"); }
     private void work(long count) { budget.charge(EmissionWorkBudget.Operation.PREPARATION, count); }
