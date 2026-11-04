@@ -22,13 +22,13 @@ Gradle uses the shared Termux tmp flock; full suites run in GitHub CI.
 | 1: reviewed evaluator defects | CLOSED; source integration additionally reviewed/tested. |
 | 2: Legacy solver/integration | Core + managed capture/transport CLOSED; real-image work-cap failure remains; consumers/Apply qualification incomplete. |
 | 3: actual fitting improvement | Revised two-strand synthetic regressions GREEN; full classifier/oracle review and actual Drasov/Omice quality still open. |
-| 4: native Corridor A | Component implemented/tested; independent review finds two blockers; original R4 screen and actual managed-A producer/consumer gates not done. |
+| 4: native Corridor A | Both native component review blockers CLOSED at4fcb7a9d; integrated185101bf passes180 focused tests. Original R4 binding/screen and actual managed-A producer/consumer gates not done. |
 
 ### Verified integrated evidence
 
 Experimental worktree `/data/data/com.termux/files/usr/tmp/josm-drasov-optional-emission-experiment`,
-branch `codex/drasov-optional-emission-experiment`: local HEADaf02233a (tiny scale
-API29bc1323 + reviewed explicit-policy721a3717 above remotea71708d3). Clean last
+branch `codex/drasov-optional-emission-experiment`: local HEAD185101bf (native-A
+core/review repairs, scale API29bc1323 and explicit-policy721a3717 above remotea71708d3). Clean last
 checked. Source snapshot91dee0d8 and kernel transportffeae28f are integrated.
 Their independent reports close source, memory, coordinate, source-S, nonlinear
 probe, freshness, ownership, endpoint-roundoff and transport findings. Focused
@@ -43,7 +43,7 @@ Source reports: `drasov-managed-final-resource-review.md`,
 closed. Source normalization getter29bc1323 passes11tests; policy forwarding
 721a3717 passes165tests and independent `drasov-legacy-policy-review.md`.
 
-### Actual Drasov practical failure; next exact experiment
+### Actual Drasov practical failure; prior exact experiment
 
 Actual per-address tiles are seeded into real ManagedTileCache; six truthful disk
 cache receipts, zero network. Native185rows/301peaks exactly reproduced; old185-point
@@ -58,14 +58,15 @@ attempt BOTH reach128Mwork, no M/QCTK/geometry result. Dense:127999933used/9041p
 163715904bytespeak. Local:127999998used/1423pairs,70128288bytespeak,19.9s kernel,
 zeroafterclose. Local operations:57.46Mmode extraction,35.55Mregion,18.76Mnode reads.
 No more policy/cap/parameter retries. Actor `kernel_memory_closure` owns isolated
-`josm-drasov-kernel-managed-transport` at721a3717, implementing a new EXACT execution
+`josm-drasov-kernel-managed-transport`; the completed EXACT execution
 shortcut after independent mathematical consultation: preflight unchanged actual
 future slab integrals, reuse source-owned results; reject a zero slab only under
 proved positive-shoulder guard. Bare global-minimum zero is NOT a sound shortcut.
-Proof: `drasov-zero-scalar-early-refusal-review.md`. New report filename
-`drasov-exact-slab-prefight-report.md`. No further private run before tests/review.
+Proof: `drasov-zero-scalar-early-refusal-review.md`. Report filename
+`drasov-exact-slab-prefight-report.md`. See current continuation below for the
+reviewed implementation and capped third-run outcome.
 
-### Affinity correction and native A work
+### Affinity correction and native A work — prior repair state
 
 Binding amendment: `../specs/2026-11-04-drasov-experimental-affinity-amendment.md`.
 Actor `affinity_contract_probe`, isolated `josm-drasov-affinity-test`: owner35cca6d2
@@ -93,7 +94,39 @@ Original R4 potential26098 must reconcile before any graph run. Managed-A produc
 is still missing: old A uses >=4m spacing plus full Gaussian levels; existing
 managed retention is Legacy singleL0/185rows and CANNOT claim original-A parity.
 
+### Reviewed repair rulings
+
+Affinity integration389f31d8 has188tests/13classes plus13affected publication tests
+GREEN, but independent review finds P1 final smoothing can cross branches through
+raw-owner UNKNOWN, and P2 negative links/partial UNKNOWN evidence are discarded.
+Fix round1/5 is authorized; closed owner findings remain closed.
+Ruling: newly moved final vertices cannot inherit raw-state fallback authority.
+Freshly validate final positions/edges; retain the valid raw consecutive run when
+its optional smoothing cannot be proved safe. This is rollback of the permitted
+smoothing stage, not another optimization pass or inference change. Preserve
+unchanged/raw UNKNOWN fallback semantics and report the smoothing outcome. Retain
+bounded typed negative-link and partial-proof provenance; do not fabricate missing
+queries as empty measured evidence. Cost if wrong: raw runs may remain unsmoothed;
+this is preferable to introducing the proved cross-branch kink after a valid solve.
+
 ### Resume discipline / next gates
+
+Current continuation: affinity fix round1 committed a6690efe/c8bb6460,194 tests
+across13classes pass; frozen for independent P1/P2 re-review. Native-A4fcb7a9d
+independently CLOSED (296tests/17XML); integrated185101bf passes180tests/6XML.
+Original-A17/retained19 binding implementation now isolated in
+`josm-drasov-a-r4-binding` at185101bf; no R4 graph run before binding review.
+
+Exact scalar slab preflight b87d6ad4 independently CLOSED (184tests/8XML), but
+the single authorized third real Drasov run still reaches127999992work (next14
+refused),4314pairs,112893376Bpeak,18.69s kernel,zero memory after close and
+zeroHTTP. No M/QCTK/geometry. Report `drasov-exact-slab-prefight-report.md`.
+Do not compare absolute operation totals at different cap-limited progress as
+proof of per-query efficiency. Sol6.1/xhigh focused exact-execution consultation
+is active (`legacy_exact_execution_design`); justification: three capped failures
+require a changed exact strategy, not more parameter/policy retries. No Astra.
+No fourth private run or cap increase authorized by this checkpoint; first prove
+and review the next execution contract and common-progress measurement.
 
 Use existing actors/reports; one writer per isolated worktree. No recursive agents.
 `managed_source_audit` performs source/A/proof reviews; `kernel_memory_audit` closed
