@@ -35,7 +35,11 @@
   josm-drasov-local-noise-precheck,base6d6,209focusedtests/13XML plus12rechecks.
   Independent auditor found no blockers (closed report being frozen). Synthetic
   41probes preserve5986samples and settled evidence, skip41doomedextractions;
-  MODE153709→136325. Actual32M helper preparation underway, no invocation yet.
+  MODE153709→136325. Source/helper reviews CLOSED. Root ONE actual32M invocation
+  initial-noise-67856654-32m-001 completed as typedTOTAL_WORK31999991,next32,
+  seed0BASErow12 vs oldrow11,409pairs,4.382skernel,noM/QCTK. Not practical
+  geometry improvement. Owner analyzes exact work/progress. Integration9832f7df
+  on ee94 clean,317tests26XML PASS; independent merge audit underway.
 - Curved-census source dc1bd5c6 and helper R1 independently CLOSED. Root's ONE
   fad79c35 replacement invocation completed184/184 pairs:7,870,402work,
   41,129,312Bpeak/0after,4.915s,0network,all24hashes unchanged. Fresh21folds
@@ -47,7 +51,13 @@
   Only pair5→6 has2/26 positive-run route refusals despite acquired support;
   16producer stations there pass. Actual rounded Mode placement/fullfuturedomain
   remain UNAVAILABLE. Next bounded managed-classifier ownership design assigned;
-  no adapter or rerun yet.
+  no adapter or rerun yet. Ruling A: retain actual metric-line evaluator law with
+  captured monotone inverse; never equate native-straight census lines to actual
+  query curves. Design/review drasov-managed-affinity-m1-m2-design-{packet,review}.md
+  approve M1-only actual numeric Mode/point/support ownership; consumer disabled.
+  Implementer affinity_contract_probe assigned new isolated ee94-based worktree.
+  M2 remains conditional on independently reviewed M1; no user approval needed
+  for this authorized experiment follow-on. Roundtrip differences remain factual.
 - Active owners: a_native_integration implements reviewed A scalar-bound stage;
   managed_source_audit available for scoped census-helper repair review;
   kernel_memory_audit closes noise-source review; managed_context_closure prepares
