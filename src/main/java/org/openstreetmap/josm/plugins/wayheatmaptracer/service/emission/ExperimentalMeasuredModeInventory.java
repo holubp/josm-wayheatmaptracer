@@ -51,7 +51,8 @@ public final class ExperimentalMeasuredModeInventory {
     private final List<List<Owner>> rows;
     private final List<AcceptedThresholdExtraction> extractions;
     private final List<List<Sample>> rowSamples;
-    private final IdentityHashMap<NativeConnectorEvaluator.RowState, Owner> aliases;
+    private record Alias(Owner owner) { }
+    private final IdentityHashMap<NativeConnectorEvaluator.RowState, Alias> aliases;
 
     ExperimentalMeasuredModeInventory(SampledEmissionInput input) {
         this.input = input;
@@ -139,15 +140,19 @@ public final class ExperimentalMeasuredModeInventory {
             scope = memory.child("domain-alias-publication");
             try {
                 budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
-                scope.reserve(128);
+                var listReservation = scope.reserve(128);
                 bound = new ArrayList<>();
+                listReservation.adopt(bound);
             } catch (RuntimeException failure) { scope.close(); throw failure; }
         }
         void bind(NativeConnectorEvaluator.RowState state, Owner owner) {
             if (closed || committed) throw new IllegalStateException("Measured publication is closed");
-            budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1); scope.reserve(192); work(1);
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+            var reservation = scope.reserve(192); work(1);
             if (aliases.containsKey(state)) throw new IllegalArgumentException("Duplicate measured state alias");
-            bound.add(state); aliases.put(state, owner);
+            var alias = new Alias(owner);
+            reservation.adopt(alias);
+            bound.add(state); aliases.put(state, alias);
         }
         void commit() {
             input.requireOpenAndUnchanged();
@@ -208,7 +213,7 @@ public final class ExperimentalMeasuredModeInventory {
     }
 
     public Owner ownerFor(NativeConnectorEvaluator.RowState state) {
-        requireLive(); work(1); return aliases.get(state);
+        requireLive(); work(1); var alias = aliases.get(state); return alias == null ? null : alias.owner();
     }
 
     public void requireOwned(Owner owner, int originalRow) {

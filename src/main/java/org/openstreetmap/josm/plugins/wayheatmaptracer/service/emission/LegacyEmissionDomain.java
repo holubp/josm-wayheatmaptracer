@@ -88,7 +88,7 @@ public final class LegacyEmissionDomain {
             peaks = Math.addExact(peaks, observation.producerPeaks().size());
         }
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
-        allocation.reserve(Math.addExact(512, Math.addExact(
+        var domainReservation = allocation.reserve(Math.addExact(512, Math.addExact(
             Math.multiplyExact(512L, binding.observations().size()), Math.multiplyExact(256L, peaks))));
         this.suppressedProfiles = List.copyOf(suppressedProfiles);
         if (this.suppressedProfiles.size() != binding.observations().size() || seedOffsets.isEmpty())
@@ -159,15 +159,18 @@ public final class LegacyEmissionDomain {
                         throw failure;
                     }
                     budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
-                    allocation.reserve(512);
+                    var stateReservation = allocation.reserve(512);
                     var evaluatorState = measuredModes.issueCenter(measured, nextId++, publication);
-                    expanded.add(new State(row, evaluatorState.nativeStateId(), Kind.OBSERVED_SCALAR_MODE,
-                        origin++, evaluatorState.offsetRasterPixels(), null, evaluatorState));
+                    var state = new State(row, evaluatorState.nativeStateId(), Kind.OBSERVED_SCALAR_MODE,
+                        origin++, evaluatorState.offsetRasterPixels(), null, evaluatorState);
+                    stateReservation.adopt(state);
+                    expanded.add(state);
                 }
                 rows.set(row, List.copyOf(expanded));
             }
         }
         observed = List.copyOf(rows);
+        domainReservation.adopt(observed);
         originalPeakIdentity = idByPeak;
         nextOriginId = origin;
         if (publication != null) publication.commit();

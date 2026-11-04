@@ -124,8 +124,11 @@ class LegacyAffinityContractProbeTest {
                 assertSame(modes, input.experimentalMeasuredModes());
                 var old = new LegacyEmissionDomain(binding, retained.profiles().levelZeroProfiles(),
                     List.of(-4.0, 4.0), budget, root);
+                long beforePublication = ledger.currentBytes();
                 var domain = new LegacyEmissionDomain(binding, retained.profiles().levelZeroProfiles(),
                     List.of(-4.0, 4.0), budget, root, modes);
+                assertTrue(ledger.currentBytes() - beforePublication >= 8960L + 11L * 512 + 22L * 192,
+                    "Successful publication must retain native/new state and alias accounting until its owner closes");
                 int represented = 0;
                 for (int row = 0; row < 11; row++) {
                     assertEquals(1, retained.profiles().levelZeroProfiles().get(row).peaks().size());
