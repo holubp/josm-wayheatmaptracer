@@ -5,6 +5,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.Bilinear
 
 /** Read-only scalar values with an explicit mapping to the producer's base raster. */
 public interface NativeScalarGridView extends BilinearSegmentIntegral.ReadOnlyScalarGrid {
+    default int originX() { return 0; }
+    default int originY() { return 0; }
     RasterPoint toGrid(RasterPoint baseRasterPoint);
     RasterPoint toBaseRaster(RasterPoint gridPoint);
 }

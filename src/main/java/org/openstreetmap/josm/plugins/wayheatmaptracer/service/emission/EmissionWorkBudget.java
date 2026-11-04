@@ -140,4 +140,9 @@ public final class EmissionWorkBudget {
 
     /** Effective original-row state-family ceiling, including a stricter caller limit. */
     public int stateFamilyLimit() { return stateFamilyLimit; }
+
+    /** Retains a same-attempt terminal producer/memory failure before any later phase can retry. */
+    public synchronized void failTerminally(RuntimeException failure) {
+        if (terminalFailure == null) terminalFailure = Objects.requireNonNull(failure, "terminal failure");
+    }
 }

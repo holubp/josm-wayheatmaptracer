@@ -158,6 +158,27 @@ public final class ManagedGroundTransform {
         return nativePixelPitchAt(virtualRasterPoint) / mosaic.virtualRasterScale();
     }
 
+    /** Analytic local ground displacement per one original virtual-raster normal unit. */
+    public double normalPitchAt(RasterPoint point, RasterPoint normal) {
+        requireOpen();
+        double worldY = mosaic.originWorldPxY() + point.y() / mosaic.virtualRasterScale() + 0.5;
+        double lat = Math.toRadians(latitude(worldY, worldSize));
+        double k = 2.0 * Math.PI / worldSize / mosaic.virtualRasterScale();
+        return Math.hypot(normal.x() * k * frame.distortionCertificate().eastMetersPerRadian(),
+                normal.y() * k * frame.distortionCertificate().northMetersPerRadian() * Math.cos(lat));
+    }
+    /** Unit transverse direction of the actual mapped raster segment at this probe. */
+    public RasterPoint transverseAt(RasterPoint probe, RasterPoint from, RasterPoint to) {
+        requireOpen();
+        double worldY = mosaic.originWorldPxY() + probe.y() / mosaic.virtualRasterScale() + 0.5;
+        double lat = Math.toRadians(latitude(worldY, worldSize));
+        double east = (to.x() - from.x()) * frame.distortionCertificate().eastMetersPerRadian();
+        double north = -(to.y() - from.y()) * frame.distortionCertificate().northMetersPerRadian() * Math.cos(lat);
+        double length = Math.hypot(east, north);
+        if (!(length > 0.0)) throw new IllegalArgumentException("Managed connector direction is zero");
+        return new RasterPoint(-north / length, east / length);
+    }
+
     /** Analytic deviation of the transformed raster segment from its metric endpoint chord. */
     public double maximumNorthChordErrorMeters(RasterPoint start, RasterPoint end) {
         requireOpen();

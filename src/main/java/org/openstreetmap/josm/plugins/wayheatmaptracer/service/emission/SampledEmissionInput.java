@@ -51,8 +51,9 @@ public final class SampledEmissionInput implements AutoCloseable {
         legacyBinding.ifPresent(binding -> binding.requireNativeProfilesUnchanged(workBudget));
     }
     /** First terminal admission failure belongs to the whole retained attempt, not one phase. */
-    synchronized void recordTerminalExecutionFailure(RuntimeException failure) {
+    public synchronized void recordTerminalExecutionFailure(RuntimeException failure) {
         if (terminalExecutionFailure == null) terminalExecutionFailure = failure;
+        workBudget.failTerminally(failure);
     }
     /** Shares the retained input's exact attempt/lifetime with a bounded numerical service. */
     public synchronized AttemptMemoryLedger.Owner openExecutionOwner(String phase) {
