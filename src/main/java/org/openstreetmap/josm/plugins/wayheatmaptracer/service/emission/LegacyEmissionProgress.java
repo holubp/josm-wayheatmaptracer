@@ -64,6 +64,8 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     private Termination termination;
     private LegacyEmissionKernel.UnavailableReason unavailableReason;
     private int failureOriginalOrdinal=-1;
+    private static final int REQUESTED_AVAILABLE=1,USED_AVAILABLE=2,LIMIT_AVAILABLE=4,ORDINAL_AVAILABLE=8;
+    private int failureFields;
     private ProfileBackend backend;
     private boolean sealed,evaluationInFlight,sampleInFlight,extractionInFlight,samplingFinished;
     private boolean profileInFlight,windowInFlight;
@@ -266,12 +268,12 @@ public final class LegacyEmissionProgress implements AutoCloseable {
         used=budget.workUsed();pairs=budget.pairVisits();peak=owner.peakBytes();current=owner.currentBytes();
         if(failure==null)termination=Termination.SUCCESS;
         else if(failure instanceof EmissionWorkBudget.LimitExceededException e){termination=e.kind()==EmissionWorkBudget.LimitKind.TOTAL_WORK?Termination.TOTAL_WORK:Termination.PAIR_VISITS;
-            requested=e.requestedUnits();failureUsed=e.used();failureLimit=e.limit();}
-        else if(failure instanceof AttemptMemoryLedger.ResourceLimitException e){termination=Termination.MEMORY;requested=e.requestedBytes();failureUsed=e.currentBytes();failureLimit=e.limitBytes();}
+            requested=e.requestedUnits();failureUsed=e.used();failureLimit=e.limit();failureFields=REQUESTED_AVAILABLE|USED_AVAILABLE|LIMIT_AVAILABLE;}
+        else if(failure instanceof AttemptMemoryLedger.ResourceLimitException e){termination=Termination.MEMORY;requested=e.requestedBytes();failureUsed=e.currentBytes();failureLimit=e.limitBytes();failureFields=REQUESTED_AVAILABLE|USED_AVAILABLE|LIMIT_AVAILABLE;}
         else if(failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor.ResourceLimitException
-                &&failure.getCause() instanceof AttemptMemoryLedger.ResourceLimitException e){termination=Termination.MEMORY;requested=e.requestedBytes();failureUsed=e.currentBytes();failureLimit=e.limitBytes();}
-        else if(failure instanceof LegacyEmissionDomain.StateFamilyLimitException e){termination=Termination.STATE_FAMILY;failureOriginalOrdinal=e.originalRow();failureUsed=e.familySize();failureLimit=e.limit();}
-        else if(failure instanceof NativeConnectorEvaluator.StateFamilyLimitException e){termination=Termination.STATE_FAMILY;failureOriginalOrdinal=e.originalOrdinal();failureUsed=(long)e.limit()+1;failureLimit=e.limit();}
+                &&failure.getCause() instanceof AttemptMemoryLedger.ResourceLimitException e){termination=Termination.MEMORY;requested=e.requestedBytes();failureUsed=e.currentBytes();failureLimit=e.limitBytes();failureFields=REQUESTED_AVAILABLE|USED_AVAILABLE|LIMIT_AVAILABLE;}
+        else if(failure instanceof LegacyEmissionDomain.StateFamilyLimitException e){termination=Termination.STATE_FAMILY;failureOriginalOrdinal=e.originalRow();failureUsed=e.familySize();failureLimit=e.limit();failureFields=USED_AVAILABLE|LIMIT_AVAILABLE|ORDINAL_AVAILABLE;}
+        else if(failure instanceof NativeConnectorEvaluator.StateFamilyLimitException e){termination=Termination.STATE_FAMILY;failureOriginalOrdinal=e.originalOrdinal();failureLimit=e.limit();failureFields=LIMIT_AVAILABLE|ORDINAL_AVAILABLE;}
         else if(failure instanceof LegacyEmissionKernel.UnavailableException e){termination=Termination.UNAVAILABLE;unavailableReason=e.reason();}
         else termination=failure instanceof CancellationException?Termination.CANCELLED:Termination.OTHER;
         localEnd();sealed=true;
@@ -334,7 +336,14 @@ public final class LegacyEmissionProgress implements AutoCloseable {
         public long workUsed(){return p.used;}public long pairVisits(){return p.pairs;}
         public long workLimit(){return p.budget.workLimit();}public long pairLimit(){return p.budget.pairLimit();}
         public long memoryLimit(){return p.owner.limitBytes();}public long peakMemoryBytes(){return p.peak;}public long currentMemoryBytes(){return p.current;}
-        public long failureRequested(){return p.requested;}public long failureUsed(){return p.failureUsed;}public long failureLimit(){return p.failureLimit;}
-        public int failureOriginalOrdinal(){return p.failureOriginalOrdinal;}public LegacyEmissionKernel.UnavailableReason unavailableReason(){return p.unavailableReason;}
+        public boolean hasFailureRequested(){return (p.failureFields&REQUESTED_AVAILABLE)!=0;}
+        public boolean hasFailureUsed(){return (p.failureFields&USED_AVAILABLE)!=0;}
+        public boolean hasFailureLimit(){return (p.failureFields&LIMIT_AVAILABLE)!=0;}
+        public boolean hasFailureOriginalOrdinal(){return (p.failureFields&ORDINAL_AVAILABLE)!=0;}
+        public long failureRequested(){if(!hasFailureRequested())throw new IllegalStateException("Failure request is unavailable");return p.requested;}
+        public long failureUsed(){if(!hasFailureUsed())throw new IllegalStateException("Failure used quantity is unavailable");return p.failureUsed;}
+        public long failureLimit(){if(!hasFailureLimit())throw new IllegalStateException("Failure limit is unavailable");return p.failureLimit;}
+        public int failureOriginalOrdinal(){if(!hasFailureOriginalOrdinal())throw new IllegalStateException("Failure ordinal is unavailable");return p.failureOriginalOrdinal;}
+        public LegacyEmissionKernel.UnavailableReason unavailableReason(){return p.unavailableReason;}
     }
 }

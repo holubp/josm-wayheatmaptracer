@@ -102,6 +102,15 @@ class LegacyProgressPolicyTest {
             assertEquals(1,p.view().count(Counter.POSITIVE_MISS));assertEquals(0,p.view().count(Counter.POSITIVE_INSERT));
         }
     }
+    @Test void actualUnavailableKernelEntryHasNoInventedFailureQuantities() {
+        try(var f=stageInput(new EmissionWorkBudget(TraceBudgets.defaults(),CancellationProbe.NONE),true);
+            var p=LegacyEmissionProgress.open(f.input(),QUERY,EXEC)) {
+            var failure=assertThrows(LegacyEmissionKernel.UnavailableException.class,()->new RidgeTracker().trackEmission(f.input(),CancellationProbe.NONE,QUERY,EXEC,p));
+            assertEquals(Termination.UNAVAILABLE,p.view().termination());assertEquals(failure.reason(),p.view().unavailableReason());
+            assertFalse(p.view().hasFailureRequested());assertFalse(p.view().hasFailureUsed());assertFalse(p.view().hasFailureLimit());assertFalse(p.view().hasFailureOriginalOrdinal());
+            assertThrows(IllegalStateException.class,()->p.view().failureUsed());
+        }
+    }
     private static NativeConnectorEvaluatorTest.Straight fractional(EmissionWorkBudget work,EvidenceResolution resolution) {
         return NativeConnectorEvaluatorTest.scene((x,y)->{double u=Math.abs((y-32)*.2);return u==0?1:u<=.2?.5:0;},
             (x,y)->true,MetricRegion.rectangle(0,0,12.6,12.6),SourceClass.OBSERVED,2,.2,
@@ -111,10 +120,13 @@ class LegacyProgressPolicyTest {
         @Override public void close(){input.close();owner.close();assertEquals(0,ledger.currentBytes());}
     }
     private static StageInput stageInput(EmissionWorkBudget work) {
+        return stageInput(work,false);
+    }
+    private static StageInput stageInput(EmissionWorkBudget work,boolean movableBoundary) {
         var f=LegacyEmissionStagesTest.fixture();var ledger=AttemptMemoryLedger.production();var owner=ledger.rootOwner();
         try(var permit=OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(f.evidence(),"stage-ridge",f.input(),f.chainage(),25,work,owner)) {
             var retained=new RenderedHeatmapSampler().sampleDetachedRetainingL0(f.evidence(),"stage-ridge",f.input().profileLocations(),25,1,1,work,permit);
-            var event=new LegacyEmissionBinding.ProtectedOccurrence("fixed-3-4",3,4,28,new MetricPoint(52,64.5),true);
+            var event=new LegacyEmissionBinding.ProtectedOccurrence("fixed-3-4",3,4,28,new MetricPoint(52,64.5),!movableBoundary);
             var binding=OptionalEmissionContextFactory.createLegacyBinding(permit,retained,List.of(0,1,2,3,4,5,6),1,List.of(event));
             return new StageInput(OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit,retained,binding),owner,ledger);
         }catch(RuntimeException failure){owner.close();throw failure;}

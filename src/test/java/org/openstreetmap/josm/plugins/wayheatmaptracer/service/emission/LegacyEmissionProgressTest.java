@@ -11,6 +11,50 @@ import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.N
 import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.LegacyEmissionProgress.*;
 
 class LegacyEmissionProgressTest {
+    @Test void nativeStateFamilyCannotPublishAnInferredUsedQuantity() {
+        try(var f=fixture();var p=LegacyEmissionProgress.open(f.input(),QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1);
+            var e=new NativeConnectorEvaluator(f.input(),new Domain(List.of(),List.of(),List.of(),Map.of(0,0)),
+                QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1,p)) {
+            for(int id=0;id<96;id++)e.registerState(new RowState(0,id,0,SourceClass.GAP,null),0);
+            var failure=assertThrows(StateFamilyLimitException.class,()->e.registerState(new RowState(0,96,0,SourceClass.GAP,null),0));
+            p.seal(failure);assertEquals(96,p.view().failureLimit());
+            assertEquals(0,p.view().failureOriginalOrdinal());
+            assertTrue(p.view().hasFailureLimit());assertTrue(p.view().hasFailureOriginalOrdinal());
+            assertFalse(p.view().hasFailureUsed());assertFalse(p.view().hasFailureRequested());
+            assertThrows(IllegalStateException.class,()->p.view().failureUsed(),"That exception exposes no used quantity");
+            assertThrows(IllegalStateException.class,()->p.view().failureRequested());
+        }
+    }
+    @Test void suppliedPairUsedZeroRemainsAvailableAndSealStillPaysNothing() {
+        try(var f=fixture();var p=LegacyEmissionProgress.open(f.input(),QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1)) {
+            var work=f.input().workBudget();assertEquals(0,work.pairVisits());
+            var failure=assertThrows(EmissionWorkBudget.LimitExceededException.class,()->work.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP,work.pairLimit()+1));
+            var before=work.snapshot();long bytes=f.ledger().currentBytes();p.seal(failure);
+            assertEquals(before,work.snapshot());assertEquals(bytes,f.ledger().currentBytes());
+            assertTrue(p.view().hasFailureUsed());assertEquals(0,p.view().failureUsed());
+            assertTrue(p.view().hasFailureRequested());assertTrue(p.view().hasFailureLimit());assertFalse(p.view().hasFailureOriginalOrdinal());
+        }
+    }
+    @Test void successAndActualUnsupportedEntryHaveNoFailureQuantities() {
+        for(boolean unsupported:new boolean[]{false,true})try(var f=fixture();var p=LegacyEmissionProgress.open(f.input(),QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1)) {
+            if(unsupported)assertThrows(IllegalArgumentException.class,()->new RidgeTracker().trackEmission(f.input(),CancellationProbe.NONE,
+                QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1,p));
+            else try(var e=evaluator(f,p)){e.evaluate(f.states().get(0),f.states().get(1));p.seal(null);}
+            var v=p.view();assertEquals(unsupported?Termination.OTHER:Termination.SUCCESS,v.termination());
+            assertFalse(v.hasFailureRequested());assertFalse(v.hasFailureUsed());assertFalse(v.hasFailureLimit());assertFalse(v.hasFailureOriginalOrdinal());
+            assertThrows(IllegalStateException.class,v::failureRequested);assertThrows(IllegalStateException.class,v::failureUsed);
+            assertThrows(IllegalStateException.class,v::failureLimit);assertThrows(IllegalStateException.class,v::failureOriginalOrdinal);
+        }
+    }
+    @Test void domainFamilyUsesItsSuppliedFieldsOnly() {
+        try(var f=fixture();var p=LegacyEmissionProgress.open(f.input(),QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1)) {
+            var failure=new LegacyEmissionDomain.StateFamilyLimitException(7,97,96);p.seal(failure);
+            assertTrue(p.view().hasFailureUsed());assertEquals(failure.familySize(),p.view().failureUsed());
+            assertTrue(p.view().hasFailureLimit());assertEquals(failure.limit(),p.view().failureLimit());
+            assertTrue(p.view().hasFailureOriginalOrdinal());assertEquals(failure.originalRow(),p.view().failureOriginalOrdinal());
+            assertFalse(p.view().hasFailureRequested());assertThrows(IllegalStateException.class,()->p.view().failureRequested());
+        }
+    }
     @Test void exactNestedCensusSeparatesPartialSamplingAndExtraction() {
         try(var f=fixture();var p=LegacyEmissionProgress.open(f.input(),QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1)) {
             p.localBegin();
@@ -149,6 +193,8 @@ class LegacyEmissionProgressTest {
                 assertEquals(1,v.count(Counter.SAMPLE_STARTED));assertEquals(0,v.count(Counter.SAMPLE_COMPLETED));
                 assertEquals(0,v.count(Counter.EVALUATION_COMPLETED));assertTrue(v.evaluationInFlight());
                 assertEquals(target==0?Termination.TOTAL_WORK:target==1?Termination.PAIR_VISITS:Termination.CANCELLED,v.termination());
+                assertEquals(target!=2,v.hasFailureRequested());assertEquals(target!=2,v.hasFailureUsed());assertEquals(target!=2,v.hasFailureLimit());
+                if(target==2){assertThrows(IllegalStateException.class,v::failureUsed);assertThrows(IllegalStateException.class,v::failureLimit);assertThrows(IllegalStateException.class,v::failureRequested);}
                 assertSame(failure,assertThrows(RuntimeException.class,()->e.evaluate(f.states().get(0),f.states().get(1))));
             }
         }
@@ -193,6 +239,7 @@ class LegacyEmissionProgressTest {
             holder[0]=f;current[0]=p;armed.set(true);
             var failure=assertThrows(AttemptMemoryLedger.ResourceLimitException.class,()->e.evaluate(f.states().get(0),f.states().get(1)));p.seal(failure);
             assertTrue(injected.get());assertEquals(Termination.MEMORY,p.view().termination());
+            assertTrue(p.view().hasFailureRequested());assertTrue(p.view().hasFailureUsed());assertTrue(p.view().hasFailureLimit());
             assertFalse(p.view().sampleInFlight());assertEquals(1,p.view().count(Counter.SAMPLE_COMPLETED));
             assertEquals(0,p.view().count(Counter.SAMPLING_COMPLETED));assertEquals(0,p.view().count(Counter.EXTRACTION_STARTED));
             assertSame(failure,assertThrows(AttemptMemoryLedger.ResourceLimitException.class,f.input()::requireOpenAndUnchanged));
