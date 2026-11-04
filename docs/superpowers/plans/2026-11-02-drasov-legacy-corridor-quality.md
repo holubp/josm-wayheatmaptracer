@@ -29,7 +29,8 @@ Gradle uses the shared Termux tmp flock; full suites run in GitHub CI.
 Experimental worktree `/data/data/com.termux/files/usr/tmp/josm-drasov-optional-emission-experiment`,
 branch `codex/drasov-optional-emission-experiment`: stable HEAD88d4fa28 (reviewed
 native-A original-row binding, affine affinity, source and explicit-policy work).
-Remotea8c098fc has full CI41826880110 IN_PROGRESS; it excludes88 binding changes. Clean last
+Remote88d4fa28 has full CI41833501937 IN_PROGRESS. Priora8c098fc CI41826880110
+SUCCESS excludes88 binding changes. Clean last
 checked. Source snapshot91dee0d8 and kernel transportffeae28f are integrated.
 Their independent reports close source, memory, coordinate, source-S, nonlinear
 probe, freshness, ownership, endpoint-roundoff and transport findings. Focused
@@ -171,6 +172,11 @@ Report `drasov-affinity-managed-integration-review.md` closes integration only.
 Public experimental branch pushed a8c098fc; Build CI41826880110 is IN_PROGRESS at
 that exact SHA (https://github.com/holubp/josm-wayheatmaptracer/actions/runs/41826880110).
 No private artifact uploaded, no release. Earlier CI cannot qualify this new head.
+Final verification supersedes that launch status: CI41826880110 SUCCESS at exacta8,
+258JUnitXML/2801executions/2706distincttests,0failure/error/skip/malformed; both
+pinnedJOSM19555 GUI engines PASS. Public status/summary and official host receipt
+verified locally. Report `drasov-ci-41826880110-report.md`; no private inputs/JAR
+download/release. Later88d4fa28 remains outside that full-CI evidence.
 Native A binding first GREEN reproduces239states/26098potentialpairs and4frozen
 hashes; broader validation continues. Ruling: permit a narrow retained-source-only
 Input validator for A, preserving every sticky/open/source/witness/geometry check
@@ -204,6 +210,13 @@ enum missing. Original e1 classes lack EXACT_SLAB, integrated88 classes supply i
 One future128M/8M/256MiB/512MiB-host graph requires independent helper/run review
 and root go. Typed terminal failure has no winner; partial metrics unavailable
 unless exposed factually. No R4 graph has run by this checkpoint.
+Reviewed88 binding batch pushed for unattended full CI41833501937 at exact88SHA:
+https://github.com/holubp/josm-wayheatmaptracer/actions/runs/41833501937.
+Current fulla8CI is verified SUCCESS;88run is not yet green. Public source only,
+no private uploads/release. Harness host guard corrected before first execution
+to120s (20s was an estimate, not the algorithm cap); unchanged128M/8M/256MiB and
+512MiBhost remain binding. Fresh helper-host120 diff/snapshot are frozen; source
+auditor reviews before the single invocation. Earlier metadata artifacts retained.
 
 Use existing actors/reports; one writer per isolated worktree. No recursive agents.
 `managed_source_audit` performs source/A/proof reviews; `kernel_memory_audit` closed
