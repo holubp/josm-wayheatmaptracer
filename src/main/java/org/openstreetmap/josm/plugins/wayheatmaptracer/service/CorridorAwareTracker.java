@@ -106,7 +106,21 @@ public final class CorridorAwareTracker {
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution) {
         java.util.Objects.requireNonNull(binding).requireCurrent(input);
-        return trackOptionalEmissionBound(input,binding,junctions,barriers,cleanup,query,execution);
+        return trackOptionalEmissionBound(input,binding,junctions,barriers,cleanup,query,execution,NativeAEmissionSolver.ExecutionChoice.UNCHANGED_V1);
+    }
+
+    /** Explicit A-only execution choice; no connector numerical/query policy is changed. */
+    public OptionalEmissionTracking trackOptionalEmission(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAEmissionBinding binding,
+            JunctionContext junctions,
+            List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.Barrier> barriers,
+            GeometryCleanupConfig cleanup,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution,
+            NativeAEmissionSolver.ExecutionChoice choice) {
+        java.util.Objects.requireNonNull(binding).requireCurrent(input);
+        return trackOptionalEmissionBound(input,binding,junctions,barriers,cleanup,query,execution,java.util.Objects.requireNonNull(choice));
     }
 
     /** Runs the original extraction/association/grouping and explicit native optional-emission kernel. */
@@ -117,7 +131,19 @@ public final class CorridorAwareTracker {
             GeometryCleanupConfig cleanup,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution) {
-        return trackOptionalEmissionBound(input,null,junctions,barriers,cleanup,query,execution);
+        return trackOptionalEmissionBound(input,null,junctions,barriers,cleanup,query,execution,NativeAEmissionSolver.ExecutionChoice.UNCHANGED_V1);
+    }
+
+    /** Explicit A-only execution choice over an unchanged complete retained inventory. */
+    public OptionalEmissionTracking trackOptionalEmission(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
+            JunctionContext junctions,
+            List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.Barrier> barriers,
+            GeometryCleanupConfig cleanup,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution,
+            NativeAEmissionSolver.ExecutionChoice choice) {
+        return trackOptionalEmissionBound(input,null,junctions,barriers,cleanup,query,execution,java.util.Objects.requireNonNull(choice));
     }
 
     private OptionalEmissionTracking trackOptionalEmissionBound(
@@ -127,7 +153,8 @@ public final class CorridorAwareTracker {
             List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.Barrier> barriers,
             GeometryCleanupConfig cleanup,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
-            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution) {
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution,
+            NativeAEmissionSolver.ExecutionChoice choice) {
         if(binding==null)input.requireOpenAndUnchanged();else binding.requireCurrent(input);
         if(binding!=null&&!barriers.isEmpty())throw new IllegalArgumentException("Original A protected capture alias is unavailable");
         if(!cleanup.isDisabled())throw new IllegalArgumentException("Optional A cleanup adapter is unavailable");
@@ -157,7 +184,10 @@ public final class CorridorAwareTracker {
             for(CorridorTrack track:grouped.tracks()) {
                 budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.ALLOCATION,1);
                 owner.reserve(256);
-                results.add(optimizer.optimizeOptionalEmission(input,track,fine,junctions,evidence,barriers,cleanup,query,execution,nativeSource,binding));
+                results.add(choice==NativeAEmissionSolver.ExecutionChoice.UNCHANGED_V1
+                    ?optimizer.optimizeOptionalEmission(input,track,fine,junctions,evidence,barriers,cleanup,query,execution,nativeSource,binding)
+                    :NativeAEmissionSolver.solve(optimizer,input,track,fine,sourcePixel,junctions,evidence,barriers,true,
+                        query,execution,cleanup,nativeSource,binding,choice));
                 ids.add(track.id());
             }
             return new OptionalEmissionTracking(input,owner,results,ids);

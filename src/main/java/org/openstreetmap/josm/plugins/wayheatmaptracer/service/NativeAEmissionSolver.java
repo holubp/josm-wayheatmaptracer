@@ -7,6 +7,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.CompetitiveAdmissionExecutor.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.Status;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
@@ -17,6 +18,18 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
  */
 public final class NativeAEmissionSolver {
     public static final String EXECUTION_VERSION="native-a-certified-competitive-v1";
+    /** A-only execution choice; it does not change numerical or connector query policies. */
+    public enum ExecutionChoice { UNCHANGED_V1, POSITIVE_ARC_REFUSAL_REUSE_V1 }
+    /** Enabled-path counters; disabled execution has no fabricated physical-evaluation census. */
+    public record RefusalReuseDiagnostics(long positiveArcLookups,long evaluatorMissCalls,
+            long admittedEvidenceReuseHits,long refusalReuseHits,long returnedAdmitted,long returnedRejected,
+            long returnedUnavailable,long positiveCanonicalRefusals,long retainedRefusalEntries,
+            long positiveCanonicalRejected,long positiveCanonicalUnavailable,long excludedOptionalEvaluatorCalls,
+            Map<Reason,Long> firstRejectedReasons,Map<Reason,Long> firstUnavailableReasons) {
+        public RefusalReuseDiagnostics {
+            firstRejectedReasons=Map.copyOf(firstRejectedReasons);firstUnavailableReasons=Map.copyOf(firstUnavailableReasons);
+        }
+    }
     private NativeAEmissionSolver() { }
 
     /** Read-only native core evidence. Only the private A pipeline creates these facts. */
@@ -158,7 +171,10 @@ public final class NativeAEmissionSolver {
         public CompetitiveAdmissionExecutor.Result closure(){requireOpen();return closure;}
         public String sourceIdentity(){requireOpen();return engine.input.context().sourceIdentity();}
         public String sourceContentHash(){requireOpen();return engine.input.context().evidenceContentHash();}
-        public String executionVersion(){requireOpen();return EXECUTION_VERSION;}
+        public String executionVersion(){requireOpen();return engine.choice==ExecutionChoice.UNCHANGED_V1?EXECUTION_VERSION
+            :"native-a-certified-competitive-positive-refusal-reuse-v1";}
+        public ExecutionChoice executionChoice(){requireOpen();return engine.choice;}
+        public Optional<RefusalReuseDiagnostics> refusalReuseDiagnostics(){requireOpen();return engine.reuseDiagnostics();}
         public String numericalPolicyId(){requireOpen();return engine.input.context().policyId();}
         public EmissionWorkBudget.Snapshot work(){requireOpen();return engine.budget.snapshot();}
         @Override public void close(){engine.close();}
@@ -192,13 +208,23 @@ public final class NativeAEmissionSolver {
             Map<String,BandScaleEvidence> scale,List<Barrier> barriers,boolean competitive,
             QueryPolicy query,ExecutionPolicy execution,GeometryCleanupConfig cleanup,
             CorridorAwareTracker.NativeOwnerSource nativeSource,NativeAEmissionBinding binding) {
+        return solve(optimizer,input,track,profiles,sourcePixel,junctions,scale,barriers,competitive,query,execution,cleanup,
+            nativeSource,binding,ExecutionChoice.UNCHANGED_V1);
+    }
+
+    static Result solve(CorridorCenterlineOptimizer optimizer,SampledEmissionInput input,
+            CorridorTrack track,List<CorridorProfile> profiles,double sourcePixel,JunctionContext junctions,
+            Map<String,BandScaleEvidence> scale,List<Barrier> barriers,boolean competitive,
+            QueryPolicy query,ExecutionPolicy execution,GeometryCleanupConfig cleanup,
+            CorridorAwareTracker.NativeOwnerSource nativeSource,NativeAEmissionBinding binding,ExecutionChoice choice) {
+        Objects.requireNonNull(choice,"A execution choice");
         if(binding!=null)binding.requireCurrent(input);
         var admittedOwner=binding==null?input.openExecutionOwner("native-a-optional-v2"):binding.openExecutionOwner("native-a-optional-v2");
         Engine engine=null;
         try {
             input.workBudget().charge(EmissionWorkBudget.Operation.ALLOCATION,1);
             admittedOwner.reserve(2048); // Engine/map/list shells, before construction.
-            engine=new Engine(optimizer,input,track,profiles,sourcePixel,junctions,scale,barriers,query,execution,cleanup,admittedOwner,nativeSource,binding);
+            engine=new Engine(optimizer,input,track,profiles,sourcePixel,junctions,scale,barriers,query,execution,cleanup,admittedOwner,nativeSource,binding,choice);
             var closure=competitive?new CompetitiveAdmissionExecutor(engine.graph,engine,engine.budget,engine.owner).run():null;
             Label best=engine.solveExact(closure);
             if(closure!=null&&(!closure.vertexIds().equals(engine.pathIds(best))
@@ -215,6 +241,27 @@ public final class NativeAEmissionSolver {
             RasterPoint raster,RasterPoint measurementRaster,MetricPoint metric,Double offset) { }
     private record TransitionKey(CanonicalKey prefix,int arcId) { }
     private record ArcEvidence(BilinearSegmentIntegral.Result scalar,Receipt optional,Object direction) { }
+    private record PositiveRefusal(Arc arc,Receipt receipt) { }
+    private static final class RefusalMemo {
+        final PositiveRefusal[] slots;
+        final long[] rejectedReasons,unavailableReasons;
+        long lookups,evaluations,admittedHits,refusalHits,admitted,rejected,unavailable,canonicalRefusals,entries,excludedEvaluations;
+        long canonicalRejected,canonicalUnavailable;
+        RefusalMemo(int arcs,int reasons) {
+            slots=new PositiveRefusal[arcs];rejectedReasons=new long[reasons];unavailableReasons=new long[reasons];
+        }
+        void returned(Receipt receipt) {
+            switch(receipt.status()) {
+                case ADMITTED -> admitted++;
+                case REJECTED -> {rejected++;rejectedReasons[receipt.reason().ordinal()]++;}
+                case UNAVAILABLE -> {unavailable++;unavailableReasons[receipt.reason().ordinal()]++;}
+            }
+        }
+        void canonicalRefusal(Receipt receipt) {
+            canonicalRefusals++;
+            if(receipt.status()==Status.REJECTED)canonicalRejected++;else canonicalUnavailable++;
+        }
+    }
     private record Label(CanonicalKey key,Label parent,Arc arc,Admission admission,double cost,
             double q,double c,double t,double k,int consumed,int depth) { }
 
@@ -223,6 +270,8 @@ public final class NativeAEmissionSolver {
         final EmissionWorkBudget budget;
         final AttemptMemoryLedger.Owner owner;
         final NativeAEmissionBinding binding;
+        final ExecutionChoice choice;
+        final RefusalMemo refusalMemo;
         final List<CorridorProfile> profiles;
         final List<VertexFact> vertices=new ArrayList<>();
         final List<Arc> arcs=new ArrayList<>();
@@ -244,8 +293,17 @@ public final class NativeAEmissionSolver {
                 Map<String,BandScaleEvidence> scale,List<Barrier> barriers,QueryPolicy query,
                 ExecutionPolicy execution,GeometryCleanupConfig cleanup,AttemptMemoryLedger.Owner admittedOwner,
                 CorridorAwareTracker.NativeOwnerSource nativeSource,NativeAEmissionBinding binding) {
+            this(optimizer,input,track,profiles,sourcePixel,junctions,scale,barriers,query,execution,cleanup,
+                admittedOwner,nativeSource,binding,ExecutionChoice.UNCHANGED_V1);
+        }
+
+        Engine(CorridorCenterlineOptimizer optimizer,SampledEmissionInput input,CorridorTrack track,
+                List<CorridorProfile> profiles,double sourcePixel,JunctionContext junctions,
+                Map<String,BandScaleEvidence> scale,List<Barrier> barriers,QueryPolicy query,
+                ExecutionPolicy execution,GeometryCleanupConfig cleanup,AttemptMemoryLedger.Owner admittedOwner,
+                CorridorAwareTracker.NativeOwnerSource nativeSource,NativeAEmissionBinding binding,ExecutionChoice choice) {
             this.input=Objects.requireNonNull(input);budget=input.workBudget();
-            owner=admittedOwner;this.binding=binding;
+            owner=admittedOwner;this.binding=binding;this.choice=Objects.requireNonNull(choice,"A execution choice");
             try {
                 reserve(128L+profiles.size()*16L);this.profiles=List.copyOf(profiles);
                 if(!cleanup.isDisabled())throw new IllegalArgumentException("Native A optional cleanup is ineligible");
@@ -397,6 +455,15 @@ public final class NativeAEmissionSolver {
                     while(edge<arcs.size()&&arcs.get(edge).fromId()==vertex){work(1);edge++;}
                 }
                 arcStarts[vertices.size()]=edge;
+                if(choice==ExecutionChoice.POSITIVE_ARC_REFUSAL_REUSE_V1) {
+                    // Shell and current fixed enum metadata, then exact arc-indexed slots/counters,
+                    // all before allocation. No slot, scan or counter allocation on the old path.
+                    reserve(4096);work(64);int reasons=Reason.values().length;
+                    reserve(Math.addExact(AttemptMemoryLedger.referenceArrayBytes(arcs.size()),
+                        Math.multiplyExact(2,AttemptMemoryLedger.arrayBytes(reasons,8))));
+                    work(Math.addExact((long)arcs.size(),Math.multiplyExact(2L,reasons)));
+                    refusalMemo=new RefusalMemo(arcs.size(),reasons);
+                }else refusalMemo=null;
             }catch(RuntimeException failure){recordTerminal(input,failure);close();throw failure;}
         }
 
@@ -416,14 +483,33 @@ public final class NativeAEmissionSolver {
         MetricPoint metric(RasterPoint p){return input.context().metricAt(measurement(p));}
         @Override public BilinearSegmentIntegral.ReadOnlyScalarGrid nativeGrid(){return input.context().nativeGrid();}
         @Override public Admission certify(CanonicalKey key,Arc arc) {
+            try {
             requireOpen();if(binding==null)input.requireOpenAndUnchanged();pair(EmissionWorkBudget.Operation.PAIR_LOOKUP);
             if(key.cursorId()!=arc.fromId())throw new IllegalArgumentException("Native A prefix is misplaced");
+            if(refusalMemo!=null) {
+                work(1);
+                if(arc.id()<0||arc.id()>=arcs.size()||arcs.get(arc.id())!=arc)
+                    throw new IllegalArgumentException("Refusal reuse requires the exact same-engine arc");
+            }
             reserve(512);var cacheKey=new TransitionKey(key,arc.id());var cached=admissions.get(cacheKey);
             if(cached!=null)return cached;
             VertexFact from=vertices.get(arc.fromId()),to=vertices.get(arc.toId());
+            boolean reusable=refusalMemo!=null&&positiveOptional(arc,from,to);
+            if(reusable) {
+                work(3);refusalMemo.lookups++;
+                var reused=refusalMemo.slots[arc.id()];
+                if(reused!=null) {
+                    if(reused.arc()!=arc)throw new InvalidCertificateException("Refusal entry belongs to another arc");
+                    work(3);var refused=Admission.refused(reused.receipt().reason().name());
+                    admissions.put(cacheKey,refused);refusalMemo.refusalHits++;refusalMemo.canonicalRefusal(reused.receipt());return refused;
+                }
+            }
             ArcEvidence evidence=positiveEvidence.get(arc.id());
+            if(reusable&&evidence!=null)refusalMemo.admittedHits++;
             if(evidence==null) {
                 if(arc.optional()) {
+                    if(reusable)refusalMemo.evaluations++;
+                    else if(refusalMemo!=null){work(1);refusalMemo.excludedEvaluations++;}
                     Receipt receipt;
                     if(!arc.zeroPhysical())receipt=evaluator.evaluate((RowState)from.endpoint,(RowState)to.endpoint);
                     else {
@@ -438,7 +524,9 @@ public final class NativeAEmissionSolver {
                     if(receipt.context()!=input.context()||receipt.from()!=from.endpoint||receipt.to()!=to.endpoint
                             ||Double.doubleToLongBits(receipt.sourceSpanMeters())!=Double.doubleToLongBits(arc.sourceSpanMeters()))
                         throw new InvalidCertificateException("Native optional receipt has a foreign source/span");
+                    if(reusable)refusalMemo.returned(receipt);
                     if(receipt.status()!=NativeConnectorEvaluator.Status.ADMITTED) {
+                        if(reusable)return publishRefusal(cacheKey,arc,receipt);
                         Admission refused=Admission.refused(receipt.reason().name());admissions.put(cacheKey,refused);return refused;
                     }
                     evidence=new ArcEvidence(receipt.scalar().orElseThrow(),receipt,receipt);
@@ -475,6 +563,39 @@ public final class NativeAEmissionSolver {
             CanonicalKey next=nextKey(key,arc);
             if(evidence.direction!=null){reserve(192);directions.putIfAbsent(next,evidence.direction);}
             admissions.put(cacheKey,admitted);return admitted;
+            }catch(RuntimeException failure) {
+                if(refusalMemo!=null)recordTerminal(input,failure);
+                throw failure;
+            }
+        }
+        private boolean positiveOptional(Arc arc,VertexFact from,VertexFact to) {
+            if(!arc.optional())return false;
+            work(1);double distance=from.metric.distanceTo(to.metric);
+            if(arc.zeroPhysical()!=(distance==0.0))throw new InvalidCertificateException("Native physical zero flag is inconsistent");
+            return !arc.zeroPhysical()&&Double.isFinite(distance)&&distance>0.0;
+        }
+        private Admission publishRefusal(TransitionKey key,Arc arc,Receipt receipt) {
+            // The evaluator still owns the exact receipt/payload through this Engine's lifetime.
+            // This reservation covers only the additional immutable reference-bearing entry.
+            reserve(160);work(2);
+            var entry=new PositiveRefusal(arc,receipt);var refused=Admission.refused(receipt.reason().name());
+            refusalMemo.slots[arc.id()]=entry;admissions.put(key,refused);
+            refusalMemo.entries++;refusalMemo.canonicalRefusal(receipt);return refused;
+        }
+        Optional<RefusalReuseDiagnostics> reuseDiagnostics() {
+            if(refusalMemo==null)return Optional.empty();
+            try {
+                reserve(4096L+refusalMemo.rejectedReasons.length*256L);
+                var rejected=new EnumMap<Reason,Long>(Reason.class);var unavailable=new EnumMap<Reason,Long>(Reason.class);
+                for(var reason:Reason.values()) {
+                    work(1);long r=refusalMemo.rejectedReasons[reason.ordinal()],u=refusalMemo.unavailableReasons[reason.ordinal()];
+                    if(r>0)rejected.put(reason,r);if(u>0)unavailable.put(reason,u);
+                }
+                return Optional.of(new RefusalReuseDiagnostics(refusalMemo.lookups,refusalMemo.evaluations,refusalMemo.admittedHits,
+                    refusalMemo.refusalHits,refusalMemo.admitted,refusalMemo.rejected,refusalMemo.unavailable,refusalMemo.canonicalRefusals,
+                    refusalMemo.entries,refusalMemo.canonicalRejected,refusalMemo.canonicalUnavailable,
+                    refusalMemo.excludedEvaluations,rejected,unavailable));
+            }catch(RuntimeException failure){recordTerminal(input,failure);throw failure;}
         }
         private Object ordinaryLeg(VertexFact a,VertexFact b,boolean reference) {
             var status=reference?NativeReferenceStatus.AVAILABLE:NativeReferenceStatus.UNAVAILABLE;
