@@ -7,6 +7,29 @@ import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.data.coor.EastNorth;
 
 class PolylineMathSourceParameterTest {
+    @Test void sourceBoundOperationResidualsEncloseConditionedFinalFractionsBothSidesOfOne() {
+        boolean above = false, below = false, nativeCoordinateDrift = false;
+        for (double last : List.of(.001, .01, .1, 1.0, 2.0, 3.0)) {
+            var source = List.of(new EastNorth(0, 0), new EastNorth(100, 100),
+                    new EastNorth(100 + last, 100 + last));
+            var nativeRows = PolylineMath.resampleByCount(source, 25);
+            var rows = PolylineMath.resampleByCountWithParameters(source, 25);
+            for (int row = 0; row < rows.size(); row++) {
+                assertEquals(Double.doubleToLongBits(nativeRows.get(row).east()),
+                        Double.doubleToLongBits(rows.get(row).point().east()));
+                assertEquals(Double.doubleToLongBits(nativeRows.get(row).north()),
+                        Double.doubleToLongBits(rows.get(row).point().north()));
+            }
+            var end = rows.get(24);
+            var enclosure = end.endpointEnclosure();
+            assertNotNull(enclosure);
+            assertTrue(Math.abs(end.fraction() - 1) <= enclosure.fractionErrorUpper());
+            assertTrue(end.point().distance(source.get(2)) <= enclosure.projectedErrorUpper());
+            above |= end.fraction() > 1; below |= end.fraction() < 1;
+            nativeCoordinateDrift |= !end.point().equals(source.get(2));
+        }
+        assertTrue(above); assertTrue(below); assertTrue(nativeCoordinateDrift);
+    }
     @Test void retainsNativeEndpointRoundingWithoutChangingItsPoint() {
         var source = List.of(new EastNorth(0, 0), new EastNorth(7, 8), new EastNorth(12, 16));
         for (int count : List.of(3, 4)) {

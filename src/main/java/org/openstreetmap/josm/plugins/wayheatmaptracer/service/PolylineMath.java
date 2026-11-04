@@ -3,6 +3,9 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 import java.awt.geom.Point2D;
 import java.util.ArrayList;
 import java.util.List;
+import java.math.BigDecimal;
+import java.math.MathContext;
+import java.math.RoundingMode;
 
 import org.openstreetmap.josm.data.coor.EastNorth;
 
@@ -58,13 +61,115 @@ public final class PolylineMath {
     }
 
     /** The exact source segment and interpolation fraction selected for a dense producer row. */
-    public record SourceParameter(int segmentIndex, double fraction, EastNorth point) {
+    public record SourceParameter(int segmentIndex, double fraction, EastNorth point,
+            EndpointArithmeticEnclosure endpointEnclosure) {
+        public SourceParameter(int segmentIndex, double fraction, EastNorth point) {
+            this(segmentIndex, fraction, point, null);
+        }
         public SourceParameter {
             if (segmentIndex < 0 || !Double.isFinite(fraction) || fraction < 0.0
-                    || fraction > Math.nextUp(1.0) || point == null) {
+                    || fraction > 1.0 && endpointEnclosure == null || point == null) {
                 throw new IllegalArgumentException("Invalid source parameter");
             }
+            if (endpointEnclosure != null && !endpointEnclosure.matches(segmentIndex, fraction, point)) {
+                throw new IllegalArgumentException("Endpoint arithmetic belongs to another produced row");
+            }
         }
+    }
+
+    /** Exact-operation residual proof, constructible only by this native producer. */
+    public static final class EndpointArithmeticEnclosure {
+        private static final MathContext UP = new MathContext(80, RoundingMode.CEILING);
+        private final int segment;
+        private final double rawFraction;
+        private final EastNorth point;
+        private final double fractionErrorUpper;
+        private final double projectedErrorUpper;
+        private final boolean originalEndpointFallback;
+
+        private EndpointArithmeticEnclosure(int segment, double rawFraction, EastNorth point,
+                double fractionErrorUpper, double projectedErrorUpper) {
+            this(segment, rawFraction, point, fractionErrorUpper, projectedErrorUpper, false);
+        }
+        private EndpointArithmeticEnclosure(int segment, double rawFraction, EastNorth point,
+                double fractionErrorUpper, double projectedErrorUpper, boolean originalEndpointFallback) {
+            this.segment = segment; this.rawFraction = rawFraction; this.point = point;
+            this.fractionErrorUpper = fractionErrorUpper; this.projectedErrorUpper = projectedErrorUpper;
+            this.originalEndpointFallback = originalEndpointFallback;
+        }
+        private boolean matches(int segment, double fraction, EastNorth point) {
+            return this.segment == segment && Double.doubleToLongBits(rawFraction) == Double.doubleToLongBits(fraction)
+                && Double.doubleToLongBits(this.point.east()) == Double.doubleToLongBits(point.east())
+                && Double.doubleToLongBits(this.point.north()) == Double.doubleToLongBits(point.north());
+        }
+        public double fractionErrorUpper() { return fractionErrorUpper; }
+        public double projectedErrorUpper() { return projectedErrorUpper; }
+        public boolean originalEndpointFallback() { return originalEndpointFallback; }
+        private static BigDecimal exact(double value) {
+            if (!Double.isFinite(value)) throw new IllegalArgumentException("Endpoint arithmetic is not finite");
+            return new BigDecimal(value);
+        }
+        private static BigDecimal error(double actual, BigDecimal exact) { return exact(actual).subtract(exact).abs(); }
+        private static double outward(BigDecimal bound) {
+            double result = bound.doubleValue();
+            if (!Double.isFinite(result)) throw new IllegalArgumentException("Endpoint arithmetic enclosure overflow");
+            return exact(result).compareTo(bound) < 0 ? Math.nextUp(result) : result;
+        }
+        private static BigDecimal axisError(double a, double b, double t, BigDecimal fractionError) {
+            double d = b - a, product = d * t, output = a + product;
+            return error(d, exact(b).subtract(exact(a)))
+                .add(exact(d).abs().multiply(fractionError))
+                .add(error(product, exact(d).multiply(exact(t))))
+                .add(error(output, exact(a).add(exact(product))));
+        }
+        private static EndpointArithmeticEnclosure finalRow(int segment, EastNorth a, EastNorth b,
+                double walked, double distance, double total, int intervals, double target,
+                double fraction, EastNorth point) {
+            if (!(distance > 0) || intervals <= 0
+                    || Double.doubleToLongBits(walked + distance) != Double.doubleToLongBits(total)) {
+                throw new IllegalArgumentException("Endpoint cumulative arithmetic is unresolved");
+            }
+            double multiplied = total * intervals;
+            double numerator = target - walked;
+            if (Double.doubleToLongBits(multiplied / intervals) != Double.doubleToLongBits(target)
+                    || Double.doubleToLongBits(numerator / distance) != Double.doubleToLongBits(fraction)) {
+                throw new IllegalArgumentException("Endpoint producer operation order changed");
+            }
+            BigDecimal k = BigDecimal.valueOf(intervals), d = exact(distance);
+            BigDecimal addError = error(total, exact(walked).add(d));
+            BigDecimal multiplyError = error(multiplied, exact(total).multiply(k));
+            BigDecimal targetDivideError = exact(target).multiply(k).subtract(exact(multiplied)).abs().divide(k, UP);
+            BigDecimal subtractError = error(numerator, exact(target).subtract(exact(walked)));
+            BigDecimal fractionDivideError = exact(fraction).multiply(d).subtract(exact(numerator)).abs().divide(d, UP);
+            BigDecimal fractionError = addError.add(multiplyError.divide(k, UP)).add(targetDivideError)
+                .add(subtractError).divide(d, UP).add(fractionDivideError);
+            double fractionBound = outward(fractionError);
+            if (Math.abs(fraction - 1.0) > fractionBound) {
+                throw new IllegalArgumentException("Endpoint fraction exceeds its operation residual enclosure");
+            }
+            double x = outward(axisError(a.east(), b.east(), fraction, fractionError));
+            double y = outward(axisError(a.north(), b.north(), fraction, fractionError));
+            double projected = Math.nextUp(Math.nextUp(Math.hypot(x, y)));
+            return new EndpointArithmeticEnclosure(segment, fraction, point, fractionBound, projected);
+        }
+    }
+    /** Outward dyadic operation bound for an exact 0/1 source boundary parameter. */
+    public static double boundaryProjectedErrorUpper(List<EastNorth> source, SourceParameter parameter,
+            int originalVertex) {
+        if (originalVertex != parameter.segmentIndex() && originalVertex != parameter.segmentIndex() + 1)
+            throw new IllegalArgumentException("Source boundary is not adjacent to its producer segment");
+        double canonical = originalVertex == parameter.segmentIndex() ? 0.0 : 1.0;
+        if (parameter.fraction() != canonical) {
+            if (canonical == 1.0 && parameter.endpointEnclosure() != null)
+                return parameter.endpointEnclosure().projectedErrorUpper();
+            throw new IllegalArgumentException("Source boundary has no producer arithmetic alias");
+        }
+        var a = source.get(parameter.segmentIndex()); var b = source.get(parameter.segmentIndex() + 1);
+        double x = EndpointArithmeticEnclosure.outward(EndpointArithmeticEnclosure.axisError(
+                a.east(), b.east(), canonical, BigDecimal.ZERO));
+        double y = EndpointArithmeticEnclosure.outward(EndpointArithmeticEnclosure.axisError(
+                a.north(), b.north(), canonical, BigDecimal.ZERO));
+        return Math.nextUp(Math.nextUp(Math.hypot(x, y)));
     }
 
     /**
@@ -103,15 +208,22 @@ public final class PolylineMath {
                     EastNorth point = new EastNorth(
                         start.east() + (end.east() - start.east()) * fraction,
                         start.north() + (end.north() - start.north()) * fraction);
-                    result.add(new SourceParameter(segmentIndex - 1, fraction, point));
+                    EndpointArithmeticEnclosure endpoint = null;
+                    if (row == count - 1 && segmentIndex == polyline.size() - 1) {
+                        work.accept(64);
+                        endpoint = EndpointArithmeticEnclosure.finalRow(segmentIndex - 1, start, end, walked,
+                            segment, total, count - 1, target, fraction, point);
+                    }
+                    result.add(new SourceParameter(segmentIndex - 1, fraction, point, endpoint));
                     selected = true;
                     break;
                 }
                 walked += segment;
             }
             if (!selected) {
-                result.add(new SourceParameter(polyline.size() - 2, 1.0,
-                        polyline.get(polyline.size() - 1)));
+                EastNorth endpoint = polyline.get(polyline.size() - 1);
+                result.add(new SourceParameter(polyline.size() - 2, 1.0, endpoint,
+                        new EndpointArithmeticEnclosure(polyline.size() - 2, 1.0, endpoint, 0, 0, true)));
             }
         }
         return List.copyOf(result);

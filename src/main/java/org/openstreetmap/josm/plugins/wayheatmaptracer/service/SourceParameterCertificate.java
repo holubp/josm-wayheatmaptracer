@@ -28,7 +28,7 @@ public final class SourceParameterCertificate {
     }
     /** Producer-parameter alias with explicit outward coordinate roundoff enclosures. */
     public record SourceAlias(int row, int originalVertex, double rawFraction,
-            double projectedErrorUpper, double metricErrorUpperMeters) { }
+            double parameterErrorUpper, double projectedErrorUpper, double metricErrorUpperMeters) { }
 
     /** Frozen original selected occurrence and its source-parameter bracket. */
     public record OriginalOccurrence(String occurrenceId, int fullWayIndex, long osmNodeId,
@@ -132,8 +132,8 @@ public final class SourceParameterCertificate {
                 double t = parameter.fraction();
                 // Preserve the native fraction/point; only its certified source parameter aliases
                 // the original final boundary under a separately retained roundoff enclosure.
-                boolean finalAlias = row == producedRows.size() - 1
-                    && segment == segments.size() - 1 && Math.abs(t - 1.0) <= Math.ulp(1.0);
+                boolean finalAlias = row == producedRows.size() - 1 && segment == segments.size() - 1
+                    && (t == 1.0 || parameter.endpointEnclosure() != null);
                 if (t > 1.0 && !finalAlias) throw new IllegalArgumentException("Nonterminal source parameter exceeds segment");
                 double certifiedT = finalAlias ? 1.0 : t;
                 Arc partial = integrate(world.get(segment), world.get(segment + 1), 0.0, certifiedT,
@@ -150,7 +150,7 @@ public final class SourceParameterCertificate {
                             || segment == previous.segmentIndex() && t <= previous.fraction()) {
                         throw new IllegalArgumentException("Dense source parameters are not strictly ordered");
                     }
-                    var certifiedPrevious = normalizedBoundary(previous, row == producedRows.size() - 1);
+                    var certifiedPrevious = previous;
                     var certifiedCurrent = normalizedBoundary(parameter, finalAlias);
                     Arc span = span(world, certifiedPrevious, certifiedCurrent, worldSize, eastScale, northScale, budget);
                     adjacentUpper.add(span.upper());
@@ -164,7 +164,8 @@ public final class SourceParameterCertificate {
             if (producedRows.get(0).segmentIndex() != 0
                     || producedRows.get(0).fraction() != 0.0
                     || producedRows.get(producedRows.size() - 1).segmentIndex() != segments.size() - 1
-                    || Math.abs(producedRows.get(producedRows.size() - 1).fraction() - 1.0) > 1e-12) {
+                    || producedRows.get(producedRows.size() - 1).fraction() != 1.0
+                        && producedRows.get(producedRows.size() - 1).endpointEnclosure() == null) {
                 throw new IllegalArgumentException("Dense rows do not span the original source");
             }
             List<OriginalOccurrence> originalOccurrences = new ArrayList<>();
@@ -213,7 +214,7 @@ public final class SourceParameterCertificate {
         }
     }
     private static PolylineMath.SourceParameter normalizedBoundary(PolylineMath.SourceParameter p, boolean alias) {
-        return alias && Math.abs(p.fraction() - 1.0) <= Math.ulp(1.0)
+        return alias
             ? new PolylineMath.SourceParameter(p.segmentIndex(), 1.0, p.point()) : p;
     }
     private static Arc add(Arc a, Arc b) {
@@ -224,19 +225,18 @@ public final class SourceParameterCertificate {
     private static SourceAlias certifyAlias(int row, int vertex, PolylineMath.SourceParameter parameter,
             List<EastNorth> original, RasterPoint actualRaster, ManagedGroundTransform ground,
             TileHeatmapSampler.PreparedManagedCapture capture, EmissionWorkBudget budget) {
-        budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION, 64);
         EastNorth target = original.get(vertex), point = parameter.point();
-        double coordinateRoundoff = 32.0 * Math.max(Math.ulp(Math.abs(target.east())),
-                Math.ulp(Math.abs(target.north())));
-        double fractionRoundoff = Math.abs(parameter.fraction() - (vertex == parameter.segmentIndex() ? 0.0 : 1.0))
-                * original.get(parameter.segmentIndex()).distance(original.get(parameter.segmentIndex() + 1));
-        double projectedUpper = Math.nextUp(coordinateRoundoff + fractionRoundoff);
+        double projectedUpper = PolylineMath.boundaryProjectedErrorUpper(original, parameter, vertex);
         if (point.distance(target) > projectedUpper) {
             throw new IllegalArgumentException("Producer endpoint alias exceeds its arithmetic roundoff enclosure");
         }
         // EPSG:3857 projected metres bound local ground displacement. The captured frame
         // certificate provides the geographic scale; 2x encloses that scale plus inverse roundoff.
         double metricUpper = Math.nextUp(projectedUpper * 2.0 + 1e-6);
+        if (!(metricUpper < ground.minimumNativePixelPitchMeters() * 0.5)) {
+            throw new IllegalArgumentException("Endpoint arithmetic is unresolved within native localization uncertainty");
+        }
         if (capture.selectionWitness().isPresent()) {
             var coordinate = capture.selectionWitness().orElseThrow().frozenSelectedFacts().get(vertex).coordinate();
             MetricPoint exact = ground.frame().toMetric(new GeographicPoint(coordinate.lat(), coordinate.lon()));
@@ -244,7 +244,8 @@ public final class SourceParameterCertificate {
                 throw new IllegalArgumentException("Source-parameter alias exceeds its retained metric roundoff enclosure");
             }
         }
-        return new SourceAlias(row, vertex, parameter.fraction(), projectedUpper, metricUpper);
+        return new SourceAlias(row, vertex, parameter.fraction(), parameter.endpointEnclosure() == null
+            ? 0.0 : parameter.endpointEnclosure().fractionErrorUpper(), projectedUpper, metricUpper);
     }
 
     private static Arc span(List<RasterPoint> world, PolylineMath.SourceParameter first,
@@ -317,6 +318,9 @@ public final class SourceParameterCertificate {
             PolylineMath.SourceParameter parameter) {
         int index = parameter.segmentIndex();
         EastNorth start = source.get(index), end = source.get(index + 1);
+        if (parameter.endpointEnclosure() != null && parameter.endpointEnclosure().originalEndpointFallback()) {
+            return index == source.size() - 2 && sameBits(parameter.point(), end);
+        }
         double fraction = parameter.fraction();
         return sameBits(parameter.point(), new EastNorth(
                 start.east() + (end.east() - start.east()) * fraction,
