@@ -14,12 +14,51 @@
 
 ### Live execution map (read before older chronology)
 
+- Recovery A db332b94 independently reviewed PASS; root ONE claim
+  original-r4-host-export-recovery-01 completed exit0,13.239s host. Final report
+  CERTIFIED/observation COMPLETE/gate true; per-track M3, J0.30259409391738523,
+  length9.200766993288795, production7.487s/observer4.168s, peak180241744B,
+  final owner0. Actual geometry stays near independent y64 ridge. This is the
+  original public synthetic R4 case, NOT real Drasov or adoption qualification.
+  Detailed result analysis and independent completed-output audit assigned.
+  Bulk evidence124406868B retained; free storage now below512MiB admission gate,
+  so further private runs/runtime benchmark held, no threshold weakening.
+- Exact-union integration b27310b0 independently PASS; branch pushed to origin,
+  public CI41912441658 in progress, no private inputs uploaded and no RC.
+
+- Current closure batch: reviewed kernels integrated cleanly at b27310b0 with
+  575 focused executions/53XML and Javadoc passing; independent exact-union
+  integration audit assigned. Recovery A helper db332b94 and grouped Legacy
+  helper98e92c1f frozen with synthetic controls passing; actual runs remain
+  held for independent helper review. Legacy helper audit identified missing
+  shared-budget charges/prepayment for newly added successful stage/geometry
+  observation; repair required before execution. Historical sealed progress
+  serialization is distinct. M2 source-owned moved-point and admission-oracle
+  controls now green; named regressions/freeze pending. Ordinary Legacy matched
+  runtime comparison assigned separately, no runtime parity claim. No RC.
+
+- Legacy runtime preservation (user requirement, 2026-11-04): retain the fast
+  ordinary Legacy path. New optional-emission/affinity experiments must not run
+  implicitly in ordinary Legacy, introduce hidden A/B passes, or become default
+  without measured evidence. Before adoption, compare the previous released
+  Legacy and proposed Legacy on identical private inputs/settings/selection,
+  detector set, JVM/heap and host, with warm-up and repeated interleaved runs.
+  Report median and tail end-to-end latency, inference time, work/allocation and
+  output identity or intentional geometry changes separately. Include Drasov and
+  representative strong/sparse/long ways; distinguish cold acquisition from warm
+  cached computation and diagnostic export. Exact output/work parity alone is
+  not runtime evidence. A material repeatable slowdown blocks default adoption;
+  investigate or retain the previous fast path instead of spending a larger
+  budget, silently falling back, or claiming a quality/runtime tradeoff accepted.
+  A numeric regression tolerance has not been approved: publish measured ratios
+  rather than inventing one. No current claim of measured runtime parity.
+
 - Controller ledger HEAD updated continuously in v022-legacy-b-release; primary
   dirty user tree stays117baaf0, untouched. No RC/default adoption authorized.
-- Highest full-CI heade774e364: CI41874502271 PASS,2944executions/272XML,
-  2843distinct,0failure/error/skip/malformed; bothJOSM19555GUI engines PASS.
+- Highest full-CI head3225cb3b: CI41898159020 PASS,2992executions/281XML,
+  2886distinct,0failure/error/skip/malformed; bothJOSM19555GUI engines PASS.
   Public evidence only downloaded, no private upload/JAR. Report
-  drasov-ci-41874502271-report.md. Earlier ee94 CI41857618076 also PASS.
+  drasov-ci-41898159020-report.md. Earlier e774 CI41874502271 andee94 alsoPASS.
 - New reviewed-followups integration ee94e707 is independently CLOSED after one
   cross-Input progress fix;353combined then182affected tests GREEN. Branch
   codex/drasov-reviewed-followups pushed; full CI41857618076 PASS. Old88
@@ -134,6 +173,31 @@
   obligations also filtered from final proof scans; freshness/replacement leases
   remain mandatory. Original A implementer assigned new isolated e774-based
   tree. No new R4 screen of this law yet.
+  Prefix source0cc→fa8f0a09 fixround1/5 CLOSED1addressed/0open finalpublication:
+  finalguards after chargedresult/aggregate copy, bindingprepay beforecomplete
+  retained+original scans,119affectedtests/8XML0f/e/s. Source/helperfence CLOSED.
+  Root ONE strict32M prefix run claimprefix-r4-fa8f-32m-001 snapshot1f70949b:
+  typedTOTAL_WORK31,999,991,next16,4.566043s,74,162,312Bpeak/0after,no finalM/QCTK.
+  239evalallADMITTED,4372positiveintegrals,1956hits,dominated282/retired187,
+  maximumactivekey8;physicalqueue121744/reached1770,logicalactivetotalsUNAVAILABLE.
+  LasttrackedLB.6160578>U.3025941 is NOT a finalclosureproof. PREP21,729,300dominant.
+  Ruling: strict32M remainsFAIL/immutable. Independentreview
+  drasov-a-prefix-default128m-ruling.md supports ONE NEW unchangedfa8 experiment
+  at ORIGINALapproved TraceBudgets.defaults128M, withsame8M/256MiB/512MiB/120s.
+  No productioncap/source/modelchange, no automaticretry, no performance/quality
+  waiver. Newhelperreview+freshfingerprint/claim/rootgo required beforeexecution.
+  Default128M helper c8ed7443 independentlyCLOSED; rootONE claim
+  prefix-default128m-fa8f-001 endedhostexit1/12.395s duringcontemporaneousENOSPC.
+  NOreport.json/java.log0; track0has4312completecanonicalrecords/977645B and
+  41629pendingrecords/19021824B withtornlastline. Entry reached result export,
+  but finalCERTIFIED/winner/M/QCTK UNKNOWN; NOT a typednumericalcap or pass.
+  Oldclaim/partialoutputsimmutable. Storagecleanup onlyrecoverableCIHTML/Javadoc
+  plus75projectlocalGradleexecutionHistory caches(602899031B), no source/classes/
+  dependencies/XML/logs/privateinputs/evidence deletion.688MBfree; M2boundedchecks
+  resumed, actualbenchmarksheld. Newenvironment-recoveryhelper preparation only:
+  samefa8/default128M/allothercaps, sourcecore-summaryBEFOREbulk, realemergency
+  receiptreserve,>=512MiBpreflight and<=256MiBbulkexport; no truncatedsuccess.
+  Requiresindependentprotocol/fence+newexplicitrootgo, no automaticrerun.
 - Legacy competitive proof frozen8955baa5 in josm-drasov-legacy-competitive-proof,
   parent678.206affected/18XML then19current/7XML and3vector checks GREEN (overlap,
   not additive). Actual tiny raster2→1evals/92→33extracts,sameQCTK/winner for
@@ -161,12 +225,27 @@
   Pushed codex/drasov-m1-proof-integration for unattendedpublicCI; noRC/release,
   no M2/newdominance/defaultadoption. Report drasov-m1-proof-integration-report.md.
   CI41889814347 at8c37c900 in progress; highest fullCI remains e774e364.
-- Active owners: a_native_integration implements A-prefix dominance;
-  affinity_contract_probe implements conditional-approved M2;
-  managed_context_closure verifies composite batch; kernel_memory_closure
-  implements full-stage Legacy in newb587 tree. Full-stage design/review
+  CI41889814347 FAILED Javadoc malformedHTML literal<=1 inManagedGroundTransform
+  (2992executions/281XML/2886distinct/0failure/error/skip; GUI skipped). One-comment
+  repair3225cb3b in newcodex/drasov-ci-doc-fix preservesdoclint/settings; targeted
+  javadocPASS1m37s. Rootselfauditedexactcommentdiff andpushednewpublicCI branch.
+  CI41898159020 at3225 nowfullyverifiedPASS(allstages+bothGUI), closesdocfailure.
+  Reports drasov-ci-doc-fix-report.md anddrasov-ci-41898159020-report.md.
+- Full-stage Legacy bb26a526 independentlyCLOSED PASS,349affected/33XML plus
+  34current/9XML0f/e/s; oldb587 defaultwholeoutput/work/allocation/peakexact,
+  1293historicalclassesunchanged. Q0practicalitystillunproved. Typedownedsidecar,
+  oldEmissionResult unchanged. Report drasov-legacy-competitive-all-stage-review.md.
+- Production groupedforwarder2e8→d00cfd08 fixround1/5 CLOSED1addressed/0open,
+  65tests/10XML0f/e/s. Sameactualproductionprep/sourceS thensoleKernelbegin/seal;
+  closed+refusingobserverdoesnotpublishlate. Oldtrackerwork/output/peakexact,
+  1297frozenclassesunchanged. Review drasov-legacy-grouped-forwarder-review.md PASS.
+  ActualDrasovgrouped32M helper PREPARATIONONLY assigned afterspace recovery.
+- Active owners: a_native_integration sourcefa8 frozen; affinity_contract_probe
+  completes conditional-approved M2; managed_context_closure prepares reviewed
+  environment-recovery A128 helper; kernel_memory_closure prepares Legacy32M
+  helper. No actualrerun untilnewgates. Full-stage design/review
   drasov-legacy-competitive-all-stage-design{,-review}.md CLOSED conditionally,
-  core guard prerequisite CLOSED; source/allstage audit still required. Ruling: exact grouped objective governs, do not
+  core guard andallstage audits CLOSED; realquality/consumer gates remain. Ruling: exact grouped objective governs, do not
   claim old-bit parity for a prefix-merge exactness correction. Qlower0 allowed
   for minimal correctness slice only; not a Drasov feasibility result.
   Strong design/review drasov-legacy-competitive-strategy-{diagnosis,design-review}.md.
@@ -184,9 +263,9 @@ Gradle uses the shared Termux tmp flock; full suites run in GitHub CI.
 | Remaining step | Current disposition |
 | --- | --- |
 | 1: reviewed evaluator defects | CLOSED; source integration additionally reviewed/tested. |
-| 2: Legacy solver/integration | Core + managed capture/transport CLOSED; reviewed noise shortcut measured13.83% production saving at matched prefix, still caps/no geometry. New exact-cutoff proof slice in progress; consumers/Apply qualification incomplete. |
-| 3: actual fitting improvement | Revised two-strand regressions/classifier/oracle CLOSED atc8bb6460, combined managed API verified at full-CI ee94. Actual managed classifier M1 ownership in progress with consumer disabled; Drasov/Omice geometry improvement still open. |
-| 4: native Corridor A | Native/original R4 binding CLOSED, two128M screens no geometry. Refusal reuse and scalar-refinement source8d independently CLOSED; one32M R4 helper finalizing. Managed-A producer/consumers remain open. |
+| 2: Legacy solver/integration | Full grouped stages and explicit tracker forwarding independently CLOSED atd00, combined integrationb273 passed575 focused tests/Javadoc and merge audit. Real32M helper observation-accounting repair in progress; runtime comparison and consumers/Apply qualification incomplete. |
+| 3: actual fitting improvement | M1 actual managed ownership CLOSED; M2 bounded managed consumer366 regression executions green, final simplicity guard/freeze pending. Drasov/Omice geometry improvement still open. |
+| 4: native Corridor A | Exact scalar/prefix execution CLOSED atfa8 and integratedb273. Original synthetic R4 recovery CERTIFIED,95.58M work/M3/y64 error0.002923m, independently reviewed PASS. Real managed-A producer/consumers and quality remain open. |
 
 ### Verified integrated evidence
 
