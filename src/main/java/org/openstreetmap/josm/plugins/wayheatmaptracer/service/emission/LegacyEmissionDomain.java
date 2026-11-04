@@ -180,6 +180,6 @@ public final class LegacyEmissionDomain {
 
     public MetricPoint metricPoint(State state, OptionalEmissionContext context) {
         var point = rasterPoint(state);
-        return context.rasterTransform().pixelCenterToMetric(point.x(), point.y());
+        return context.metricAt(point);
     }
 }

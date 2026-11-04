@@ -424,7 +424,7 @@ public final class LegacyEmissionKernel {
                 cancellation.checkpoint();
                 for (int toRow = row + 1; toRow <= right.originalRow() && toRow <= row + 17; toRow++) {
                     budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
-                    if (toRow > row + 1 && (chainage(domain, toRow) - chainage(domain, row) > 20
+                    if (toRow > row + 1 && (sourceSpanUpper(domain, input.context(), row, toRow) > 20
                             || crossesMandatory(domain, row, toRow))) continue;
                     List<LegacyEmissionDomain.State> choices;
                     if (toRow == right.originalRow()) choices = List.of(rightState);
@@ -518,8 +518,7 @@ public final class LegacyEmissionKernel {
                 cancellation.checkpoint();
                 for (int toRow = row + 1; toRow < n && toRow <= row + 17; toRow++) {
                     budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
-                    double span = chainage(domain, toRow) - chainage(domain, row);
-                    if (toRow > row + 1 && span > 20) break;
+                    if (toRow > row + 1 && sourceSpanUpper(domain, input.context(), row, toRow) > 20) break;
                     if (toRow > row + 1 && crossesMandatory(domain, row, toRow)) continue;
                     List<LegacyEmissionDomain.State> choices = domain.unsupported(toRow)
                         ? List.of(reachedCarry(domain, inventory, evaluator, toRow,
@@ -566,13 +565,14 @@ public final class LegacyEmissionKernel {
         var a = from.key.last(); int rowA = a.originalRow(), rowB = to.originalRow();
         boolean optional = rowB > rowA + 1;
         MetricPoint pa = domain.metricPoint(a, input.context()), pb = domain.metricPoint(to, input.context());
-        double sourceSpan = chainage(domain, rowB) - chainage(domain, rowA);
+        double sourceSpan = sourceChainage(domain, input.context(), rowB)
+            - sourceChainage(domain, input.context(), rowA);
         List<PointDraft> points = new ArrayList<>();
         List<ArcDraft> arcs = new ArrayList<>();
         var events = eventsBetween(domain.binding(), rowA, rowB);
         if (optional && !events.isEmpty()) return null;
         MetricPoint cursor = pa;
-        double cursorSource = chainage(domain, rowA);
+        double cursorSource = sourceChainage(domain, input.context(), rowA);
         PhysicalLeg physical = from.key.lastPositive();
         Object incoming = from.key.incomingCursor() == null ? null : from.key.incomingCursor().value;
         NativeConnectorEvaluator.PhysicalEndpoint endpoint = a.evaluatorState();
@@ -636,7 +636,7 @@ public final class LegacyEmissionKernel {
                 Optional.of(receipt), null);
             incoming = receipt;
         } else {
-            finalArc = ordinary(input, cursor, pb, cursorSource, chainage(domain, rowB),
+            finalArc = ordinary(input, cursor, pb, cursorSource, sourceChainage(domain, input.context(), rowB),
                 physical, budget, owner, cancellation);
             incoming = ordinaryCursor(evaluator, inventory, endpoint, to.evaluatorState(),
                 cursor, pb, incoming, budget, owner);
@@ -666,8 +666,8 @@ public final class LegacyEmissionKernel {
             double sourceFrom, double sourceTo, PhysicalLeg previous, EmissionWorkBudget budget,
             AttemptMemoryLedger.Owner owner, CancellationProbe cancellation) {
         double sourceSpan = sourceTo - sourceFrom;
-        var transform = input.context().rasterTransform();
-        RasterPoint ra = transform.metricToPixelCenter(from), rb = transform.metricToPixelCenter(to);
+        var context = input.context();
+        RasterPoint ra = context.rasterAt(from), rb = context.rasterAt(to);
         var grid = input.context().nativeGrid();
         var ga = grid.toGrid(ra); var gb = grid.toGrid(rb);
         long cells = (long) Math.ceil(Math.abs(gb.x() - ga.x()) + Math.abs(gb.y() - ga.y())) + 16;
@@ -791,8 +791,21 @@ public final class LegacyEmissionKernel {
             .toList();
     }
 
-    private static double chainage(LegacyEmissionDomain domain, int row) {
-        return domain.binding().observations().get(row).profile().cumulativeGroundDistanceMeters();
+    private static int contextRow(LegacyEmissionDomain domain, int originalRow) {
+        // Original Legacy ordinals can be a strict subset of the retained source rows.
+        return domain.binding().observations().get(originalRow).retainedObservationIndex();
+    }
+
+    private static double sourceChainage(LegacyEmissionDomain domain,
+            OptionalEmissionContext context, int originalRow) {
+        return context.sourceChainageMeters(contextRow(domain, originalRow));
+    }
+
+    private static double sourceSpanUpper(LegacyEmissionDomain domain,
+            OptionalEmissionContext context, int fromOriginalRow, int toOriginalRow) {
+        // Admission needs the direct source-arc enclosure, never rounded prefix differences.
+        return context.sourceSpanUpperMeters(contextRow(domain, fromOriginalRow),
+            contextRow(domain, toOriginalRow));
     }
 
     private static Node allocateNode(AttemptMemoryLedger.Owner owner, EmissionWorkBudget budget,
@@ -979,11 +992,11 @@ public final class LegacyEmissionKernel {
         for (var observation : domain.binding().observations()) {
             budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
             var raster = observation.measurementProfile().samplingAnchor().rasterPoint();
-            var metric = input.context().rasterTransform().pixelCenterToMetric(raster.x(), raster.y());
+            var metric = input.context().metricAt(raster);
             sourceRecords.add(new EmissionResult.OriginalObservation(observation.originalRow(),
                 observation.retainedObservationIndex(), observation.sourceClass(), raster, metric,
                 input.context().profileChainage().sourceOriginGroundMeters()
-                    + observation.profile().cumulativeGroundDistanceMeters(),
+                    + input.context().sourceChainageMeters(observation.retainedObservationIndex()),
                 observation.producerPeaks().stream().map(LegacyEmissionBinding.PeakOwner::originalPeakId).toList()));
         }
         var provenance = provenance(input, domain, firstPath, firstNode, best,
@@ -1208,7 +1221,7 @@ public final class LegacyEmissionKernel {
                     if (!Double.isFinite(offset)) throw new IllegalArgumentException("Legacy smoother produced nonfinite offset");
                     var rp = new RasterPoint(profile.anchorScreen().x + profile.normalScreen().x * offset,
                         profile.anchorScreen().y + profile.normalScreen().y * offset);
-                    var mp = context.rasterTransform().pixelCenterToMetric(rp.x(), rp.y());
+                    var mp = context.metricAt(rp);
                     vertices.set(i, new EmissionResult.Vertex(mp,
                         path.points().get(i).owner(), vertices.get(i).kind(),
                         vertices.get(i).nativeStateId(), Optional.of(offset)));
