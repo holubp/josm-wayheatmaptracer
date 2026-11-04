@@ -18,6 +18,12 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     public static final long STORAGE_BYTES=65_536;
     public enum Phase { NOT_ENTERED, DOMAIN, BASE, ANCHOR_ELIGIBILITY, INTERVAL, STITCH, RESULT, SMOOTH }
     public enum Termination { SUCCESS, TOTAL_WORK, PAIR_VISITS, MEMORY, CANCELLED, STATE_FAMILY, UNAVAILABLE, OTHER }
+    /** Counts describe only candidates actually visited, never future geometry or certification. */
+    public enum CeilingCounter {
+        FINITE_Q0(8),ZERO_DIRECTION(9),INVALID_Q0(10),INVALID_CAP(11),CAP_CROSSINGS(14),Q0_SURVIVOR_CROSSINGS(15),Q0_STRICT_BOUNDS(16),CANDIDATES(17);
+        private final int word;CeilingCounter(int word){this.word=word;}
+    }
+    private static final int CEILING_STAGE_WORDS=18,CEILING_TOTAL_WORDS=8;
     public enum Counter {
         PHASE_ENTERED,PHASE_COMPLETED,SEEDS_STARTED,SEEDS_COMPLETED,
         POSITIVE_LOOKUP,POSITIVE_HIT,POSITIVE_MISS,POSITIVE_INSERT,
@@ -75,6 +81,10 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     private boolean currentWitnessAvailable;
     private double witnessUpper;
     private int maxCompetitiveKeyLabels;
+    // New opt-in only. One CURRENT stage, plus whole-observed-execution totals; no stage history cap.
+    // The array/header and added object fields fit the existing STORAGE_BYTES bound (layout regression).
+    private long[] ceiling;
+    private boolean ceilingStageAvailable,ceilingOverflow;
     private ProfileBackend backend;
     private boolean sealed,evaluationInFlight,sampleInFlight,extractionInFlight,samplingFinished;
     private boolean profileInFlight,windowInFlight;
@@ -154,6 +164,7 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     void cacheResult(boolean zero,boolean hit){add(zero?(hit?Counter.ZERO_HIT:Counter.ZERO_MISS):(hit?Counter.POSITIVE_HIT:Counter.POSITIVE_MISS),1);}
     void phase(Phase next,int ordinal,int left,int right) {
         if(groupedExecution!=null)currentWitnessAvailable=false;
+        ceilingStageAvailable=false;
         pay(16);phase=next;stage=ordinal;stageSlot=selectStage(ordinal);this.left=left;this.right=right;
         row=from=to=fromId=toId=-1;add(Counter.PHASE_ENTERED,1);milestone(0);
     }
@@ -167,6 +178,7 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     }
     void seedBegin(int id) {
         if(groupedExecution!=null)currentWitnessAvailable=false;
+        ceilingStageAvailable=false;
         pay(16);seed=id;seedSlot=SEED_SLOTS;phase=Phase.BASE;stage=0;stageSlot=selectStage(0);inventoryAvailable=false;
         for(int i=0;i<SEED_SLOTS;i++)if(seedIds[i]==id){seedSlot=i;break;}
         if(seedSlot==SEED_SLOTS)for(int i=0;i<SEED_SLOTS;i++)if(seedIds[i]<0){seedIds[i]=id;seedSlot=i;break;}
@@ -174,7 +186,7 @@ public final class LegacyEmissionProgress implements AutoCloseable {
         add(Counter.SEEDS_STARTED,1);
     }
     void seedComplete(){add(Counter.SEEDS_COMPLETED,1);}
-    void seedSelect(int id){if(groupedExecution!=null)currentWitnessAvailable=false;pay(8);seed=id;seedSlot=SEED_SLOTS;inventoryAvailable=false;for(int i=0;i<SEED_SLOTS;i++)if(seedIds[i]==id){seedSlot=i;break;}}
+    void seedSelect(int id){if(groupedExecution!=null)currentWitnessAvailable=false;ceilingStageAvailable=false;pay(8);seed=id;seedSlot=SEED_SLOTS;inventoryAvailable=false;for(int i=0;i<SEED_SLOTS;i++)if(seedIds[i]==id){seedSlot=i;break;}}
     void row(int value){pay(8);row=value;milestone(0);}
     void edge(int a,int b,int ai,int bi){pay(8);row=from=a;to=b;fromId=ai;toId=bi;}
     private void milestone(int completed) {
@@ -277,7 +289,70 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     }
     void competitiveBegin(LegacyEmissionKernel.CompetitiveExecution execution){pay(8);competitiveExecution=execution;}
     void witnessBegin(){event(Counter.WITNESS_ATTEMPTED);}
-    void groupedBegin(LegacyEmissionKernel.GroupedExecution execution){pay(8);groupedExecution=execution;}
+    void groupedBegin(LegacyEmissionKernel.GroupedExecution execution){
+        pay(8);groupedExecution=execution;
+        if(execution==LegacyEmissionKernel.GroupedExecution.EXACT_Q0_CEILING_CENSUS_V1) {
+            pay(64);budget.charge(Operation.ALLOCATION,1);tax[Operation.ALLOCATION.ordinal()]++;
+            ceilingRequireFresh(boundInput);ceiling=new long[CEILING_STAGE_WORDS+CEILING_TOTAL_WORDS];
+        }
+    }
+    boolean ceilingEnabled(){return ceiling!=null;}
+    /** Actual already-stored absolute witness, with all observation work prepaid before publication. */
+    void ceilingWitness(SampledEmissionInput input,java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.model.EmissionResult.Costs> costs) {
+        pay(costs.isPresent()?72:64);ceilingRequireFresh(input);
+        Arrays.fill(ceiling,0,CEILING_STAGE_WORDS,0);ceiling[0]=seed;ceiling[1]=stage;
+        if(costs.isPresent()) {
+            var c=costs.orElseThrow();ceiling[2]=1;
+            ceiling[3]=Double.doubleToRawLongBits(c.q());ceiling[4]=Double.doubleToRawLongBits(c.c());
+            ceiling[5]=Double.doubleToRawLongBits(c.t());ceiling[6]=Double.doubleToRawLongBits(c.k());
+            witnessUpper=c.total();ceiling[7]=Double.doubleToRawLongBits(witnessUpper);
+            currentWitnessAvailable=true;add(Counter.WITNESS_CERTIFIED,1);
+        }
+        ceilingStageAvailable=true;
+    }
+    void prepareCeilingObservation(){pay(128);}
+    /** Charge-free mutation after the caller's last cancellation checkpoint; no source/query is retained. */
+    void ceilingObservation(SampledEmissionInput input,boolean zero,double l0,double cap,boolean q0Strict) {
+        ceilingRequireFresh(input);
+        if(!ceilingStageAvailable)throw new IllegalStateException("Ceiling stage is unavailable");
+        ceilingIncrement(CeilingCounter.CANDIDATES);
+        if(zero){ceilingIncrement(CeilingCounter.ZERO_DIRECTION);return;}
+        if(!Double.isFinite(l0)||l0<0){ceilingIncrement(CeilingCounter.INVALID_Q0);return;}
+        ceilingIncrement(CeilingCounter.FINITE_Q0);
+        if((ceiling[2]&2)==0||l0>Double.longBitsToDouble(ceiling[12]))ceiling[12]=Double.doubleToRawLongBits(l0);
+        ceiling[2]|=2;
+        if(q0Strict)ceilingIncrement(CeilingCounter.Q0_STRICT_BOUNDS);
+        if(!Double.isFinite(cap)||cap<0){ceilingIncrement(CeilingCounter.INVALID_CAP);return;}
+        if((ceiling[2]&4)==0||cap>Double.longBitsToDouble(ceiling[13]))ceiling[13]=Double.doubleToRawLongBits(cap);
+        ceiling[2]|=4;
+        if((ceiling[2]&1)!=0&&cap>Double.longBitsToDouble(ceiling[7])) {
+            ceilingIncrement(CeilingCounter.CAP_CROSSINGS);
+            if(!q0Strict)ceilingIncrement(CeilingCounter.Q0_SURVIVOR_CROSSINGS);
+        }
+    }
+    /** Includes actual managed witness scratch work; primitive accounting also preserves partial failures. */
+    private void ceilingRequireFresh(SampledEmissionInput input) {
+        requireCompatible(input,query,execution);
+        long a=budget.operationUnits(Operation.PREPARATION),c=budget.operationUnits(Operation.CELL_QUERY),n=budget.operationUnits(Operation.NODE_READ),
+            m=budget.operationUnits(Operation.MODE_EXTRACTION),r=budget.operationUnits(Operation.REGION_QUERY),al=budget.operationUnits(Operation.ALLOCATION),
+            pi=budget.operationUnits(Operation.PAIR_INITIALIZATION),pl=budget.operationUnits(Operation.PAIR_LOOKUP),tr=budget.operationUnits(Operation.TRANSITION),
+            t=budget.operationUnits(Operation.TRANSPORT),tc=budget.operationUnits(Operation.TIE_COMPARISON),bp=budget.operationUnits(Operation.BACKPOINTER_VISIT);
+        try {input.requireOpenAndUnchanged();}
+        finally {
+            tax[Operation.PREPARATION.ordinal()]+=budget.operationUnits(Operation.PREPARATION)-a;tax[Operation.CELL_QUERY.ordinal()]+=budget.operationUnits(Operation.CELL_QUERY)-c;
+            tax[Operation.NODE_READ.ordinal()]+=budget.operationUnits(Operation.NODE_READ)-n;tax[Operation.MODE_EXTRACTION.ordinal()]+=budget.operationUnits(Operation.MODE_EXTRACTION)-m;
+            tax[Operation.REGION_QUERY.ordinal()]+=budget.operationUnits(Operation.REGION_QUERY)-r;tax[Operation.ALLOCATION.ordinal()]+=budget.operationUnits(Operation.ALLOCATION)-al;
+            tax[Operation.PAIR_INITIALIZATION.ordinal()]+=budget.operationUnits(Operation.PAIR_INITIALIZATION)-pi;tax[Operation.PAIR_LOOKUP.ordinal()]+=budget.operationUnits(Operation.PAIR_LOOKUP)-pl;
+            tax[Operation.TRANSITION.ordinal()]+=budget.operationUnits(Operation.TRANSITION)-tr;tax[Operation.TRANSPORT.ordinal()]+=budget.operationUnits(Operation.TRANSPORT)-t;
+            tax[Operation.TIE_COMPARISON.ordinal()]+=budget.operationUnits(Operation.TIE_COMPARISON)-tc;tax[Operation.BACKPOINTER_VISIT.ordinal()]+=budget.operationUnits(Operation.BACKPOINTER_VISIT)-bp;
+        }
+        requireCompatible(input,query,execution);
+    }
+    private void ceilingIncrement(CeilingCounter counter) {
+        int total=CEILING_STAGE_WORDS+counter.ordinal();
+        if(ceiling[counter.word]<Long.MAX_VALUE)ceiling[counter.word]++;else ceilingOverflow=true;
+        if(ceiling[total]<Long.MAX_VALUE)ceiling[total]++;else ceilingOverflow=true;
+    }
     void witnessCertified(double upper){pay(8);witnessUpper=upper;currentWitnessAvailable=true;add(Counter.WITNESS_CERTIFIED,1);}
     void competitiveFront(int size){pay(8);maxCompetitiveKeyLabels=Math.max(maxCompetitiveKeyLabels,size);}
 
@@ -329,6 +404,22 @@ public final class LegacyEmissionProgress implements AutoCloseable {
         public LegacyEmissionKernel.GroupedExecution groupedExecution(){if(!hasGroupedExecution())throw new IllegalStateException("Grouped execution is unavailable");return p.groupedExecution;}
         public boolean hasWitnessUpper(){return p.currentWitnessAvailable;}
         public double witnessUpper(){if(!hasWitnessUpper())throw new IllegalStateException("Witness upper is unavailable");return p.witnessUpper;}
+        public boolean hasCeilingCensus(){return p.ceiling!=null;}
+        private void requireCeiling(){if(!hasCeilingCensus())throw new IllegalStateException("Ceiling census is unavailable");}
+        /** Only the current seed/stage is retained. Past/future stage facts are unavailable. */
+        public boolean hasCeilingStage(){return hasCeilingCensus()&&p.ceilingStageAvailable;}
+        private void requireCeilingStage(){if(!hasCeilingStage())throw new IllegalStateException("Current ceiling stage is unavailable");}
+        public int ceilingSeed(){requireCeilingStage();return (int)p.ceiling[0];}
+        public int ceilingStage(){requireCeilingStage();return (int)p.ceiling[1];}
+        public long ceilingCount(CeilingCounter counter){requireCeilingStage();return p.ceiling[counter.word];}
+        public long ceilingTotalCount(CeilingCounter counter){requireCeiling();return p.ceiling[CEILING_STAGE_WORDS+counter.ordinal()];}
+        public boolean ceilingCounterOverflow(){requireCeiling();return p.ceilingOverflow;}
+        public boolean hasCeilingWitness(){return hasCeilingStage()&&(p.ceiling[2]&1)!=0;}
+        /** Components0..3 are the stored absolute Q/C/T/K, never reconstructed geometry. */
+        public double ceilingWitnessComponent(int component){if(!hasCeilingWitness())throw new IllegalStateException("Ceiling witness is unavailable");return Double.longBitsToDouble(p.ceiling[3+Objects.checkIndex(component,4)]);}
+        public double ceilingWitnessUpper(){if(!hasCeilingWitness())throw new IllegalStateException("Ceiling witness is unavailable");return Double.longBitsToDouble(p.ceiling[7]);}
+        public boolean hasCeilingMaximum(boolean nativeCap){return hasCeilingStage()&&(p.ceiling[2]&(nativeCap?4:2))!=0;}
+        public double ceilingMaximum(boolean nativeCap){if(!hasCeilingMaximum(nativeCap))throw new IllegalStateException("Ceiling maximum is unavailable");return Double.longBitsToDouble(p.ceiling[nativeCap?13:12]);}
         public int maxCompetitiveKeyLabels(){competitiveExecution();return p.maxCompetitiveKeyLabels;}
         public int maxGroupedKeyLabels(){groupedExecution();return p.maxCompetitiveKeyLabels;}
         public boolean hasInitialLocalNoiseProof(){return count(Counter.INITIAL_LOCAL_NOISE_SKIPS)>0;}

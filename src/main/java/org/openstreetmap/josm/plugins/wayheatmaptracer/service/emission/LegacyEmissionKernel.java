@@ -26,7 +26,7 @@ public final class LegacyEmissionKernel {
     /** Bounded first-stage experiment; never selected by the ordinary consumer overloads. */
     public enum CompetitiveExecution { EXACT_VERSIONS_PROOF_V1, EXACT_CUTOFF_PROOF_V1 }
     /** Explicit grouped-objective repair; Q0 is a correctness bound, not source-completion evidence. */
-    public enum GroupedExecution { EXACT_VERSIONS_V1, EXACT_Q0_CUTOFF_V1 }
+    public enum GroupedExecution { EXACT_VERSIONS_V1, EXACT_Q0_CUTOFF_V1, EXACT_Q0_CEILING_CENSUS_V1 }
     /** Exact stored absolute vectors; interval increments and post-smoothing evidence are distinct. */
     public record GroupedStageReference(int seedId,int ordinal,Optional<EmissionResult.Costs> prefix,
             Optional<EmissionResult.Costs> terminal,Optional<EmissionResult.Costs> ordinaryWitness) { }
@@ -249,13 +249,21 @@ public final class LegacyEmissionKernel {
     private static boolean deferOptional(SampledEmissionInput input,LegacyEmissionDomain domain,Node from,
             LegacyEmissionDomain.State to,double pitch,double upper,EmissionWorkBudget budget,
             CancellationProbe cancellation,LegacyEmissionProgress progress) {
+        return deferOptional(input,domain,from,to,pitch,upper,budget,cancellation,progress,false);
+    }
+    private static boolean deferOptional(SampledEmissionInput input,LegacyEmissionDomain domain,Node from,
+            LegacyEmissionDomain.State to,double pitch,double upper,EmissionWorkBudget budget,
+            CancellationProbe cancellation,LegacyEmissionProgress progress,boolean census) {
         input.requireOpenAndUnchanged();cancellation.checkpoint();
         budget.charge(EmissionWorkBudget.Operation.PREPARATION,32);
         if(progress!=null){progress.edge(from.key.last().originalRow(),to.originalRow(),from.key.last().nativeStateId(),to.nativeStateId());
             progress.event(LegacyEmissionProgress.Counter.COMPONENT_BOUND_PREPARATIONS);}
         var a=from.key.last();var pa=domain.metricPoint(a,input.context());var pb=domain.metricPoint(to,input.context());
         // No invented orientation for a zero edge: retain the full native admission path.
-        if(pa.distanceTo(pb)==0)return false;
+        if(pa.distanceTo(pb)==0){
+            if(census&&progress!=null){progress.prepareCeilingObservation();cancellation.checkpoint();progress.ceilingObservation(input,true,Double.NaN,Double.NaN,false);}
+            return false;
+        }
         double slope=(to.offsetRasterPixels()-a.offsetRasterPixels())/(to.originalRow()-a.originalRow());
         double c=.16*Math.abs(to.offsetRasterPixels()-a.offsetRasterPixels());
         double t=.12*Math.abs(slope-from.key.scalar().lastSlope());
@@ -263,6 +271,12 @@ public final class LegacyEmissionKernel {
         double qLower=from.q+0.0,cLower=from.c+c,tLower=from.t+t,kLower=from.k+(0.0+k);
         double lower=qLower+cLower+tLower+kLower;
         boolean bounded=finiteNonnegative(qLower)&&finiteNonnegative(cLower)&&finiteNonnegative(tLower)&&finiteNonnegative(kLower);
+        if(census&&progress!=null) {
+            progress.prepareCeilingObservation();
+            double span=sourceChainage(domain,input.context(),to.originalRow())-sourceChainage(domain,input.context(),a.originalRow());
+            double cap=ceilingLower(from.q,cLower,tLower,kLower,span,input.context().nativePitchMeters().orElse(Double.NaN));
+            cancellation.checkpoint();progress.ceilingObservation(input,false,bounded?lower:Double.NaN,cap,bounded&&strictCutoff(lower,upper));
+        }
         input.requireOpenAndUnchanged();cancellation.checkpoint();
         if(!bounded||!strictCutoff(lower,upper))return false;
         // Admit observer bookkeeping before the last freshness check; a callback at this
@@ -274,6 +288,15 @@ public final class LegacyEmissionKernel {
     }
     private static boolean strictCutoff(double lower,double upper) {
         return finiteNonnegative(lower)&&Double.isFinite(upper)&&upper>=0&&lower>upper;
+    }
+    /** Upper envelope on the one-edge scalar-strengthened lower, not measured Q or a terminal upper. */
+    static double ceilingLower(double prefixQ,double cLower,double tLower,double kLower,double sourceSpan,double nativePitch) {
+        if(!finiteNonnegative(prefixQ)||!finiteNonnegative(cLower)||!finiteNonnegative(tLower)||!finiteNonnegative(kLower)
+                ||!finiteNonnegative(sourceSpan)||!Double.isFinite(nativePitch)||nativePitch<=0)return Double.NaN;
+        double qCap=sourceSpan/nativePitch;
+        if(!finiteNonnegative(qCap))return Double.NaN;
+        double cap=((prefixQ+qCap)+cLower)+tLower+kLower;
+        return finiteNonnegative(cap)?cap:Double.NaN;
     }
 
     private static void insertExact(Map<Key,ExactFront> layer,Node candidate,EmissionWorkBudget budget,
@@ -713,7 +736,10 @@ public final class LegacyEmissionKernel {
         var costs=Double.isFinite(upper)?storedCosts(current):Optional.<EmissionResult.Costs>empty();
         releaseUnretained(current,budget);
         input.requireOpenAndUnchanged();cancellation.checkpoint();
-        if(costs.isPresent()&&progress!=null)progress.witnessCertified(upper);
+        if(progress!=null) {
+            if(progress.ceilingEnabled())progress.ceilingWitness(input,costs);
+            else if(costs.isPresent())progress.witnessCertified(upper);
+        }
         return costs;
     }
     private Node solveGroupedBase(SampledEmissionInput input,LegacyEmissionDomain domain,LegacyEmissionDomain.Seed seed,
@@ -754,8 +780,9 @@ public final class LegacyEmissionKernel {
                         else choices=inventory.byRow().get(toRow);
                         for(var to:choices) {
                             budget.charge(EmissionWorkBudget.Operation.TRANSITION,1);
-                            if(toRow>row+1&&execution==GroupedExecution.EXACT_Q0_CUTOFF_V1
-                                    &&deferOptional(input,domain,from,to,pitch,upper,budget,cancellation,progress))continue;
+                            if(toRow>row+1&&(execution==GroupedExecution.EXACT_Q0_CUTOFF_V1||execution==GroupedExecution.EXACT_Q0_CEILING_CENSUS_V1)
+                                    &&deferOptional(input,domain,from,to,pitch,upper,budget,cancellation,progress,
+                                        execution==GroupedExecution.EXACT_Q0_CEILING_CENSUS_V1))continue;
                             Node candidate=advance(input,domain,inventory,from,to,evaluator,owner,cancellation,stage,pitch);
                             if(candidate!=null)insertExact(layers.get(toRow-start),candidate,budget,owner,progress);
                         }
