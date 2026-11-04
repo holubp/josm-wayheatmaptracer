@@ -218,6 +218,23 @@ public final class OptionalEmissionContext {
         return managed == null ? rasterTransform.metricToPixelCenter(point)
             : managed.groundTransform().orElseThrow().rasterAt(point);
     }
+    /** Source-bound numeric curve enclosure; managed callers never receive an invented affine map. */
+    public org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedGroundTransform.LineBounds metricLineBounds(
+            MetricPoint center, MetricPoint normal, double from, double to, EmissionWorkBudget budget) {
+        if (managed != null) return managed.groundTransform().orElseThrow().metricLineBounds(center,normal,from,to,budget);
+        // No floating inverse error certificate is available for arbitrary detached affine frames in M1.
+        throw new IllegalArgumentException("Detached affine inverse enclosure is not an M1 managed certificate");
+    }
+    public boolean routeCurveBoxAuthorized(org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedGroundTransform.LineBounds box,
+            EmissionWorkBudget budget, AttemptMemoryLedger.Owner scratch) {
+        if (managed == null) return false;
+        return managedBinding.capture().originalRequest().authorizesVirtualRasterBox(managed.sourceMosaic(),box,budget,scratch);
+    }
+    public org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedGroundTransform.LineBounds metricFamilyBounds(
+            MetricPoint origin,MetricPoint direction,MetricPoint normal,double firstS,double lastS,double firstU,double lastU,EmissionWorkBudget budget) {
+        if(managed==null)throw new IllegalArgumentException("No captured managed family inverse");
+        return managed.groundTransform().orElseThrow().metricFamilyBounds(origin,direction,normal,firstS,lastS,firstU,lastU,budget);
+    }
     /** Factual source-pitch lookup in the source chainage measure. */
     public double nativePitchAtSourceChainage(double sourceMeters) {
         // A certified whole-domain upper bound remains valid at every source position.

@@ -285,9 +285,9 @@ class LegacyEmissionBindingTest {
 
     private record Fixture(EvidenceSnapshot evidence, CorridorTraceInput input, ProfileChainage chainage) { }
 
-    private record R4Crop(EvidenceSnapshot evidence, CorridorTraceInput input, ProfileChainage chainage) { }
+    record R4Crop(EvidenceSnapshot evidence, CorridorTraceInput input, ProfileChainage chainage) { }
 
-    private static R4Crop r4Crop(PhysicalGeometryFixture.R4SyntheticFrame source) {
+    static R4Crop r4Crop(PhysicalGeometryFixture.R4SyntheticFrame source) {
         int minX = 18, minY = 17, width = 93, height = 86, fullWidth = 128;
         double[] original = source.fullScalarGrid().copiedValues();
         boolean[] originalValid = source.fullScalarGrid().copiedValidity();

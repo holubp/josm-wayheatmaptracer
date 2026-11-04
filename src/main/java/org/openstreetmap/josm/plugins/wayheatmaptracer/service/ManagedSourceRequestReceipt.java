@@ -165,6 +165,41 @@ public final class ManagedSourceRequestReceipt {
                 && point.y() >= minTileY * tile && point.y() <= (maxTileY + 1.0) * tile;
     }
 
+    /** Sufficient curve-box authority in one original convex capsule; never whole-cell authority. */
+    public boolean authorizesVirtualRasterBox(TileHeatmapSampler.TileMosaic mosaic,
+            ManagedGroundTransform.LineBounds box, EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner scratchOwner) {
+        requireMatches(mosaic); budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+        try (var scratch = scratchOwner.reserve(32_768)) {
+            budget.charge(EmissionWorkBudget.Operation.REGION_QUERY,64);
+            // Enclose the actual world-origin + virtual/scale + center-phase chain.
+            double x0 = Math.nextDown(Math.nextDown(mosaic.originWorldPxX() + Math.nextDown(box.minimumX() / virtualRasterScale)) + .5);
+            double x1 = Math.nextUp(Math.nextUp(mosaic.originWorldPxX() + Math.nextUp(box.maximumX() / virtualRasterScale)) + .5);
+            double y0 = Math.nextDown(Math.nextDown(mosaic.originWorldPxY() + Math.nextDown(box.minimumY() / virtualRasterScale)) + .5);
+            double y1 = Math.nextUp(Math.nextUp(mosaic.originWorldPxY() + Math.nextUp(box.maximumY() / virtualRasterScale)) + .5);
+            var corners = List.of(new RasterPoint(x0,y0),new RasterPoint(x0,y1),new RasterPoint(x1,y0),new RasterPoint(x1,y1));
+            for (var corner : corners) { budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, 1); if (!insideRequestedTiles(corner)) return false; }
+            for (int i=1;i<originalWorldPoints.size();i++) {
+                budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, 256);
+                boolean all = true;
+                for (var corner : corners) all &= exactCapsuleContains(originalWorldPoints.get(i-1), originalWorldPoints.get(i), corner, nativeSearchHalfWidth);
+                if (all) return true;
+            }
+            return false;
+        }
+    }
+
+    private static boolean exactCapsuleContains(RasterPoint a, RasterPoint b, RasterPoint p, double radius) {
+        var ax=new java.math.BigDecimal(a.x()); var ay=new java.math.BigDecimal(a.y());
+        var dx=new java.math.BigDecimal(b.x()).subtract(ax); var dy=new java.math.BigDecimal(b.y()).subtract(ay);
+        var wx=new java.math.BigDecimal(p.x()).subtract(ax); var wy=new java.math.BigDecimal(p.y()).subtract(ay);
+        var length=dx.multiply(dx).add(dy.multiply(dy)); var dot=wx.multiply(dx).add(wy.multiply(dy));
+        var r=new java.math.BigDecimal(radius); var rr=r.multiply(r);
+        if(dot.signum()<=0)return wx.multiply(wx).add(wy.multiply(wy)).compareTo(rr)<=0;
+        if(dot.compareTo(length)>=0){wx=wx.subtract(dx);wy=wy.subtract(dy);return wx.multiply(wx).add(wy.multiply(wy)).compareTo(rr)<=0;}
+        var cross=wx.multiply(dy).subtract(wy.multiply(dx));return cross.multiply(cross).compareTo(rr.multiply(length))<=0;
+    }
+
     private static RasterPoint toWorld(TileHeatmapSampler.TileMosaic mosaic, RasterPoint point) {
         double scale = mosaic.virtualRasterScale();
         return new RasterPoint(mosaic.originWorldPxX() + point.x() / scale + 0.5,

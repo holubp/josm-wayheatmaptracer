@@ -201,6 +201,91 @@ public final class ManagedGroundTransform {
 
     public LocalMetricFrame frame() { requireOpen(); return frame; }
 
+    /** Conservative enclosure, never authority or a claim that a rounded map is injective. */
+    public record LineBounds(double minimumX, double maximumX, double minimumY, double maximumY) {
+        public LineBounds {
+            if (!Double.isFinite(minimumX) || !Double.isFinite(maximumX) || !Double.isFinite(minimumY)
+                    || !Double.isFinite(maximumY) || minimumX > maximumX || minimumY > maximumY)
+                throw new IllegalArgumentException("Unresolved metric-line enclosure");
+        }
+    }
+
+    /**
+     * Encloses the actual Java17 inverse chain for M(u)=center+u*normal. Each binary operation
+     * rounds outward by one adjacent value. sin/log are monotone on the admitted domain;
+     * Java Math specifies <=1 ulp error, enclosed by two ulps plus directed endpoint rounding.
+     * The strict frame and Java17 conversions use the captured single-multiply constants.
+     * No radians/degrees cancellation, longitude normalization seam or pole is assumed away.
+     */
+    public LineBounds metricLineBounds(MetricPoint center, MetricPoint normal, double from, double to,
+            EmissionWorkBudget budget) {
+        requireOpen(); budget.charge(EmissionWorkBudget.Operation.PREPARATION, 256);
+        if (!inverseNumericalIdentitySupported()) throw new IllegalArgumentException("Unsupported inverse numerical identity");
+        I u = new I(from, to);
+        I east = I.point(center.xMeters()).add(u.mul(I.point(normal.xMeters())));
+        I north = I.point(center.yMeters()).add(u.mul(I.point(normal.yMeters())));
+        return inverseBounds(east,north);
+    }
+    /** Encloses continuous exact-real H and its actual two-stage rounded anchor/query construction. */
+    public LineBounds metricFamilyBounds(MetricPoint origin,MetricPoint direction,MetricPoint normal,
+            double firstS,double lastS,double firstU,double lastU,EmissionWorkBudget budget) {
+        requireOpen();budget.charge(EmissionWorkBudget.Operation.PREPARATION,256);
+        if(!inverseNumericalIdentitySupported())throw new IllegalArgumentException("Unsupported inverse numerical identity");
+        I s=new I(firstS,lastS),u=new I(firstU,lastU);
+        I east=I.point(origin.xMeters()).add(s.mul(I.point(direction.xMeters()))).add(u.mul(I.point(normal.xMeters())));
+        I north=I.point(origin.yMeters()).add(s.mul(I.point(direction.yMeters()))).add(u.mul(I.point(normal.yMeters())));
+        return inverseBounds(east,north);
+    }
+    private LineBounds inverseBounds(I east,I north) {
+        var certificate = frame.distortionCertificate();
+        I latitude = I.point(frame.origin().latitudeDegrees()).add(north.div(certificate.northMetersPerRadian()).mul(I.point(0x1.ca5dc1a63c1f8p5)));
+        I longitude = I.point(frame.origin().longitudeDegrees()).add(east.div(certificate.eastMetersPerRadian()).mul(I.point(0x1.ca5dc1a63c1f8p5)));
+        if (longitude.lo <= -180 || longitude.hi >= 180
+                || latitude.lo < certificate.southWest().latitudeDegrees() || latitude.hi > certificate.northEast().latitudeDegrees()
+                || longitude.lo < certificate.southWest().longitudeDegrees() || longitude.hi > certificate.northEast().longitudeDegrees())
+            throw new IllegalArgumentException("Metric-line interval leaves captured geographic domain");
+        I radians = latitude.mul(I.point(0x1.1df46a2529d39p-6));
+        if (!(radians.lo > -Math.PI / 2 && radians.hi < Math.PI / 2)) throw new IllegalArgumentException("Inverse interval meets pole");
+        I sine = radians.sin();
+        I ratio = I.point(1).add(sine).divide(I.point(1).subtract(sine));
+        I worldY = I.point(.5).subtract(ratio.log().div(4 * Math.PI)).mul(I.point(worldSize));
+        I worldX = longitude.add(I.point(180)).div(360).mul(I.point(worldSize));
+        I x = worldX.subtract(I.point(mosaic.originWorldPxX())).subtract(I.point(.5)).mul(I.point(mosaic.virtualRasterScale()));
+        I y = worldY.subtract(I.point(mosaic.originWorldPxY())).subtract(I.point(.5)).mul(I.point(mosaic.virtualRasterScale()));
+        return new LineBounds(x.lo, x.hi, y.lo, y.hi);
+    }
+    private boolean inverseNumericalIdentitySupported() {
+        // This experimental certificate targets the reviewed OpenJDK17 multiply conversion law.
+        // Other runtime identities retain actual point facts but receive no inverse enclosure.
+        return frame.hasCompleteNumericalIdentity() && Runtime.version().feature()==17
+            && System.getProperty("java.vm.name","").startsWith("OpenJDK")
+            && Double.doubleToRawLongBits(Math.toRadians(1))==Double.doubleToRawLongBits(0x1.1df46a2529d39p-6)
+            && Double.doubleToRawLongBits(Math.toDegrees(1))==Double.doubleToRawLongBits(0x1.ca5dc1a63c1f8p5);
+    }
+
+    private record I(double lo, double hi) {
+        I { if (!Double.isFinite(lo) || !Double.isFinite(hi) || lo > hi) throw new IllegalArgumentException("Unresolved inverse interval"); }
+        static I point(double value) { return new I(value, value); }
+        I add(I b) { return new I(Math.nextDown(lo + b.lo), Math.nextUp(hi + b.hi)); }
+        I subtract(I b) { return new I(Math.nextDown(lo - b.hi), Math.nextUp(hi - b.lo)); }
+        I mul(I b) {
+            double a = lo * b.lo, c = lo * b.hi, d = hi * b.lo, e = hi * b.hi;
+            return new I(Math.nextDown(Math.min(Math.min(a,c),Math.min(d,e))), Math.nextUp(Math.max(Math.max(a,c),Math.max(d,e))));
+        }
+        I div(double positive) { return divide(point(positive)); }
+        I divide(I positive) {
+            if (!(positive.lo > 0)) throw new IllegalArgumentException("Inverse interval denominator is not positive");
+            return mul(new I(Math.nextDown(1 / positive.hi), Math.nextUp(1 / positive.lo)));
+        }
+        I sin() { return new I(down(Math.sin(lo)), up(Math.sin(hi))); }
+        I log() {
+            if (!(lo > 0)) throw new IllegalArgumentException("Inverse log interval is not positive");
+            return new I(down(Math.log(lo)), up(Math.log(hi)));
+        }
+        private static double down(double x) { return Math.nextDown(x - 2 * Math.ulp(x)); }
+        private static double up(double x) { return Math.nextUp(x + 2 * Math.ulp(x)); }
+    }
+
     private static double longitude(double worldX, double size) {
         return worldX / size * 360.0 - 180.0;
     }

@@ -162,6 +162,10 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     public Receipt evaluateWithNativeScalar(RowState from,RowState to,NativeScalarPreparation scalar) {
         return evaluateInternal(from,to,null,null,null,Objects.requireNonNull(scalar));
     }
+    /** Explicit receipt-only M1 service; no solver/classifier enables it. */
+    public static NativeMeasuredProfileReceipt.Session openAffinityProfiles(SampledEmissionInput input) {
+        return new NativeMeasuredProfileReceipt.Session(input);
+    }
     public enum QueryPolicy {
         DENSE_EIGHTH_NATIVE_V1, HALF_NATIVE_L0_V1, PIXEL_CAPPED_L0_V1, ZERO_GUARDED_LOCAL_V1
     }
@@ -1286,6 +1290,22 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             AttemptMemoryLedger.Owner evaluation) {
         if(progress!=null){progress.profileBegin();progress.windowBegin(ProfileBackend.FULL_WINDOW,-1,0);}
         double source=chainage(from.row())+span*t;
+        return measureProfile(t,point,normal,source,evaluation,null,null);
+    }
+
+    /** Same full-window numeric query, with no synthetic state or optional-admission claim. */
+    Probe measureAffinityProfile(int retainedRow, MetricPoint center, MetricPoint normal,
+            AttemptMemoryLedger.Owner evaluation,ArrayList<NativeMeasuredProfileReceipt.QueryPoint> captured) {
+        requireLive(); input.requireOpenAndUnchanged();
+        if (retainedRow < 0 || retainedRow >= context.observations().size()
+                || !(Math.hypot(normal.xMeters(), normal.yMeters()) > 0))
+            throw new IllegalArgumentException("Invalid measured profile geometry");
+        work(EmissionWorkBudget.Operation.PREPARATION, 2);
+        return measureProfile(0,context.rasterAt(center),normal,context.sourceChainageMeters(retainedRow),evaluation,center,captured);
+    }
+
+    private Probe measureProfile(double t,RasterPoint point,MetricPoint normal,double source,
+            AttemptMemoryLedger.Owner evaluation,MetricPoint requestedCenter,ArrayList<NativeMeasuredProfileReceipt.QueryPoint> captured) {
         work(EmissionWorkBudget.Operation.PREPARATION,context.resolution().spatialPitchSamples().size());
         double pitch=context.nativePitchAt(point,source);
         double requestedStep = context.lateralStepMeters();
@@ -1300,21 +1320,44 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         int intervals=checkedCount(Math.ceil(2*halfWidth/step));
         int count=Math.addExact(intervals,1);
         reserve(evaluation,Math.addExact(512,Math.multiplyExact((long)count,88)));
+        if(captured!=null){reserve(evaluation,Math.addExact(1024,Math.multiplyExact((long)count,256)));captured.ensureCapacity(count);}
         var samples=new ArrayList<Sample>(count);
-        MetricPoint center=metric(point);
+        MetricPoint center=requestedCenter==null?metric(point):requestedCenter;
         for(int i=0;i<count;i++) {
             work(EmissionWorkBudget.Operation.PREPARATION,1);
             double u=i==intervals?halfWidth:-halfWidth+2*halfWidth*i/intervals;
             var actual=new MetricPoint(center.xMeters()+u*normal.xMeters(),center.yMeters()+u*normal.yMeters());
             if(progress!=null)progress.sampleBegin(0);
-            boolean authorized=context.routePositionAuthorized(actual,budget,evaluation)
-                && context.evidencePositionAuthorized(actual,budget,evaluation);
-            double value=authorized?strictValue(context.rasterAt(actual)):Double.NaN;
+            boolean authorized,route=false,acquired=false;
+            RasterPoint scalarRaster=null;
+            if(captured==null){
+                authorized=context.routePositionAuthorized(actual,budget,evaluation)
+                    && context.evidencePositionAuthorized(actual,budget,evaluation);
+            }else{
+                work(EmissionWorkBudget.Operation.PREPARATION,8);
+                route=context.routePositionAuthorized(actual,budget,evaluation);
+                acquired=route&&context.evidencePositionAuthorized(actual,budget,evaluation);
+                authorized=route&&acquired;
+                if(authorized)scalarRaster=context.rasterAt(actual);
+            }
+            double value=authorized?strictValue(captured==null?context.rasterAt(actual):scalarRaster):Double.NaN;
             if(progress!=null)progress.sampleComplete();
             var sampleReservation=retainedSampleReservation(evaluation);
             var sample=new Sample(u,value,Double.isFinite(value));
             sampleReservation.adopt(sample);
             samples.add(sample);
+            if(captured!=null){
+                // Preserve the numeric evaluator sample and guard outcome. Ownership additionally
+                // checks the actual inverse bits used by strictValue, not another inverse evaluation.
+                boolean actualRoute=route,actualAcquired=acquired;
+                if(scalarRaster!=null){
+                    actualRoute=context.routeSegmentAuthorized(scalarRaster,scalarRaster,budget,evaluation);
+                    actualAcquired=context.evidenceSegmentAuthorized(scalarRaster,scalarRaster,budget,evaluation);
+                }
+                captured.add(new NativeMeasuredProfileReceipt.QueryPoint(sample,actual,
+                    Optional.ofNullable(scalarRaster),scalarRaster==null?Optional.empty():Optional.of(context.nativeGrid().toGrid(scalarRaster)),
+                    actualRoute,route,actualAcquired,authorized,authorized));
+            }
         }
         if(progress!=null){progress.samplingComplete();progress.extractionBegin();}
         var extraction=extractor.extractDetailedWithAcceptedThresholds(samples,pitch,parameters.localization(),evaluation,
@@ -1959,6 +2002,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     }
 
     /** Strict point query checks every touched interpolation cell, including grid-line/corner neighbors. */
+    double affinityStrictValue(RasterPoint actual) { requireLive(); return strictValue(actual); }
     private double strictValue(RasterPoint base) {
         var grid=context.nativeGrid();var p=grid.toGrid(base);
         double x=p.x(),y=p.y();int w=grid.width(),h=grid.height();

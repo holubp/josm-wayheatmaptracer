@@ -973,3 +973,45 @@ the admitted summary header. Initial work/cancellation failures report unvisited
 pair 0 with the total unavailable until the first source-validation boundary passes.
 Private replay/census invocation requires its separately reviewed
 source packet; this diagnostic implementation alone does not qualify Drasov.
+
+### Managed actual-profile receipts (M1, consumer disabled)
+
+`NativeConnectorEvaluator.openAffinityProfiles(input)` is an explicit receipt-only
+service. No tracker, classifier, solver or Apply path invokes it. Public Legacy,
+v2 and affine measured-affinity defaults retain their numerical/work paths.
+The service reuses the evaluator's full-window metric-line query and unchanged
+extractor, capturing the actual scalar-query raster bits inside the evaluator.
+Queried/unqueried acquisition and scalar flags remain distinct from invalid
+samples and from the original metric guard. Actual raster-position authority is
+rechecked separately; diagnostic Probe/Mode records cannot mint ownership.
+
+Numerical `u`, `Mode.centerMeters()`, core/sigma and thresholds remain unchanged.
+Their physical footprint uses the actual stored direction norm and rounded
+construction; it never assumes norm1 or multiplies an offset by a global scale.
+Each mode keeps M(c), actual inverse R(c) and forward G(R(c)) distinct, including
+one-ULP center escapes. Exact dyadic determinant/dual-basis arithmetic binds a
+fixed affine physical H(s,u) family. Continuous injectivity of captured F(H) is
+separate from rounded point ordering and from source authority. M1 inverse
+enclosures target the reviewed strict-frame/OpenJDK17 multiply conversions and
+Math sin/log error contracts; unreviewed numerical identities are unavailable.
+Independent 90-digit Taylor/atanh reference tests cover both hemispheres,
+equatorial and high-latitude nonidentity transport.
+
+A source point is never moved to its inverse round trip. Fresh strict scalar
+support at P, an authorized/acquired above-core-threshold P→R(0) segment, and a
+stronger R(0)→owned raw-stage-winner component witness bind it conservatively.
+Native state authority additionally requires identity membership in the same
+actual Legacy domain and original/retained binding; an equal caller-created
+State is rejected. Bindings borrow the domain weakly and retain only their small
+charged state payload, avoiding retention of an uncharged domain/list tree.
+
+Component curve boxes use original-capsule authority separately from acquired
+grid/cell validity. Conservative refusal is unavailable evidence, never a proved
+conflict or a whole-cell decision-area requirement. Unqueried cell totals are
+absent, not measured zero. Missing/ambiguous components, duplicate query points,
+unsupported enclosures and partial queries issue no usable point ownership.
+All profile/cache/geometry/support work and retained storage share the input's
+existing budget/owner tree. Sticky resource/cancellation failures retain their
+original exception and close the partial session. No supplementary state,
+future-state-family completeness, managed classifier, cut, arclength table,
+private replay, widened source acquisition or Drasov geometry result is supplied.
