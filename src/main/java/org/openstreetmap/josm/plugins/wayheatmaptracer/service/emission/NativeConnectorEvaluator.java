@@ -11,6 +11,7 @@ import java.util.concurrent.CancellationException;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.NativeScalarGridView;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionPeak;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.NativeAEmissionSolver.NativeEndpointInventory;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
@@ -32,7 +33,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     public enum QueryPolicy {
         DENSE_EIGHTH_NATIVE_V1, HALF_NATIVE_L0_V1, PIXEL_CAPPED_L0_V1, ZERO_GUARDED_LOCAL_V1
     }
-    public enum ExecutionPolicy { EAGER_ALL_PROBES_V1, STOP_ON_FINAL_MODE_FAILURE_V1 }
+    public enum ExecutionPolicy { EAGER_ALL_PROBES_V1, STOP_ON_FINAL_MODE_FAILURE_V1, EXACT_SLAB_PREFLIGHT_V1 }
     public enum SourceClass { OBSERVED, GAP, CENSORED }
     /** Status of an ordinary leg's native geometric reference, not a claim of image support. */
     public enum NativeReferenceStatus { AVAILABLE, UNAVAILABLE }
@@ -55,7 +56,8 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         SOURCE_INELIGIBLE, DECISION_AUTHORITY, ACQUISITION_AUTHORITY, SCALAR_SUPPORT,
         NO_COMPLETE_MODE, AMBIGUOUS_MODE, INCOMPLETE_FLANKS, MISSING_THRESHOLD,
         CENSORED_OR_SUPPRESSED_COMPETITOR, NONUNIQUE_CONTINUATION, ENDPOINT_OWNERSHIP,
-        SCALAR_BELOW_ENVELOPE, INCOMING_DIRECTION_UNAVAILABLE, LOCAL_NO_MODE
+        SCALAR_BELOW_ENVELOPE, INCOMING_DIRECTION_UNAVAILABLE, LOCAL_NO_MODE,
+        EXACT_ZERO_SLAB_NECESSARY_FAILURE
     }
 
     public enum ProfileBackend { FULL_WINDOW, LOCAL, DENSE_FALLBACK }
@@ -196,7 +198,19 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             Optional<BilinearSegmentIntegral.Result> scalar, boolean scalarEnvelopeComplete,
             boolean measuredNativeContinuationComplete, List<Probe> probes, int plannedProbeCount,
             int firstFailingSlabIndex,
-            Optional<Receipt> transportedIncoming, Optional<OrdinaryPhysicalLeg> transportedOrdinary) {
+            Optional<Receipt> transportedIncoming, Optional<OrdinaryPhysicalLeg> transportedOrdinary,
+            Optional<ExactSlabPreflight> exactSlabPreflight) {
+        public Receipt(Status status, Reason reason, OptionalEmissionContext context, RowState from, RowState to,
+                QueryPolicy queryPolicy, String parameterVersion, double sourceSpanMeters, double emittedLengthMeters,
+                double minimumNativePitchMeters, Optional<BilinearSegmentIntegral.Result> scalar,
+                boolean scalarEnvelopeComplete, boolean measuredNativeContinuationComplete, List<Probe> probes,
+                int plannedProbeCount, int firstFailingSlabIndex, Optional<Receipt> transportedIncoming,
+                Optional<OrdinaryPhysicalLeg> transportedOrdinary) {
+            this(status, reason, context, from, to, queryPolicy, parameterVersion, sourceSpanMeters,
+                emittedLengthMeters, minimumNativePitchMeters, scalar, scalarEnvelopeComplete,
+                measuredNativeContinuationComplete, probes, plannedProbeCount, firstFailingSlabIndex,
+                transportedIncoming, transportedOrdinary, Optional.empty());
+        }
         public Receipt(Status status, Reason reason, OptionalEmissionContext context, RowState from, RowState to,
                 QueryPolicy queryPolicy, String parameterVersion, double sourceSpanMeters, double emittedLengthMeters,
                 double minimumNativePitchMeters, Optional<BilinearSegmentIntegral.Result> scalar,
@@ -222,6 +236,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             Objects.requireNonNull(parameterVersion);
             scalar = Objects.requireNonNull(scalar); transportedIncoming = Objects.requireNonNull(transportedIncoming);
             transportedOrdinary = Objects.requireNonNull(transportedOrdinary);
+            exactSlabPreflight = Objects.requireNonNull(exactSlabPreflight);
             if (transportedIncoming.isPresent() && transportedOrdinary.isPresent())
                 throw new IllegalArgumentException("A zero edge cannot transport two physical legs");
             probes = List.copyOf(probes);
@@ -234,12 +249,187 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                     || !scalarEnvelopeComplete || !measuredNativeContinuationComplete)
                     || status != Status.ADMITTED && reason == Reason.NONE)
                 throw new IllegalArgumentException("Connector admission receipt is inconsistent");
+            if (reason == Reason.EXACT_ZERO_SLAB_NECESSARY_FAILURE
+                    && (status != Status.REJECTED || !probes.isEmpty() || scalarEnvelopeComplete
+                        || measuredNativeContinuationComplete || exactSlabPreflight.isEmpty()
+                        || exactSlabPreflight.get().necessaryFailureSlabIndex() < 0))
+                throw new IllegalArgumentException("Necessary slab failure cannot claim measured mode evidence");
         }
         /** Source measure for Q; emitted physical coverage uses emittedLengthMeters separately. */
         public double sourceWeightedLoss() {
             if (status != Status.ADMITTED) throw new IllegalStateException("Connector was not admitted");
             return sourceSpanMeters / context.nativePitchMeters().orElseThrow()
                 * (1 - scalar.orElseThrow().mean().orElseThrow());
+        }
+    }
+
+    private static final String POSITIVE_SHOULDER_PROOF = "default-positive-accepted-shoulder-v1";
+    private static final String SUPPORTED_THRESHOLD_VERSION =
+        "probabilistic-v0.22-direct-longitudinal-8/java17-fdlibm53-v1/ordered-compensated-java17-v1/"
+        + "terminal-path-count-scored-work-v2/adjacent-orientation-trapezoid-v1/profile-window-centered-v2/"
+        + "baseline-plus-bounded-continuation-v2/scalar-mode-second-difference-rms-v2";
+    private static final EvidenceModelParameters.Localization SUPPORTED_LOCALIZATION = EvidenceModelParameters.Localization.defaults();
+
+    /** Exact native queries scheduled before modes; this is not a measured shoulder or branch certificate. */
+    public record ExactSlabPreflight(String positiveShoulderInvariantVersion, List<ExactSlabReceipt> slabs,
+            int necessaryFailureSlabIndex, int finalSlabCacheHits) {
+        public ExactSlabPreflight {
+            if (!POSITIVE_SHOULDER_PROOF.equals(positiveShoulderInvariantVersion) || slabs == null
+                    || necessaryFailureSlabIndex < -1 || necessaryFailureSlabIndex >= slabs.size()
+                    || finalSlabCacheHits < 0 || finalSlabCacheHits > slabs.size())
+                throw new IllegalArgumentException("Exact slab proof provenance is inconsistent");
+            slabs = List.copyOf(slabs);
+            if (necessaryFailureSlabIndex >= 0) {
+                var result = slabs.get(necessaryFailureSlabIndex).result();
+                if (result.status() != BilinearSegmentIntegral.Status.COMPLETE || result.minimum().orElseThrow() != 0)
+                    throw new IllegalArgumentException("Necessary failure needs an actual complete zero slab");
+            }
+        }
+    }
+
+    /** Source/input/grid/version-owned exact endpoint/result identity; only this evaluator can issue it. */
+    public static final class ExactSlabReceipt {
+        private final SampledEmissionInput input;
+        private final OptionalEmissionContext context;
+        private final NativeScalarGridView grid;
+        private final String parameterVersion;
+        private final int slabIndex;
+        private final RasterPoint from, to;
+        private final BilinearSegmentIntegral.Result result;
+        private ExactSlabReceipt(SampledEmissionInput input, NativeScalarGridView grid, String version,
+                int index, RasterPoint from, RasterPoint to, BilinearSegmentIntegral.Result result) {
+            this.input = input; context = input.context(); this.grid = grid; parameterVersion = version;
+            slabIndex = index; this.from = from; this.to = to; this.result = result;
+        }
+        public OptionalEmissionContext context() { return context; }
+        public NativeScalarGridView grid() { return grid; }
+        public String parameterVersion() { return parameterVersion; }
+        public int slabIndex() { return slabIndex; }
+        public RasterPoint from() { return from; }
+        public RasterPoint to() { return to; }
+        public BilinearSegmentIntegral.Result result() { return result; }
+    }
+
+    /** The arithmetic proof is deliberately limited to the reviewed default extraction version and values. */
+    static boolean positiveShoulderInvariant(EvidenceModelParameters parameters) {
+        return parameters != null && SUPPORTED_THRESHOLD_VERSION.equals(parameters.version())
+            && SUPPORTED_LOCALIZATION.equals(parameters.localization())
+            && parameters.localization().localModeShoulderFraction() == .72;
+    }
+
+    static boolean shouldRunExactPreflight(ExecutionPolicy executionPolicy, EvidenceModelParameters parameters,
+            BilinearSegmentIntegral.Result scalar) {
+        return executionPolicy == ExecutionPolicy.EXACT_SLAB_PREFLIGHT_V1 && positiveShoulderInvariant(parameters)
+            && scalar.status() == BilinearSegmentIntegral.Status.COMPLETE && scalar.minimum().orElseThrow() == 0;
+    }
+
+    /** Per-evaluation scratch cache; published immutable identities are co-owned before this scope closes. */
+    static final class ExactSlabCache implements AutoCloseable {
+        private final NativeConnectorEvaluator evaluator;
+        private final SampledEmissionInput input;
+        private final NativeScalarGridView grid;
+        private final String version;
+        private final AttemptMemoryLedger.Owner owner;
+        private final AttemptMemoryLedger.Owner schedule;
+        private final EmissionWorkBudget budget;
+        private final RasterPoint[] points;
+        private final ExactSlabReceipt[] slabs;
+        private int completed, zeroIndex = -1, finalHits;
+        static ExactSlabCache create(NativeConnectorEvaluator evaluator, RasterPoint from, RasterPoint to,
+                double[] ts, AttemptMemoryLedger.Owner parent) {
+            return create(evaluator,from,to,ts,parent,null);
+        }
+        static ExactSlabCache create(NativeConnectorEvaluator evaluator, RasterPoint from, RasterPoint to,
+                double[] ts, AttemptMemoryLedger.Owner parent, AttemptMemoryLedger.Owner schedule) {
+            evaluator.requireLive();
+            var scope = parent.child("exact-future-slabs");
+            boolean ready = false;
+            try {
+                evaluator.work(EmissionWorkBudget.Operation.ALLOCATION,1);
+                var creation = scope.reserve(AttemptMemoryLedger.objectBytes(88));
+                var cache = new ExactSlabCache(evaluator,from,to,ts,scope,schedule,creation);
+                ready = true; return cache;
+            } finally { if (!ready) scope.close(); }
+        }
+        private ExactSlabCache(NativeConnectorEvaluator evaluator,RasterPoint from,RasterPoint to,
+                double[] ts,AttemptMemoryLedger.Owner scope,AttemptMemoryLedger.Owner schedule,
+                AttemptMemoryLedger.Reservation creation) {
+            this.evaluator = evaluator; input = evaluator.input; grid = evaluator.context.nativeGrid();
+            version = evaluator.parameters.version(); budget = evaluator.budget; owner = scope;
+            this.schedule = schedule;
+            creation.adopt(this);
+            try {
+                reserve(AttemptMemoryLedger.referenceArrayBytes(ts.length)); points = new RasterPoint[ts.length];
+                reserve(AttemptMemoryLedger.referenceArrayBytes(ts.length - 1)); slabs = new ExactSlabReceipt[ts.length - 1];
+                for (int i = 0; i < ts.length; i++) {
+                    budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                    var memory = reserve(AttemptMemoryLedger.objectBytes(16));
+                    points[i] = interpolate(from, to, ts[i]); memory.adopt(points[i]);
+                }
+            } catch (RuntimeException failure) { owner.close(); throw failure; }
+        }
+        private AttemptMemoryLedger.Reservation reserve(long bytes) {
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1); return owner.reserve(bytes);
+        }
+        private void requireLive() {
+            if (owner.isClosed() || evaluator.owner.isClosed()) throw new IllegalStateException("Exact slab cache is closed");
+        }
+        RasterPoint pointAt(int index) { requireLive(); return points[index]; }
+        int preflight() {
+            requireLive();
+            if (zeroIndex >= 0) return zeroIndex;
+            while (completed < slabs.length) {
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                var resultMemory = reserve(AttemptMemoryLedger.objectBytes(56) + 2 * AttemptMemoryLedger.objectBytes(16));
+                var entryMemory = reserve(AttemptMemoryLedger.objectBytes(72));
+                var result = evaluator.integral(points[completed], points[completed + 1], owner); resultMemory.adopt(result);
+                var entry = new ExactSlabReceipt(input, grid, version, completed, points[completed], points[completed + 1], result);
+                entryMemory.adopt(entry); slabs[completed] = entry;
+                int index = completed++;
+                if (result.status() == BilinearSegmentIntegral.Status.COMPLETE && result.minimum().orElseThrow() == 0) {
+                    zeroIndex = index; return index;
+                }
+            }
+            return -1;
+        }
+        BilinearSegmentIntegral.Result finalResult(int index, RasterPoint from, RasterPoint to,
+                SampledEmissionInput currentInput, String currentVersion) {
+            requireLive();
+            if (index < 0 || index >= completed) throw new IllegalArgumentException("Future slab was not queried");
+            var entry = slabs[index];
+            if (entry.input != currentInput || entry.context != currentInput.context()
+                    || entry.grid != currentInput.context().nativeGrid() || !entry.parameterVersion.equals(currentVersion)
+                    || !sameBits(entry.from, from) || !sameBits(entry.to, to))
+                throw new IllegalArgumentException("Future slab cache identity differs");
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1); finalHits++;
+            return entry.result;
+        }
+        ExactSlabPreflight snapshot(AttemptMemoryLedger.Owner destination) {
+            requireLive();
+            reserve(AttemptMemoryLedger.objectBytes(24) + AttemptMemoryLedger.referenceArrayBytes(completed));
+            var entries = new ArrayList<ExactSlabReceipt>(completed);
+            for (int i = 0; i < completed; i++) {
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                var entry = slabs[i]; entries.add(entry);
+                destination.retainIfAbsent(entry); destination.retainIfAbsent(entry.result);
+                destination.retainIfAbsent(entry.from); destination.retainIfAbsent(entry.to);
+            }
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+            var listMemory = destination.reserve(AttemptMemoryLedger.objectBytes(24) + AttemptMemoryLedger.referenceArrayBytes(completed));
+            var immutable = List.copyOf(entries); listMemory.adopt(immutable);
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+            // Includes the Optional wrapper retained by the receipt alongside this proof object.
+            var proofMemory = destination.reserve(AttemptMemoryLedger.objectBytes(64) + AttemptMemoryLedger.objectBytes(8));
+            var proof = new ExactSlabPreflight(POSITIVE_SHOULDER_PROOF, immutable, zeroIndex, finalHits);
+            proofMemory.adopt(proof); return proof;
+        }
+        private static boolean sameBits(RasterPoint a, RasterPoint b) {
+            return Double.doubleToLongBits(a.x()) == Double.doubleToLongBits(b.x())
+                && Double.doubleToLongBits(a.y()) == Double.doubleToLongBits(b.y());
+        }
+        @Override public void close() {
+            owner.close();
+            if (schedule != null) schedule.close();
         }
     }
 
@@ -286,7 +476,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         Objects.requireNonNull(domain);
         this.queryPolicy = Objects.requireNonNull(queryPolicy, "queryPolicy");
         this.executionPolicy=Objects.requireNonNull(executionPolicy,"executionPolicy");
-        if(executionPolicy==ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1
+        if(executionPolicy!=ExecutionPolicy.EAGER_ALL_PROBES_V1
                 && queryPolicy!=QueryPolicy.ZERO_GUARDED_LOCAL_V1)
             throw new IllegalArgumentException("Stop-on-final-mode-failure requires the zero-guarded local query policy");
         owner = input.openExecutionOwner("native-connector");
@@ -659,19 +849,33 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                     (directionEnd.xMeters()-directionStart.xMeters())/headingLength);
                 double probeLength = context.origin() == OptionalEmissionContext.Origin.MANAGED_CAPTURE
                     ? context.connectorProbeLengthUpper(a, b) : length;
-                double[] ts = probeParameters(a, b, probeLength, pitch, evaluation);
+                boolean preflight = shouldRunExactPreflight(executionPolicy,parameters,scalar);
+                try (var schedule = preflight ? evaluation.child("future-slab-schedule") : null) {
+                double[] ts = probeParameters(a, b, probeLength, pitch, schedule == null ? evaluation : schedule);
+                try (var slabs = preflight ? ExactSlabCache.create(this,a,b,ts,evaluation,schedule) : null) {
+                if (slabs != null && slabs.preflight() >= 0) {
+                    var proof = slabs.snapshot(evaluation);
+                    int planned = ts.length;
+                    slabs.close();
+                    var result = receipt(Status.REJECTED, Reason.EXACT_ZERO_SLAB_NECESSARY_FAILURE, from, to,
+                        span, length, pitch, scalar, false, false, List.of(), transport, ordinaryTransport,
+                        planned, -1, Optional.of(proof));
+                    return publish(result, evaluation);
+                }
                 reserve(evaluation, AttemptMemoryLedger.referenceArrayBytes(ts.length) * 2);
                 var probes = new ArrayList<Probe>(ts.length);
                 if (queryPolicy == QueryPolicy.ZERO_GUARDED_LOCAL_V1) {
                     reserve(evaluation,Math.multiplyExact((long)ts.length,96));
                     var profileOwners=new IdentityHashMap<Probe,AttemptMemoryLedger.Owner>(ts.length);
+                    int probeIndex = 0;
                     for (double t : ts) {
-                        RasterPoint probePoint = interpolate(a,b,t);
+                        RasterPoint probePoint = slabs == null ? interpolate(a,b,t) : slabs.pointAt(probeIndex);
+                        probeIndex++;
                         MetricPoint probeNormal = probeNormal(probePoint, directionRasterStart,
                             directionRasterEnd, normal);
                         Probe probe=measureLocalOrDense(t,probePoint,probeNormal,from,span,evaluation,profileOwners);
                         probes.add(probe);
-                        if(executionPolicy==ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1) {
+                        if(executionPolicy!=ExecutionPolicy.EAGER_ALL_PROBES_V1) {
                             boolean immutableFinalCandidate=probe.profileQuery().backend()==ProfileBackend.DENSE_FALLBACK
                                 || probe.profileQuery().localNoModeProven();
                             if(immutableFinalCandidate) {
@@ -680,7 +884,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                                     transferProfileOwners(profileOwners,evaluation);
                                     var result=receipt(Status.REJECTED,failure,from,to,span,length,pitch,scalar,false,false,
                                         probes,transport,ordinaryTransport,ts.length,-1);
-                                    return publish(result,evaluation);
+                                    return publishWithSlabs(result,evaluation,slabs);
                                 }
                             }
                         }
@@ -708,8 +912,10 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                     } while (changed);
                     transferProfileOwners(profileOwners,evaluation);
                 } else {
+                    int probeIndex = 0;
                     for (double t : ts) {
-                        RasterPoint probePoint = interpolate(a,b,t);
+                        RasterPoint probePoint = slabs == null ? interpolate(a,b,t) : slabs.pointAt(probeIndex);
+                        probeIndex++;
                         MetricPoint probeNormal = probeNormal(probePoint, directionRasterStart,
                             directionRasterEnd, normal);
                         Probe probe=measure(t,probePoint,probeNormal,from,span,evaluation);
@@ -718,12 +924,12 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                         if(reason!=Reason.NONE) {
                             var result=receipt(Status.REJECTED,reason,from,to,span,length,pitch,scalar,false,false,
                                 probes,transport,ordinaryTransport,ts.length,-1);
-                            return publish(result,evaluation);
+                            return publishWithSlabs(result,evaluation,slabs);
                         }
                         if(probes.size()>1 && !mutual(probes.get(probes.size()-2),probe)) {
                             var result=receipt(Status.REJECTED,Reason.NONUNIQUE_CONTINUATION,from,to,span,length,
                                 pitch,scalar,false,false,probes,transport,ordinaryTransport,ts.length,-1);
-                            return publish(result,evaluation);
+                            return publishWithSlabs(result,evaluation,slabs);
                         }
                     }
                 }
@@ -733,33 +939,36 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                         if(reason!=Reason.NONE) {
                             var result=receipt(Status.REJECTED,reason,from,to,span,length,pitch,scalar,false,false,
                                 probes,transport,ordinaryTransport,ts.length,-1);
-                            return publish(result,evaluation);
+                            return publishWithSlabs(result,evaluation,slabs);
                         }
                     }
                     for(int i=1;i<probes.size();i++)if(!mutual(probes.get(i-1),probes.get(i))) {
                         var result=receipt(Status.REJECTED,Reason.NONUNIQUE_CONTINUATION,from,to,span,length,
                             pitch,scalar,false,false,probes,transport,ordinaryTransport,ts.length,-1);
-                        return publish(result,evaluation);
+                        return publishWithSlabs(result,evaluation,slabs);
                     }
                 }
                 if (!endpointOwned(from, probes.get(0)) || !endpointOwned(to, probes.get(probes.size()-1))) {
                     var result=receipt(Status.UNAVAILABLE,Reason.ENDPOINT_OWNERSHIP,from,to,span,length,pitch,scalar,false,true,probes,transport,ordinaryTransport,ts.length,-1);
-                    return publish(result,evaluation);
+                    return publishWithSlabs(result,evaluation,slabs);
                 }
                 // Fresh GAP/censored endpoint ports are bound by the unique endpoint mode and its
                 // direct mutually unique neighboring probe. Source provenance is left untouched.
                 for (int k=0;k<Math.max(1,probes.size()-1);k++) {
                     work(EmissionWorkBudget.Operation.PREPARATION,1);
                     var left=probes.get(k); var right=probes.get(Math.min(k+1,probes.size()-1));
-                    var slab=integral(left.rasterPosition(),right.rasterPosition(),evaluation);
+                    var slab=slabs == null ? integral(left.rasterPosition(),right.rasterPosition(),evaluation)
+                        : slabs.finalResult(k,left.rasterPosition(),right.rasterPosition(),input,parameters.version());
                     double threshold=Math.max(left.threshold().shoulderThreshold(),right.threshold().shoulderThreshold());
                     if (slab.status()!=BilinearSegmentIntegral.Status.COMPLETE || slab.minimum().orElseThrow()<threshold) {
                         var result=receipt(Status.REJECTED,Reason.SCALAR_BELOW_ENVELOPE,from,to,span,length,pitch,scalar,false,true,probes,transport,ordinaryTransport,ts.length,k);
-                        return publish(result,evaluation);
+                        return publishWithSlabs(result,evaluation,slabs);
                     }
                 }
                 var result=receipt(Status.ADMITTED,Reason.NONE,from,to,span,length,pitch,scalar,true,true,probes,transport,ordinaryTransport,ts.length,-1);
-                return publish(result,evaluation);
+                return publishWithSlabs(result,evaluation,slabs);
+                }
+                }
             }
         } catch (EmissionWorkBudget.LimitExceededException | AttemptMemoryLedger.ResourceLimitException
                 | LocalScalarProfileExtractor.ResourceLimitException | CancellationException failure) {
@@ -769,12 +978,30 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         }
     }
 
-    // Issued receipt identity is necessary for zero-edge orientation. No scalar/probe result cache.
+    // Issued receipt identity is necessary for zero-edge orientation. No cross-evaluation result cache.
     private final IdentityHashMap<Receipt, Boolean> issued = new IdentityHashMap<>(0);
     private final IdentityHashMap<OrdinaryPhysicalLeg, Boolean> issuedOrdinary = new IdentityHashMap<>(0);
     private final IdentityHashMap<PhysicalDirectionCursor, Boolean> issuedDirections = new IdentityHashMap<>(0);
     /** Converts the precharged live evaluation payload into identities owned by issued receipts. */
     private Receipt publish(Receipt receipt,AttemptMemoryLedger.Owner evaluation) {
+        return publishOwned(receipt, evaluation, false);
+    }
+    private Receipt publishWithSlabs(Receipt receipt,AttemptMemoryLedger.Owner evaluation,ExactSlabCache cache) {
+        if (cache == null) return publish(receipt,evaluation);
+        var proof = cache.snapshot(evaluation);
+        // Publish only the co-owned immutable proof, never the cache or schedule scratch.
+        cache.close();
+        work(EmissionWorkBudget.Operation.ALLOCATION,1);
+        var memory = evaluation.reserve(AttemptMemoryLedger.objectBytes(160));
+        var bound = new Receipt(receipt.status(),receipt.reason(),receipt.context(),receipt.from(),receipt.to(),
+            receipt.queryPolicy(),receipt.parameterVersion(),receipt.sourceSpanMeters(),receipt.emittedLengthMeters(),
+            receipt.minimumNativePitchMeters(),receipt.scalar(),receipt.scalarEnvelopeComplete(),
+            receipt.measuredNativeContinuationComplete(),receipt.probes(),receipt.plannedProbeCount(),
+            receipt.firstFailingSlabIndex(),receipt.transportedIncoming(),receipt.transportedOrdinary(),Optional.of(proof));
+        memory.adopt(bound);
+        return publishOwned(bound,evaluation,true);
+    }
+    private Receipt publishOwned(Receipt receipt,AttemptMemoryLedger.Owner evaluation,boolean alreadyOwned) {
         for(Probe probe:receipt.probes()) {
             work(EmissionWorkBudget.Operation.PREPARATION,1);
             retainPayload(evaluation,AttemptMemoryLedger.objectBytes(80),probe);
@@ -785,7 +1012,8 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         if(!receipt.probes().isEmpty())
             retainPayload(evaluation,Math.addExact(AttemptMemoryLedger.objectBytes(24),
                 AttemptMemoryLedger.referenceArrayBytes(receipt.probes().size())),receipt.probes());
-        retainPayload(evaluation,AttemptMemoryLedger.objectBytes(160),receipt);
+        // The conservative original payload allowance also covers the additive optional proof reference.
+        if (!alreadyOwned) retainPayload(evaluation,AttemptMemoryLedger.objectBytes(160),receipt);
         evaluation.transferTo(owner);
         return remember(receipt);
     }
@@ -832,13 +1060,20 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private Receipt receipt(Status status,Reason reason,RowState from,RowState to,double span,double length,
             double pitch,BilinearSegmentIntegral.Result scalar,boolean envelope,boolean continuation,List<Probe> probes,
             Receipt incoming,OrdinaryPhysicalLeg ordinary,int plannedProbeCount,int failingSlabIndex) {
+        return receipt(status,reason,from,to,span,length,pitch,scalar,envelope,continuation,probes,
+            incoming,ordinary,plannedProbeCount,failingSlabIndex,Optional.empty());
+    }
+    private Receipt receipt(Status status,Reason reason,RowState from,RowState to,double span,double length,
+            double pitch,BilinearSegmentIntegral.Result scalar,boolean envelope,boolean continuation,List<Probe> probes,
+            Receipt incoming,OrdinaryPhysicalLeg ordinary,int plannedProbeCount,int failingSlabIndex,
+            Optional<ExactSlabPreflight> proof) {
         work(EmissionWorkBudget.Operation.ALLOCATION,1);
         work(EmissionWorkBudget.Operation.PREPARATION,probes.size());
         String version=parameters.version()+"/"+queryPolicy.name();
         if(executionPolicy!=ExecutionPolicy.EAGER_ALL_PROBES_V1)version+="/"+executionPolicy.name();
         return new Receipt(status,reason,context,from,to,queryPolicy,version,span,length,pitch,
             Optional.ofNullable(scalar),envelope,continuation,probes,plannedProbeCount,failingSlabIndex,
-            Optional.ofNullable(incoming),Optional.ofNullable(ordinary));
+            Optional.ofNullable(incoming),Optional.ofNullable(ordinary),proof);
     }
 
     private Probe measure(double t,RasterPoint point,MetricPoint normal,RowState from,double span,

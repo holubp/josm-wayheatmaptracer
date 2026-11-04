@@ -46,7 +46,7 @@ public final class RidgeTracker {
         java.util.Objects.requireNonNull(cancellation, "cancellation probe");
         java.util.Objects.requireNonNull(queryPolicy, "query policy");
         java.util.Objects.requireNonNull(executionPolicy, "execution policy");
-        if (executionPolicy == NativeConnectorEvaluator.ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1
+        if (executionPolicy != NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1
                 && queryPolicy != NativeConnectorEvaluator.QueryPolicy.ZERO_GUARDED_LOCAL_V1)
             throw new IllegalArgumentException("Stop-on-final-mode-failure requires the zero-guarded local query policy");
         input.requireOpenAndUnchanged();

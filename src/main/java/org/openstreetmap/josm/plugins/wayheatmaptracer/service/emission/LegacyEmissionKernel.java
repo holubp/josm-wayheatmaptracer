@@ -121,7 +121,7 @@ public final class LegacyEmissionKernel {
         Objects.requireNonNull(input); Objects.requireNonNull(suppressed); Objects.requireNonNull(seeds);
         Objects.requireNonNull(proposals); Objects.requireNonNull(smoother); Objects.requireNonNull(cancellation);
         Objects.requireNonNull(queryPolicy); Objects.requireNonNull(executionPolicy);
-        if (executionPolicy == NativeConnectorEvaluator.ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1
+        if (executionPolicy != NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1
                 && queryPolicy != NativeConnectorEvaluator.QueryPolicy.ZERO_GUARDED_LOCAL_V1)
             throw new IllegalArgumentException("Stop-on-final-mode-failure requires the zero-guarded local query policy");
         input.requireOpenAndUnchanged();
