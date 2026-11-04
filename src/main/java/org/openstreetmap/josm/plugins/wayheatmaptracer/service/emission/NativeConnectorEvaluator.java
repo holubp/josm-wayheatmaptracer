@@ -442,6 +442,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private final QueryPolicy queryPolicy;
     private final ExecutionPolicy executionPolicy;
     private final IdentityHashMap<RowState, Boolean> states;
+    private final ExperimentalMeasuredModeInventory measuredModes;
     private final List<Integer> mandatoryRows;
     private final List<Barrier> barriers;
     private final Map<Integer, Integer> originalOrdinalByContextRow;
@@ -459,20 +460,30 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     public NativeConnectorEvaluator(SampledEmissionInput input, Domain domain, QueryPolicy queryPolicy,
             ExecutionPolicy executionPolicy) {
-        this(input,domain,queryPolicy,executionPolicy,(NativeEndpointInventory)null);
+        this(input,domain,queryPolicy,executionPolicy,null,null);
     }
 
     /** Uses opaque original-A state/core ownership, leaving the Legacy peak route unchanged. */
     public static NativeConnectorEvaluator forNativeA(SampledEmissionInput input,Domain domain,
             QueryPolicy queryPolicy,ExecutionPolicy executionPolicy,NativeEndpointInventory owners) {
         if(owners==null||!owners.belongsTo(input))throw new IllegalArgumentException("Native A endpoint inventory is foreign or closed");
-        return new NativeConnectorEvaluator(input,domain,queryPolicy,executionPolicy,owners);
+        return new NativeConnectorEvaluator(input,domain,queryPolicy,executionPolicy,owners,null);
+    }
+
+    /** Explicit accepted-mode ownership for the revised experimental policy only. */
+    public NativeConnectorEvaluator(SampledEmissionInput input, Domain domain, QueryPolicy queryPolicy,
+            ExecutionPolicy executionPolicy, ExperimentalMeasuredModeInventory measuredModes) {
+        this(input,domain,queryPolicy,executionPolicy,null,measuredModes);
     }
 
     private NativeConnectorEvaluator(SampledEmissionInput input,Domain domain,QueryPolicy queryPolicy,
-            ExecutionPolicy executionPolicy,NativeEndpointInventory nativeAOwners) {
+            ExecutionPolicy executionPolicy,NativeEndpointInventory nativeAOwners,
+            ExperimentalMeasuredModeInventory measuredModes) {
         this.input = Objects.requireNonNull(input);
         this.nativeAOwners=nativeAOwners;
+        if (measuredModes != null && !measuredModes.belongsTo(input))
+            throw new IllegalArgumentException("Measured mode inventory belongs to another input");
+        this.measuredModes = measuredModes;
         Objects.requireNonNull(domain);
         this.queryPolicy = Objects.requireNonNull(queryPolicy, "queryPolicy");
         this.executionPolicy=Objects.requireNonNull(executionPolicy,"executionPolicy");
@@ -1459,6 +1470,19 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private boolean endpointOwned(RowState state,Probe probe) {
         if(nativeAOwners!=null)return nativeAEndpointOwned(state,probe);
         if(state.sourceClass()!=SourceClass.OBSERVED)return true; // Fresh measured complete port, never an old position.
+        if (measuredModes != null && state.peakOwner() == null) {
+            var measured = measuredModes.ownerFor(state);
+            if (measured == null || measured.retainedRow() != state.row()) return false;
+            var observation = context.observations().get(state.row());
+            var anchor = observation.location().rasterPoint(); var normal = observation.normal();
+            var point = metric(new RasterPoint(anchor.x() + normal.x() * state.offsetRasterPixels(),
+                anchor.y() + normal.y() * state.offsetRasterPixels()));
+            double offset = (point.xMeters() - probe.metricPosition().xMeters()) * probe.metricNormal().xMeters()
+                + (point.yMeters() - probe.metricPosition().yMeters()) * probe.metricNormal().yMeters();
+            return probe.selectedMode().distanceToCenterSet(offset)
+                    <= measured.receipt().mode().localizationSigmaMeters()
+                && point.distanceTo(probe.metricPosition()) <= measured.nativePitchMeters();
+        }
         var peak=state.peakOwner(); if(peak==null || peak.syntheticCenter())return false;
         var observation=context.observations().get(state.row());
         RasterPoint anchor=observation.location().rasterPoint(), normal=observation.normal();
@@ -1480,6 +1504,11 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             return owner!=null&&state.peakOwner()==null&&owner.actualRasterPosition().equals(point(state));
         }
         if(state.sourceClass()!=SourceClass.OBSERVED)return state.peakOwner()==null;
+        if (state.peakOwner() == null && measuredModes != null) {
+            var owner = measuredModes.ownerFor(state);
+            return owner != null && owner.retainedRow() == state.row()
+                && ExperimentalMeasuredModeInventory.same(owner.centerRasterOffset(), state.offsetRasterPixels());
+        }
         for(var peak:input.profiles().levelZeroProfiles().get(state.row()).peaks()) {
             work(EmissionWorkBudget.Operation.PREPARATION,1);
             if(peak==state.peakOwner())return !peak.syntheticCenter();

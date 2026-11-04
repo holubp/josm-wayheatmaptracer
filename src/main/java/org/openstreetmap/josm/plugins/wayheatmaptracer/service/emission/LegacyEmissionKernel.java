@@ -1196,7 +1196,7 @@ public final class LegacyEmissionKernel {
                 EmissionResult.StateKind.BOUNDARY_EVENT, Optional.empty(), Optional.empty());
         var state = point.state();
         var kind = switch (state.kind()) {
-            case OBSERVED_PEAK -> EmissionResult.StateKind.OBSERVED_PEAK;
+            case OBSERVED_PEAK, OBSERVED_SCALAR_MODE -> EmissionResult.StateKind.OBSERVED_PEAK;
             case BASE_CARRY -> EmissionResult.StateKind.BASE_CARRY;
             case INTERVAL_TARGET -> EmissionResult.StateKind.INTERVAL_TARGET;
         };

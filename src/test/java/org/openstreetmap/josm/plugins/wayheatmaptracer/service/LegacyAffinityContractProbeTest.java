@@ -19,6 +19,92 @@ class LegacyAffinityContractProbeTest {
     private static final String FIELD = "affinity-contract-probe";
     private enum AffinityProof { COMPATIBLE, INCOMPATIBLE, UNKNOWN }
 
+    @Test void revisedOwnerFamilyAndCancellationFailuresRemainTerminalAndReleaseMemory() {
+        for (boolean cancel : new boolean[] {false, true}) {
+            var fixture = fixture(.3, false, false);
+            var ledger = AttemptMemoryLedger.production();
+            var cancellation = new java.util.concurrent.atomic.AtomicBoolean();
+            var limits = cancel ? TraceBudgets.defaults() : new TraceBudgets(1, 8_000_000, 128_000_000, 32, 8);
+            var budget = new EmissionWorkBudget(limits, cancellation::get);
+            try (var root = ledger.rootOwner();
+                 var permit = OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(fixture.evidence(), FIELD,
+                     fixture.input(), fixture.chainage(), 25, budget, root)) {
+                var retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(fixture.evidence(), FIELD,
+                    fixture.input().profileLocations(), 25, 1, 1, budget, permit);
+                var binding = OptionalEmissionContextFactory.createLegacyBinding(permit, retained,
+                    java.util.stream.IntStream.range(0, 11).boxed().toList(), 1, List.of());
+                try (var input = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit, retained, binding)) {
+                    if (cancel) {
+                        cancellation.set(true);
+                        assertThrows(java.util.concurrent.CancellationException.class, input::experimentalMeasuredModes);
+                        cancellation.set(false);
+                        assertThrows(java.util.concurrent.CancellationException.class, input::requireOpenAndUnchanged);
+                    } else {
+                        var modes = input.experimentalMeasuredModes();
+                        assertThrows(LegacyEmissionDomain.StateFamilyLimitException.class,
+                            () -> new LegacyEmissionDomain(binding, retained.profiles().levelZeroProfiles(),
+                                List.of(-4.0, 4.0), budget, root, modes));
+                        assertThrows(LegacyEmissionDomain.StateFamilyLimitException.class, input::requireOpenAndUnchanged);
+                    }
+                }
+            }
+            assertEquals(0, ledger.currentBytes());
+        }
+    }
+
+    @Test void revisedDomainRepresentsEveryAcceptedCenterWithoutReplacingNativeStates() {
+        var fixture = fixture(.3, false, false);
+        var ledger = AttemptMemoryLedger.production();
+        var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+        try (var root = ledger.rootOwner();
+             var permit = OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(fixture.evidence(), FIELD,
+                 fixture.input(), fixture.chainage(), 25, budget, root)) {
+            var retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(fixture.evidence(), FIELD,
+                fixture.input().profileLocations(), 25, 1, 1, budget, permit);
+            var rowMap = java.util.stream.IntStream.range(0, 11).boxed().toList();
+            var binding = OptionalEmissionContextFactory.createLegacyBinding(permit, retained, rowMap, 1, List.of());
+            try (var input = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit, retained, binding)) {
+                var modes = input.experimentalMeasuredModes();
+                assertSame(modes, input.experimentalMeasuredModes());
+                var old = new LegacyEmissionDomain(binding, retained.profiles().levelZeroProfiles(),
+                    List.of(-4.0, 4.0), budget, root);
+                var domain = new LegacyEmissionDomain(binding, retained.profiles().levelZeroProfiles(),
+                    List.of(-4.0, 4.0), budget, root, modes);
+                int represented = 0;
+                for (int row = 0; row < 11; row++) {
+                    assertEquals(1, retained.profiles().levelZeroProfiles().get(row).peaks().size());
+                    assertEquals(2, domain.observedAt(row).size(), "Both accepted measured centers at row=" + row);
+                    assertSame(binding.observations().get(row).producerPeaks().get(0).peak(),
+                        domain.observedAt(row).get(0).peakOwner());
+                    assertEquals(old.observedAt(row).get(0).nativeStateId(), domain.observedAt(row).get(0).nativeStateId());
+                    assertEquals(old.observedAt(row).get(0).offsetOriginId(), domain.observedAt(row).get(0).offsetOriginId());
+                    assertEquals(LegacyEmissionDomain.Kind.OBSERVED_SCALAR_MODE, domain.observedAt(row).get(1).kind());
+                    assertNull(domain.observedAt(row).get(1).peakOwner());
+                    for (var state : domain.observedAt(row)) assertNotNull(modes.ownerFor(state.evaluatorState()));
+                    represented += domain.observedAt(row).size();
+                }
+                assertEquals(22, represented);
+                assertThrows(IllegalArgumentException.class, () -> modes.requireOwned(modes.ownersAt(0).get(0), 1));
+                var states = java.util.stream.IntStream.range(0, 11).boxed()
+                    .flatMap(row -> domain.observedAt(row).stream()).map(LegacyEmissionDomain.State::evaluatorState).toList();
+                try (var evaluator = new NativeConnectorEvaluator(input, new NativeConnectorEvaluator.Domain(states, List.of()),
+                        NativeConnectorEvaluator.QueryPolicy.ZERO_GUARDED_LOCAL_V1,
+                        NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1, modes)) {
+                    var weakA = domain.observedAt(0).get(1).evaluatorState();
+                    var weakB = domain.observedAt(1).get(1).evaluatorState();
+                    assertEquals(NativeConnectorEvaluator.Status.ADMITTED, evaluator.evaluate(weakA, weakB).status());
+                    var fake = new NativeConnectorEvaluator.RowState(weakA.row(), 999,
+                        weakA.offsetRasterPixels(), weakA.sourceClass(), null);
+                    assertNull(modes.ownerFor(fake));
+                    assertEquals(NativeConnectorEvaluator.Reason.FOREIGN_STATE, evaluator.evaluate(fake, weakB).reason());
+                }
+                input.close();
+                assertThrows(IllegalStateException.class, () -> modes.ownersAt(0));
+            }
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
     @Test void actualExtractorMeasuresBothThinStrandsFromEveryRetainedRow() {
         var fixture = fixture(.3, false, false);
         var ledger = AttemptMemoryLedger.production();
@@ -255,9 +341,9 @@ class LegacyAffinityContractProbeTest {
         return true;
     }
 
-    private record Fixture(EvidenceSnapshot evidence, CorridorTraceInput input, ProfileChainage chainage) { }
+    record Fixture(EvidenceSnapshot evidence, CorridorTraceInput input, ProfileChainage chainage) { }
 
-    private static Fixture fixture(double weak, boolean missing, boolean join) {
+    static Fixture fixture(double weak, boolean missing, boolean join) {
         double[] values = new double[128 * 128];
         boolean[] valid = new boolean[values.length];
         Arrays.fill(valid, true);

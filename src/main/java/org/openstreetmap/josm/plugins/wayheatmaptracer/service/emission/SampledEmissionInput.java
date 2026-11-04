@@ -17,6 +17,7 @@ public final class SampledEmissionInput implements AutoCloseable {
     private volatile RuntimeException terminalExecutionFailure;
     private boolean logicallyClosed;
     private int liveResults;
+    private ExperimentalMeasuredModeInventory measuredModes;
 
     SampledEmissionInput(MultiScaleProfileSet profiles, OptionalEmissionContext context,
             EmissionWorkBudget workBudget, AttemptMemoryLedger.Owner retainedOwner) {
@@ -39,6 +40,19 @@ public final class SampledEmissionInput implements AutoCloseable {
     private synchronized void requireOpen() {
         if (logicallyClosed || retainedOwner.isClosed())
             throw new IllegalStateException("Retained emission input is closed");
+    }
+    synchronized void requireRetainedOpen() { requireOpen(); }
+
+    /** One immutable source-mode inventory per retained input, only on explicit revised entry. */
+    public synchronized ExperimentalMeasuredModeInventory experimentalMeasuredModes() {
+        try {
+            requireOpenAndUnchanged();
+            if (measuredModes == null) measuredModes = new ExperimentalMeasuredModeInventory(this);
+            return measuredModes;
+        } catch (RuntimeException failure) {
+            if (ExperimentalMeasuredModeInventory.terminal(failure)) recordTerminalExecutionFailure(failure);
+            throw failure;
+        }
     }
     /** Required at each numerical entry, using the same admitted attempt budget. */
     public void requireOpenAndUnchanged() {

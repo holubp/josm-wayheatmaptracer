@@ -14,7 +14,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 
 /** Original Legacy state inventory, independent of retained-context row padding. */
 public final class LegacyEmissionDomain {
-    public enum Kind { OBSERVED_PEAK, BASE_CARRY, INTERVAL_TARGET }
+    public enum Kind { OBSERVED_PEAK, OBSERVED_SCALAR_MODE, BASE_CARRY, INTERVAL_TARGET }
 
     /** Refusal to truncate an original native state family. */
     public static final class StateFamilyLimitException extends RuntimeException {
@@ -59,10 +59,20 @@ public final class LegacyEmissionDomain {
     private final List<List<State>> observed;
     private final Map<CrossSectionPeak, Integer> originalPeakIdentity;
     private final int nextOriginId;
+    private final ExperimentalMeasuredModeInventory measuredModes;
 
     public LegacyEmissionDomain(LegacyEmissionBinding binding, List<CrossSectionProfile> suppressedProfiles,
             List<Double> seedOffsets, EmissionWorkBudget budget, AttemptMemoryLedger.Owner owner) {
+        this(binding, suppressedProfiles, seedOffsets, budget, owner, null);
+    }
+
+    /** Explicit revised experimental inventory; the old constructor remains native-only. */
+    public LegacyEmissionDomain(LegacyEmissionBinding binding, List<CrossSectionProfile> suppressedProfiles,
+            List<Double> seedOffsets, EmissionWorkBudget budget, AttemptMemoryLedger.Owner owner,
+            ExperimentalMeasuredModeInventory measuredModes) {
         this.binding = Objects.requireNonNull(binding);
+        this.measuredModes = measuredModes;
+        if (measuredModes != null) measuredModes.requireBinding(binding);
         Objects.requireNonNull(suppressedProfiles); Objects.requireNonNull(seedOffsets);
         Objects.requireNonNull(budget); Objects.requireNonNull(owner);
         long peaks = 0;
@@ -118,6 +128,38 @@ public final class LegacyEmissionDomain {
                 throw new StateFamilyLimitException(row, states.size(), budget.stateFamilyLimit());
             rows.add(List.copyOf(states));
         }
+        // Append after constructing every old state so all old origin IDs remain unchanged.
+        if (measuredModes != null) {
+            for (int row = 0; row < rows.size(); row++) {
+                var originals = rows.get(row);
+                for (var state : originals) measuredModes.aliasNative(state.evaluatorState(), row);
+                var expanded = new ArrayList<State>(originals);
+                int nextId = binding.observations().get(row).producerPeaks().stream()
+                    .mapToInt(LegacyEmissionBinding.PeakOwner::originalPeakId).max().orElse(-1) + 1;
+                for (var measured : measuredModes.ownersAt(row)) {
+                    budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                    boolean represented = false;
+                    for (var state : originals) {
+                        budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                        if (measuredModes.ownerFor(state.evaluatorState()) == measured
+                                && ExperimentalMeasuredModeInventory.same(state.offsetRasterPixels(),
+                                    measured.centerRasterOffset())) represented = true;
+                    }
+                    if (represented) continue;
+                    if (expanded.size() >= budget.stateFamilyLimit()) {
+                        var failure = new StateFamilyLimitException(row, expanded.size() + 1, budget.stateFamilyLimit());
+                        measuredModes.recordTerminal(failure);
+                        throw failure;
+                    }
+                    budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+                    owner.reserve(512);
+                    var evaluatorState = measuredModes.issueCenter(measured, nextId++);
+                    expanded.add(new State(row, evaluatorState.nativeStateId(), Kind.OBSERVED_SCALAR_MODE,
+                        origin++, evaluatorState.offsetRasterPixels(), null, evaluatorState));
+                }
+                rows.set(row, List.copyOf(expanded));
+            }
+        }
         observed = List.copyOf(rows);
         originalPeakIdentity = idByPeak;
         nextOriginId = origin;
@@ -128,6 +170,7 @@ public final class LegacyEmissionDomain {
     public List<State> observedAt(int originalRow) { return observed.get(originalRow); }
     public CrossSectionProfile suppressedProfile(int originalRow) { return suppressedProfiles.get(originalRow); }
     public LegacyEmissionBinding binding() { return binding; }
+    public ExperimentalMeasuredModeInventory measuredModes() { return measuredModes; }
     public boolean unsupported(int originalRow) {
         return observed.get(originalRow).isEmpty();
     }
