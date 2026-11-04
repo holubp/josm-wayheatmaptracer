@@ -66,9 +66,16 @@ public final class ExperimentalMeasuredModeInventory {
             rowSamples = new ArrayList<>(binding.observations().size());
             aliases = new IdentityHashMap<>();
             var extractor = new LocalScalarProfileExtractor();
+            boolean nativeKnown = input.context().resolution().nativePitchMeters().isPresent();
+            for (var pitch : input.context().resolution().spatialPitchSamples()) {
+                work(1); nativeKnown &= pitch.nativePitchMeters().isPresent();
+            }
             for (var observation : binding.observations()) {
                 work(1);
-                if (observation.sourceClass() != NativeConnectorEvaluator.SourceClass.OBSERVED) {
+                boolean fallback = observation.profile().peaks().stream().allMatch(peak -> peak.syntheticCenter()
+                    && peak.supportWidthPx() <= 0 && peak.prominence() <= 0);
+                work(observation.profile().peaks().size());
+                if (!nativeKnown || fallback || observation.sourceClass() != NativeConnectorEvaluator.SourceClass.OBSERVED) {
                     rows.add(List.of()); extractions.add(null); rowSamples.add(List.of()); continue;
                 }
                 var profile = observation.measurementProfile();
@@ -188,19 +195,51 @@ public final class ExperimentalMeasuredModeInventory {
         }
         if (!nativeOwned) throw new IllegalArgumentException("Measured alias has no original native peak owner");
         Owner matched = null;
+        Double exactScalar = null;
         for (Owner owner : ownersAt(originalRow)) {
             work(1);
             double offset = state.offsetRasterPixels() * owner.metersPerRasterOffset;
             // A unique raw high-core interval is stronger than nearest-center/sigma matching.
             var samples = observation.measurementProfile().intensitySamples();
-            double left = samples.get(owner.core.firstHighCoreSampleIndex()).offsetPx() * owner.metersPerRasterOffset;
-            double right = samples.get(owner.core.lastHighCoreSampleIndex()).offsetPx() * owner.metersPerRasterOffset;
-            if (offset >= left && offset <= right) {
+            double left = samples.get(owner.core.leftAdjacentSampleIndex()).offsetPx() * owner.metersPerRasterOffset;
+            double right = samples.get(owner.core.rightAdjacentSampleIndex()).offsetPx() * owner.metersPerRasterOffset;
+            boolean insideOwnedCore = false;
+            if (offset > left && offset < right) {
+                for (int sample = owner.core.firstHighCoreSampleIndex(); sample <= owner.core.lastHighCoreSampleIndex(); sample++) {
+                    work(1);
+                    if (same(offset, samples.get(sample).offsetPx() * owner.metersPerRasterOffset)) insideOwnedCore = true;
+                }
+                if (!insideOwnedCore) {
+                    if (exactScalar == null) exactScalar = actualScalarAt(state);
+                    insideOwnedCore = Double.isFinite(exactScalar)
+                        && exactScalar >= owner.receipt.rawCore().orElseThrow().threshold();
+                }
+            }
+            if (insideOwnedCore) {
                 if (matched != null) return;
                 matched = owner;
             }
         }
         if (matched != null) publication.bind(state, matched);
+    }
+
+    private double actualScalarAt(NativeConnectorEvaluator.RowState state) {
+        var fact = input.context().observations().get(state.row());
+        var anchor = fact.location().rasterPoint(); var normal = fact.normal();
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+        try (var scratch = memory.reserve(40_960)) {
+            var raster = new RasterPoint(anchor.x() + normal.x() * state.offsetRasterPixels(),
+                anchor.y() + normal.y() * state.offsetRasterPixels());
+            var metric = input.context().rasterTransform().pixelCenterToMetric(raster.x(), raster.y());
+            if (!input.context().decisionRegion().containsSegment(metric, metric, CancellationProbe.NONE,
+                    count -> budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, count), memory)
+                    || !input.context().evidenceRegion().containsSegment(metric, metric, CancellationProbe.NONE,
+                        count -> budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, count), memory)) return Double.NaN;
+            var point = input.context().nativeGrid().toGrid(raster);
+            var result = BilinearSegmentIntegral.evaluate(input.context().nativeGrid(), point, point,
+                CancellationProbe.NONE, () -> budget.charge(EmissionWorkBudget.Operation.CELL_QUERY, 1));
+            return result.mean().orElse(Double.NaN);
+        }
     }
 
     /** Issues only the exact accepted center; the opaque owner cannot issue another position. */

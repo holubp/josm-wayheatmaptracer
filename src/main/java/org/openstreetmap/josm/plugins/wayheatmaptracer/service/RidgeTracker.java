@@ -42,6 +42,18 @@ public final class RidgeTracker {
     /** Runs one explicit existing evaluator policy without changing stored settings or the default entry. */
     public EmissionResult trackEmission(SampledEmissionInput input, CancellationProbe cancellation,
             NativeConnectorEvaluator.QueryPolicy queryPolicy, NativeConnectorEvaluator.ExecutionPolicy executionPolicy) {
+        return trackEmission(input,cancellation,queryPolicy,executionPolicy,false);
+    }
+
+    /** Explicit revised measured-mode/ordinary-affinity experiment; native v2 stays separately callable. */
+    public EmissionResult trackEmissionMeasuredAffinity(SampledEmissionInput input, CancellationProbe cancellation) {
+        return trackEmission(input, cancellation, NativeConnectorEvaluator.QueryPolicy.DENSE_EIGHTH_NATIVE_V1,
+            NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1, true);
+    }
+
+    private EmissionResult trackEmission(SampledEmissionInput input, CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy queryPolicy, NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
+            boolean measuredAffinity) {
         java.util.Objects.requireNonNull(input, "retained emission input");
         java.util.Objects.requireNonNull(cancellation, "cancellation probe");
         java.util.Objects.requireNonNull(queryPolicy, "query policy");
@@ -68,9 +80,11 @@ public final class RidgeTracker {
             .map(anchor -> new LegacyEmissionKernel.AnchorProposal(anchor.index(), anchor.peak()))
             .toList();
         budget.charge(EmissionWorkBudget.Operation.PREPARATION, proposals.size());
-        return new LegacyEmissionKernel().solve(input, suppressed, seeds, proposals,
-            (runProfiles, offsets, intensities) -> smoothOffsets(runProfiles, offsets, intensities,
-                normalization, cancellation, budget), cancellation, queryPolicy, executionPolicy);
+        LegacyEmissionKernel.Smoother smoother = (runProfiles, offsets, intensities) ->
+            smoothOffsets(runProfiles, offsets, intensities, normalization, cancellation, budget);
+        var kernel = new LegacyEmissionKernel();
+        return measuredAffinity ? kernel.solveMeasuredAffinity(input, suppressed, seeds, proposals, smoother, cancellation)
+            : kernel.solve(input, suppressed, seeds, proposals, smoother, cancellation, queryPolicy, executionPolicy);
     }
 
     /**

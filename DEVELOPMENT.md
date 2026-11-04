@@ -892,3 +892,24 @@ source checks do not paint or fetch tiles while the dataset write lock is held.
 Generic third-party visible imagery still lacks a provider-wide render lease;
 its separate Apply/Redo policy must be resolved before claiming full source
 freshness or release readiness.
+
+### Experimental Legacy measured-mode affinity
+
+`RidgeTracker.trackEmissionMeasuredAffinity` explicitly selects
+`LEGACY_OPTIONAL_MEASURED_AFFINITY_V1`; `trackEmission` keeps the separately
+callable native-integral v2 baseline, and public Legacy tracking is unchanged.
+The revised entry retains every native state and adds only missing centers
+from input-owned accepted scalar receipts. It shares source-slab evidence per
+original row pair and removes ordinary edges only for a positively measured
+separating crosscut. Its first chart is an exact affine parallelogram with
+parallel frozen normals. Unsupported charts, joins and unavailable evidence
+remain `UNKNOWN`, retain old ordinary eligibility, and make the exported
+`EmissionResult.affinity()` certification incomplete. This is diagnostic
+metadata and adds no public Apply gate.
+
+Original native owners, newly measured owners and carry origins remain
+distinct in the additive diagnostics. Search width, source acquisition,
+Q/C/T/K arithmetic, the exact pair-state solve and caller/production caps
+are unchanged. Synthetic geometry and source-pitch controls do not qualify
+general curved Drasov behavior or release readiness; fresh Drasov/Omice and
+application/Hybrid acceptance remain separate gates.

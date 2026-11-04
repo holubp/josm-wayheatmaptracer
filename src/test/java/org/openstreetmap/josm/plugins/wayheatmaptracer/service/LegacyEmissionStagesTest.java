@@ -18,6 +18,33 @@ class LegacyEmissionStagesTest {
     private static final int WIDTH = 96, HEIGHT = 96;
     private static final String FIELD = "stage-ridge";
 
+    @Test void revisedAffinityKeepsExactProtectedOccurrenceAndTruthfulUnknownGapLegs() {
+        var fixture = fixture();
+        var ledger = AttemptMemoryLedger.production();
+        var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+        try (var root = ledger.rootOwner();
+             var permit = OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(
+                 fixture.evidence(), FIELD, fixture.input(), fixture.chainage(), 25, budget, root)) {
+            var retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(
+                fixture.evidence(), FIELD, fixture.input().profileLocations(), 25, 1, 1, budget, permit);
+            var event = new LegacyEmissionBinding.ProtectedOccurrence("fixed-revised", 3, 4, 28,
+                new MetricPoint(52, 64.5), true);
+            var binding = OptionalEmissionContextFactory.createLegacyBinding(permit, retained,
+                List.of(0, 1, 2, 3, 4, 5, 6), 1, List.of(event));
+            try (var input = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit, retained, binding);
+                 var result = new RidgeTracker().trackEmissionMeasuredAffinity(input, CancellationProbe.NONE)) {
+                assertEquals(NativeConnectorEvaluator.SourceClass.GAP, result.originalObservations().get(3).sourceClass());
+                var boundary = result.inferenceVertices().stream().filter(v -> v.owner()
+                    .equals(new EmissionMapping.BoundaryVertex("fixed-revised"))).findFirst().orElseThrow();
+                assertEquals(new MetricPoint(52, 64.5), boundary.position());
+                assertTrue(result.smoothedVertices().contains(boundary));
+                assertTrue(result.affinity().orElseThrow().measuredStates().stream().noneMatch(s -> s.originalRow() == 3));
+                assertFalse(result.affinity().orElseThrow().fullyCertified());
+            }
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
     @Test
     void anchoredTargetAndFixedBoundaryKeepOriginalGapAndExactOccurrence() {
         var fixture = fixture();

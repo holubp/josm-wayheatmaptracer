@@ -15,6 +15,28 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 class LegacyEmissionGeometryTest {
     private static final String FIELD = "geometry";
 
+    @Test void revisedWeakSustainedBendRetainsItsSourceSupportedReversal() {
+        var source = fixture(false);
+        var original = source.evidence().fields().get(FIELD);
+        double[] values = new double[96 * 96]; boolean[] valid = new boolean[values.length];
+        Arrays.fill(valid, true);
+        for (int y = 0; y < 96; y++) for (int x = 0; x < 96; x++)
+            values[y * 96 + x] = .3 * original.sample(x, y).orElseThrow();
+        var field = new ScalarEvidenceField(96, 96, values, valid, original.lineage());
+        var old = source.evidence();
+        var evidence = new EvidenceSnapshot("weak-supported-bend", old.coordinateFrame(), old.transform(), old.resolution(),
+            old.decisionRegion(), old.evidenceRegion(), Map.of(FIELD, field), "weak-supported-bend");
+        solve(new Fixture(evidence, source.input(), source.chainage()), true, result -> {
+            for (int x = 28; x <= 52; x += 4) {
+                assertEquals(bendY(x), interpolatedY(result.inferenceVertices(), x), 2,
+                    "Weak measured source geometry must retain its sustained bend at x=" + x);
+                assertEquals(bendY(x), interpolatedY(result.smoothedVertices(), x), 2);
+            }
+            assertTrue(interpolatedY(result.inferenceVertices(), 40) > 68);
+            assertTrue(interpolatedY(result.smoothedVertices(), 40) > 68);
+        });
+    }
+
     @Test
     void sustainedBrightBendKeepsItsApexInsteadOfTakingADarkChord() {
         var fixture = fixture(false);
@@ -75,6 +97,10 @@ class LegacyEmissionGeometryTest {
     }
 
     private static void solve(Fixture fixture, java.util.function.Consumer<EmissionResult> assertion) {
+        solve(fixture, false, assertion);
+    }
+
+    private static void solve(Fixture fixture, boolean revised, java.util.function.Consumer<EmissionResult> assertion) {
         var ledger = AttemptMemoryLedger.production();
         var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
         try (var root = ledger.rootOwner();
@@ -86,7 +112,8 @@ class LegacyEmissionGeometryTest {
                 List.of(0, 1, 2, 3, 4, 5, 6, 7, 8), 1, List.of());
             try (var input = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit,
                     retained, binding);
-                 var result = new RidgeTracker().trackEmission(input, CancellationProbe.NONE)) {
+                 var result = revised ? new RidgeTracker().trackEmissionMeasuredAffinity(input, CancellationProbe.NONE)
+                     : new RidgeTracker().trackEmission(input, CancellationProbe.NONE)) {
                 assertion.accept(result);
             }
         }

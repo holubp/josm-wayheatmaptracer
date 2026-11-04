@@ -40,6 +40,8 @@ public final class LegacyEmissionDomain {
         public State {
             if (originalRow < 0 || nativeStateId < 0 || kind == null || offsetOriginId < 0
                     || !Double.isFinite(offsetRasterPixels) || evaluatorState == null
+                    || evaluatorState.nativeStateId() != nativeStateId
+                    || !ExperimentalMeasuredModeInventory.same(evaluatorState.offsetRasterPixels(), offsetRasterPixels)
                     || (kind == Kind.OBSERVED_PEAK) != (peakOwner != null))
                 throw new IllegalArgumentException("Legacy native state identity is incomplete");
         }

@@ -7,6 +7,8 @@ import java.util.OptionalDouble;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.OrdinaryAffinityClassifier;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
 
 /** An opt-in Legacy route with separate original observations and actual vertices. */
 public final class EmissionResult implements AutoCloseable {
@@ -82,13 +84,22 @@ public final class EmissionResult implements AutoCloseable {
         }
     }
 
-    /** Native carry origin is either an original seed or an original observed peak. */
+    public record MeasuredOriginReference(int originalRow, int stateId) {
+        public MeasuredOriginReference {
+            if (originalRow < 0 || stateId < 0) throw new IllegalArgumentException("Measured origin is invalid");
+        }
+    }
+    /** Native and newly measured origin identities remain distinct. */
     public record OriginReference(int originId, Optional<SeedReference> seed,
-            Optional<AnchorReference> observedPeak) {
+            Optional<AnchorReference> observedPeak, Optional<MeasuredOriginReference> measuredMode) {
+        public OriginReference(int originId, Optional<SeedReference> seed, Optional<AnchorReference> observedPeak) {
+            this(originId, seed, observedPeak, Optional.empty());
+        }
         public OriginReference {
-            Objects.requireNonNull(seed); Objects.requireNonNull(observedPeak);
-            if (originId < 0 || seed.isPresent() == observedPeak.isPresent())
-                throw new IllegalArgumentException("Carry origin must name exactly one native source");
+            Objects.requireNonNull(seed); Objects.requireNonNull(observedPeak); Objects.requireNonNull(measuredMode);
+            if (originId < 0 || (seed.isPresent() ? 1 : 0) + (observedPeak.isPresent() ? 1 : 0)
+                    + (measuredMode.isPresent() ? 1 : 0) != 1)
+                throw new IllegalArgumentException("Carry origin must name exactly one owned source");
         }
     }
 
@@ -198,6 +209,54 @@ public final class EmissionResult implements AutoCloseable {
         public double total() { return q + c + t + k; }
     }
 
+    public enum MeasuredOwnerKind { NATIVE_PEAK_ALIAS, ACCEPTED_SCALAR_CENTER }
+    /** Additive source receipt identity; original native state tables and peak values remain exact. */
+    public record MeasuredStateReference(int originalRow, int retainedRow, int stateId, int originId,
+        MeasuredOwnerKind ownerKind, double rasterOffset, double metersPerRasterOffset, double nativePitchMeters,
+        LocalScalarProfileExtractor.AcceptedModeThresholdReceipt accepted,
+        LocalScalarProfileExtractor.RawCoreReceipt rawCore, LocalScalarProfileExtractor.FlankReceipt flanks) {
+        public MeasuredStateReference {
+            Objects.requireNonNull(ownerKind); Objects.requireNonNull(accepted);
+            Objects.requireNonNull(rawCore); Objects.requireNonNull(flanks);
+            if (originalRow < 0 || retainedRow < 0 || stateId < 0 || originId < 0 || !Double.isFinite(rasterOffset)
+                    || !finitePositive(metersPerRasterOffset) || !finitePositive(nativePitchMeters)
+                    || accepted.mode() != rawCore.mode() || accepted.originPeak() != rawCore.rawPeak()
+                    || accepted.mode() != flanks.mode() || accepted.rawCore().isEmpty())
+                throw new IllegalArgumentException("Measured state diagnostic lost source receipt identity");
+        }
+    }
+    public record AffinityArcReference(int arcIndex, boolean optionalNativeCertificate,
+        Optional<OrdinaryAffinityClassifier.Receipt> receipt) {
+        public AffinityArcReference {
+            receipt = Objects.requireNonNull(receipt);
+            if (arcIndex < 0 || optionalNativeCertificate && receipt.isPresent())
+                throw new IllegalArgumentException("Affinity arc classification is inconsistent");
+        }
+        public OrdinaryAffinityClassifier.Status status() {
+            return optionalNativeCertificate ? OrdinaryAffinityClassifier.Status.COMPATIBLE
+                : receipt.map(OrdinaryAffinityClassifier.Receipt::status).orElse(OrdinaryAffinityClassifier.Status.UNKNOWN);
+        }
+        public String reasonCode() {
+            return optionalNativeCertificate ? "OPTIONAL_NATIVE_CERTIFICATE"
+                : receipt.map(r -> r.reason().name()).orElse("BOUNDARY_ONLY_OWNER");
+        }
+    }
+    /** Diagnostic certification only: UNKNOWN adds no public Apply restriction or ranking bonus. */
+    public record AffinityDiagnostics(String policyId, List<MeasuredStateReference> measuredStates,
+        List<AffinityArcReference> inference, List<AffinityArcReference> finalGeometry,
+        int preparedSourcePairs, long stationExtractions) {
+        public AffinityDiagnostics {
+            Objects.requireNonNull(policyId); measuredStates = List.copyOf(measuredStates);
+            inference = List.copyOf(inference); finalGeometry = List.copyOf(finalGeometry);
+            if (policyId.isBlank() || preparedSourcePairs < 0 || stationExtractions < 0)
+                throw new IllegalArgumentException("Affinity source-pair accounting is invalid");
+        }
+        public boolean fullyCertified() {
+            return inference.stream().allMatch(a -> a.status() == OrdinaryAffinityClassifier.Status.COMPATIBLE)
+                && finalGeometry.stream().allMatch(a -> a.status() == OrdinaryAffinityClassifier.Status.COMPATIBLE);
+        }
+    }
+
     private final List<OriginalObservation> originalObservations;
     private final EmissionMapping mapping;
     private final List<Vertex> inferenceVertices;
@@ -215,6 +274,7 @@ public final class EmissionResult implements AutoCloseable {
     private final long peakRetainedBytes;
     private final AutoCloseable receiptLifetime;
     private final Provenance provenance;
+    private final Optional<AffinityDiagnostics> affinity;
     private volatile boolean closed;
 
     public EmissionResult(List<OriginalObservation> originalObservations,
@@ -224,6 +284,19 @@ public final class EmissionResult implements AutoCloseable {
             double sourceIntervalMassMeters, double measuredPhysicalLengthMeters,
             double totalPhysicalLengthMeters, EmissionWorkBudget.Snapshot work,
             long peakRetainedBytes, Provenance provenance, AutoCloseable receiptLifetime) {
+        this(originalObservations, mapping, inferenceVertices, smoothedVertices, inferenceArcs, postSmoothingArcs,
+            firstStage, intervalStages, stitched, postSmoothing, sourceIntervalMassMeters, measuredPhysicalLengthMeters,
+            totalPhysicalLengthMeters, work, peakRetainedBytes, provenance, receiptLifetime, Optional.empty());
+    }
+
+    public EmissionResult(List<OriginalObservation> originalObservations,
+            EmissionMapping mapping, List<Vertex> inferenceVertices, List<Vertex> smoothedVertices,
+            List<Arc> inferenceArcs, List<Arc> postSmoothingArcs, Costs firstStage,
+            List<Costs> intervalStages, Costs stitched, Costs postSmoothing,
+            double sourceIntervalMassMeters, double measuredPhysicalLengthMeters,
+            double totalPhysicalLengthMeters, EmissionWorkBudget.Snapshot work,
+            long peakRetainedBytes, Provenance provenance, AutoCloseable receiptLifetime,
+            Optional<AffinityDiagnostics> affinity) {
         this.originalObservations = List.copyOf(Objects.requireNonNull(originalObservations));
         this.mapping = Objects.requireNonNull(mapping);
         this.inferenceVertices = List.copyOf(Objects.requireNonNull(inferenceVertices));
@@ -240,6 +313,7 @@ public final class EmissionResult implements AutoCloseable {
         this.work = Objects.requireNonNull(work);
         this.peakRetainedBytes = peakRetainedBytes;
         this.provenance = Objects.requireNonNull(provenance);
+        this.affinity = Objects.requireNonNull(affinity);
         this.receiptLifetime = Objects.requireNonNull(receiptLifetime);
         if (mapping.observationCount() != this.originalObservations.size()
                 || mapping.vertexOwners().size() != this.inferenceVertices.size()
@@ -254,6 +328,9 @@ public final class EmissionResult implements AutoCloseable {
                 || provenance.nativeStateTables().size() != this.originalObservations.size()
                 || provenance.intervalStageReferences().size() != this.intervalStages.size())
             throw new IllegalArgumentException("Emission N/M dimensions or measures disagree");
+        if (affinity.isPresent() && (affinity.orElseThrow().inference().size() != this.inferenceArcs.size()
+                || affinity.orElseThrow().finalGeometry().size() != this.postSmoothingArcs.size()))
+            throw new IllegalArgumentException("Affinity classifications do not cover the actual result arcs");
         for (int i = 0; i < this.inferenceVertices.size(); i++) {
             if (!mapping.vertexOwners().get(i).equals(this.inferenceVertices.get(i).owner())
                     || !mapping.vertexOwners().get(i).equals(this.smoothedVertices.get(i).owner()))
@@ -296,6 +373,7 @@ public final class EmissionResult implements AutoCloseable {
     public EmissionWorkBudget.Snapshot work() { requireOpen(); return work; }
     public long peakRetainedBytes() { requireOpen(); return peakRetainedBytes; }
     public SourceReference sourceReference() { requireOpen(); return provenance.sourceReference(); }
+    public Optional<AffinityDiagnostics> affinity() { requireOpen(); return affinity; }
     public List<SeedReference> seedReferences() { requireOpen(); return provenance.seedReferences(); }
     public SeedReference chosenSeed() { requireOpen(); return provenance.chosenSeed(); }
     public List<NativeStateTable> nativeStateTables() { requireOpen(); return provenance.nativeStateTables(); }
