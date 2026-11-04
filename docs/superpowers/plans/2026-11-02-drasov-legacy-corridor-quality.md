@@ -22,7 +22,7 @@ Gradle uses the shared Termux tmp flock; full suites run in GitHub CI.
 | 1: reviewed evaluator defects | CLOSED; source integration additionally reviewed/tested. |
 | 2: Legacy solver/integration | Core + managed capture/transport CLOSED; real-image work-cap failure remains; consumers/Apply qualification incomplete. |
 | 3: actual fitting improvement | Revised two-strand synthetic regressions and classifier/oracle review CLOSED atc8bb6460 (194tests); combined managed API integration and actual Drasov/Omice quality still open. |
-| 4: native Corridor A | Native component and original R4 alias/integration reviews CLOSED at88d4fa28 (239focused tests). Original R4 graph screen under preparation; actual managed-A producer/consumer gates not done. |
+| 4: native Corridor A | Native component and original R4 alias/integration reviews CLOSED at88d4fa28 (239focused tests). Original R4 screen reached128M work/no geometry; exact positive-refusal reuse fix active. Managed-A producer/consumers remain open. |
 
 ### Verified integrated evidence
 
@@ -217,6 +217,35 @@ no private uploads/release. Harness host guard corrected before first execution
 to120s (20s was an estimate, not the algorithm cap); unchanged128M/8M/256MiB and
 512MiBhost remain binding. Fresh helper-host120 diff/snapshot are frozen; source
 auditor reviews before the single invocation. Earlier metadata artifacts retained.
+R4 harness fix round1/5: two reviewed helper findings OPEN. Charge summary-item
+and output hash-chunk observer work in the same budget (memory reservation alone
+is not work); stop production timer immediately on return, before serialization.
+Original helper author repairs/refreezes metadata only; source/model/graph and
+120s host guard unchanged. No execute claim exists; scoped re-review precedes go.
+Superseding result: helper fix round1 independently CLOSED, snapshotcb1864e9;
+root ran ONE original R4 graph. TypedTOTAL_WORK128000000,next1,253318pair visits,
+18.075sproduction,peak128617880B/final0. No M/QCTK/quality result. Host guard did
+not fire. ActualTRANSITION2767;128M is totalwork, not transition count. Original
+execution-once claim is consumed and immutable. Report drasov-a-r4-execution-result.md.
+
+Independent actual-source diagnosis identifies exact reusable positive optional
+REJECTED/UNAVAILABLE receipts remeasured across different canonical prefixes in
+A Engine.certify. ADMITTED already caches by arcID; zero physical arcs remain
+direction-dependent and excluded. Binding packet drasov-exact-endpoint-profile-reuse-design.md
+specifies a named opt-in, unchanged-default exact fix, no full Mode cache and no
+claimed hit rate. a_native_integration now owns isolated josm-drasov-a-refusal-reuse,
+branchcodex/drasov-a-refusal-reuse,base88d4fa28. TDD/review/new fingerprint precede
+any distinct practical run; old claim never reset. Limits/objective/states unchanged.
+
+Legacy progress P0 frozen6586c77a:203broadtests/11XML+final32affected/4XML GREEN.
+Independent review holds3bounded metadata/export findings. Fixround1/5 active:
+failure-field availability (no invented0/limit+1), honest fresh CSV numeric parity
+within existing5e-7 (notEXACT; no comparator weakening), and export IO cannot replace
+the primary typed numerical failure. kernel_memory_closure repairs source+ignored
+harness; no32M private screen until scopedclosure. Original203broad commandargv is
+notretained; exactaffectedcommand and allXML/log/manifests are available; do not
+invent unavailable execution evidence. Current row-pair census remains synthetic
+tested only; no actual184/21 private invocation has occurred.
 
 Use existing actors/reports; one writer per isolated worktree. No recursive agents.
 `managed_source_audit` performs source/A/proof reviews; `kernel_memory_audit` closed
