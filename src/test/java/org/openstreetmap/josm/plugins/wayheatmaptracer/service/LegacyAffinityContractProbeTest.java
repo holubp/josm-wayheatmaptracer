@@ -19,6 +19,62 @@ class LegacyAffinityContractProbeTest {
     private static final String FIELD = "affinity-contract-probe";
     private enum AffinityProof { COMPATIBLE, INCOMPATIBLE, UNKNOWN }
 
+    @Test void cachedOwnerValidationAndRevisedDomainRejectMutatedSourceNormals() {
+        var fixture = fixture(.3, false, false);
+        var ledger = AttemptMemoryLedger.production();
+        var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+        try (var root = ledger.rootOwner();
+             var permit = OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(fixture.evidence(), FIELD,
+                 fixture.input(), fixture.chainage(), 25, budget, root)) {
+            var retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(fixture.evidence(), FIELD,
+                fixture.input().profileLocations(), 25, 1, 1, budget, permit);
+            var binding = OptionalEmissionContextFactory.createLegacyBinding(permit, retained,
+                java.util.stream.IntStream.range(0, 11).boxed().toList(), 1, List.of());
+            try (var input = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit, retained, binding)) {
+                var modes = input.experimentalMeasuredModes();
+                var owner = modes.ownersAt(0).get(0);
+                var normal = retained.profiles().levelZeroProfiles().get(0).normalScreen();
+                double original = normal.x;
+                normal.x += .1;
+                try {
+                    assertThrows(IllegalStateException.class, () -> modes.requireOwned(owner, 0));
+                    assertThrows(IllegalStateException.class, () -> new LegacyEmissionDomain(binding,
+                        retained.profiles().levelZeroProfiles(), List.of(-4.0, 4.0), budget, root, modes));
+                } finally { normal.x = original; }
+                modes.requireOwned(owner, 0);
+            }
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(longs = {100, 292, 576})
+    void revisedDomainMemoryRefusalStaysTerminalAfterPressureIsReleased(long residual) {
+        var fixture = fixture(.3, false, false);
+        var ledger = AttemptMemoryLedger.production();
+        var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+        try (var root = ledger.rootOwner();
+             var permit = OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(fixture.evidence(), FIELD,
+                 fixture.input(), fixture.chainage(), 25, budget, root)) {
+            var retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(fixture.evidence(), FIELD,
+                fixture.input().profileLocations(), 25, 1, 1, budget, permit);
+            var binding = OptionalEmissionContextFactory.createLegacyBinding(permit, retained,
+                java.util.stream.IntStream.range(0, 11).boxed().toList(), 1, List.of());
+            try (var input = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit, retained, binding)) {
+                var modes = input.experimentalMeasuredModes();
+                long stableBytes = ledger.currentBytes();
+                // Native domain reserve is 512+512*11+256*11=8960, then aliases require 192 each.
+                try (var pressure = root.reserve(ledger.limitBytes() - ledger.currentBytes() - 8960 - residual)) {
+                    assertThrows(AttemptMemoryLedger.ResourceLimitException.class, () -> new LegacyEmissionDomain(binding,
+                        retained.profiles().levelZeroProfiles(), List.of(-4.0, 4.0), budget, root, modes));
+                }
+                assertEquals(stableBytes, ledger.currentBytes(), "Partial domain/alias reservations must roll back");
+                assertThrows(AttemptMemoryLedger.ResourceLimitException.class, input::requireOpenAndUnchanged);
+            }
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
     @Test void revisedOwnerFamilyAndCancellationFailuresRemainTerminalAndReleaseMemory() {
         for (boolean cancel : new boolean[] {false, true}) {
             var fixture = fixture(.3, false, false);

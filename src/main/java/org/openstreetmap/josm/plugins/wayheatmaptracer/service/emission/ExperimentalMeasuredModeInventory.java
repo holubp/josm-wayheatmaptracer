@@ -122,15 +122,55 @@ public final class ExperimentalMeasuredModeInventory {
     public List<Owner> ownersAt(int originalRow) { requireLive(); work(1); return rows.get(originalRow); }
     public AcceptedThresholdExtraction extractionAt(int originalRow) { requireLive(); work(1); return extractions.get(originalRow); }
     public List<Sample> samplesAt(int originalRow) { requireLive(); work(1); return rowSamples.get(originalRow); }
-    public boolean belongsTo(SampledEmissionInput other) { requireLive(); return input == other; }
+    public boolean belongsTo(SampledEmissionInput other) { input.requireOpenAndUnchanged(); return input == other; }
     void requireBinding(LegacyEmissionBinding other) {
-        requireLive();
+        input.requireOpenAndUnchanged();
         if (binding != other) throw new IllegalArgumentException("Measured inventory belongs to another source binding");
     }
     void recordTerminal(RuntimeException failure) { input.recordTerminalExecutionFailure(failure); }
 
+    /** A revised domain publishes aliases and their accounting atomically after source revalidation. */
+    final class Publication implements AutoCloseable {
+        private final AttemptMemoryLedger.Owner scope;
+        private final List<NativeConnectorEvaluator.RowState> bound;
+        private boolean committed;
+        private boolean closed;
+        Publication() {
+            scope = memory.child("domain-alias-publication");
+            try {
+                budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+                scope.reserve(128);
+                bound = new ArrayList<>();
+            } catch (RuntimeException failure) { scope.close(); throw failure; }
+        }
+        void bind(NativeConnectorEvaluator.RowState state, Owner owner) {
+            if (closed || committed) throw new IllegalStateException("Measured publication is closed");
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1); scope.reserve(192); work(1);
+            if (aliases.containsKey(state)) throw new IllegalArgumentException("Duplicate measured state alias");
+            bound.add(state); aliases.put(state, owner);
+        }
+        void commit() {
+            input.requireOpenAndUnchanged();
+            scope.transferTo(memory); committed = true;
+        }
+        @Override public void close() {
+            if (closed) return;
+            closed = true;
+            if (!committed) for (var state : bound) aliases.remove(state);
+            scope.close();
+        }
+    }
+
+    Publication beginPublication(LegacyEmissionBinding binding) {
+        try { requireBinding(binding); return new Publication(); }
+        catch (RuntimeException failure) {
+            if (terminal(failure)) input.recordTerminalExecutionFailure(failure);
+            throw failure;
+        }
+    }
+
     /** Retains a unique evidence alias without changing the old native state or peak. */
-    void aliasNative(NativeConnectorEvaluator.RowState state, int originalRow) {
+    void aliasNative(NativeConnectorEvaluator.RowState state, int originalRow, Publication publication) {
         requireLive();
         var observation = binding.observations().get(originalRow);
         if (state.row() != observation.retainedObservationIndex()
@@ -155,15 +195,15 @@ public final class ExperimentalMeasuredModeInventory {
                 matched = owner;
             }
         }
-        if (matched != null) bind(state, matched);
+        if (matched != null) publication.bind(state, matched);
     }
 
     /** Issues only the exact accepted center; the opaque owner cannot issue another position. */
-    NativeConnectorEvaluator.RowState issueCenter(Owner owner, int nativeStateId) {
+    NativeConnectorEvaluator.RowState issueCenter(Owner owner, int nativeStateId, Publication publication) {
         requireOwned(owner, owner.originalRow);
         var state = new NativeConnectorEvaluator.RowState(owner.retainedRow, nativeStateId,
             owner.centerRasterOffset(), NativeConnectorEvaluator.SourceClass.OBSERVED, null);
-        bind(state, owner);
+        publication.bind(state, owner);
         return state;
     }
 
@@ -172,16 +212,12 @@ public final class ExperimentalMeasuredModeInventory {
     }
 
     public void requireOwned(Owner owner, int originalRow) {
-        requireLive(); work(1);
+        input.requireOpenAndUnchanged(); work(1);
         if (owner == null || owner.issuer != this || owner.originalRow != originalRow
                 || binding.observations().get(originalRow).retainedObservationIndex() != owner.retainedRow)
             throw new IllegalArgumentException("Measured mode owner belongs to another source or row");
     }
 
-    private void bind(NativeConnectorEvaluator.RowState state, Owner owner) {
-        reserve(192); work(1);
-        if (aliases.put(state, owner) != null) throw new IllegalArgumentException("Duplicate measured state alias");
-    }
     private void requireLive() { input.requireRetainedOpen(); if (memory.isClosed()) throw new IllegalStateException("Measured inventory is closed"); }
     private void work(long count) { budget.charge(EmissionWorkBudget.Operation.PREPARATION, count); }
     private void reserve(long bytes) { budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1); memory.reserve(bytes); }

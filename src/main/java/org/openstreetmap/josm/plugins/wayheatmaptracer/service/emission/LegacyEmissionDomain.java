@@ -72,7 +72,14 @@ public final class LegacyEmissionDomain {
             ExperimentalMeasuredModeInventory measuredModes) {
         this.binding = Objects.requireNonNull(binding);
         this.measuredModes = measuredModes;
-        if (measuredModes != null) measuredModes.requireBinding(binding);
+        ExperimentalMeasuredModeInventory.Publication publication = null;
+        AttemptMemoryLedger.Owner build = null;
+        try {
+        if (measuredModes != null) {
+            publication = measuredModes.beginPublication(binding);
+            build = owner.child("revised-domain-publication");
+        }
+        var allocation = build == null ? owner : build;
         Objects.requireNonNull(suppressedProfiles); Objects.requireNonNull(seedOffsets);
         Objects.requireNonNull(budget); Objects.requireNonNull(owner);
         long peaks = 0;
@@ -81,7 +88,7 @@ public final class LegacyEmissionDomain {
             peaks = Math.addExact(peaks, observation.producerPeaks().size());
         }
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
-        owner.reserve(Math.addExact(512, Math.addExact(
+        allocation.reserve(Math.addExact(512, Math.addExact(
             Math.multiplyExact(512L, binding.observations().size()), Math.multiplyExact(256L, peaks))));
         this.suppressedProfiles = List.copyOf(suppressedProfiles);
         if (this.suppressedProfiles.size() != binding.observations().size() || seedOffsets.isEmpty())
@@ -132,7 +139,7 @@ public final class LegacyEmissionDomain {
         if (measuredModes != null) {
             for (int row = 0; row < rows.size(); row++) {
                 var originals = rows.get(row);
-                for (var state : originals) measuredModes.aliasNative(state.evaluatorState(), row);
+                for (var state : originals) measuredModes.aliasNative(state.evaluatorState(), row, publication);
                 var expanded = new ArrayList<State>(originals);
                 int nextId = binding.observations().get(row).producerPeaks().stream()
                     .mapToInt(LegacyEmissionBinding.PeakOwner::originalPeakId).max().orElse(-1) + 1;
@@ -152,8 +159,8 @@ public final class LegacyEmissionDomain {
                         throw failure;
                     }
                     budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
-                    owner.reserve(512);
-                    var evaluatorState = measuredModes.issueCenter(measured, nextId++);
+                    allocation.reserve(512);
+                    var evaluatorState = measuredModes.issueCenter(measured, nextId++, publication);
                     expanded.add(new State(row, evaluatorState.nativeStateId(), Kind.OBSERVED_SCALAR_MODE,
                         origin++, evaluatorState.offsetRasterPixels(), null, evaluatorState));
                 }
@@ -163,6 +170,16 @@ public final class LegacyEmissionDomain {
         observed = List.copyOf(rows);
         originalPeakIdentity = idByPeak;
         nextOriginId = origin;
+        if (publication != null) publication.commit();
+        if (build != null) build.transferTo(owner);
+        } catch (RuntimeException failure) {
+            if (measuredModes != null && ExperimentalMeasuredModeInventory.terminal(failure))
+                measuredModes.recordTerminal(failure);
+            throw failure;
+        } finally {
+            if (publication != null) publication.close();
+            if (build != null) build.close();
+        }
     }
 
     public int rowCount() { return observed.size(); }
