@@ -114,6 +114,20 @@ public final class NativeAEmissionBinding implements AutoCloseable {
                 throw new IllegalStateException("Original A source geometry changed after binding");
         }
     }
+    /** Final A publication gate: prepay every callback before validating either source receipt. */
+    public void requireCurrentForFinalPublication(SampledEmissionInput expected) {
+        if(!belongsTo(expected))throw new IllegalArgumentException("Original A geometry binding is foreign or closed");
+        input.requireRetainedOpen();
+        long retainedWork=Math.multiplyExact((long)input.context().observations().size(),input.profiles().levels().size());
+        input.workBudget().charge(EmissionWorkBudget.Operation.PREPARATION,
+            Math.addExact(retainedWork,Math.multiplyExact(16L,rows.size())));
+        // No charge/cancellation/observer callback may follow before the complete receipt scan.
+        if(!belongsTo(expected))throw new IllegalArgumentException("Original A geometry binding is foreign or closed");
+        input.requireRetainedOpen();
+        input.context().requireProfilesUnchanged(input.profiles());
+        for(var row:rows)if(!row.unchanged()||input.profiles().levelZeroProfiles().get(row.retainedRow())!=row.measurementProfile())
+            throw new IllegalStateException("Original A source geometry changed after binding");
+    }
     public AttemptMemoryLedger.Owner openExecutionOwner(String phase) {
         requireCurrent(input);return input.openRetainedSourceExecutionOwner(phase);
     }

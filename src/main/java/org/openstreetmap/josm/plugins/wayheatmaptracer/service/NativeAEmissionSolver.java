@@ -268,7 +268,13 @@ public final class NativeAEmissionSolver {
                     ||Double.doubleToLongBits(closure.cost())!=Double.doubleToLongBits(best==null?Double.POSITIVE_INFINITY:best.cost)))
                 throw new InvalidCertificateException("Native canonical DP disagrees with closure");
             if(census!=null)census.boundary(NativeAExecutionCensus.Phase.RESULT,-1,-1,-1,-1);
-            if(choice==ExecutionChoice.POSITIVE_ARC_SCALAR_PREFIX_DOMINANCE_V1)engine.requireDominanceSourceUnchanged();
+            if(choice==ExecutionChoice.POSITIVE_ARC_SCALAR_PREFIX_DOMINANCE_V1) {
+                var result=new Result(engine,best,closure);
+                try {
+                    if(binding==null)input.requireRetainedSourceUnchanged();else binding.requireCurrentForFinalPublication(input);
+                    return result;
+                }catch(RuntimeException failure){result.close();throw failure;}
+            }
             return new Result(engine,best,closure);
         } catch(RuntimeException failure){
             if(census!=null)input.recordTerminalExecutionFailure(failure);else recordTerminal(input,failure);

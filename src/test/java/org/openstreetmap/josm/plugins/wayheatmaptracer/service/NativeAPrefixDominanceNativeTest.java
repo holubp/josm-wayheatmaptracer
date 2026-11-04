@@ -3,6 +3,9 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 import static org.junit.jupiter.api.Assertions.*;
 import java.util.*;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.CompetitiveAdmissionExecutor.*;
@@ -10,6 +13,89 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeCo
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 class NativeAPrefixDominanceNativeTest {
+    @ParameterizedTest @ValueSource(strings={"mutate","cancel","work"})
+    void directResultCopyCannotPublishAfterItsSourceChangesOrPublicationFails(String action) {
+        var fixtureRef=new java.util.concurrent.atomic.AtomicReference<NativeAEmissionSolverTest.Fixture>();
+        var censusRef=new java.util.concurrent.atomic.AtomicReference<NativeAExecutionCensus>();
+        var hit=new boolean[1];var original=new double[1];
+        var budgetRef=new java.util.concurrent.atomic.AtomicReference<EmissionWorkBudget>();
+        var budget=new EmissionWorkBudget(TraceBudgets.defaults(),()->{
+            var census=censusRef.get();
+            if(hit[0]||census==null||census.phase()!=NativeAExecutionCensus.Phase.RESULT)return false;
+            if(!StackWalker.getInstance().walk(frames->frames.anyMatch(frame->frame.getClassName().equals(NativeAEmissionSolver.Result.class.getName())
+                    &&frame.getMethodName().equals("<init>"))))return false;
+            hit[0]=true;
+            if(action.equals("cancel"))return true;
+            if(action.equals("work"))budgetRef.get().charge(EmissionWorkBudget.Operation.PREPARATION,budgetRef.get().workLimit());
+            var normal=fixtureRef.get().input.profiles().levelZeroProfiles().get(0).normalScreen();original[0]=normal.x;normal.x+=.125;
+            return false;
+        });budgetRef.set(budget);
+        try(var f=new NativeAEmissionSolverTest.Fixture(3,budget);var census=NativeAExecutionCensus.open(f.input)) {
+            fixtureRef.set(f);census.begin(f.input);censusRef.set(census);long baseline=f.ledger.currentBytes();
+            try {
+                var failure=assertThrows(RuntimeException.class,()->{
+                    var profiles=new CorridorExtractor().extract(f.input.profiles().levelZeroProfiles(),1);
+                    try(var escaped=NativeAEmissionSolver.solve(new CorridorCenterlineOptimizer(),f.input,NativeAEmissionSolverTest.track(profiles),profiles,1,
+                            JunctionContext.empty(),Map.of(),List.of(),true,QueryPolicy.DENSE_EIGHTH_NATIVE_V1,ExecutionPolicy.EAGER_ALL_PROBES_V1,
+                            GeometryCleanupConfig.disabled(),null,null,NativeAEmissionSolver.ExecutionChoice.POSITIVE_ARC_SCALAR_PREFIX_DOMINANCE_V1,census)) {
+                        fail("A copied native Result escaped its final source boundary");
+                    }
+                });
+                assertTrue(hit[0]);assertTrue(census.finished());assertSame(failure,census.failure());
+                assertSame(failure,assertThrows(RuntimeException.class,f.input::requireRetainedSourceUnchanged));
+                assertEquals(baseline,f.ledger.currentBytes());
+                if(action.equals("cancel"))assertInstanceOf(java.util.concurrent.CancellationException.class,failure);
+                if(action.equals("work"))assertInstanceOf(EmissionWorkBudget.LimitExceededException.class,failure);
+            }finally {if(action.equals("mutate")&&hit[0])f.input.profiles().levelZeroProfiles().get(0).normalScreen().x=original[0];}
+        }
+    }
+
+    @ParameterizedTest @CsvSource({"0,mutate","2,mutate","0,cancel","2,cancel","0,work","2,work"})
+    void finalAggregateBoundaryRejectsLateSourceMutationForEmptyAndMultipleHypotheses(int strands,String action) {
+        // First measure the unchanged execution's final callback ordinal, then mutate only there.
+        int[] calls={0};
+        try(var f=aggregateFixture(strands,()->{calls[0]++;return false;});var census=NativeAExecutionCensus.open(f.input)) {
+            calls[0]=0;
+            try(var result=new CorridorAwareTracker().trackOptionalEmissionWithPrefixDominance(f.input,null,JunctionContext.empty(),List.of(),
+                    GeometryCleanupConfig.disabled(),QueryPolicy.DENSE_EIGHTH_NATIVE_V1,ExecutionPolicy.EAGER_ALL_PROBES_V1,census)) {
+                if(strands==0)assertTrue(result.results().isEmpty());else assertTrue(result.results().size()>=2);
+            }
+        }
+        int target=calls[0];assertTrue(target>0);calls[0]=0;
+        var fixtureRef=new java.util.concurrent.atomic.AtomicReference<NativeAEmissionSolverTest.Fixture>();
+        var hit=new boolean[1];var original=new double[1];
+        try(var f=aggregateFixture(strands,()->{
+                    if(fixtureRef.get()!=null&&++calls[0]==target) {
+                        hit[0]=true;
+                        if(action.equals("cancel"))return true;
+                        if(action.equals("work")) {
+                            var budget=fixtureRef.get().input.workBudget();budget.charge(EmissionWorkBudget.Operation.PREPARATION,budget.workLimit());
+                        }
+                        var normal=fixtureRef.get().input.profiles().levelZeroProfiles().get(0).normalScreen();
+                        original[0]=normal.x;normal.x+=.125;
+                    }return false;
+                });var census=NativeAExecutionCensus.open(f.input)) {
+            fixtureRef.set(f);calls[0]=0;long baseline=f.ledger.currentBytes();
+            try {
+                var failure=assertThrows(RuntimeException.class,()->{
+                    try(var escaped=new CorridorAwareTracker().trackOptionalEmissionWithPrefixDominance(f.input,null,JunctionContext.empty(),List.of(),
+                            GeometryCleanupConfig.disabled(),QueryPolicy.DENSE_EIGHTH_NATIVE_V1,ExecutionPolicy.EAGER_ALL_PROBES_V1,census)) {
+                        fail("A stale aggregate escaped its final boundary");
+                    }
+                });
+                assertTrue(hit[0]);assertTrue(census.finished());assertSame(failure,census.failure());
+                assertSame(failure,assertThrows(RuntimeException.class,f.input::requireRetainedSourceUnchanged));
+                assertEquals(baseline,f.ledger.currentBytes());
+                if(action.equals("cancel"))assertInstanceOf(java.util.concurrent.CancellationException.class,failure);
+                if(action.equals("work"))assertInstanceOf(EmissionWorkBudget.LimitExceededException.class,failure);
+            }finally {if(action.equals("mutate")&&hit[0])f.input.profiles().levelZeroProfiles().get(0).normalScreen().x=original[0];}
+        }
+    }
+    static NativeAEmissionSolverTest.Fixture aggregateFixture(int strands,CancellationProbe probe) {
+        return new NativeAEmissionSolverTest.Fixture(List.of(new RasterPoint(10,20),new RasterPoint(12,20),new RasterPoint(14,20)),
+            (x,y)->strands==0?0:Math.max(Math.max(0,1-Math.abs(y-16)/2),Math.max(0,1-Math.abs(y-24)/2)),8,
+            new EmissionWorkBudget(TraceBudgets.defaults(),probe),0);
+    }
     record Path(CanonicalKey key,List<Integer> ids,List<Integer> arcs,double cost,double q,double c,double t,double k,int consumed) { }
     record Collision(int ySteps,int xSteps,int preferredBranch,int cheapBranch,double preferredPrefix,double cheapPrefix,
             List<Integer> suffixes,List<Double> finalCosts) { }

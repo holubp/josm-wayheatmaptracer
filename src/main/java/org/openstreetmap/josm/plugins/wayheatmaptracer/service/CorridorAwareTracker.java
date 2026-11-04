@@ -157,13 +157,19 @@ public final class CorridorAwareTracker {
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAExecutionCensus census) {
         java.util.Objects.requireNonNull(census,"native A census");census.requireCanBegin(input);
+        OptionalEmissionTracking result=null;
         try {
             census.begin(input);
             census.boundary(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAExecutionCensus.Phase.PREPROCESSING,-1,-1,-1,-1);
-            var result=trackOptionalEmissionBound(input,binding,junctions,barriers,cleanup,query,execution,
+            result=trackOptionalEmissionBound(input,binding,junctions,barriers,cleanup,query,execution,
                 NativeAEmissionSolver.ExecutionChoice.POSITIVE_ARC_SCALAR_PREFIX_DOMINANCE_V1,census);
+            if(binding==null)input.requireRetainedSourceUnchanged();else binding.requireCurrentForFinalPublication(input);
             census.finish();return result;
-        }catch(RuntimeException failure){census.fail(failure);throw failure;}
+        }catch(RuntimeException failure){
+            input.recordTerminalExecutionFailure(failure);
+            if(result!=null)result.close();
+            census.fail(failure);throw failure;
+        }
     }
     private OptionalEmissionTracking trackOptionalEmissionBound(
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,

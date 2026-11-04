@@ -8,6 +8,42 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 
 class NativeAEmissionBindingTest {
+    @Test void finalPublicationPrepaysBothReceiptScansBeforeAnyEarlierRowCanBeInvalidatedByALaterCharge() {
+        var armed=new boolean[1];var calls=new int[1];var target=new int[]{18};
+        var normalRef=new java.util.concurrent.atomic.AtomicReference<java.awt.geom.Point2D.Double>();
+        CancellationProbe probe=()->{
+            if(armed[0]&&++calls[0]==target[0])normalRef.get().x+=.125;
+            return false;
+        };
+        try(var f=new NativeAOriginalR4Fixture(probe);var binding=NativeAEmissionBinding.fromOriginalGeometry(f.input)) {
+            var original=f.source.profiles().get(1).normalScreen();double nx=original.x;normalRef.set(original);armed[0]=true;
+            // The existing row-by-row gate is intentionally unchanged; a later charge can
+            // invalidate an already checked earlier row. It cannot serve as the final gate.
+            assertDoesNotThrow(()->binding.requireCurrent(f.input));assertEquals(18,calls[0]);assertNotEquals(nx,original.x);
+            original.x=nx;calls[0]=0;target[0]=1;
+            long work=f.input.workBudget().workUsed();
+            assertThrows(IllegalStateException.class,()->binding.requireCurrentForFinalPublication(f.input));
+            assertEquals(1,calls[0]);assertEquals(3,f.input.profiles().levels().size());
+            assertEquals(19*3+16*17,f.input.workBudget().workUsed()-work);
+            original.x=nx;calls[0]=0;
+            var retained=f.input.profiles().levelZeroProfiles().get(0).normalScreen();double retainedX=retained.x;normalRef.set(retained);
+            assertThrows(IllegalStateException.class,()->binding.requireCurrentForFinalPublication(f.input));
+            assertEquals(1,calls[0]);retained.x=retainedX;armed[0]=false;
+            binding.requireCurrentForFinalPublication(f.input);
+        }
+    }
+    @Test void finalPublicationGateRefusesForeignClosedAndStickyTerminalInputsWithoutIssuingAuthority() {
+        try(var f=new SmallFrame();var foreign=new SmallFrame();var binding=NativeAEmissionBinding.fromOriginalGeometry(f.input)) {
+            var before=f.input.workBudget().snapshot();
+            assertThrows(IllegalArgumentException.class,()->binding.requireCurrentForFinalPublication(foreign.input));
+            assertEquals(before,f.input.workBudget().snapshot());
+            var failure=new java.util.concurrent.CancellationException("synthetic terminal");f.input.recordTerminalExecutionFailure(failure);
+            assertSame(failure,assertThrows(java.util.concurrent.CancellationException.class,()->binding.requireCurrentForFinalPublication(f.input)));
+            assertEquals(before,f.input.workBudget().snapshot());
+            binding.close();assertThrows(IllegalArgumentException.class,()->binding.requireCurrentForFinalPublication(f.input));
+            assertEquals(before,f.input.workBudget().snapshot());
+        }
+    }
     @Test void sourceOnlyFreshnessDoesNotAuthorizeChangedOriginalNativeGeometryOrMutableRows() {
         try(var f=new NativeAOriginalR4Fixture();var binding=NativeAEmissionBinding.fromOriginalGeometry(f.input)) {
             var original=f.source.profiles().get(1);
