@@ -6,6 +6,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
@@ -16,6 +17,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledE
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.LegacyEmissionProgress;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 
 /**
  * Links cross-section heatmap peaks into one or more longitudinal ridge candidates.
@@ -103,6 +105,52 @@ public final class RidgeTracker {
         var kernel = new LegacyEmissionKernel();
         return measuredAffinity ? kernel.solveMeasuredAffinity(input, suppressed, seeds, proposals, smoother, cancellation)
             : kernel.solve(input, suppressed, seeds, proposals, smoother, cancellation, queryPolicy, executionPolicy,progress);
+    }
+
+    /** Explicit read-only grouped experiment. Preparation is copied to preserve the old entries' allocation/work path. */
+    public LegacyEmissionKernel.GroupedResult trackGroupedEmission(SampledEmissionInput input,CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
+            LegacyEmissionKernel.GroupedExecution grouped,LegacyEmissionProgress progress) {
+        // A foreign observer must remain untouched even when preparation fails before kernel entry.
+        if(progress!=null)progress.requireCompatible(input,queryPolicy,executionPolicy);
+        List<RenderedHeatmapSampler.CrossSectionProfile> suppressed;
+        List<Double> seeds;
+        List<LegacyEmissionKernel.AnchorProposal> proposals;
+        LegacyEmissionKernel.Smoother smoother;
+        try {
+            java.util.Objects.requireNonNull(input,"retained emission input");
+            java.util.Objects.requireNonNull(cancellation,"cancellation probe");
+            java.util.Objects.requireNonNull(queryPolicy,"query policy");
+            java.util.Objects.requireNonNull(executionPolicy,"execution policy");
+            java.util.Objects.requireNonNull(grouped,"grouped execution");
+            if(executionPolicy!=NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1
+                    &&queryPolicy!=NativeConnectorEvaluator.QueryPolicy.ZERO_GUARDED_LOCAL_V1)
+                throw new IllegalArgumentException("Stop-on-final-mode-failure requires the zero-guarded local query policy");
+            input.requireOpenAndUnchanged();
+            var binding=input.legacyBinding().orElseThrow(()->new IllegalArgumentException("Original Legacy emission binding is required"));
+            var budget=input.workBudget();
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,binding.observations().size());
+            List<RenderedHeatmapSampler.CrossSectionProfile> original=binding.observations().stream()
+                .map(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.LegacyEmissionBinding.OriginalObservation::profile).toList();
+            suppressed=suppressLongitudinalNoise(cancellableProfiles(original,cancellation));
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,suppressed.size());
+            seeds=collectSeedOffsets(suppressed);
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,seeds.size());
+            double normalization=binding.trackerNormalizationRasterPx();
+            proposals=reliableAnchors(suppressed,normalization,profileEdgeLimit(suppressed)).stream()
+                .map(anchor->new LegacyEmissionKernel.AnchorProposal(anchor.index(),anchor.peak())).toList();
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,proposals.size());
+            smoother=(runProfiles,offsets,intensities)->
+                smoothOffsets(runProfiles,offsets,intensities,normalization,cancellation,budget);
+        } catch(RuntimeException failure) {
+            // Preparation has no execution owner to transfer and has not entered a kernel stage.
+            if(failure instanceof CancellationException||failure instanceof EmissionWorkBudget.LimitExceededException
+                    ||failure instanceof AttemptMemoryLedger.ResourceLimitException)input.recordTerminalExecutionFailure(failure);
+            if(progress!=null)progress.seal(failure);throw failure;
+        }
+        // Kernel alone owns admission/begin/seal and final publication. No work/callback follows this return.
+        return new LegacyEmissionKernel().solveGrouped(input,suppressed,seeds,proposals,smoother,cancellation,
+            queryPolicy,executionPolicy,grouped,progress);
     }
 
     /**
