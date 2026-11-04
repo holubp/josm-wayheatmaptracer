@@ -33,14 +33,21 @@
   from435.315broad/18XML then67current/5XML=316unique0f/e/s. Source review active;
   new ONE32M R4 helper preparation assigned, no invocation yet. Same native
   scalar Result/Qbits, Pending/Prefix/serial/lease and old paths retained by tests.
-  Source auditor found foreign-input census poisoning and terminal strong-Input
-  retention; consolidated review pending. Helper fingerprint held for correction.
+  Source review NOT PASS solely foreign/reused census poisoning and terminal
+  strong-Input retention. Native-Q/sameResult/PendingPrefixseriallease proofs
+  CLOSED. Fixround1/5 assigned original implementer; scoped covering tests, no
+  repeated broad315matrix. Helper fingerprint held until corrected reviewedHEAD.
   R4 helper ruling: no duplicate unbudgeted trackDetailed/nativeStateDomain
   reference solve. Charge fresh pixels/sourceS/scalaridentity/original17binding
   checks;239states/26098pairs/statehash/strand-3 are labelled HISTORICAL expected
   controls from unchanged native producer and closed binding tests. Fresh native
   inventory/hash UNAVAILABLE after a throw; compare actual returned state data
   only on success. This is explicit new32M experiment protocol, not old128M parity.
+  Synthetic original17 profile INPUT generation remains unchanged and separately
+  timed outside algorithm budget (no optional solver/reference optimizer).32M
+  includes Input/context prep, retained production sampling, optional native
+  preprocessing/refinement/closure/finalDP+census/export. Do not claim complete
+  capture/runtime accounting from this public synthetic-input experiment.
 - Legacy32M P0 completed as typed work refusal,seed0 BASErow11→16. All852local
   windows fell back for NOISE_FLOOR_NONZERO;zero repeats. Do NOT implement P1
   nested sample cache. Exact valid/zero-count shortcut67856654 in isolated
