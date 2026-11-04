@@ -12,130 +12,97 @@
 
 ## Resume checkpoint — 2026-11-04
 
-User renewed execution of remaining steps 1–4. Step 1 evaluator fixes are reviewed;
-steps 2–4 remain open. No release or production-default adoption follows from
-experimental component tests. Earlier CI at 9ca7b53 passes but does not qualify
-later kernel, managed-source or A additions.
+User instruction: finish remaining steps1–4 autonomously. Preserve root dirty/private
+artifacts; no RC/default adoption authorized. No Astra used. Requested workers are
+Sol6.1/high; actual runtime model/weekly usage telemetry unavailable. All local
+Gradle uses the shared Termux tmp flock; full suites run in GitHub CI.
 
-Stable resumed snapshots: Legacy kernel 5626a022 (inspect/preserve interrupted
-unstaged kernel/stage-test edits); managed source 9a06c5fe; A executor 9f557114;
-affinity regressions 5db51868. Four isolated Sol implementation/probe assignments
-resume these existing worktrees, without recursive delegation or Astra. All local
-Gradle executions use the shared flock; full suites belong in CI. Weekly telemetry
-is unavailable. Existing root dirty/private artifacts remain untouched.
+| Remaining step | Current disposition |
+| --- | --- |
+| 1: reviewed evaluator defects | CLOSED; source integration additionally reviewed/tested. |
+| 2: Legacy solver/integration | Core + managed capture/transport CLOSED; real-image work-cap failure remains; consumers/Apply qualification incomplete. |
+| 3: actual fitting improvement | Revised two-strand synthetic regressions GREEN; full classifier/oracle review and actual Drasov/Omice quality still open. |
+| 4: native Corridor A | Component implemented/tested; independent review finds two blockers; original R4 screen and actual managed-A producer/consumer gates not done. |
 
-Blocking evidence: the .90/.60 two-continuous-strand regression retains both states
-but the exact objective still selects a dark cross-strand jump (J=17.497525,
-37.49M work, no cap). The .90/.30 case additionally drops the weak native peak.
-Do not declare step 3 complete on R4 solver optimality alone. Probe actual measured
-weak modes, then explicitly review a tri-state ordinary branch-affinity amendment;
-unknown evidence must never become a fabricated conflict or observed state.
+### Verified integrated evidence
 
-Step 2 remaining: release anchored-stage DP reservations, independently re-review;
-finish actual managed context/factory with separate original-source chainage and
-unchanged native sampling, source freshness and ownership. Step 4 remaining: bind
-the reviewed generic competitive executor to actual A graph/admission/costs and
-canonical DP, then real-data quality/work gates and independent review.
+Experimental worktree `/data/data/com.termux/files/usr/tmp/josm-drasov-optional-emission-experiment`,
+branch `codex/drasov-optional-emission-experiment`: local HEADaf02233a (tiny scale
+API29bc1323 + reviewed explicit-policy721a3717 above remotea71708d3). Clean last
+checked. Source snapshot91dee0d8 and kernel transportffeae28f are integrated.
+Their independent reports close source, memory, coordinate, source-S, nonlinear
+probe, freshness, ownership, endpoint-roundoff and transport findings. Focused
+evidence169tests/5suites +159tests/9suites. Full source/kernela71708d3 CI41809033588
+SUCCESS:245XML /2704executions /2610distincttests,0f/e/skip/malformed; both
+pinnedJOSM19555 GUI engines PASS. Artifacts in `drasov-ci-41809033588/`.
+Earlier49d34e37 CI41803224213 SUCCESS2674executions/239XML. No private inputs in CI.
 
-Reports: task-local tmp files `drasov-kernel-memory-closure-report.md`,
-`drasov-managed-context-closure-report.md`, `drasov-affinity-contract-probe-report.md`,
-and `drasov-a-native-integration-report.md`. Update this checkpoint after the next
-coherent tested/reviewed batch; preserve the historical evidence below.
+Source reports: `drasov-managed-final-resource-review.md`,
+`drasov-kernel-managed-transport-review.md`, and associated closure reports in
+`/data/data/com.termux/files/usr/tmp`. Kernel pinfixc6595b79 is independently
+closed. Source normalization getter29bc1323 passes11tests; policy forwarding
+721a3717 passes165tests and independent `drasov-legacy-policy-review.md`.
 
-Milestone: kernel memory repair c6595b79 closes the final scoped kernel finding.
-Fresh base RED reproduces the 29-anchor false memory refusal; balanced first-stage
-and stitched-path pins pass 156 tests / seven suites, zero failures/errors/skips.
-Independent scoped review `drasov-kernel-memory-closure-review.md` finds finding 4
-ADDRESSED and no new blocker. Integrated experimental HEAD49d34e37 is pushed;
-GitHub CI41803224213 is IN_PROGRESS, not yet a pass. No RC published.
+### Actual Drasov practical failure; next exact experiment
 
-Default exact source-S API28fa4f57 is integrated as0cdf1424. Managed API651deb2f
-is not yet qualified; full managed factory and kernel/evaluator transport remain.
-Independent managed audit9a06c5fe found valid endpoint roundoff can reject native
-sampling (fraction1.0000000000000002); repair is assigned. Audit otherwise finds
-reviewed epoch/cancellation/witness components coherent, while source-alias proof,
-active-layer authority and production integration remain explicit open gates.
-Actual extractor probe certifies both .90/.30 thin modes; a supported join can
-still produce native NO_COMPLETE_MODE, confirming that reason alone cannot prove
-an incompatible ordinary transition. Affinity amendment is still under experiment.
+Actual per-address tiles are seeded into real ManagedTileCache; six truthful disk
+cache receipts, zero network. Native185rows/301peaks exactly reproduced; old185-point
+ridge matches captured coordinates to1.068e-8 projected units. Original archive
+does not retain full tags/referrers/relations; missing-witness refusal is retained.
+Independent `drasov-real-image-fixture-ruling.md` permits ONLY an explicitly
+declared reconstructed selection fixture for numerical geometry/work testing,
+not original OSM authority, strict original replay or Apply/release qualification.
 
-Next milestone: managed actual Factory/Context b6600e2e and evaluator transport
-49455fb1 are implemented; 144 Context/evaluator tests pass on that integration.
-These are NOT fully reviewed production qualification. Explicit open repairs:
-initial capture/witness memory refusal must poison the attempt; minimum pitch for
-physical probe spacing must be a factual minimum, not a maximum; local extractor
-pitch must be taken at the actual managed probe. Independent integration review is
-active against fixed9a06c5fe..49455fb1. Original-roundoff parity is now covered by
-the producer repair and retained source-S/alias enclosures require review.
+`drasov-real-production-replay-report.md`: dense/eager and one reviewed local/stop
+attempt BOTH reach128Mwork, no M/QCTK/geometry result. Dense:127999933used/9041pairs,
+163715904bytespeak. Local:127999998used/1423pairs,70128288bytespeak,19.9s kernel,
+zeroafterclose. Local operations:57.46Mmode extraction,35.55Mregion,18.76Mnode reads.
+No more policy/cap/parameter retries. Actor `kernel_memory_closure` owns isolated
+`josm-drasov-kernel-managed-transport` at721a3717, implementing a new EXACT execution
+shortcut after independent mathematical consultation: preflight unchanged actual
+future slab integrals, reuse source-owned results; reject a zero slab only under
+proved positive-shoulder guard. Bare global-minimum zero is NOT a sound shortcut.
+Proof: `drasov-zero-scalar-early-refusal-review.md`. New report filename
+`drasov-exact-slab-prefight-report.md`. No further private run before tests/review.
 
-Kernel managed transport proceeds in isolated `josm-drasov-kernel-managed-transport`
-with the real managed factory, source-row mapping and acute source-arc>20m versus
-dense-chord<20m regression. No fake context injection is permitted as evidence.
-The A native solver has its first three focused tests green; broader physical,
-boundary/resource oracles and actual tracker integration remain open.
+### Affinity correction and native A work
 
-Affinity design has completed independent review with four incorporated
-clarifications. Binding amendment:
-`../specs/2026-11-04-drasov-experimental-affinity-amendment.md`.
-Implementation is authorized and active in the existing affinity worktree,
-preserving original source/geometry assertions and explicit policy identities.
-Affine-slab proof is an allowed first experiment, not a claim of real Drasov repair.
+Binding amendment: `../specs/2026-11-04-drasov-experimental-affinity-amendment.md`.
+Actor `affinity_contract_probe`, isolated `josm-drasov-affinity-test`: owner35cca6d2
+repaired e59a3780 then c0cdc60c; all owner findings CLOSED by independent
+`drasov-affinity-owner-review.md`. No raw transferTo reservation leak/global
+ledger change. Classifier/revised solver still UNCOMMITTED: original .30/.60
+geometry assertions pass, one strand in inference/final, Q31.6980385/19.7705871,
+C/T/K0,38.33/38.34Mwork,42.64/42.77MBpeak. Additional affine/cell/direction/pitch
+controls pass; exhaustive oracle, UNKNOWN/GAP/boundary/foreign-source controls and
+coherent final review remain. Original v2 baseline retained. Affine-slab success
+alone cannot qualify curved managed Drasov. Report `drasov-affinity-implementation-report.md`.
 
-Latest coherent evidence: managed safety follow-up3adc683d passes157tests/4suites,
-including identical acquisition/witness/factory budget ownership, sticky initial
-memory failure, factual minimum pitch, local actual-probe pitch, nonlinear physical
-spacing/authority and an actual source-arc>20m/chord<20m refusal. Independent review
-of49455 additionally found a valid36ULP endpoint example and below-one alias failure;
-the original one-ULP producer fix is NOT closed. The assigned replacement derives
-an outward error enclosure from actual final-row sum/target/division/interpolation
-arithmetic, preserving raw fraction/native point and separately proving endpoint
-alias. No larger arbitrary ULP band is authorized.
+Actor `a_native_integration`, `josm-drasov-a-competitive`, frozen394e7e83:
+64focused +173regressiontests pass. Generic executor9f557114 previously reviewed.
+Actual A fallback-state test follows one supported strand; fewer extractor bands
+do NOT prove missing native states. Independent native integration review BLOCKS:
+(1) substitute-first-Legacy-peak endpoint owner must become actual opaque A-band/
+allowed-state authority; (2) extraction/grouping accounting must cover actual
+band/track pair/cubic work and in-phase cancellation. Repair packet
+`drasov-a-native-round1-repair-packet.md` is active. Shared RowState remains5fields;
+Legacy measured owner is a side table; use named A factory to avoid constructor
+ambiguity. `drasov-a-r4-screen-packet.md` additionally requires original17 profiles
+versus retained19 crop(18,17)/row+1 binding, not a different easier graph.
+Original R4 potential26098 must reconcile before any graph run. Managed-A producer
+is still missing: old A uses >=4m spacing plus full Gaussian levels; existing
+managed retention is Legacy singleL0/185rows and CANNOT claim original-A parity.
 
-The isolated kernel transport's two actual-managed tests now pass (source-S mass
-and analytic Q, exact boundary events, nonlinear smoothing/remeasurement). Its
-nonidentity original-row/source-origin control and neighboring suites remain in
-progress before independent review. A native solver has expanded focused evidence;
-its thin-strand test must inspect actual optimizer state geometry rather than infer
-representability from extractor-band or hypothesis counts alone. No real Drasov
-improvement, usable application integration, or release readiness is asserted yet.
+### Resume discipline / next gates
 
-CI41803224213 at49d34e372a4329900b9872baa863c811c408e47c is now verified SUCCESS:
-239XMLsuites /2674executions /2580distincttests,0failures/errors/skips/malformed;
-public validation and both pinnedJOSM19555 GUI engines PASS. No private inputs
-executed, no RC/tag/release created. Report `drasov-ci-41803224213-report.md`.
-This qualifies the closed kernel/default-source-S integration only; later managed,
-affinity and A changes still require their own integrated regression evidence.
-
-Managed/source closure milestone: final91dee0d8 passes169tests/5suites and the
-independent `drasov-managed-final-resource-review.md` closes all scoped findings.
-Kernel managed transport ffeae28f passes159tests/9suites and its independent review
-is clean. Both are integrated at experimentala71708d3. GitHub's first push failed
-with server `commit_refs_rules`; one ordinary retry succeeded without changing any
-protection. CI41809033588 at exacta71708d328a17aff168bfe7e23cf804e6803c4ab is running.
-Tiny factual A normalization seam29bc1323 is integrated locally asa6c138bc, with
-11focusedtests; it is not included in that in-flight CI.
-
-Actual Drasov cache-only declared-fixture entry now reproduces185rows/301peaks
-exactly and old185-point ridge to1.068e-8 projected units. Dense/eager experimental
-Legacy reaches the unchanged128M work limit (127999933used,9041pairs,163715904bytes
-peak, zeroafterclose;39.5s kernel), no M/QCTK result. This is a negative practical
-result, not a quality pass. Six real disk-cache receipts, zero transport calls.
-Original archive lacks tags/full referrer/relation context: original-authority
-factory refusal stays explicit. Independent `drasov-real-image-fixture-ruling.md`
-permits a separately declared geometry/fixed-anchor fixture for read-only numerical
-testing; it cannot satisfy original Apply/strict-replay/release authority gates.
-Next bounded experiment exposes existing reviewed ZERO_GUARDED_LOCAL_V1 plus
-STOP_ON_FINAL_MODE_FAILURE_V1 through an explicit Legacy overload; default remains
-dense/eager. One source-bound capped comparison follows tests/review, not tuning.
-
-Affinity owner fixround1 e59a3780 addresses stale/terminal boundaries but introduced
-raw-reservation transfer undercount; fixround2 c0cdc60c adopts actual retained
-objects and is under scoped independent review. No global ledger change. Revised
-classifier/solver currently uncommitted:17combinedtests pass, including original
-.30/.60 geometry assertions through the explicitly revised entry. Each stays on
-one strand in inference/final geometry (Q31.6980385 /19.7705871,C/T/K0),38.33/38.34M
-work and42.64/42.77MB peak. Original v2 baseline remains callable. Remaining affine
-chart/cell/tie/oracle controls and actual-data fitting gates are still open.
+Use existing actors/reports; one writer per isolated worktree. No recursive agents.
+`managed_source_audit` performs source/A/proof reviews; `kernel_memory_audit` closed
+pin/transport/owner/policy reviews. Pause writers for review snapshots. Exact
+closes remain scoped: consumer N/M/K adapters, final preview/Apply/Undo/Redo/Hybrid,
+actual strong/sparse/switchback quality, required real evidence and final independent
+whole-task audit remain binding. No cap increase, hidden state pruning, fictitious
+source classes, altered geometric expectations or additional refusal counts as
+success. Historical receipts below remain evidence, not current status.
 
 ## Prior execution evidence — 2026-11-03
 
