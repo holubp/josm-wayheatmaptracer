@@ -29,7 +29,7 @@ Gradle uses the shared Termux tmp flock; full suites run in GitHub CI.
 Experimental worktree `/data/data/com.termux/files/usr/tmp/josm-drasov-optional-emission-experiment`,
 branch `codex/drasov-optional-emission-experiment`: stable HEAD88d4fa28 (reviewed
 native-A original-row binding, affine affinity, source and explicit-policy work).
-Remote88d4fa28 has full CI41833501937 IN_PROGRESS. Priora8c098fc CI41826880110
+Remote88d4fa28 has full CI41833501937 SUCCESS. Priora8c098fc CI41826880110
 SUCCESS excludes88 binding changes. Clean last
 checked. Source snapshot91dee0d8 and kernel transportffeae28f are integrated.
 Their independent reports close source, memory, coordinate, source-S, nonlinear
@@ -278,6 +278,9 @@ managed_context_closure mergedP06586/6d→deddcdaf/4e447884 (3actualconflicts).
 NamedforLegacyProgress avoidsnull5argambiguity; private7tuple preservesA/measured/
 progress ande1freshness.30namedcombinedtest suites running; sourcefrozen4e447884
 pendingresults/independentintegrationaudit. No private files imported/new release.
+Full88CI41833501937 now VERIFIED SUCCESS:259XML/2810executions/2715distinct,
+0failure/error/skip/malformed; bothpinned19555GUI engines PASS andhostreceipt
+verified. Evidence/report drasov-ci-41833501937-report.md. Excludeslaterfollowups.
 
 Use existing actors/reports; one writer per isolated worktree. No recursive agents.
 `managed_source_audit` performs source/A/proof reviews; `kernel_memory_audit` closed
