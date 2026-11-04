@@ -956,6 +956,9 @@ default shoulder fraction strictly above one half, including the smallest
 subnormal case. Neither bound asserts accepted mode ownership or physical inverse
 placement. Producer-only and declared possible-center-line station queries retain
 separate original-route, acquired-envelope and exact closed-cell support results.
+The index proof does not certify every rounded `Mode.centerMeters()` reconstruction:
+for example, reconstructing center 0.1 from bounds made with half-width 0.25 gives
+0.09999999999999999. Physical placement/support remains unavailable.
 
 All input scans, arithmetic, stations, authority visits and streamed support visits
 consume the existing attempt budget. One admitted scratch scope is reused; there
@@ -964,5 +967,9 @@ sticky and rethrow their original type while reporting the first unvisited pair.
 A conservative plan refusal does not prove a narrower accepted domain impossible;
 a center-only pass leaves full proof/endpoint feasibility unavailable. External
 profile artifact hashes and saved fold labels are frozen provenance, not original
-OSM attestation. Private replay/census invocation requires its separately reviewed
+OSM attestation. Artifact identities are lowercase SHA-256 or explicit ASCII
+`synthetic:` labels of at most 128 characters, validated before retention under
+the admitted summary header. Initial work/cancellation failures report unvisited
+pair 0 with the total unavailable until the first source-validation boundary passes.
+Private replay/census invocation requires its separately reviewed
 source packet; this diagnostic implementation alone does not qualify Drasov.

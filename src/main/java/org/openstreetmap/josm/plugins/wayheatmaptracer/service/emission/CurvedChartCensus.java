@@ -17,11 +17,30 @@ import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.C
 public final class CurvedChartCensus {
     public static final String POLICY_ID = "curved-chart-authority-census-p0-v1";
     private CurvedChartCensus() { }
-    /** External artifact identity is provenance, not an attestation of original OSM geometry. */
+    /** Lowercase SHA-256 or an ASCII synthetic: label, at most 128 characters; provenance only. */
     public record Metadata(String expectedProfileArtifactHash, String actualProfileArtifactHash,
         List<Integer> savedFoldedPairs) {
         public Metadata { Objects.requireNonNull(expectedProfileArtifactHash); Objects.requireNonNull(actualProfileArtifactHash);
-            Objects.requireNonNull(savedFoldedPairs); }
+            Objects.requireNonNull(savedFoldedPairs);
+            requireIdentifier(expectedProfileArtifactHash); requireIdentifier(actualProfileArtifactHash); }
+    }
+    private static void requireIdentifier(String value) {
+        // Check length before any scan/comparison. Both retained identities fit the existing 4096-byte header.
+        if (value.isEmpty() || value.length() > 128) throw new IllegalArgumentException("Artifact identifier exceeds its bounded syntax");
+        if (value.length() == 64) {
+            boolean hash = true;
+            for (int i = 0; i < 64; i++) {
+                char c = value.charAt(i); if (!(c >= '0' && c <= '9' || c >= 'a' && c <= 'f')) { hash = false; break; }
+            }
+            if (hash) return;
+        }
+        if (!value.startsWith("synthetic:") || value.length() == 10)
+            throw new IllegalArgumentException("Artifact identifier requires SHA-256 or an explicit synthetic label");
+        for (int i = 10; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (!(c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '-' || c == '_' || c == '.'))
+                throw new IllegalArgumentException("Synthetic artifact label is outside its bounded ASCII syntax");
+        }
     }
     public enum Completion { COMPLETE_DIAGNOSTIC, IDENTITY_MISMATCH, ORIGINAL_MAPPING_UNAVAILABLE }
     public enum Availability { UNAVAILABLE }
@@ -57,7 +76,7 @@ public final class CurvedChartCensus {
         double actualOffset, RasterPoint actualRaster, RasterPoint actualNativeGrid, Optional<Bounds> chartBounds) { }
     public record Run(int firstSample, int lastSample, double firstOffset, double lastOffset,
         Boundary leftBoundary, Boundary rightBoundary) { }
-    /** Index enclosure only; physical ordering/placement and accepted ownership are not supplied by P0. */
+    /** Index enclosure only; rounded Mode center reconstruction, physical placement/support and ownership are unavailable. */
     public record Envelope(EnvelopeKind kind, Reason reason, List<Run> runs,
         long excludedInvalidSamples, long excludedZeroSamples) { }
     public record Row(int originalRow, int retainedRow, NativeConnectorEvaluator.SourceClass sourceClass,
@@ -116,11 +135,14 @@ public final class CurvedChartCensus {
     }
     public static Summary scan(SampledEmissionInput input, Metadata metadata, Sink sink) {
         Objects.requireNonNull(input); Objects.requireNonNull(metadata); Objects.requireNonNull(sink);
-        long workAtEntry = input.workBudget().snapshot().workUsed();
-        input.requireOpenAndUnchanged(); var lease = input.retainResultLifetime();
+        SampledEmissionInput.ResultLease lease = null;
         AttemptMemoryLedger.Owner owner = null; boolean success = false;
-        int total = input.legacyBinding().map(binding -> binding.observations().size() - 1).orElse(-1), next = 0;
+        int total = -1, next = 0;
         try {
+            long workAtEntry = input.workBudget().snapshot().workUsed();
+            input.requireOpenAndUnchanged();
+            total = input.legacyBinding().map(binding -> binding.observations().size() - 1).orElse(-1);
+            lease = input.retainResultLifetime();
             owner = input.openExecutionOwner(POLICY_ID); var budget = input.workBudget();
             budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1); var reservation = owner.reserve(4096);
             var result = new Summary(owner, lease); reservation.adopt(result);
@@ -173,7 +195,7 @@ public final class CurvedChartCensus {
                 try { sink.stopped(total, next); } catch (RuntimeException ignored) { /* Preserve owning failure. */ }
             }
             throw failure;
-        } finally { if (!success) { if (owner != null) owner.close(); lease.close(); } }
+        } finally { if (!success) { if (owner != null) owner.close(); if (lease != null) lease.close(); } }
     }
     private static Pair pair(SampledEmissionInput input, LegacyEmissionBinding.OriginalObservation left,
             LegacyEmissionBinding.OriginalObservation right, int pair, boolean folded, String profileArtifactHash, CensusGeometry math,

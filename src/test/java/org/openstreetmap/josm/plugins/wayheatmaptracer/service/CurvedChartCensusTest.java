@@ -7,6 +7,8 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
@@ -17,7 +19,7 @@ public class CurvedChartCensusTest {
         var valid = new boolean[16]; java.util.Arrays.fill(valid, true);
         return ScalarFieldGridView.fromIntensity(new ScalarIntensityField(10, 20, 4, 4, 3, values, valid));
     }
-    private static CurvedChartCensus.Metadata metadata() { return new CurvedChartCensus.Metadata("synthetic", "synthetic", List.of(4)); }
+    private static CurvedChartCensus.Metadata metadata() { return new CurvedChartCensus.Metadata("synthetic:affinity", "synthetic:affinity", List.of(4)); }
     @Test void censusVisitsEveryActualOriginalPairWithoutConstructingMeasuredInventory() {
         var fixture = LegacyAffinityContractProbeTest.fixture(.30, false, false);
         var ledger = AttemptMemoryLedger.production();
@@ -35,7 +37,7 @@ public class CurvedChartCensusTest {
                 var pairWork = new java.util.concurrent.atomic.AtomicLong();
                 long before = budget.snapshot().workUsed();
                 try (var result = CurvedChartCensus.scan(input,
-                    new CurvedChartCensus.Metadata("synthetic", "synthetic", List.of(4)),
+                    metadata(),
                     pair -> { assertEquals(count.getAndIncrement(), pair.index()); pairWork.addAndGet(pair.operationUnits()); })) {
                 assertEquals(10, result.totalPairs());
                 assertEquals(10, result.visitedPairs());
@@ -54,7 +56,7 @@ public class CurvedChartCensusTest {
             long modes = input.workBudget().snapshot().operationUnits().get(EmissionWorkBudget.Operation.MODE_EXTRACTION);
             try (var result = CurvedChartCensus.scan(input, metadata(), pair -> {
                 assertSame(input.context(), pair.source().contextOwner()); assertSame(input.context().nativeGrid(), pair.source().gridOwner());
-                assertEquals("synthetic", pair.source().profileArtifactHash());
+                assertEquals("synthetic:affinity", pair.source().profileArtifactHash());
                 var chart = pair.chart().orElseThrow(); assertTrue(chart.exactPositiveDeterminant().signum() > 0);
                 var leftAnchor = input.context().nativeGrid().toGrid(input.legacyBinding().orElseThrow().observations().get(pair.index()).measurementProfile().samplingAnchor().rasterPoint());
                 var rightAnchor = input.context().nativeGrid().toGrid(input.legacyBinding().orElseThrow().observations().get(pair.index() + 1).measurementProfile().samplingAnchor().rasterPoint());
@@ -121,7 +123,7 @@ public class CurvedChartCensusTest {
 
     @Test void identityMismatchAndAbsentOriginalMappingAreUnavailableWithoutPairQueries() {
         withInput(LegacyAffinityContractProbeTest.fixture(.3, false, false), budget(), (input, owner, ledger) -> {
-            try (var result = CurvedChartCensus.scan(input, new CurvedChartCensus.Metadata("expected", "different", List.of()), pair -> fail())) {
+            try (var result = CurvedChartCensus.scan(input, new CurvedChartCensus.Metadata("synthetic:expected", "synthetic:different", List.of()), pair -> fail())) {
                 assertEquals(CurvedChartCensus.Completion.IDENTITY_MISMATCH, result.completion());
                 assertEquals(0, result.visitedPairs()); assertEquals(0, result.firstUnvisitedPair());
             }
@@ -146,7 +148,7 @@ public class CurvedChartCensusTest {
             double lo = (dx - 25 * nx) * a.normal().y() - (dy - 25 * ny) * a.normal().x();
             double hi = (dx + 25 * nx) * a.normal().y() - (dy + 25 * ny) * a.normal().x();
             assertTrue(lo * hi < 0, "The actual full-window original-normal chart folds");
-            try (var result = CurvedChartCensus.scan(input, new CurvedChartCensus.Metadata("s", "s", List.of(0)), pair -> {
+            try (var result = CurvedChartCensus.scan(input, new CurvedChartCensus.Metadata("synthetic:folded", "synthetic:folded", List.of(0)), pair -> {
                 assertEquals(CurvedChartCensus.Reason.NONE, pair.chartReason());
                 assertTrue(pair.centerPlan().isPresent());
                 if (pair.index() == 0) {
@@ -203,10 +205,10 @@ public class CurvedChartCensusTest {
     @Test void externalSavedLabelsAreFrozenBeforeAnyBorrowedCallbackCanMutateThem() {
         withInput(LegacyAffinityContractProbeTest.fixture(.3, false, false), budget(), (input, owner, ledger) -> {
             var labels = new ArrayList<>(List.of(4)); var observed = new ArrayList<Integer>();
-            try (var result = CurvedChartCensus.scan(input, new CurvedChartCensus.Metadata("s", "s", labels), pair -> {
+            try (var result = CurvedChartCensus.scan(input, new CurvedChartCensus.Metadata("synthetic:labels", "synthetic:labels", labels), pair -> {
                 if (pair.index() == 0) { labels.clear(); labels.add(0); }
                 if (pair.savedOriginalWindowFold()) observed.add(pair.index());
-            })) { assertEquals(List.of(4), observed); assertEquals(1, result.savedFoldPairCount()); assertEquals(4, result.savedFoldPairId(0)); assertEquals("s", result.profileArtifactHash()); }
+            })) { assertEquals(List.of(4), observed); assertEquals(1, result.savedFoldPairCount()); assertEquals(4, result.savedFoldPairId(0)); assertEquals("synthetic:labels", result.profileArtifactHash()); }
         });
     }
     @Test void successfulSummaryRetainsOnlyItsOwnedHeaderAndReleasesAfterLogicalInputClose() {
@@ -218,6 +220,65 @@ public class CurvedChartCensusTest {
             assertEquals(10, result.visitedPairs()); result.close(); assertTrue(ledger.currentBytes() < held);
             result.close(); assertThrows(IllegalStateException.class, result::visitedPairs);
         });
+    }
+    @ParameterizedTest @ValueSource(booleans = {true, false})
+    void overlongArtifactIdentityIsRejectedBeforeMappedOrUnmappedSummaryRetention(boolean originalMappingPresent) {
+        String overlong = "a".repeat(1_000_000);
+        if (originalMappingPresent) withInput(LegacyAffinityContractProbeTest.fixture(.3, false, false), budget(), (input, owner, ledger) -> {
+            long before = ledger.currentBytes();
+            assertThrows(IllegalArgumentException.class, () -> {
+                try (var ignored = CurvedChartCensus.scan(input,
+                        new CurvedChartCensus.Metadata(overlong, overlong, List.of()), pair -> { })) { }
+            });
+            assertEquals(before, ledger.currentBytes()); input.requireOpenAndUnchanged();
+        });
+        else try (var fixture = new NativeAEmissionSolverTest.Fixture(3)) {
+            long before = fixture.ledger.currentBytes();
+            assertThrows(IllegalArgumentException.class, () -> {
+                try (var ignored = CurvedChartCensus.scan(fixture.input,
+                        new CurvedChartCensus.Metadata(overlong, overlong, List.of()), pair -> fail())) { }
+            });
+            assertEquals(before, fixture.ledger.currentBytes()); fixture.input.requireOpenAndUnchanged();
+        }
+    }
+    @Test void boundedHashAndExplicitSyntheticIdentifiersFitTheUnmappedHeaderWithoutChangingProvenance() {
+        String sha = "0123456789abcdef".repeat(4), boundary = "synthetic:" + "x".repeat(118);
+        for (String invalid : List.of("unqualified-label", "g".repeat(64), "synthetic:", "synthetic:has space", boundary + "x")) {
+            assertThrows(IllegalArgumentException.class, () -> new CurvedChartCensus.Metadata(invalid, sha, List.of()));
+            assertThrows(IllegalArgumentException.class, () -> new CurvedChartCensus.Metadata(sha, invalid, List.of()));
+        }
+        try (var fixture = new NativeAEmissionSolverTest.Fixture(3)) {
+            for (String identifier : List.of(sha, boundary)) {
+                long before = fixture.ledger.currentBytes();
+                try (var result = CurvedChartCensus.scan(fixture.input, new CurvedChartCensus.Metadata(identifier, identifier, List.of()), pair -> fail())) {
+                    assertEquals(CurvedChartCensus.Completion.ORIGINAL_MAPPING_UNAVAILABLE, result.completion());
+                    assertEquals(identifier, result.profileArtifactHash()); assertEquals(-1, result.totalPairs());
+                    assertEquals(before + 4096, fixture.ledger.currentBytes(), "Bounded identity fits its admitted result header");
+                }
+                assertEquals(before, fixture.ledger.currentBytes());
+            }
+        }
+    }
+    @ParameterizedTest @ValueSource(booleans = {false, true})
+    void initiallyArmedCancellationOrExhaustedWorkReportsUnvisitedZeroAndPreservesPrimaryFailure(boolean cancel) {
+            var cancelled = new AtomicBoolean(); var work = new EmissionWorkBudget(TraceBudgets.defaults(), cancelled::get);
+            withInput(LegacyAffinityContractProbeTest.fixture(.3, false, false), work, (input, owner, ledger) -> {
+                long before = ledger.currentBytes(); var total = new AtomicInteger(99); var first = new AtomicInteger(99); var stops = new AtomicInteger();
+                if (cancel) cancelled.set(true);
+                else work.charge(EmissionWorkBudget.Operation.PREPARATION, work.snapshot().workLimit() - work.snapshot().workUsed());
+                var failure = assertThrows(RuntimeException.class, () -> CurvedChartCensus.scan(input, metadata(), new CurvedChartCensus.Sink() {
+                    public void pair(CurvedChartCensus.Pair pair) { fail("Initial validation must not publish a pair"); }
+                    public void stopped(int pairTotal, int firstUnvisited) {
+                        total.set(pairTotal); first.set(firstUnvisited); stops.incrementAndGet();
+                        throw new IllegalStateException("A reporting callback cannot replace the primary failure");
+                    }
+                }));
+                assertTrue(cancel ? failure instanceof CancellationException : failure instanceof EmissionWorkBudget.LimitExceededException);
+                assertEquals(-1, total.get(), "Original mapping has not yet passed its owning freshness check");
+                assertEquals(0, first.get()); assertEquals(1, stops.get()); assertEquals(before, ledger.currentBytes());
+                assertSame(failure, assertThrows(RuntimeException.class, input::requireOpenAndUnchanged));
+                assertSame(failure, assertThrows(RuntimeException.class, () -> work.charge(EmissionWorkBudget.Operation.PREPARATION, 0)));
+            });
     }
     private static EmissionWorkBudget budget() { return new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE); }
     private static void measured(String scene, CurvedChartCensus.Pair pair) {

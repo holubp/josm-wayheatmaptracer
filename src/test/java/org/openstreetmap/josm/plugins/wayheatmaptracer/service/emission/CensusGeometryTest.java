@@ -89,7 +89,19 @@ class CensusGeometryTest {
         assertEquals(CurvedChartCensus.EnvelopeKind.UNAVAILABLE, CurvedChartCensus.envelope(List.of(sample(0, .2, true), sample(0, .3, true)), true, .72, math).kind());
     }
 
-    @Test void unchangedExtractorAcceptedCentersStayInPositiveRunsUnderNonuniformPhysicalCoordinates() {
+    @Test void roundedModeCenterReconstructionIsNotCertifiedByAnIndexRun() {
+        var math = new CensusGeometry(budget());
+        var run = CurvedChartCensus.envelope(List.of(sample(0, 0, true), sample(.1, .9, true), sample(.2, 0, true)), true, .72, math);
+        assertEquals(1, run.runs().size()); assertEquals(1, run.runs().get(0).firstSample()); assertEquals(1, run.runs().get(0).lastSample());
+        assertEquals(.1, run.runs().get(0).firstOffset()); assertEquals(.1, run.runs().get(0).lastOffset());
+        double center = .1, halfCenter = .25;
+        double reconstructed = .5 * ((center - halfCenter) + (center + halfCenter));
+        assertEquals(.09999999999999999, reconstructed);
+        assertTrue(reconstructed < run.runs().get(0).firstOffset(), "Index containment must not be promoted to an arbitrary rounded Mode-center placement certificate");
+    }
+
+    /** Finite illustrative bank only; the separate reconstruction counterexample excludes a universal numerical claim. */
+    @Test void illustrativeUnchangedExtractorCentersRemainInRunsForTheNonuniformPhysicalBank() {
         var math = new CensusGeometry(budget()); int acceptedCount = 0, weakSwitchbackCount = 0;
         try (var owner = AttemptMemoryLedger.production().rootOwner()) {
             for (int scenario = 0; scenario < 13; scenario++) {

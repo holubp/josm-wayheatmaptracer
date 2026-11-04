@@ -42,7 +42,7 @@ class LegacyEmissionManagedTransportTest {
             assertNotEquals(1, scale);
             long modes = input.workBudget().snapshot().operationUnits().get(EmissionWorkBudget.Operation.MODE_EXTRACTION);
             var stationCount = new AtomicInteger(); var observed = new AtomicInteger();
-            try (var result = CurvedChartCensus.scan(input, new CurvedChartCensus.Metadata("synthetic-managed", "synthetic-managed", List.of()), new CurvedChartCensus.Sink() {
+            try (var result = CurvedChartCensus.scan(input, new CurvedChartCensus.Metadata("synthetic:managed", "synthetic:managed", List.of()), new CurvedChartCensus.Sink() {
                 public void pair(CurvedChartCensus.Pair pair) {
                     assertSame(context, pair.source().contextOwner()); assertSame(grid, pair.source().gridOwner());
                     assertEquals(scale, pair.source().producerUnitsPerGridPixel().orElseThrow(), 0);
