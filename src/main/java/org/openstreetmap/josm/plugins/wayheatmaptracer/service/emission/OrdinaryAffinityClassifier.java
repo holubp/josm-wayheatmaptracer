@@ -188,6 +188,8 @@ public final class OrdinaryAffinityClassifier {
         if (ownerA != null && (ownerA.originalRow() != from.originalRow() || ownerA.retainedRow() != from.evaluatorState().row())
                 || ownerB != null && (ownerB.originalRow() != to.originalRow() || ownerB.retainedRow() != to.evaluatorState().row()))
             throw new IllegalArgumentException("Affinity endpoint owner belongs to another source row");
+        if (slab.reason() == Reason.UNSUPPORTED_CHART)
+            return unknown(from, to, a, b, slab, slab.reason());
         if (!finalPoints && (ownerA == null || ownerB == null)) return unknown(from, to, a, b, slab, Reason.SOURCE_OWNERSHIP);
         if (slab.reason() != Reason.SLAB_PREPARED)
             return unknown(from, to, a, b, slab, slab.reason());
@@ -234,8 +236,8 @@ public final class OrdinaryAffinityClassifier {
             for (ChainPair pair : slab.pairs()) {
                 work(1);
                 if (pair.lowerChain() != Math.min(ca, cb) || pair.upperChain() != Math.max(ca, cb)) continue;
-                var ga = input.context().nativeGrid().toGrid(input.context().rasterTransform().metricToPixelCenter(a));
-                var gb = input.context().nativeGrid().toGrid(input.context().rasterTransform().metricToPixelCenter(b));
+                var ga = input.context().nativeGrid().toGrid(input.context().rasterAt(a));
+                var gb = input.context().nativeGrid().toGrid(input.context().rasterAt(b));
                 var crossed = new ArrayList<CrosscutPiece>();
                 reserve(64L + 16L * pair.crosscut().size());
                 for (var piece : pair.crosscut()) {
@@ -286,6 +288,8 @@ public final class OrdinaryAffinityClassifier {
     private Slab prepare(RowPair pair) {
         var evidence = new Preparation(pair);
         var context = input.context();
+        if (!ExperimentalMeasuredModeInventory.supportsAffineChart(context))
+            return evidence.fail(Reason.UNSUPPORTED_CHART, PreparationPhase.CHART, -1, -1, -1);
         if (pair.to() != pair.from() + 1)
             return evidence.fail(Reason.UNSUPPORTED_CHART, PreparationPhase.CHART, -1, -1, -1);
         var left = domain.binding().observations().get(pair.from());
@@ -303,9 +307,9 @@ public final class OrdinaryAffinityClassifier {
         double determinant = (br.x() - ar.x()) * normal.y() - (br.y() - ar.y()) * normal.x();
         if (!Double.isFinite(determinant) || determinant == 0)
             return evidence.fail(Reason.UNSUPPORTED_CHART, PreparationPhase.CHART, -1, -1, -1);
-        var a = context.rasterTransform().pixelCenterToMetric(ar.x(), ar.y());
-        var b = context.rasterTransform().pixelCenterToMetric(br.x(), br.y());
-        var unitEnd = context.rasterTransform().pixelCenterToMetric(ar.x() + normal.x(), ar.y() + normal.y());
+        var a = context.metricAt(ar);
+        var b = context.metricAt(br);
+        var unitEnd = context.metricAt(new RasterPoint(ar.x() + normal.x(), ar.y() + normal.y()));
         double normalPitch = ExperimentalMeasuredModeInventory.normalPitch(context, left.retainedObservationIndex());
         var metricNormal = new MetricPoint((unitEnd.xMeters() - a.xMeters()) / normalPitch,
             (unitEnd.yMeters() - a.yMeters()) / normalPitch);
@@ -323,7 +327,7 @@ public final class OrdinaryAffinityClassifier {
             double t = (double) station / segments;
             double sourceChainage = left.profile().cumulativeGroundDistanceMeters()
                 + t * (right.profile().cumulativeGroundDistanceMeters() - left.profile().cumulativeGroundDistanceMeters());
-            double pitch = context.resolution().effectivePitchMetersAt(context.profileChainage().sourceOriginGroundMeters() + sourceChainage);
+            double pitch = context.nativePitchAtSourceChainage(sourceChainage);
             var anchor = interpolate(a, b, t);
             evidence.plan.add(new StationPlan(station, t, anchor, pitch,
                 displaced(anchor, metricNormal, -context.searchHalfWidthMeters()),
@@ -426,7 +430,7 @@ public final class OrdinaryAffinityClassifier {
                 - hi.mode().localizationSigmaMeters();
             if (!(left < right)) return null;
             var midpoint = displaced(station.anchor(), normal, left + (right - left) * .5);
-            var gridPoint = input.context().nativeGrid().toGrid(input.context().rasterTransform().metricToPixelCenter(midpoint));
+            var gridPoint = input.context().nativeGrid().toGrid(input.context().rasterAt(midpoint));
             if (previous != null) {
                 var prior = stations.get(index - 1);
                 var plo = prior.modes().get(lower); var phi = prior.modes().get(upper);
@@ -443,7 +447,7 @@ public final class OrdinaryAffinityClassifier {
                     for (int y = cell.y(); y <= cell.y() + 1; y++) for (int x = cell.x(); x <= cell.x() + 1; x++) {
                         work(1);
                         var base = grid.toBaseRaster(new RasterPoint(x, y));
-                        var metric = input.context().rasterTransform().pixelCenterToMetric(base.x(), base.y());
+                        var metric = input.context().metricAt(base);
                         if (!authority(metric, metric) || !insideTransverseWindow(metric, stations, normal)) return null;
                     }
                     evidence.add(measured);
@@ -556,7 +560,7 @@ public final class OrdinaryAffinityClassifier {
         var profile = observation.measurementProfile();
         var raster = new RasterPoint(profile.anchorScreen().x + profile.normalScreen().x * rasterOffset,
             profile.anchorScreen().y + profile.normalScreen().y * rasterOffset);
-        var expected = input.context().rasterTransform().pixelCenterToMetric(raster.x(), raster.y());
+        var expected = input.context().metricAt(raster);
         if (!actual.equals(expected)) return null;
         double pitch = ExperimentalMeasuredModeInventory.normalPitch(input.context(), state.evaluatorState().row());
         double physicalOffset = rasterOffset * pitch;
@@ -607,8 +611,8 @@ public final class OrdinaryAffinityClassifier {
                 count -> budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, count), memory);
     }
     private BilinearSegmentIntegral.Result integral(MetricPoint a, MetricPoint b) {
-        var grid = input.context().nativeGrid(); var transform = input.context().rasterTransform();
-        var ga = grid.toGrid(transform.metricToPixelCenter(a)); var gb = grid.toGrid(transform.metricToPixelCenter(b));
+        var grid = input.context().nativeGrid();
+        var ga = grid.toGrid(input.context().rasterAt(a)); var gb = grid.toGrid(input.context().rasterAt(b));
         long cells = (long) Math.ceil(Math.abs(gb.x() - ga.x()) + Math.abs(gb.y() - ga.y())) + 16;
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
         try (var scratch = memory.reserve(Math.addExact(4096, Math.multiplyExact(cells, 2048)))) {

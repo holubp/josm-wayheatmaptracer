@@ -4,7 +4,6 @@ import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor.*;
@@ -66,7 +65,8 @@ public final class ExperimentalMeasuredModeInventory {
             rowSamples = new ArrayList<>(binding.observations().size());
             aliases = new IdentityHashMap<>();
             var extractor = new LocalScalarProfileExtractor();
-            boolean nativeKnown = input.context().resolution().nativePitchMeters().isPresent();
+            boolean nativeKnown = supportsAffineChart(input.context())
+                && input.context().resolution().nativePitchMeters().isPresent();
             for (var pitch : input.context().resolution().spatialPitchSamples()) {
                 work(1); nativeKnown &= pitch.nativePitchMeters().isPresent();
             }
@@ -80,9 +80,8 @@ public final class ExperimentalMeasuredModeInventory {
                 }
                 var profile = observation.measurementProfile();
                 double metricPitch = normalPitch(input.context(), observation.retainedObservationIndex());
-                double nativePitch = input.context().resolution().effectivePitchMetersAt(
-                    input.context().profileChainage().sourceOriginGroundMeters()
-                        + profile.samplingAnchor().cumulativeGroundDistanceMeters());
+                double nativePitch = input.context().nativePitchAtSourceChainage(
+                    input.context().sourceChainageMeters(observation.retainedObservationIndex()));
                 if (!Double.isFinite(metricPitch) || metricPitch <= 0 || !Double.isFinite(nativePitch)
                         || nativePitch <= 0) throw new IllegalArgumentException("Measured mode pitch is unavailable");
                 reserve(64L + 64L * profile.intensitySamples().size());
@@ -230,7 +229,7 @@ public final class ExperimentalMeasuredModeInventory {
         try (var scratch = memory.reserve(40_960)) {
             var raster = new RasterPoint(anchor.x() + normal.x() * state.offsetRasterPixels(),
                 anchor.y() + normal.y() * state.offsetRasterPixels());
-            var metric = input.context().rasterTransform().pixelCenterToMetric(raster.x(), raster.y());
+            var metric = input.context().metricAt(raster);
             if (!input.context().decisionRegion().containsSegment(metric, metric, CancellationProbe.NONE,
                     count -> budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, count), memory)
                     || !input.context().evidenceRegion().containsSegment(metric, metric, CancellationProbe.NONE,
@@ -275,13 +274,11 @@ public final class ExperimentalMeasuredModeInventory {
 
     /** Physical displacement of one original raster-normal offset, without virtual-scale substitution. */
     static double normalPitch(OptionalEmissionContext context, int retainedRow) {
-        var normal = context.observations().get(retainedRow).normal();
-        RasterMetricTransform transform = context.rasterTransform();
-        double scale = transform.axisUnit() == RasterMetricTransform.AxisUnit.SOURCE_PIXEL
-            ? transform.rasterPixelsPerSourcePixel() : 1;
-        return Math.hypot((normal.x() * transform.xAxisEastMetersPerSourcePixel()
-                + normal.y() * transform.yAxisEastMetersPerSourcePixel()) / scale,
-            (normal.x() * transform.xAxisNorthMetersPerSourcePixel()
-                + normal.y() * transform.yAxisNorthMetersPerSourcePixel()) / scale);
+        return context.metricNormalPitchAtRow(retainedRow);
+    }
+
+    /** The reviewed chart proof covers exact detached affine inputs only. */
+    static boolean supportsAffineChart(OptionalEmissionContext context) {
+        return context.origin() != OptionalEmissionContext.Origin.MANAGED_CAPTURE;
     }
 }

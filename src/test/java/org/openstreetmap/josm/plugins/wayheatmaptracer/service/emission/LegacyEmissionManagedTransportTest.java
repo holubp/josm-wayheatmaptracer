@@ -33,6 +33,58 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 class LegacyEmissionManagedTransportTest {
     @TempDir Path cache;
 
+    @Test void affineAffinityRejectsManagedChartWithoutInventingMeasuredOwners() throws Exception {
+        withManaged(List.of(new EastNorth(500, 500), new EastNorth(650, 500)), 30, fixture -> {
+            var input = fixture.input();
+            var binding = input.legacyBinding().orElseThrow();
+            assertTrue(fixture.nativeProfiles().size() >= 5,
+                "Keep at least three interior rows after protected endpoints split the smoothing run");
+            assertThrows(IllegalStateException.class, () -> input.context().rasterTransform());
+            var measured = input.experimentalMeasuredModes();
+            for (int row = 0; row < binding.observations().size(); row++) {
+                assertTrue(measured.ownersAt(row).isEmpty());
+                assertNull(measured.extractionAt(row));
+                assertTrue(measured.samplesAt(row).isEmpty());
+            }
+            var domain = new LegacyEmissionDomain(binding, fixture.nativeProfiles(), List.of(0.0),
+                input.workBudget(), fixture.owner(), measured);
+            var from = state(domain, 0, input.workBudget());
+            var to = state(domain, 1, input.workBudget());
+            var classifier = new OrdinaryAffinityClassifier(input, domain, fixture.owner());
+            var receipt = classifier.classify(from, to, domain.metricPoint(from, input.context()),
+                domain.metricPoint(to, input.context()));
+            assertEquals(OrdinaryAffinityClassifier.Status.UNKNOWN, receipt.status());
+            assertEquals(OrdinaryAffinityClassifier.Reason.UNSUPPORTED_CHART, receipt.reason());
+            assertTrue(receipt.ordinaryEligible());
+            assertEquals(0, classifier.stationExtractions());
+            assertTrue(receipt.slab().stations().isEmpty());
+            assertTrue(receipt.slab().plan().isEmpty());
+            try (var result = new LegacyEmissionKernel().solveMeasuredAffinity(input, fixture.nativeProfiles(),
+                    List.of(0.0), List.of(), (profiles, offsets, intensities) -> {
+                        var moved = new ArrayList<>(offsets);
+                        for (int row = 1; row + 1 < moved.size(); row++) moved.set(row, moved.get(row) + 2);
+                        return List.copyOf(moved);
+                    }, CancellationProbe.NONE)) {
+                var affinity = result.affinity().orElseThrow();
+                assertFalse(affinity.fullyCertified());
+                assertEquals(0, affinity.stationExtractions());
+                assertTrue(affinity.measuredStates().isEmpty());
+                assertFalse(affinity.inference().isEmpty());
+                assertTrue(affinity.inference().stream().allMatch(arc ->
+                    arc.status() == OrdinaryAffinityClassifier.Status.UNKNOWN));
+                assertTrue(affinity.inference().stream().anyMatch(arc -> arc.receipt().isPresent()));
+                for (var arc : affinity.inference()) {
+                    assertEquals(arc.receipt().isPresent() ? "UNSUPPORTED_CHART" : "BOUNDARY_ONLY_OWNER",
+                        arc.reasonCode());
+                }
+                assertEquals(result.inferenceVertices(), result.smoothedVertices());
+                assertTrue(affinity.smoothingOutcomes().stream().anyMatch(outcome ->
+                    outcome.disposition() == EmissionResult.SmoothingDisposition.RAW_RETAINED
+                        && outcome.reason() == EmissionResult.SmoothingReason.FINAL_EVIDENCE_UNAVAILABLE));
+            }
+        });
+    }
+
     @Test void acuteSourceArcKeepsItsMassWhenNativeDenseChordsAreBelowTwentyMeters() throws Exception {
         withManaged(List.of(new EastNorth(500, 500), new EastNorth(515, 500),
                 new EastNorth(508, 500.5)), 11, fixture -> {

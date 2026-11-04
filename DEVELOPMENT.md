@@ -907,6 +907,15 @@ remain `UNKNOWN`, retain old ordinary eligibility, and make the exported
 `EmissionResult.affinity()` certification incomplete. This is diagnostic
 metadata and adds no public Apply gate.
 
+The integrated managed-v3 context retains its nonlinear ground mapping and
+native-A endpoint ownership. The first affinity implementation issues no
+measured owners for managed captures and returns `UNKNOWN/UNSUPPORTED_CHART`
+before preparing stations. Its named solver remains usable with that explicit
+incomplete diagnostic; newly proposed smoothing without final-point proof
+retains the valid raw run. This boundary does not qualify managed affinity.
+Detached affine inputs use the context's actual metric/raster conversion,
+source-chainage pitch lookup and row-normal pitch, with unchanged arithmetic.
+
 Optional smoothing measures the proposed final points and their changed incident
 edges against the frozen source. Newly moved points cannot inherit raw UNKNOWN
 eligibility. A conflicting or unproved proposal retains that entire valid raw
