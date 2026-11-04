@@ -828,7 +828,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             AttemptMemoryLedger.Owner evaluation) {
         double source=chainage(from.row())+span*t;
         work(EmissionWorkBudget.Operation.PREPARATION,context.resolution().spatialPitchSamples().size());
-        double pitch=context.nativePitchAtSourceChainage(source);
+        double pitch=context.nativePitchAt(point,source);
         double requestedStep = context.lateralStepMeters();
         double outputPitch = outputPitch(point);
         double step = switch (queryPolicy) {
@@ -877,7 +877,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private Probe measureLocalOrDense(double t,RasterPoint point,MetricPoint normal,RowState from,double span,
             AttemptMemoryLedger.Owner evaluation,IdentityHashMap<Probe,AttemptMemoryLedger.Owner> profileOwners) {
         double source=chainage(from.row())+span*t;
-        double pitch=context.nativePitchAtSourceChainage(source);
+        double pitch=context.nativePitchAt(point,source);
         double delta=Math.min(context.lateralStepMeters(),Math.min(minimumPitch()/2,
             outputPitch(point)));
         if (!(delta>0) || !Double.isFinite(delta))
@@ -1006,7 +1006,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             AttemptMemoryLedger.Owner evaluation,double halfWidth,double step,ProfileBackend backend,
             int expansions,FallbackCause cause,boolean localNoMode,int previousQueries,int centeredHalfIntervals) {
         double source=chainage(from.row())+span*t;
-        double pitch=context.nativePitchAtSourceChainage(source);
+        double pitch=context.nativePitchAt(point,source);
         int intervals=centeredHalfIntervals>=0?Math.multiplyExact(2,centeredHalfIntervals)
             :checkedCount(Math.ceil(2*halfWidth/step));
         int count=Math.addExact(intervals,1);
@@ -1295,6 +1295,8 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     }
 
     private double minimumPitch() {
+        if(context.origin()==OptionalEmissionContext.Origin.MANAGED_CAPTURE)
+            return context.minimumNativePitchMeters().orElse(Double.NaN);
         if(context.resolution().nativePitchMeters().isEmpty())return Double.NaN;
         double minimum=context.resolution().nativePitchMeters().getAsDouble();
         for(var sample:context.resolution().spatialPitchSamples()) {

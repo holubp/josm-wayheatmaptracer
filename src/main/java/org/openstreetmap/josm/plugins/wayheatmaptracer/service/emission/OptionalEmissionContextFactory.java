@@ -56,6 +56,7 @@ public final class OptionalEmissionContextFactory {
         synchronized void requireCurrent() {
             if (terminalFailure != null) throw terminalFailure;
             if (owner.isClosed()) throw new IllegalStateException("Managed source permit is closed");
+            try {
             var settings = currentSettings.get();
             capture.requireSourceCurrent(settings, budget);
             if (settings.trackerMode() != org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.LEGACY_V02
@@ -66,6 +67,12 @@ public final class OptionalEmissionContextFactory {
             var witness = capture.selectionWitness().orElseThrow();
             if (org.openstreetmap.josm.gui.MainApplication.getLayerManager().getEditDataSet() != witness.dataSet()) {
                 throw new IllegalStateException("Managed selected dataset is not the active edit layer");
+            }
+            } catch (AttemptMemoryLedger.ResourceLimitException | EmissionWorkBudget.LimitExceededException
+                    | CancellationException failure) {
+                terminalFailure = failure;
+                budget.failTerminally(failure);
+                throw failure;
             }
         }
         public synchronized void failProduction(RuntimeException failure) {

@@ -124,6 +124,9 @@ public final class ManagedSourceRequestReceipt {
             reservation.adopt(receipt);
             complete = true;
             return receipt;
+        } catch (AttemptMemoryLedger.ResourceLimitException failure) {
+            budget.failTerminally(failure);
+            throw failure;
         } finally {
             if (!complete) owner.close();
         }

@@ -71,8 +71,11 @@ class ManagedSourceRequestReceiptTest {
         ProjectionRegistry.setProjection(projection);
         var dataSet = new DataSet();
         Node a = new Node(new LatLon(49.44, 14.0));
-        Node corner = new Node(new LatLon(49.44013, 14.0));
-        Node b = new Node(new LatLon(49.44, 14.0001));
+        var projectedStart = a.getEastNorth(projection);
+        Node corner = new Node(projection.eastNorth2latlon(new EastNorth(
+                projectedStart.east() + 34, projectedStart.north())));
+        Node b = new Node(projection.eastNorth2latlon(new EastNorth(
+                projectedStart.east(), projectedStart.north() + 8)));
         dataSet.addPrimitive(a); dataSet.addPrimitive(corner); dataSet.addPrimitive(b);
         Way way = new Way(); way.setNodes(List.of(a, corner, b)); dataSet.addPrimitive(way);
         dataSet.setSelected(way);
@@ -94,6 +97,9 @@ class ManagedSourceRequestReceiptTest {
             var witness = ManagedSelectionWitness.capture(dataSet, selection, projection, source, budget, owner);
             try (var capture = sampler.prepareForEmission(settings.get(), witness, List.of("hot"), "hot", false, budget, owner);
                  var binding = OptionalEmissionContextFactory.bindManagedCapture(capture, settings::get, budget, owner)) {
+                var resetBudget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+                assertThrows(IllegalArgumentException.class, () -> OptionalEmissionContextFactory.bindManagedCapture(
+                        capture, settings::get, resetBudget, owner), "The same memory ledger cannot reset acquisition work allowance");
                 int alreadyFetched = fetches.get();
                 var nativeProfiles = sampler.sampleProfiles(capture.selectedMosaic(), source, "hot",
                         IntensitySamplingMode.COLOR_MAPPING, projection, CancellationProbe.NONE);
@@ -116,13 +122,112 @@ class ManagedSourceRequestReceiptTest {
                             > nativeProfiles.get(last).cumulativeGroundDistanceMeters());
                     var events = input.legacyBinding().orElseThrow().protectedOccurrences();
                     assertEquals(input.context().sourceChainageMeters(last), events.get(events.size() - 1).sourceChainageMeters());
+                    assertEquals(input.context().sourceChainageMeters(last),
+                            input.context().sourceChainageMeters(events.get(events.size() - 1).occurrenceId()));
+                    assertManagedConnectorTransport(input, budget, owner);
+                    assertManagedSourceArcRefusesNativeChordShortcut(input);
                     assertThrows(IllegalStateException.class, () -> sampler.sampleProfilesForEmission(binding, CancellationProbe.NONE));
+                    settings.set(settings.get().withSearchHalfWidthMeters(29));
+                    assertThrows(IllegalStateException.class, input::requireOpenAndUnchanged);
+                    settings.set(managedSettings());
+                    input.requireOpenAndUnchanged();
+                    var otherLayer = new OsmDataLayer(new DataSet(), "different active dataset", null);
+                    MainApplication.getLayerManager().addLayer(otherLayer);
+                    try { assertThrows(IllegalStateException.class, input::requireOpenAndUnchanged); }
+                    finally { MainApplication.getLayerManager().removeLayer(otherLayer); }
+                    MainApplication.getLayerManager().setActiveLayer(layer);
+                    input.requireOpenAndUnchanged();
                     a.setCoor(new LatLon(49.440001, 14.0));
                     assertThrows(IllegalStateException.class, input::requireOpenAndUnchanged);
                 }
             }
         } finally { MainApplication.getLayerManager().removeLayer(layer); }
         assertEquals(0, ledger.currentBytes());
+    }
+
+    private static void assertManagedSourceArcRefusesNativeChordShortcut(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input) {
+        var context = input.context();
+        var profiles = input.profiles().levelZeroProfiles();
+        int from = -1, to = -1;
+        for (int a = 0; a < profiles.size(); a++) for (int b = a + 1; b < profiles.size(); b++) {
+            double nativeSpan = profiles.get(b).cumulativeGroundDistanceMeters()
+                    - profiles.get(a).cumulativeGroundDistanceMeters();
+            if (b - a <= 17 && nativeSpan < 20.0 && context.sourceSpanUpperMeters(a, b) > 20.0) {
+                from = a; to = b;
+            }
+        }
+        assertTrue(from >= 0, "Acute source has a native chord shortcut across the strict 20 m source-arc boundary");
+        var a = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.RowState(
+                from, 0, 0, org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.SourceClass.GAP, null);
+        var b = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.RowState(
+                to, 0, 0, org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.SourceClass.GAP, null);
+        try (var evaluator = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator(
+                input, new org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.Domain(List.of(a, b), List.of()))) {
+            var receipt = evaluator.evaluate(a, b);
+            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.Reason.SPAN,
+                    receipt.reason());
+            assertTrue(receipt.probes().isEmpty());
+        }
+    }
+
+    private static void assertManagedConnectorTransport(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
+            EmissionWorkBudget budget, AttemptMemoryLedger.Owner owner) {
+        var context = input.context();
+        // A real nonhorizontal acquired connector, independent of the heatmap's route position.
+        var first = context.observations().get(0).location().rasterPoint();
+        var last = context.observations().get(context.observations().size() - 1).location().rasterPoint();
+        var middle = new RasterPoint((first.x() + last.x()) * .5, (first.y() + last.y()) * .5);
+        var actual = context.metricAt(middle);
+        var inverse = context.rasterAt(actual);
+        assertEquals(middle.x(), inverse.x(), 1e-6);
+        assertEquals(middle.y(), inverse.y(), 1e-6);
+        double minimum = context.minimumNativePitchMeters().orElseThrow();
+        double maximum = context.nativePitchMeters().orElseThrow();
+        double local = context.nativePitchAt(middle, 0);
+        assertTrue(minimum <= local && local <= maximum);
+        assertTrue(context.evidenceSegmentAuthorized(first, last, budget, owner));
+        assertTrue(context.routeSegmentAuthorized(first, first, budget, owner));
+        var outside = new RasterPoint(-context.profileCoordinateScale(), -context.profileCoordinateScale());
+        assertFalse(context.evidenceSegmentAuthorized(first, outside, budget, owner));
+        assertFalse(context.routeSegmentAuthorized(first, outside, budget, owner));
+        // A diagonal segment exposes non-affine north scale and its physical local normal.
+        var diagonal = new RasterPoint(first.x() + context.profileCoordinateScale() * 4,
+                first.y() + context.profileCoordinateScale() * 5);
+        var normal = context.normalAt(first, first, diagonal);
+        double epsilon = 1e-3;
+        var close = context.metricAt(new RasterPoint(first.x() + (diagonal.x() - first.x()) * epsilon,
+                first.y() + (diagonal.y() - first.y()) * epsilon));
+        var origin = context.metricAt(first);
+        double dx = close.xMeters() - origin.xMeters(), dy = close.yMeters() - origin.yMeters();
+        assertEquals(0, (dx * normal.x() + dy * normal.y()) / Math.hypot(dx, dy), 1e-5);
+        double upper = context.connectorProbeLengthUpper(first, diagonal);
+        int intervals = (int) Math.ceil(upper / (.5 * minimum));
+        for (int i = 1; i <= intervals; i++) {
+            double a = (i - 1.0) / intervals, b = (double) i / intervals;
+            var ma = context.metricAt(new RasterPoint(first.x() + (diagonal.x() - first.x()) * a,
+                    first.y() + (diagonal.y() - first.y()) * a));
+            var mb = context.metricAt(new RasterPoint(first.x() + (diagonal.x() - first.x()) * b,
+                    first.y() + (diagonal.y() - first.y()) * b));
+            assertTrue(ma.distanceTo(mb) <= minimum * .5, "Actual nonlinear physical probe spacing must respect the native half-pitch bound");
+        }
+    }
+
+    @Test void initialRequestMemoryFailurePoisonsTheSameAttemptAfterPressureRelief() {
+        var projection = Projections.getProjectionByCode("EPSG:3857");
+        var source = List.of(projection.latlon2eastNorth(new LatLon(49.44, 14)),
+                projection.latlon2eastNorth(new LatLon(49.44, 14.0001)));
+        var ledger = new AttemptMemoryLedger(1024);
+        var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+        try (var owner = ledger.rootOwner()) {
+            var failure = assertThrows(AttemptMemoryLedger.ResourceLimitException.class,
+                    () -> new TileHeatmapSampler().prepareForEmission(managedSettings(), source,
+                            List.of("hot"), "hot", false, projection, budget, owner));
+            assertEquals(0, ledger.currentBytes());
+            assertSame(failure, assertThrows(AttemptMemoryLedger.ResourceLimitException.class,
+                    () -> budget.charge(EmissionWorkBudget.Operation.PREPARATION, 0)));
+        }
     }
 
     @Test void cancellationDetachesOnlyManagedSubscriberDuringBlockedSharedFetch() throws Exception {

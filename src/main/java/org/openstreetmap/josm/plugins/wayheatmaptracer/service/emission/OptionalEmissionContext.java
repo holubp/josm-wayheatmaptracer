@@ -226,6 +226,31 @@ public final class OptionalEmissionContext {
         }
         return resolution.effectivePitchMetersAt(chainage.sourceOriginGroundMeters() + sourceMeters);
     }
+    /** Local pitch at the actual connector probe; detached lookup retains its source-S formula. */
+    public double nativePitchAt(RasterPoint actualProbe, double sourceMeters) {
+        return managed == null ? nativePitchAtSourceChainage(sourceMeters)
+            : managed.groundTransform().orElseThrow().nativePixelPitchAt(actualProbe);
+    }
+    public OptionalDouble minimumNativePitchMeters() {
+        if (managed != null) return OptionalDouble.of(managed.groundTransform().orElseThrow()
+                .minimumNativePixelPitchMeters());
+        if (resolution.nativePitchMeters().isEmpty()) return OptionalDouble.empty();
+        double minimum = resolution.nativePitchMeters().getAsDouble();
+        for (var sample : resolution.spatialPitchSamples()) {
+            if (sample.nativePitchMeters().isEmpty()) return OptionalDouble.empty();
+            minimum = Math.min(minimum, sample.nativePitchMeters().getAsDouble());
+        }
+        return OptionalDouble.of(minimum);
+    }
+    /** Exact occurrence identity lookup in the managed producer's distinct source measure. */
+    public double sourceChainageMeters(String occurrenceId) {
+        if (managed == null) throw new IllegalStateException("This source has no managed occurrence certificate");
+        for (var occurrence : managed.sourceParameters().orElseThrow().originalOccurrences()) {
+            managedBinding.workBudget().charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            if (occurrence.occurrenceId().equals(occurrenceId)) return occurrence.sourceChainageMeters();
+        }
+        throw new IllegalArgumentException("Unknown original source occurrence");
+    }
     public double outputPitchAt(MetricPoint point) {
         return managed == null ? resolution.outputRasterPitchMeters()
             : managed.groundTransform().orElseThrow().virtualPixelPitchAt(rasterAt(point));

@@ -177,12 +177,13 @@ public final class TileHeatmapSampler {
         private final TileFetchCoordinator coordinator;
         private final long sourceEpoch;
         private final ManagedSelectionWitness selectionWitness;
+        private final EmissionWorkBudget attemptBudget;
         private boolean sampled;
 
         private PreparedManagedCapture(TileMosaicSet mosaics, TileMosaic selectedMosaic,
                 ManagedSourceRequestReceipt request, AttemptMemoryLedger.Owner mosaicOwner,
                 ManagedHeatmapConfig sourceConfig, TileFetchCoordinator coordinator,
-                long sourceEpoch, ManagedSelectionWitness selectionWitness) {
+                long sourceEpoch, ManagedSelectionWitness selectionWitness, EmissionWorkBudget attemptBudget) {
             this.mosaics = mosaics;
             this.selectedMosaic = selectedMosaic;
             this.request = request;
@@ -191,6 +192,7 @@ public final class TileHeatmapSampler {
             this.coordinator = coordinator;
             this.sourceEpoch = sourceEpoch;
             this.selectionWitness = selectionWitness;
+            this.attemptBudget = attemptBudget;
         }
         public TileMosaicSet mosaics() { request.requireMatches(selectedMosaic); return mosaics; }
         public TileMosaic selectedMosaic() { request.requireMatches(selectedMosaic); return selectedMosaic; }
@@ -224,6 +226,7 @@ public final class TileHeatmapSampler {
         public void requireSourceCurrent(ManagedHeatmapConfig current,
                 EmissionWorkBudget budget) {
             java.util.Objects.requireNonNull(budget, "shared work budget");
+            if (budget != attemptBudget) throw new IllegalArgumentException("Managed capture belongs to a different work attempt");
             budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
             if (current == null || !sameSourceConfig(sourceConfig, current)
                     || !coordinator.isActiveGenerationAtEpoch(
@@ -388,7 +391,7 @@ public final class TileHeatmapSampler {
             request.requireMatches(selected);
             colorsReservation.close();
             var capture = new PreparedManagedCapture(set, selected, request, mosaicOwner,
-                    config, tileCoordinator, sourceEpoch, witness);
+                    config, tileCoordinator, sourceEpoch, witness, budget);
             mosaicReservation.adopt(capture);
             capture.requireSourceCurrent(config, budget);
             if (witness != null) capture.requireSelectionCurrent(budget, parentOwner);

@@ -126,6 +126,17 @@ public final class ManagedGroundTransform {
         requireOpen();
         return maximumNativePixelPitchMeters;
     }
+    /** Outward lower bound on the local maximum-axis native pitch over the acquired domain. */
+    public double minimumNativePixelPitchMeters() {
+        requireOpen();
+        double north = Math.abs(Math.toRadians(latitude(mosaic.originWorldPxY(), worldSize)));
+        double south = Math.abs(Math.toRadians(latitude(mosaic.originWorldPxY() + mosaic.image().getHeight(), worldSize)));
+        double minimumCosine = Math.cos(Math.max(north, south));
+        double k = 2.0 * Math.PI / worldSize;
+        return Math.nextDown(k * Math.max(frame.distortionCertificate().eastMetersPerRadian(),
+                frame.distortionCertificate().northMetersPerRadian() * minimumCosine)
+                * (1.0 - 1e-12) - 1e-9);
+    }
 
     /** Local ground pitch of a native image pixel at one certified producer raster point. */
     public double nativePixelPitchAt(RasterPoint virtualRasterPoint) {

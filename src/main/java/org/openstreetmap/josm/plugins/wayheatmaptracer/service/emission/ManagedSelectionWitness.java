@@ -49,13 +49,14 @@ public final class ManagedSelectionWitness implements AutoCloseable {
     private final List<FrozenOccurrence> frozenSelectedFacts;
     private final Snapshot frozen;
     private final AttemptMemoryLedger.Owner owner;
+    private final EmissionWorkBudget attemptBudget;
     private final List<AttemptMemoryLedger.Owner> retainedOwners = new ArrayList<>();
 
     private ManagedSelectionWitness(DataSet dataSet, SelectionContext selection,
             Projection projection, List<EastNorth> originalSource,
             List<Node> selectedOccurrences, List<FrozenOccurrence> frozenSelectedFacts,
             Snapshot frozen,
-            AttemptMemoryLedger.Owner owner) {
+            AttemptMemoryLedger.Owner owner, EmissionWorkBudget attemptBudget) {
         this.dataSet = dataSet;
         this.selection = selection;
         this.projection = projection;
@@ -64,6 +65,7 @@ public final class ManagedSelectionWitness implements AutoCloseable {
         this.frozenSelectedFacts = frozenSelectedFacts;
         this.frozen = frozen;
         this.owner = owner;
+        this.attemptBudget = attemptBudget;
     }
 
     /** Captures only dependencies reachable from selected nodes/way through live referrers. */
@@ -104,10 +106,13 @@ public final class ManagedSelectionWitness implements AutoCloseable {
             }
             var result = new ManagedSelectionWitness(dataSet, selection, projection,
                     sourceCopy, List.copyOf(selectedNodes), List.copyOf(selectedFacts),
-                    frozen, owner);
+                    frozen, owner, budget);
             reservation.adopt(result);
             complete = true;
             return result;
+        } catch (AttemptMemoryLedger.ResourceLimitException failure) {
+            budget.failTerminally(failure);
+            throw failure;
         } finally {
             if (!complete) owner.close();
         }
@@ -115,6 +120,7 @@ public final class ManagedSelectionWitness implements AutoCloseable {
 
     /** Rechecks exact source/referrer facts under the same read-lock rule before a later decision. */
     public void requireCurrent(EmissionWorkBudget budget, AttemptMemoryLedger.Owner scratchParent) {
+        if (budget != attemptBudget) throw new IllegalArgumentException("Managed witness belongs to a different work attempt");
         if (!isLive()) throw new IllegalStateException("Managed selection witness is closed");
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
         try (var scratch = scratchParent.child("managed-selection-recheck")) {
