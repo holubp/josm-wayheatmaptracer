@@ -7,7 +7,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
  * after close/failure. Sealing performs no source reads, allocation, iteration or budget charge.
  */
 public final class NativeAExecutionCensus implements AutoCloseable {
-    public enum Phase { CREATED, PREPROCESSING, ENGINE, CLOSURE, SCALAR, REINSERT, CERTIFY, EXTEND, FINAL_EXACT, RESULT }
+    public enum Phase { CREATED, PREPROCESSING, ENGINE, CLOSURE, SCALAR, REINSERT, CERTIFY, EXTEND, PREFIX_FRONTIER, PREFIX_PUBLICATION, FINAL_EXACT, RESULT }
     // Exact authority only while live; a terminal export must not retain the source payload.
     private SampledEmissionInput input;
     private final EmissionWorkBudget budget;
@@ -18,6 +18,8 @@ public final class NativeAExecutionCensus implements AutoCloseable {
     private long prefixVersion=-1,pendingSerial=-1,refinements,reinsertions,scalarStarts,scalarCompleted,scalarComplete,scalarUnknown,scalarHits;
     private long evaluateStarts,evaluateReturned,admitted,rejected,unavailable,refusalHits,admittedHits;
     private long nativeQAvailable,positiveQ;
+    private long prefixDominated,prefixRetired,stalePrefixPops,inactivePendingFiltered,maxActivePrefixes;
+    private boolean prefixDominanceApplied;
     private long work,pairs,peak,current;
     private boolean hasIncumbent;
     private double upper=Double.NaN,lower=Double.NaN;
@@ -75,6 +77,12 @@ public final class NativeAExecutionCensus implements AutoCloseable {
     }
     public void refusalHit(){refusalHits++;}
     public void admittedHit(){admittedHits++;}
+    public void prefixDominated(){prefixDominated++;}
+    public void prefixRetired(){prefixRetired++;}
+    public void stalePrefixPopped(){stalePrefixPops++;}
+    public void inactivePendingFiltered(){inactivePendingFiltered++;}
+    public void activePrefixes(int count){maxActivePrefixes=Math.max(maxActivePrefixes,count);}
+    public void prefixDominanceApplied(){prefixDominanceApplied=true;}
     public void finish(){finished=true;input=null;closeFrontier();}
     public void fail(RuntimeException failure){if(this.failure==null)this.failure=failure;finished=true;input=null;closeFrontier();}
     private void refresh(){work=budget.workUsed();pairs=budget.pairVisits();peak=owner.peakBytes();current=owner.currentBytes();
@@ -105,6 +113,12 @@ public final class NativeAExecutionCensus implements AutoCloseable {
     public long unavailable(){return unavailable;}
     public long refusalHits(){return refusalHits;}
     public long admittedHits(){return admittedHits;}
+    public long dominatedPrefixes(){return prefixDominated;}
+    public long retiredPrefixes(){return prefixRetired;}
+    public long stalePrefixPops(){return stalePrefixPops;}
+    public long filteredInactivePending(){return inactivePendingFiltered;}
+    public long maximumActivePrefixesPerKey(){return maxActivePrefixes;}
+    public boolean hasPrefixDominance(){return prefixDominanceApplied;}
     public long workUsed(){return work;}
     public long pairVisits(){return pairs;}
     public long peakBytes(){return owner.peakBytes();}

@@ -19,7 +19,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 public final class NativeAEmissionSolver {
     public static final String EXECUTION_VERSION="native-a-certified-competitive-v1";
     /** A-only execution choice; it does not change numerical or connector query policies. */
-    public enum ExecutionChoice { UNCHANGED_V1, POSITIVE_ARC_REFUSAL_REUSE_V1, POSITIVE_ARC_SCALAR_REFINEMENT_V1 }
+    public enum ExecutionChoice { UNCHANGED_V1, POSITIVE_ARC_REFUSAL_REUSE_V1, POSITIVE_ARC_SCALAR_REFINEMENT_V1,
+        POSITIVE_ARC_SCALAR_PREFIX_DOMINANCE_V1 }
+    private static boolean scalarEnabled(ExecutionChoice choice){return choice==ExecutionChoice.POSITIVE_ARC_SCALAR_REFINEMENT_V1
+        ||choice==ExecutionChoice.POSITIVE_ARC_SCALAR_PREFIX_DOMINANCE_V1;}
     /** Enabled-path counters; disabled execution has no fabricated physical-evaluation census. */
     public record RefusalReuseDiagnostics(long positiveArcLookups,long evaluatorMissCalls,
             long admittedEvidenceReuseHits,long refusalReuseHits,long returnedAdmitted,long returnedRejected,
@@ -188,7 +191,8 @@ public final class NativeAEmissionSolver {
         public String sourceContentHash(){requireOpen();return engine.input.context().evidenceContentHash();}
         public String executionVersion(){requireOpen();return engine.choice==ExecutionChoice.UNCHANGED_V1?EXECUTION_VERSION
             :engine.choice==ExecutionChoice.POSITIVE_ARC_REFUSAL_REUSE_V1?"native-a-certified-competitive-positive-refusal-reuse-v1"
-            :"native-a-certified-competitive-positive-scalar-refinement-v1";}
+            :engine.choice==ExecutionChoice.POSITIVE_ARC_SCALAR_REFINEMENT_V1?"native-a-certified-competitive-positive-scalar-refinement-v1"
+            :"native-a-certified-competitive-positive-scalar-prefix-dominance-v1";}
         public ExecutionChoice executionChoice(){requireOpen();return engine.choice;}
         public Optional<RefusalReuseDiagnostics> refusalReuseDiagnostics(){requireOpen();return engine.reuseDiagnostics();}
         public String numericalPolicyId(){requireOpen();return engine.input.context().policyId();}
@@ -241,7 +245,7 @@ public final class NativeAEmissionSolver {
             QueryPolicy query,ExecutionPolicy execution,GeometryCleanupConfig cleanup,
             CorridorAwareTracker.NativeOwnerSource nativeSource,NativeAEmissionBinding binding,ExecutionChoice choice,NativeAExecutionCensus census) {
         Objects.requireNonNull(choice,"A execution choice");
-        if(choice==ExecutionChoice.POSITIVE_ARC_SCALAR_REFINEMENT_V1) {
+        if(scalarEnabled(choice)) {
             Objects.requireNonNull(census,"Scalar refinement requires a prepaid census").requireActive(input);
             if(!competitive)throw new IllegalArgumentException("Scalar refinement requires competitive execution");
         }else if(census!=null)throw new IllegalArgumentException("Census is only available for scalar refinement");
@@ -254,7 +258,9 @@ public final class NativeAEmissionSolver {
             input.workBudget().charge(EmissionWorkBudget.Operation.ALLOCATION,1);
             admittedOwner.reserve(2048); // Engine/map/list shells, before construction.
             engine=new Engine(optimizer,input,track,profiles,sourcePixel,junctions,scale,barriers,query,execution,cleanup,admittedOwner,nativeSource,binding,choice,census);
-            var closure=competitive?(census==null?new CompetitiveAdmissionExecutor(engine.graph,engine,engine.budget,engine.owner)
+            var closure=competitive?(choice==ExecutionChoice.POSITIVE_ARC_SCALAR_PREFIX_DOMINANCE_V1
+                ?CompetitiveAdmissionExecutor.forNativePrefixDominance(engine.graph,engine,engine.budget,engine.owner,census)
+                :census==null?new CompetitiveAdmissionExecutor(engine.graph,engine,engine.budget,engine.owner)
                 :new CompetitiveAdmissionExecutor(engine.graph,engine,engine.budget,engine.owner,census)).run():null;
             if(census!=null)census.boundary(NativeAExecutionCensus.Phase.FINAL_EXACT,-1,-1,-1,-1);
             Label best=engine.solveExact(closure);
@@ -262,6 +268,7 @@ public final class NativeAEmissionSolver {
                     ||Double.doubleToLongBits(closure.cost())!=Double.doubleToLongBits(best==null?Double.POSITIVE_INFINITY:best.cost)))
                 throw new InvalidCertificateException("Native canonical DP disagrees with closure");
             if(census!=null)census.boundary(NativeAExecutionCensus.Phase.RESULT,-1,-1,-1,-1);
+            if(choice==ExecutionChoice.POSITIVE_ARC_SCALAR_PREFIX_DOMINANCE_V1)engine.requireDominanceSourceUnchanged();
             return new Result(engine,best,closure);
         } catch(RuntimeException failure){
             if(census!=null)input.recordTerminalExecutionFailure(failure);else recordTerminal(input,failure);
@@ -295,9 +302,11 @@ public final class NativeAEmissionSolver {
         }
     }
     private record Label(CanonicalKey key,Label parent,Arc arc,Admission admission,double cost,
-            double q,double c,double t,double k,int consumed,int depth) { }
+            double q,double c,double t,double k,int consumed,int depth) implements NativeAPrefixFrontier.Path {
+        @Override public int incomingArcId(){return arc==null?-1:arc.id();}
+    }
 
-    private static final class Engine implements NativeScalarRefinementProvider,AutoCloseable {
+    private static final class Engine implements NativePrefixDominanceProvider,AutoCloseable {
         final SampledEmissionInput input;
         final EmissionWorkBudget budget;
         final AttemptMemoryLedger.Owner owner;
@@ -525,9 +534,10 @@ public final class NativeAEmissionSolver {
         RasterPoint measurement(RasterPoint p){return binding==null?p:binding.toMeasurement(p);}
         MetricPoint metric(RasterPoint p){return input.context().metricAt(measurement(p));}
         @Override public BilinearSegmentIntegral.ReadOnlyScalarGrid nativeGrid(){return input.context().nativeGrid();}
+        @Override public void requireDominanceSourceUnchanged(){requireOpen();endpointOwners.requireSourceUnchanged();}
         @Override public NativeScalarPreparation prepareScalar(CanonicalKey key,Arc arc) {
             requireOpen();
-            if(choice!=ExecutionChoice.POSITIVE_ARC_SCALAR_REFINEMENT_V1||census==null)
+            if(!scalarEnabled(choice)||census==null)
                 throw new IllegalStateException("Native scalar refinement is not enabled");
             census.requireActive(input);endpointOwners.requireScalarProvider(this,arcs.size());
             pair(EmissionWorkBudget.Operation.PAIR_LOOKUP);
@@ -703,7 +713,9 @@ public final class NativeAEmissionSolver {
                 to.offset==null?key.lastNumericVertexId():to.id,0);
         }
         Label solveExact(CompetitiveAdmissionExecutor.Result closure) {
-            // Retain exact prefix versions; no IEEE dominance assumption or hidden beam.
+            // Old choices retain every version. Only the new native law removes covered versions.
+            var frontier=choice==ExecutionChoice.POSITIVE_ARC_SCALAR_PREFIX_DOMINANCE_V1
+                ?NativeAPrefixFrontier.create(graph,budget,owner,census,true):null;
             reserve(1024L+vertices.size()*128L);var labels=new ArrayList<List<Label>>(vertices.size());
             for(int vertex=0;vertex<vertices.size();vertex++){work(1);labels.add(new ArrayList<>());}
             Map<TransitionKey,MeasuredTransition> measured=new HashMap<>();
@@ -713,11 +725,15 @@ public final class NativeAEmissionSolver {
             }
             for(var vertex:graph.vertices())if(vertex.initial()) {
                 pair(EmissionWorkBudget.Operation.PAIR_INITIALIZATION);reserve(320);
-                labels.get(vertex.id()).add(new Label(new CanonicalKey(vertex.id(),-1,vertex.id(),0),null,null,null,0,0,0,0,0,0,1));
+                var seed=new Label(new CanonicalKey(vertex.id(),-1,vertex.id(),0),null,null,null,0,0,0,0,0,0,1);
+                var installation=frontier==null?null:frontier.prepare(seed);
+                if(frontier!=null&&installation==null)continue;
+                labels.get(vertex.id()).add(seed);if(frontier!=null)frontier.publish(installation);
             }
             Label best=null;
             for(int cursor=0;cursor<vertices.size();cursor++)for(Label prefix:labels.get(cursor)) {
                 pair(EmissionWorkBudget.Operation.PAIR_LOOKUP);
+                if(frontier!=null&&!frontier.active(prefix))continue;
                 if(graph.vertices().get(cursor).terminal()){if(best==null||compare(prefix,best)<0)best=prefix;continue;}
                 for(int edge=arcStarts[cursor];edge<arcStarts[cursor+1];edge++) {
                     pair(EmissionWorkBudget.Operation.PAIR_LOOKUP);Arc arc=arcs.get(edge);
@@ -730,13 +746,23 @@ public final class NativeAEmissionSolver {
                         if(admission==null)throw new IllegalStateException("Measured closure lost native source receipt");
                     }
                     if(!admission.admitted())continue;
+                    if(frontier!=null){work(1);if(!Double.isFinite(admission.q())||!Double.isFinite(admission.c())
+                            ||!Double.isFinite(admission.t())||!Double.isFinite(admission.k())
+                            ||admission.q()<0||admission.c()<0||admission.t()<0||admission.k()<0)
+                        throw new InvalidCertificateException("Native prefix dominance requires finite nonnegative increments");}
                     reserve(384);CanonicalKey key=nextKey(prefix.key,arc);
                     double cost=prefix.cost+admission.q()+admission.c()+admission.t()+admission.k();
                     if(!Double.isFinite(cost))throw new IllegalStateException("Native A objective is nonfinite");
-                    labels.get(arc.toId()).add(new Label(key,prefix,arc,admission,cost,prefix.q+admission.q(),prefix.c+admission.c(),
-                        prefix.t+admission.t(),prefix.k+admission.k(),Math.addExact(prefix.consumed,arc.consumedRows()),prefix.depth+1));
+                    var next=new Label(key,prefix,arc,admission,cost,prefix.q+admission.q(),prefix.c+admission.c(),
+                        prefix.t+admission.t(),prefix.k+admission.k(),Math.addExact(prefix.consumed,arc.consumedRows()),prefix.depth+1);
+                    var installation=frontier==null?null:frontier.prepare(next);
+                    if(frontier!=null&&installation==null)continue;
+                    // The increasing-ID replay installs a complete row label before retirement;
+                    // that label covers every original implicit successor in the measured mask.
+                    labels.get(arc.toId()).add(next);if(frontier!=null)frontier.publish(installation);
                 }
             }
+            if(choice==ExecutionChoice.POSITIVE_ARC_SCALAR_PREFIX_DOMINANCE_V1)requireDominanceSourceUnchanged();
             return best;
         }
         private int compare(Label a,Label b) {

@@ -103,6 +103,15 @@ public final class CompetitiveAdmissionExecutor {
     public interface NativeScalarRefinementProvider extends TransitionProvider {
         NativeConnectorEvaluator.NativeScalarPreparation prepareScalar(CanonicalKey prefix,Arc arc);
     }
+    /** Native key-owned continuation and fresh source boundary for the opt-in prefix law. */
+    public interface NativePrefixDominanceProvider extends NativeScalarRefinementProvider {
+        void requireDominanceSourceUnchanged();
+    }
+    public static CompetitiveAdmissionExecutor forNativePrefixDominance(Graph graph,NativePrefixDominanceProvider provider,
+            EmissionWorkBudget budget,AttemptMemoryLedger.Owner owner,NativeAExecutionCensus census) {
+        return new CompetitiveAdmissionExecutor(graph,provider,budget,owner,provider,
+            Objects.requireNonNull(census,"native A census"),provider);
+    }
 
     /** An actual measured admission or refusal, with source-bound Q on success. */
     public static final class Admission {
@@ -203,7 +212,7 @@ public final class CompetitiveAdmissionExecutor {
 
     private record TransitionKey(CanonicalKey prefix, int arcId) { }
 
-    private static final class Prefix {
+    private static final class Prefix implements NativeAPrefixFrontier.Path {
         final CanonicalKey key;
         final Prefix parent;
         final Arc via;
@@ -215,6 +224,13 @@ public final class CompetitiveAdmissionExecutor {
         final int consumed;
         final int depth;
         final long serial;
+        @Override public CanonicalKey key(){return key;}
+        @Override public double cost(){return cost;}
+        @Override public int consumed(){return consumed;}
+        @Override public int depth(){return depth;}
+        @Override public Prefix parent(){return parent;}
+        @Override public long version(){return serial;}
+        @Override public int incomingArcId(){return via==null?-1:via.id();}
 
         Prefix(CanonicalKey key, Prefix parent, Arc via, double cost,
                 double q, double c, double t, double k, int consumed, long serial) {
@@ -260,6 +276,7 @@ public final class CompetitiveAdmissionExecutor {
     private final AttemptMemoryLedger.Owner parentOwner;
     private final NativeScalarRefinementProvider refinement;
     private final NativeAExecutionCensus census;
+    private final NativePrefixDominanceProvider dominanceProvider;
     private boolean used;
     private long serial;
 
@@ -273,11 +290,17 @@ public final class CompetitiveAdmissionExecutor {
     }
     private CompetitiveAdmissionExecutor(Graph graph,TransitionProvider provider,EmissionWorkBudget budget,
             AttemptMemoryLedger.Owner parentOwner,NativeScalarRefinementProvider refinement,NativeAExecutionCensus census) {
+        this(graph,provider,budget,parentOwner,refinement,census,null);
+    }
+    private CompetitiveAdmissionExecutor(Graph graph,TransitionProvider provider,EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner parentOwner,NativeScalarRefinementProvider refinement,NativeAExecutionCensus census,
+            NativePrefixDominanceProvider dominanceProvider) {
         this.graph = Objects.requireNonNull(graph, "graph");
         this.provider = Objects.requireNonNull(provider, "provider");
         this.budget = Objects.requireNonNull(budget, "budget");
         this.parentOwner = Objects.requireNonNull(parentOwner, "parentOwner");
         this.refinement=refinement;this.census=census;
+        this.dominanceProvider=dominanceProvider;
     }
 
     /** Runs one charged attempt; a cap/cancel/source contradiction publishes no partial winner. */
@@ -290,6 +313,8 @@ public final class CompetitiveAdmissionExecutor {
         parentOwner.retainIfAbsent(graph);
         try (var scope = parentOwner.child("a-competitive-closure")) {
             validateGraph();
+            if(dominanceProvider!=null)dominanceProvider.requireDominanceSourceUnchanged();
+            var frontier=dominanceProvider==null?null:NativeAPrefixFrontier.create(graph,budget,scope,census);
             // Package-local synthetic raw costs have no source proof. They can
             // exercise the exhaustive oracle but can never justify deferred admission.
             double upperIntensity = graph.syntheticControl()
@@ -308,12 +333,18 @@ public final class CompetitiveAdmissionExecutor {
                 Prefix seed = retainPrefix(scope, reached, vertex.id(), -1,
                     vertex.numeric() ? vertex.id() : -1, vertex.phaseId(),
                     null, null, 0, 0, 0, 0, 0, 0);
+                var installation=frontier==null?null:frontier.prepare(seed);
+                if(frontier!=null&&installation==null)continue;
                 enqueueOutgoing(scope, queue, seed, edgeStarts, upperIntensity);
+                if(frontier!=null)frontier.publish(installation);
             }
             Prefix best = null;
             int admitted = 0;
             int refused = 0;
             while (!queue.isEmpty()) {
+                if(frontier!=null)purgeRetiredHeads(queue,frontier);
+                if(dominanceProvider!=null)dominanceProvider.requireDominanceSourceUnchanged();
+                if(queue.isEmpty())break;
                 if(census!=null){var current=queue.peek();census.frontier(queue.size(),reached.size(),best!=null,best==null?Double.NaN:best.cost,current.lower);
                     census.boundary(NativeAExecutionCensus.Phase.CLOSURE,current.arc.id(),current.prefix.key.cursorId(),current.prefix.serial,current.serial);}
                 budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
@@ -359,13 +390,22 @@ public final class CompetitiveAdmissionExecutor {
                     }
                     if (admission.admitted()) {
                         verifyAdmitted(pending.arc, admission, upperIntensity);
+                        if(frontier!=null&&admission.q()<0)throw new InvalidCertificateException("Native prefix dominance requires nonnegative increments");
                         if(pending.scalar!=null&&pending.scalar.hasFiniteNativeQ()
                                 &&(Double.doubleToLongBits(pending.scalar.nativeQ())!=Double.doubleToLongBits(admission.q())
                                     ||admission.scalar().orElse(null)!=pending.scalar.scalar()))
                             throw new InvalidCertificateException("Native scalar preparation disagrees with admission");
                         if(census!=null)census.boundary(NativeAExecutionCensus.Phase.EXTEND,pending.arc.id(),pending.prefix.key.cursorId(),pending.prefix.serial,pending.serial);
                         Prefix next = extend(scope, reached, pending.prefix, pending.arc, admission);
-                        if (graph.vertices().get(next.key.cursorId()).terminal()) {
+                        if(frontier!=null) {
+                            var installation=frontier.prepare(next);if(installation==null)continue;
+                            boolean terminal=graph.vertices().get(next.key.cursorId()).terminal();
+                            if(!terminal)enqueueOutgoing(scope,queue,next,edgeStarts,upperIntensity);
+                            // Every replacement obligation is installed before any old version retires.
+                            frontier.publish(installation);
+                            if(terminal){if(best==null||compareTerminal(next,best)<0)best=next;
+                                census.frontier(queue.size(),reached.size(),true,best.cost,pending.lower);}
+                        }else if (graph.vertices().get(next.key.cursorId()).terminal()) {
                             if (best == null || compareTerminal(next, best) < 0) best = next;
                             if(census!=null)census.frontier(queue.size(),reached.size(),true,best.cost,pending.lower);
                         } else {
@@ -376,9 +416,12 @@ public final class CompetitiveAdmissionExecutor {
                     if(!reinserted)pending.lease.close();
                 }
             }
-            int unmeasured = 0;
+            if(frontier!=null)filterRetiredPending(scope,queue,frontier);
+            int unmeasured = 0;int activePending=0;
             for (Pending pending : queue) {
                 budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                if(frontier!=null&&!frontier.active(pending.prefix))continue;
+                activePending++;
                 budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
                 try (var scratch = scope.reserve(64)) {
                     if (!measured.containsKey(new TransitionKey(pending.prefix.key, pending.arc.id())))
@@ -386,13 +429,43 @@ public final class CompetitiveAdmissionExecutor {
                 }
             }
             double minLower = queue.isEmpty() ? Double.POSITIVE_INFINITY : queue.peek().lower;
+            if(dominanceProvider!=null)dominanceProvider.requireDominanceSourceUnchanged();
             if (best == null && !queue.isEmpty())
                 throw new InvalidCertificateException("frontier cannot close without a feasible incumbent");
             if (best != null && !(minLower > best.cost))
                 throw new InvalidCertificateException("unmeasured frontier is not strictly worse");
             var result=snapshotResult(best, admitted, refused, unmeasured, minLower,
-                upperIntensity, measured, queue);
+                upperIntensity, measured, queue,frontier,activePending);
+            if(dominanceProvider!=null)dominanceProvider.requireDominanceSourceUnchanged();
             if(census!=null)census.closeFrontier();return result;
+        }
+    }
+    private void purgeRetiredHeads(PriorityQueue<Pending> queue,NativeAPrefixFrontier frontier) {
+        while(!queue.isEmpty()) {
+            var pending=queue.peek();
+            census.boundary(NativeAExecutionCensus.Phase.CLOSURE,pending.arc.id(),pending.prefix.key.cursorId(),pending.prefix.serial,pending.serial);
+            if(frontier.active(pending.prefix))return;
+            budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP,1);
+            queue.remove();pending.lease.close();census.stalePrefixPopped();
+        }
+    }
+    private void filterRetiredPending(AttemptMemoryLedger.Owner scope,PriorityQueue<Pending> queue,NativeAPrefixFrontier frontier) {
+        if(queue.isEmpty())return;
+        census.boundary(NativeAExecutionCensus.Phase.CLOSURE,-1,-1,-1,-1);
+        long count=queue.size();
+        // PriorityQueue's removing iterator can retain moved live entries in a lazy deque.
+        // Cover its geometric growth and initialization before allocating it; never release a
+        // Pending's payload lease while the heap still owns that Pending reference.
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION,4L+2L*(64-Long.numberOfLeadingZeros(Math.max(1,count))));
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION,Math.addExact(256,Math.multiplyExact(6,count)));
+        try(var scratch=scope.reserve(Math.addExact(512,AttemptMemoryLedger.referenceArrayBytes(Math.addExact(Math.multiplyExact(4,count),32))))) {
+            var iterator=queue.iterator();
+            while(iterator.hasNext()) {
+                var pending=iterator.next();
+                census.boundary(NativeAExecutionCensus.Phase.CLOSURE,pending.arc.id(),pending.prefix.key.cursorId(),pending.prefix.serial,pending.serial);
+                if(frontier.active(pending.prefix))continue;
+                iterator.remove();pending.lease.close();census.inactivePendingFiltered();
+            }
         }
     }
 
@@ -608,17 +681,17 @@ public final class CompetitiveAdmissionExecutor {
     private Result snapshotResult(Prefix best, int admitted, int refused,
             int unmeasured, double minLower, double intensityUpper,
             Map<TransitionKey, Admission> measured,
-            PriorityQueue<Pending> queue) {
+            PriorityQueue<Pending> queue,NativeAPrefixFrontier frontier,int activePending) {
         int depth = best == null ? 0 : best.depth;
         long bytes = Math.addExact(512L, Math.multiplyExact(64L, depth));
         bytes = Math.addExact(bytes, Math.multiplyExact(256L, measured.size()));
-        bytes = Math.addExact(bytes, Math.multiplyExact(192L, queue.size()));
+        bytes = Math.addExact(bytes, Math.multiplyExact(192L, activePending));
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 3);
         try (var reservation = parentOwner.reserve(bytes)) {
             List<Integer> vertexIds = new ArrayList<>(depth);
             List<Integer> arcIds = new ArrayList<>(Math.max(0, depth - 1));
             List<MeasuredTransition> measuredRows = new ArrayList<>(measured.size());
-            List<PendingProof> pendingRows = new ArrayList<>(queue.size());
+            List<PendingProof> pendingRows = new ArrayList<>(activePending);
             Prefix cursor = best;
             while (cursor != null) {
                 budget.charge(EmissionWorkBudget.Operation.BACKPOINTER_VISIT, 1);
@@ -646,6 +719,7 @@ public final class CompetitiveAdmissionExecutor {
             });
             for (Pending pending : queue) {
                 budget.charge(EmissionWorkBudget.Operation.BACKPOINTER_VISIT, 1);
+                if(frontier!=null&&!frontier.active(pending.prefix))continue;
                 budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
                 CanonicalKey source = pending.prefix.key;
                 CanonicalKey copy = new CanonicalKey(source.cursorId(), source.effectivePositiveArcId(),

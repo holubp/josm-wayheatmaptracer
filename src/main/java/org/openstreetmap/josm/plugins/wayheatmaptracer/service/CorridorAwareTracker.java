@@ -146,6 +146,25 @@ public final class CorridorAwareTracker {
         return trackOptionalEmissionBound(input,null,junctions,barriers,cleanup,query,execution,java.util.Objects.requireNonNull(choice));
     }
 
+    /** Explicit native A stable-tie prefix law, layered over scalar and refusal reuse. */
+    public OptionalEmissionTracking trackOptionalEmissionWithPrefixDominance(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAEmissionBinding binding,
+            JunctionContext junctions,
+            List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.Barrier> barriers,
+            GeometryCleanupConfig cleanup,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAExecutionCensus census) {
+        java.util.Objects.requireNonNull(census,"native A census");census.requireCanBegin(input);
+        try {
+            census.begin(input);
+            census.boundary(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAExecutionCensus.Phase.PREPROCESSING,-1,-1,-1,-1);
+            var result=trackOptionalEmissionBound(input,binding,junctions,barriers,cleanup,query,execution,
+                NativeAEmissionSolver.ExecutionChoice.POSITIVE_ARC_SCALAR_PREFIX_DOMINANCE_V1,census);
+            census.finish();return result;
+        }catch(RuntimeException failure){census.fail(failure);throw failure;}
+    }
     private OptionalEmissionTracking trackOptionalEmissionBound(
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAEmissionBinding binding,
@@ -155,7 +174,8 @@ public final class CorridorAwareTracker {
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution,
             NativeAEmissionSolver.ExecutionChoice choice) {
-        if(choice==NativeAEmissionSolver.ExecutionChoice.POSITIVE_ARC_SCALAR_REFINEMENT_V1)
+        if(choice==NativeAEmissionSolver.ExecutionChoice.POSITIVE_ARC_SCALAR_REFINEMENT_V1
+                ||choice==NativeAEmissionSolver.ExecutionChoice.POSITIVE_ARC_SCALAR_PREFIX_DOMINANCE_V1)
             throw new IllegalArgumentException("Scalar refinement requires the explicit prepaid-census entry");
         return trackOptionalEmissionBound(input,binding,junctions,barriers,cleanup,query,execution,choice,null);
     }
