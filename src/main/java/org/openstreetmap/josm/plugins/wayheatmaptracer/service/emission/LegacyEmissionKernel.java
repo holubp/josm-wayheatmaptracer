@@ -108,8 +108,22 @@ public final class LegacyEmissionKernel {
     public EmissionResult solve(SampledEmissionInput input, List<CrossSectionProfile> suppressed,
             List<Double> seeds, List<AnchorProposal> proposals, Smoother smoother,
             CancellationProbe cancellation) {
+        return solve(input, suppressed, seeds, proposals, smoother, cancellation,
+            NativeConnectorEvaluator.QueryPolicy.DENSE_EIGHTH_NATIVE_V1,
+            NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1);
+    }
+
+    /** Applies one caller-explicit existing evaluator policy under the same attempt and numerical objective. */
+    public EmissionResult solve(SampledEmissionInput input, List<CrossSectionProfile> suppressed,
+            List<Double> seeds, List<AnchorProposal> proposals, Smoother smoother,
+            CancellationProbe cancellation, NativeConnectorEvaluator.QueryPolicy queryPolicy,
+            NativeConnectorEvaluator.ExecutionPolicy executionPolicy) {
         Objects.requireNonNull(input); Objects.requireNonNull(suppressed); Objects.requireNonNull(seeds);
         Objects.requireNonNull(proposals); Objects.requireNonNull(smoother); Objects.requireNonNull(cancellation);
+        Objects.requireNonNull(queryPolicy); Objects.requireNonNull(executionPolicy);
+        if (executionPolicy == NativeConnectorEvaluator.ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1
+                && queryPolicy != NativeConnectorEvaluator.QueryPolicy.ZERO_GUARDED_LOCAL_V1)
+            throw new IllegalArgumentException("Stop-on-final-mode-failure requires the zero-guarded local query policy");
         input.requireOpenAndUnchanged();
         var binding = input.legacyBinding().orElseThrow(() ->
             new IllegalArgumentException("Original Legacy binding is required"));
@@ -141,7 +155,7 @@ public final class LegacyEmissionKernel {
                 boolean retained = false;
                 try {
                     var inventory = inventory(domain, budget, seedOwner);
-                    evaluator = evaluator(input, domain, inventory);
+                    evaluator = evaluator(input, domain, inventory, queryPolicy, executionPolicy);
                     Node candidate = solveBase(input, domain, seed, inventory, evaluator,
                         seedOwner, cancellation, pitch);
                     if (candidate != null && better(candidate, best, budget, seedOwner)) {
@@ -226,7 +240,7 @@ public final class LegacyEmissionKernel {
                 throw new UnavailableException(UnavailableReason.NO_POSITIVE_PHYSICAL_LEG);
             return result(input, domain, stitchedPath, path, firstStage, best, intervalCosts,
                 intervalReferences, eligible, bestInventory,
-                smoother, bestSeedOwner, owner, bestEvaluator, budget, cancellation, resultLease);
+                smoother, bestSeedOwner, owner, bestEvaluator, budget, cancellation, resultLease, queryPolicy, executionPolicy);
             }
             }
         } catch (RuntimeException failure) {
@@ -461,7 +475,8 @@ public final class LegacyEmissionKernel {
     }
 
     private NativeConnectorEvaluator evaluator(SampledEmissionInput input, LegacyEmissionDomain domain,
-            Inventory inventory) {
+            Inventory inventory, NativeConnectorEvaluator.QueryPolicy queryPolicy,
+            NativeConnectorEvaluator.ExecutionPolicy executionPolicy) {
         var binding = domain.binding();
         var mapping = binding.originalRowToRetainedObservation();
         var ordinals = new HashMap<Integer, Integer>();
@@ -482,7 +497,7 @@ public final class LegacyEmissionKernel {
         }
         return new NativeConnectorEvaluator(input,
             new NativeConnectorEvaluator.Domain(inventory.evaluatorStates(), mandatory, barriers,
-                ordinals));
+                ordinals), queryPolicy, executionPolicy);
     }
 
     private Node solveBase(SampledEmissionInput input, LegacyEmissionDomain domain,
@@ -941,7 +956,8 @@ public final class LegacyEmissionKernel {
             Smoother smoother, AttemptMemoryLedger.Owner owner,
             AttemptMemoryLedger.Owner kernelOwner,
             NativeConnectorEvaluator evaluator, EmissionWorkBudget budget,
-            CancellationProbe cancellation, SampledEmissionInput.ResultLease resultLease) {
+            CancellationProbe cancellation, SampledEmissionInput.ResultLease resultLease,
+            NativeConnectorEvaluator.QueryPolicy queryPolicy, NativeConnectorEvaluator.ExecutionPolicy executionPolicy) {
         int n = domain.rowCount();
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 6);
         owner.reserve(Math.addExact(1024, Math.addExact(Math.multiplyExact(96L, n),
@@ -1000,7 +1016,7 @@ public final class LegacyEmissionKernel {
                 observation.producerPeaks().stream().map(LegacyEmissionBinding.PeakOwner::originalPeakId).toList()));
         }
         var provenance = provenance(input, domain, firstPath, firstNode, best,
-            intervalReferences, eligible, inventory, owner, budget);
+            intervalReferences, eligible, inventory, owner, budget, queryPolicy, executionPolicy);
         // The result retains immutable vertex/arc values, never the DP predecessor graph.
         unpinChain(best, budget);
         unpinChain(firstNode, budget);
@@ -1027,7 +1043,8 @@ public final class LegacyEmissionKernel {
             LegacyEmissionDomain domain, Flattened firstPath, Node firstNode, Node best,
             List<EmissionResult.IntervalStageReference> intervalReferences,
             List<AnchorProposal> eligible, Inventory inventory,
-            AttemptMemoryLedger.Owner owner, EmissionWorkBudget budget) {
+            AttemptMemoryLedger.Owner owner, EmissionWorkBudget budget,
+            NativeConnectorEvaluator.QueryPolicy queryPolicy, NativeConnectorEvaluator.ExecutionPolicy executionPolicy) {
         var binding = domain.binding();
         long peakCount = binding.observations().stream()
             .mapToLong(observation -> observation.producerPeaks().size()).sum();
@@ -1039,7 +1056,7 @@ public final class LegacyEmissionKernel {
         var context = input.context();
         var source = new EmissionResult.SourceReference(context.sourceIdentity(),
             context.evidenceContentHash(), context.requestIdentity(), context.policyId(),
-            "LEGACY_OPTIONAL_NATIVE_INTEGRAL_V2", binding.trackerNormalizationRasterPx(),
+            modelPolicyId(queryPolicy, executionPolicy, owner, budget), binding.trackerNormalizationRasterPx(),
             context.nativePitchMeters().orElseThrow(), binding.productionEligible());
         var seeds = domain.seeds().stream().map(seed ->
             new EmissionResult.SeedReference(seed.id(), seed.offsetRasterPixels())).toList();
@@ -1125,6 +1142,19 @@ public final class LegacyEmissionKernel {
         return new EmissionResult.Provenance(source, seeds, chosen, tables, origins, generated,
             eligibleReferences, List.copyOf(selected), firstVertices, arcResults(firstPath.arcs()),
             intervalReferences);
+    }
+
+    private static String modelPolicyId(NativeConnectorEvaluator.QueryPolicy queryPolicy,
+            NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
+            AttemptMemoryLedger.Owner owner, EmissionWorkBudget budget) {
+        String base = "LEGACY_OPTIONAL_NATIVE_INTEGRAL_V2";
+        if (queryPolicy == NativeConnectorEvaluator.QueryPolicy.DENSE_EIGHTH_NATIVE_V1
+                && executionPolicy == NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1) return base;
+        int characters = base.length() + "/query=".length() + queryPolicy.name().length()
+            + "/execution=".length() + executionPolicy.name().length();
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+        owner.reserve(AttemptMemoryLedger.objectBytes(24) + AttemptMemoryLedger.arrayBytes(characters, Character.BYTES));
+        return base + "/query=" + queryPolicy.name() + "/execution=" + executionPolicy.name();
     }
 
     private static EmissionResult.AnchorReference anchorReference(LegacyEmissionDomain domain,

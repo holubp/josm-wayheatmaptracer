@@ -13,6 +13,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EmissionResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.LegacyEmissionKernel;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /**
@@ -34,8 +35,20 @@ public final class RidgeTracker {
      * must be consumed through its mapping; it is not a legacy CenterlineCandidate.
      */
     public EmissionResult trackEmission(SampledEmissionInput input, CancellationProbe cancellation) {
+        return trackEmission(input, cancellation, NativeConnectorEvaluator.QueryPolicy.DENSE_EIGHTH_NATIVE_V1,
+            NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1);
+    }
+
+    /** Runs one explicit existing evaluator policy without changing stored settings or the default entry. */
+    public EmissionResult trackEmission(SampledEmissionInput input, CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy queryPolicy, NativeConnectorEvaluator.ExecutionPolicy executionPolicy) {
         java.util.Objects.requireNonNull(input, "retained emission input");
         java.util.Objects.requireNonNull(cancellation, "cancellation probe");
+        java.util.Objects.requireNonNull(queryPolicy, "query policy");
+        java.util.Objects.requireNonNull(executionPolicy, "execution policy");
+        if (executionPolicy == NativeConnectorEvaluator.ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1
+                && queryPolicy != NativeConnectorEvaluator.QueryPolicy.ZERO_GUARDED_LOCAL_V1)
+            throw new IllegalArgumentException("Stop-on-final-mode-failure requires the zero-guarded local query policy");
         input.requireOpenAndUnchanged();
         var binding = input.legacyBinding().orElseThrow(() ->
             new IllegalArgumentException("Original Legacy emission binding is required"));
@@ -57,7 +70,7 @@ public final class RidgeTracker {
         budget.charge(EmissionWorkBudget.Operation.PREPARATION, proposals.size());
         return new LegacyEmissionKernel().solve(input, suppressed, seeds, proposals,
             (runProfiles, offsets, intensities) -> smoothOffsets(runProfiles, offsets, intensities,
-                normalization, cancellation, budget), cancellation);
+                normalization, cancellation, budget), cancellation, queryPolicy, executionPolicy);
     }
 
     /**
