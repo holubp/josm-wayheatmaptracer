@@ -42,6 +42,45 @@ Reports: task-local tmp files `drasov-kernel-memory-closure-report.md`,
 and `drasov-a-native-integration-report.md`. Update this checkpoint after the next
 coherent tested/reviewed batch; preserve the historical evidence below.
 
+Milestone: kernel memory repair c6595b79 closes the final scoped kernel finding.
+Fresh base RED reproduces the 29-anchor false memory refusal; balanced first-stage
+and stitched-path pins pass 156 tests / seven suites, zero failures/errors/skips.
+Independent scoped review `drasov-kernel-memory-closure-review.md` finds finding 4
+ADDRESSED and no new blocker. Integrated experimental HEAD49d34e37 is pushed;
+GitHub CI41803224213 is IN_PROGRESS, not yet a pass. No RC published.
+
+Default exact source-S API28fa4f57 is integrated as0cdf1424. Managed API651deb2f
+is not yet qualified; full managed factory and kernel/evaluator transport remain.
+Independent managed audit9a06c5fe found valid endpoint roundoff can reject native
+sampling (fraction1.0000000000000002); repair is assigned. Audit otherwise finds
+reviewed epoch/cancellation/witness components coherent, while source-alias proof,
+active-layer authority and production integration remain explicit open gates.
+Actual extractor probe certifies both .90/.30 thin modes; a supported join can
+still produce native NO_COMPLETE_MODE, confirming that reason alone cannot prove
+an incompatible ordinary transition. Affinity amendment is still under experiment.
+
+Next milestone: managed actual Factory/Context b6600e2e and evaluator transport
+49455fb1 are implemented; 144 Context/evaluator tests pass on that integration.
+These are NOT fully reviewed production qualification. Explicit open repairs:
+initial capture/witness memory refusal must poison the attempt; minimum pitch for
+physical probe spacing must be a factual minimum, not a maximum; local extractor
+pitch must be taken at the actual managed probe. Independent integration review is
+active against fixed9a06c5fe..49455fb1. Original-roundoff parity is now covered by
+the producer repair and retained source-S/alias enclosures require review.
+
+Kernel managed transport proceeds in isolated `josm-drasov-kernel-managed-transport`
+with the real managed factory, source-row mapping and acute source-arc>20m versus
+dense-chord<20m regression. No fake context injection is permitted as evidence.
+The A native solver has its first three focused tests green; broader physical,
+boundary/resource oracles and actual tracker integration remain open.
+
+Affinity design has completed independent review with four incorporated
+clarifications. Binding amendment:
+`../specs/2026-11-04-drasov-experimental-affinity-amendment.md`.
+Implementation is authorized and active in the existing affinity worktree,
+preserving original source/geometry assertions and explicit policy identities.
+Affine-slab proof is an allowed first experiment, not a claim of real Drasov repair.
+
 ## Prior execution evidence — 2026-11-03
 
 Execution resumed by explicit user instruction to finish remaining steps1–4.
