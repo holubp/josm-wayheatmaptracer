@@ -95,13 +95,14 @@
   codex/drasov-a-noise-integration for full publicCI, noRC/release. Old8d source and
   classes remain frozen. Report drasov-a-noise-integration-report.md.
   CI41874502271 at e774e364 now in progress; fullCIee94 remains highest verified.
-  Strong A prefix-dominance packet drasov-a-prefix-dominance-diagnosis.md under
-  independent design review. Sufficient law requires BOTH cost and extension-
-  stable tie preference dominance at identical FULL key, in closure and finalDP.
-  No implementation or new R4 screen of that law yet.
-- Active owners: kernel_memory_audit reviews integration e774;
-  managed_source_audit writes actual R4 result report; legacy_exact_execution_design
-  examines exact A-prefix dominance after the measured32M failure;
+  Strong A prefix-dominance packet drasov-a-prefix-dominance-diagnosis.md and
+  independent drasov-a-prefix-dominance-design-review.md CLOSED for bounded
+  implementation. Sufficient law requires BOTH cost and extension-stable tie
+  preference dominance at identical FULL key, in closure and finalDP. Retired
+  obligations also filtered from final proof scans; freshness/replacement leases
+  remain mandatory. Original A implementer assigned new isolated e774-based
+  tree. No new R4 screen of this law yet.
+- Active owners: a_native_integration implements A-prefix dominance;
   affinity_contract_probe implements reviewed M1 actual-Mode ownership with
   consumer disabled; kernel_memory_closure implements a reviewed Legacy one-seed
   cutoff proof slice from678. Ruling: exact grouped objective governs, do not
