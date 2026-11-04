@@ -213,7 +213,7 @@ public final class ManagedGroundTransform {
     /**
      * Encloses the actual Java17 inverse chain for M(u)=center+u*normal. Each binary operation
      * rounds outward by one adjacent value. sin/log are monotone on the admitted domain;
-     * Java Math specifies <=1 ulp error, enclosed by two ulps plus directed endpoint rounding.
+     * Java Math specifies {@code <=1} ulp error, enclosed by two ulps plus directed endpoint rounding.
      * The strict frame and Java17 conversions use the captured single-multiply constants.
      * No radians/degrees cancellation, longitude normalization seam or pole is assumed away.
      */
