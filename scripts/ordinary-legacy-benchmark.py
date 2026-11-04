@@ -238,8 +238,26 @@ def parser():
     return result
 
 
+def write_atomic(path, lines):
+    """Replace a receipt only after its complete sibling staging file closes."""
+    staging = path.with_name("." + path.name + ".tmp")
+    created = False
+    try:
+        with staging.open("x", encoding="utf-8") as target:
+            created = True
+            for line in lines:
+                target.write(line)
+        os.replace(staging, path)
+    finally:
+        if created:
+            try:
+                staging.unlink(missing_ok=True)
+            except OSError:
+                pass  # Cleanup must not replace the primary serialization/write/replace failure.
+
+
 def write_json(path, value):
-    path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    write_atomic(path, [json.dumps(value, indent=2, allow_nan=False) + "\n"])
 
 
 def execute(args):
@@ -248,12 +266,12 @@ def execute(args):
         raise Refusal("Public validation artifacts and fresh output are required")
     output = args.output
     output.mkdir(parents=True, exist_ok=False)
-    write_json(output / "protocol.json", {**PROTOCOL, "max_calls": MAX_CALLS, "timeout_seconds": TIMEOUT_SECONDS})
-    write_json(output / "summary.json", {"outcome": "INCONCLUSIVE", "reason": "EXECUTION_NOT_FINISHED",
-                                       "completed_calls": None, "active_batch_calls": "UNKNOWN",
-                                       "scope": "PUBLIC_ORDINARY_KERNEL_ONLY", "no_tolerance_decision": True, "no_automatic_retry": True})
     environment = {}
     try:
+        write_json(output / "summary.json", {"outcome": "INCONCLUSIVE", "reason": "EXECUTION_NOT_FINISHED",
+                                           "completed_calls": None, "active_batch_calls": "UNKNOWN",
+                                           "scope": "PUBLIC_ORDINARY_KERNEL_ONLY", "no_tolerance_decision": True, "no_automatic_retry": True})
+        write_json(output / "protocol.json", {**PROTOCOL, "max_calls": MAX_CALLS, "timeout_seconds": TIMEOUT_SECONDS})
         source = source_guard(ROOT)
         report = args.validation_output / "summary.json"
         if report.is_symlink() or not report.is_file() or report.stat().st_size > 1_048_576:
@@ -308,16 +326,18 @@ def execute(args):
         if timed_out:
             receipt.update(outcome="INCONCLUSIVE", reason="HOST_TIMEOUT", active_batch_calls="UNKNOWN")
         samples = receipt.pop("samples")
-        with (output / "samples.jsonl").open("x") as target:
-            for sample in samples:
-                target.write(json.dumps(sample, allow_nan=False) + "\n")
+        write_atomic(output / "samples.jsonl", (json.dumps(sample, allow_nan=False) + "\n" for sample in samples))
         write_json(output / "summary.json", {**receipt, "fingerprint": fingerprint, "scope": "PUBLIC_ORDINARY_KERNEL_ONLY", "fences_unchanged": True})
         print("Ordinary Legacy benchmark: " + receipt["outcome"] + "; no speed threshold or workflow qualification")
         return 0
     except Exception as error:
-        write_json(output / "summary.json", {"outcome": "REFUSED", "cause": type(error).__name__, "scope": "PUBLIC_ORDINARY_KERNEL_ONLY",
-                                           "no_tolerance_decision": True, "no_automatic_retry": True})
-        print("Public benchmark refused; no result or automatic retry")
+        cause = type(error).__name__
+        try:
+            write_json(output / "summary.json", {"outcome": "REFUSED", "cause": cause, "scope": "PUBLIC_ORDINARY_KERNEL_ONLY",
+                                               "no_tolerance_decision": True, "no_automatic_retry": True})
+        except Exception:
+            print("Public benchmark evidence export failed; prior receipt retained when available")
+        print("Public benchmark refused; cause=" + cause + "; no result or automatic retry")
         return 1
 
 

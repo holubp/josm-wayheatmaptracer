@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -214,3 +215,190 @@ def test_timeout_keeps_complete_prefix_and_marks_active_calls_unknown():
     assert len(result["samples"]) == 2 and result["completed_calls"] == 64
     assert result["active_batch_calls"] == "UNKNOWN" and result["trailing_log_fragment"] is True
     assert result["summary"] == {} and result["outcome"] == "INCONCLUSIVE"
+
+
+@pytest.mark.parametrize("fault", ["write", "replace", "serialization"])
+def test_json_replacement_failure_preserves_complete_existing_receipt(tmp_path, monkeypatch, fault):
+    m = module()
+    receipt = tmp_path / "summary.json"
+    initial = b'{"outcome":"INCONCLUSIVE","reason":"EXECUTION_NOT_FINISHED"}\n'
+    receipt.write_bytes(initial)
+    if fault == "replace":
+        monkeypatch.setattr(m.os, "replace", lambda *args: (_ for _ in ()).throw(OSError("unsafe details")))
+    elif fault == "write":
+        original_open = Path.open
+        def failing_open(path, *args, **kwargs):
+            target = original_open(path, *args, **kwargs)
+            if args and args[0] in ("w", "x"):
+                original_write = target.write
+                def fail(text):
+                    original_write(text[:4])
+                    raise OSError("unsafe details")
+                target.write = fail
+            return target
+        monkeypatch.setattr(Path, "open", failing_open)
+    with pytest.raises((OSError, ValueError)):
+        m.write_json(receipt, {"outcome": "COMPLETE", "value": float("nan") if fault == "serialization" else 1})
+    assert receipt.read_bytes() == initial
+    assert list(tmp_path.iterdir()) == [receipt]
+
+
+def synthetic_execution(tmp_path, monkeypatch, m, text=None, timed_out=False):
+    """Replace only acquisition/JVM boundaries; exercise real receipt/parser/export code."""
+    for key, value in {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_RUN_ATTEMPT": "1", "ORDINARY_LEGACY_BENCHMARK": "true", "JAVA_HOME": str(tmp_path / "jdk")}.items():
+        monkeypatch.setenv(key, value)
+    validation = tmp_path / "validation"
+    validation.mkdir()
+    (validation / "summary.json").write_text(json.dumps({"result": "PASS", "profile": "public", "private_fixture_scope": "not-executed"}))
+    monkeypatch.setattr(m, "source_guard", lambda *args: {"source": "synthetic"})
+    monkeypatch.setattr(m, "sha", lambda *args: "0" * 64)
+    monkeypatch.setattr(m, "verify_jar", lambda *args: None)
+    monkeypatch.setattr(m, "fetch_baseline", lambda *args: tmp_path / "baseline.jar")
+    monkeypatch.setattr(m.os, "statvfs", lambda *args: SimpleNamespace(f_bavail=m.DISK_FLOOR, f_frsize=1))
+    calls = []
+    def fake_process(command, **kwargs):
+        calls.append(command)
+        if "--benchmark" in command:
+            kwargs["stdout"].write(fake_log(m) if text is None else text)
+            if timed_out:
+                raise subprocess.TimeoutExpired(command, m.TIMEOUT_SECONDS)
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(m.subprocess, "run", fake_process)
+    return m.parser().parse_args(["--execute", "--validation-output", str(validation), "--host-jar", str(tmp_path / "host.jar"), "--output", str(tmp_path / "output")]), calls
+
+
+@pytest.mark.parametrize("log_case", ["complete", "inconclusive", "timeout"])
+def test_synthetic_execution_publishes_exact_samples_and_final_receipt(tmp_path, monkeypatch, log_case):
+    m = module()
+    raw = fake_log(m, log_case == "complete")
+    if log_case == "timeout":
+        raw = "\n".join(fake_log(m).splitlines()[:3]) + "\nsample fixture=parallel-185 incomplete"
+    args, calls = synthetic_execution(tmp_path, monkeypatch, m, raw, log_case == "timeout")
+    expected = m.parse_log(raw, partial=log_case == "timeout")
+    assert m.execute(args) == 0 and len(calls) == 4
+    receipt = json.loads((args.output / "summary.json").read_text())
+    samples = [json.loads(line) for line in (args.output / "samples.jsonl").read_text().splitlines()]
+    assert samples == expected["samples"] and receipt["completed_calls"] == expected["completed_calls"]
+    assert receipt["outcome"] == expected["outcome"] and receipt["fences_unchanged"] is True
+    assert receipt["active_batch_calls"] == expected["active_batch_calls"]
+    assert (args.output / "runtime.log").read_text() == raw
+    assert not list(args.output.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize("primary", ["source", "parser", "statistics"])
+def test_primary_failure_survives_refusal_export_failure(tmp_path, monkeypatch, capsys, primary):
+    m = module()
+    args, calls = synthetic_execution(tmp_path, monkeypatch, m)
+    original = m.write_json
+    initial = []
+    def receipt(path, value):
+        if value.get("outcome") == "REFUSED":
+            # A failing replacement may write partial staging bytes, never the old receipt.
+            monkeypatch.setattr(m.os, "replace", lambda *args: (_ for _ in ()).throw(OSError("secondary secret")))
+        original(path, value)
+        if value.get("reason") == "EXECUTION_NOT_FINISHED":
+            initial.append(path.read_bytes())
+    monkeypatch.setattr(m, "write_json", receipt)
+    if primary == "source":
+        monkeypatch.setattr(m, "source_guard", lambda *args: (_ for _ in ()).throw(m.Refusal("primary secret")))
+        cause = "Refusal"
+    elif primary == "parser":
+        monkeypatch.setattr(m, "parse_log", lambda *args, **kwargs: (_ for _ in ()).throw(m.Refusal("primary secret")))
+        cause = "Refusal"
+    else:
+        monkeypatch.setattr(m.statistics, "median", lambda *args: (_ for _ in ()).throw(ValueError("primary secret")))
+        cause = "ValueError"
+    assert m.execute(args) == 1
+    assert (args.output / "summary.json").read_bytes() == initial[0]
+    console = capsys.readouterr().out
+    assert "cause=" + cause in console and "Public benchmark evidence export failed" in console
+    assert "secret" not in console and "COMPLETE" not in console
+    assert len(calls) == (0 if primary == "source" else 4)
+    if calls:
+        assert (args.output / "runtime.log").read_text() == fake_log(m)
+
+
+@pytest.mark.parametrize("stage", ["samples", "final"])
+@pytest.mark.parametrize("log_case", ["complete", "inconclusive", "timeout"])
+def test_partial_export_write_and_refusal_write_keep_initial_receipt_and_raw_log(tmp_path, monkeypatch, capsys, stage, log_case):
+    m = module()
+    raw = fake_log(m, log_case == "complete")
+    if log_case == "timeout":
+        raw = "\n".join(fake_log(m).splitlines()[:3]) + "\nsample fixture=parallel-185 incomplete"
+    args, calls = synthetic_execution(tmp_path, monkeypatch, m, raw, log_case == "timeout")
+    original_json = m.write_json
+    initial = []
+    def save_initial(path, value):
+        original_json(path, value)
+        if value.get("reason") == "EXECUTION_NOT_FINISHED":
+            initial.append(path.read_bytes())
+    monkeypatch.setattr(m, "write_json", save_initial)
+    original_open = Path.open
+    def failing_open(path, *args, **kwargs):
+        target = original_open(path, *args, **kwargs)
+        if args and args[0] == "x" and path.name in (".samples.jsonl.tmp", ".summary.json.tmp"):
+            original_write = target.write
+            def fail(text):
+                summary = path.name == ".summary.json.tmp"
+                value = json.loads(text) if summary else {}
+                if ((summary and value.get("outcome") == "REFUSED")
+                        or (stage == "final" and summary and value.get("reason") != "EXECUTION_NOT_FINISHED")
+                        or (stage == "samples" and not summary)):
+                    original_write(text[:4])
+                    raise OSError("unsafe partial write")
+                return original_write(text)
+            target.write = fail
+        return target
+    monkeypatch.setattr(Path, "open", failing_open)
+    assert m.execute(args) == 1
+    summary = args.output / "summary.json"
+    assert summary.read_bytes() == initial[0]
+    receipt = json.loads(summary.read_text())
+    assert receipt["completed_calls"] is None and receipt["active_batch_calls"] == "UNKNOWN"
+    assert (args.output / "runtime.log").read_text() == raw and len(calls) == 4
+    if stage == "samples":
+        assert not (args.output / "samples.jsonl").exists()
+    elif log_case == "timeout":
+        assert len((args.output / "samples.jsonl").read_text().splitlines()) == 2
+    assert not list(args.output.glob(".*.tmp"))
+    console = capsys.readouterr().out
+    assert "cause=OSError" in console and "Public benchmark evidence export failed" in console
+    assert "unsafe" not in console and "COMPLETE" not in console
+
+
+@pytest.mark.parametrize("stage", ["initial", "protocol", "samples", "final"])
+@pytest.mark.parametrize("log_complete", [True, False])
+def test_export_failure_is_nonzero_and_never_publishes_success(tmp_path, monkeypatch, capsys, stage, log_complete):
+    m = module()
+    raw = fake_log(m, log_complete)
+    args, calls = synthetic_execution(tmp_path, monkeypatch, m, raw)
+    original_replace = m.os.replace
+    initial = []
+    def fail_replace(source, target):
+        target = Path(target)
+        if target.name == "summary.json":
+            value = json.loads(Path(source).read_text())
+            if value.get("outcome") == "REFUSED" or (stage == "initial" and not initial) or (stage == "final" and value.get("reason") != "EXECUTION_NOT_FINISHED"):
+                raise OSError("export secret")
+        if target.name == {"protocol": "protocol.json", "samples": "samples.jsonl"}.get(stage):
+            raise OSError("export secret")
+        original_replace(source, target)
+        if target.name == "summary.json":
+            initial.append(target.read_bytes())
+    monkeypatch.setattr(m.os, "replace", fail_replace)
+    assert m.execute(args) == 1
+    summary = args.output / "summary.json"
+    if stage == "initial":
+        assert not summary.exists() and not calls
+    else:
+        assert summary.read_bytes() == initial[0]
+        assert json.loads(summary.read_text())["reason"] == "EXECUTION_NOT_FINISHED"
+    assert len(calls) == (0 if stage in ("initial", "protocol") else 4)
+    if calls:
+        assert (args.output / "runtime.log").read_text() == raw
+    if stage == "samples":
+        assert not (args.output / "samples.jsonl").exists()
+    assert not list(args.output.glob(".*.tmp"))
+    console = capsys.readouterr().out
+    assert "cause=OSError" in console and "Public benchmark evidence export failed" in console
+    assert "secret" not in console and "COMPLETE" not in console
