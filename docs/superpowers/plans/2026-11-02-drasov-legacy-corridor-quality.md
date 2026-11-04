@@ -164,7 +164,12 @@ numerical evidence, as the existing plan requires.
 
 Integration snapshot a8c098fc frozen: exact836b..a8 whole diff and focused
 managed API adaptation in `drasov-affinity-managed-integration{,-adaptation}.diff`;
-managed_context_closure independently audits it while25named regression suites run.
+managed_context_closure independently CLOSED spec/quality/no blockers.25XML suites
+contain306tests,0failure/error/skip; all25manifestfiles verified, same head clean.
+Report `drasov-affinity-managed-integration-review.md` closes integration only.
+Public experimental branch pushed a8c098fc; Build CI41826880110 is IN_PROGRESS at
+that exact SHA (https://github.com/holubp/josm-wayheatmaptracer/actions/runs/41826880110).
+No private artifact uploaded, no release. Earlier CI cannot qualify this new head.
 Native A binding first GREEN reproduces239states/26098potentialpairs and4frozen
 hashes; broader validation continues. Ruling: permit a narrow retained-source-only
 Input validator for A, preserving every sticky/open/source/witness/geometry check
@@ -175,6 +180,20 @@ Curved-affinity design packet is drafted, not approved: its proposed new physica
 line arclength/inverse certificate is absent. managed_source_audit now gives a
 decisive feasibility review (including the alternative unit-typed native-grid
 proof receipt), rather than treating conditional API assumptions as implemented.
+
+Next bounded continuation: native-A alias is frozen e1d328b2 in
+`josm-drasov-a-r4-binding`;202unique tests plus9historical-entry controls GREEN,
+all4R4hashes/239states/26098potential pairs preserved. kernel_memory_audit reviews
+whole185101bf..e1d328b2 including the Input validation seam; graph still held.
+Legacy P0 counters are implemented but testing/uncommitted in kernel transport;
+no private32M run before code review. Curved-proof design review now APPROVES
+ONLY its section1 P0 source/chart/authority census. affinity_contract_probe owns
+fresh `josm-drasov-curved-chart-census`, branch `codex/drasov-curved-chart-census`,
+basea8c098fc. No physical-line adapter, new Modes/states/classifier/solver change.
+It must distinguish actual ports, conservative possible centers and UNAVAILABLE
+support/generated/final domains, preserve all184/21 accounting, and stop at one
+eventual reviewed census. Report `drasov-curved-affinity-design-review.md` is the
+task brief; source-grid/private census execution requires a later root packet.
 
 Use existing actors/reports; one writer per isolated worktree. No recursive agents.
 `managed_source_audit` performs source/A/proof reviews; `kernel_memory_audit` closed
