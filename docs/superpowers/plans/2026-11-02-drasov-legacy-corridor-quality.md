@@ -31,8 +31,11 @@
   worktree from435; no new numerical graph or actual R4 run authorized yet.
 - Legacy32M P0 completed as typed work refusal,seed0 BASErow11→16. All852local
   windows fell back for NOISE_FLOOR_NONZERO;zero repeats. Do NOT implement P1
-  nested sample cache. Exact valid/zero-count shortcut under TDD in isolated
-  josm-drasov-local-noise-precheck,base6d6; no new private run.
+  nested sample cache. Exact valid/zero-count shortcut67856654 in isolated
+  josm-drasov-local-noise-precheck,base6d6,209focusedtests/13XML plus12rechecks.
+  Independent auditor found no blockers (closed report being frozen). Synthetic
+  41probes preserve5986samples and settled evidence, skip41doomedextractions;
+  MODE153709→136325. Actual32M helper preparation underway, no invocation yet.
 - Curved-census source dc1bd5c6 and helper R1 independently CLOSED. Root's ONE
   fad79c35 replacement invocation completed184/184 pairs:7,870,402work,
   41,129,312Bpeak/0after,4.915s,0network,all24hashes unchanged. Fresh21folds
@@ -47,8 +50,9 @@
   no adapter or rerun yet.
 - Active owners: a_native_integration implements reviewed A scalar-bound stage;
   managed_source_audit available for scoped census-helper repair review;
-  kernel_memory_closure implements noise shortcut; affinity_contract_probe fixes
-  private census helper. Source integration ee94 is frozen. All other actors idle
+  kernel_memory_audit closes noise-source review; managed_context_closure prepares
+  ONE32M noise helper; affinity_contract_probe designs next actual-Mode ownership
+  slice from the completed census. Source integration ee94 is frozen. Other actors idle
   unless explicitly followed up. No Astra; requested Sol6.1/high, focused xhigh
   only for two hard execution diagnoses; actual routing/weekly usage unknown.
 
