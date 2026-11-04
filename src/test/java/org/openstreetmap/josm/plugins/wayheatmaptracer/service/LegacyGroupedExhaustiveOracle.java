@@ -8,18 +8,34 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 
 /** Tiny test-only FULL prefix enumeration: no Key map, merge, bound, witness, or production stage controller. */
-final class LegacyGroupedExhaustiveOracle {
-    record Point(MetricPoint position,EmissionMapping.VertexOwner owner,Integer stateId) { }
-    record Stage(int seed,int ordinal,EmissionResult.Costs prefix,EmissionResult.Costs terminal) { }
-    record Result(int seed,EmissionResult.Costs first,EmissionResult.Costs stitched,List<Point> firstPoints,
+public final class LegacyGroupedExhaustiveOracle {
+    public interface EdgeAdmission { boolean allowed(LegacyEmissionDomain.State from,LegacyEmissionDomain.State to); }
+    public interface AdmissionFactory { EdgeAdmission prepare(LegacyEmissionDomain domain) throws Exception; }
+    private record Borrowed(SampledEmissionInput input,List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionProfile> profiles) { }
+    public record Point(MetricPoint position,EmissionMapping.VertexOwner owner,Integer stateId) { }
+    public record Stage(int seed,int ordinal,EmissionResult.Costs prefix,EmissionResult.Costs terminal) { }
+    public record Result(int seed,EmissionResult.Costs first,EmissionResult.Costs stitched,List<Point> firstPoints,
             List<Point> points,List<Stage> stages,List<Integer> anchors,int terminalPaths) { }
-    final LegacyCompetitiveProofTest.Fixture f;final LegacyEmissionKernel kernel=new LegacyEmissionKernel();
+    final Borrowed f;final LegacyEmissionKernel kernel=new LegacyEmissionKernel();
+    final NativeConnectorEvaluator.QueryPolicy query;final NativeConnectorEvaluator.ExecutionPolicy execution;final EdgeAdmission admission;
     final EmissionWorkBudget budget;final LegacyEmissionDomain domain;final AttemptMemoryLedger.Owner owner;
     final double pitch;int terminalPaths;
-    LegacyGroupedExhaustiveOracle(LegacyCompetitiveProofTest.Fixture f,List<Double> seeds,AttemptMemoryLedger.Owner owner) {
-        this.f=f;this.owner=owner;budget=f.input().workBudget();
+    LegacyGroupedExhaustiveOracle(LegacyCompetitiveProofTest.Fixture f,List<Double> seeds,AttemptMemoryLedger.Owner owner) throws Exception {
+        this(new Borrowed(f.input(),f.profiles()),seeds,owner,LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC,d->(a,b)->true);
+    }
+    private LegacyGroupedExhaustiveOracle(Borrowed f,List<Double> seeds,AttemptMemoryLedger.Owner owner,
+            NativeConnectorEvaluator.QueryPolicy query,NativeConnectorEvaluator.ExecutionPolicy execution,AdmissionFactory factory)throws Exception{
+        this.f=f;this.owner=owner;this.query=query;this.execution=execution;budget=f.input().workBudget();
         domain=new LegacyEmissionDomain(f.input().legacyBinding().orElseThrow(),f.profiles(),seeds,budget,owner);
-        pitch=f.input().context().nativePitchMeters().orElseThrow();
+        pitch=f.input().context().nativePitchMeters().orElseThrow();admission=factory.prepare(domain);
+    }
+    public static Result enumerate(SampledEmissionInput input,
+            List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionProfile> profiles,
+            List<Double> seeds,List<LegacyEmissionKernel.AnchorProposal> proposals,NativeConnectorEvaluator.QueryPolicy query,
+            NativeConnectorEvaluator.ExecutionPolicy execution,AdmissionFactory factory)throws Exception{
+        try(var owner=input.openExecutionOwner("managed-graph-exhaustive-oracle")){
+            return new LegacyGroupedExhaustiveOracle(new Borrowed(input,profiles),seeds,owner,query,execution,factory).run(proposals);
+        }
     }
     static Result enumerate(LegacyCompetitiveProofTest.Fixture f,List<Double> seeds,List<LegacyEmissionKernel.AnchorProposal> proposals) throws Exception {
         try(var owner=f.input().openExecutionOwner("public-exhaustive-oracle")) {
@@ -50,7 +66,7 @@ final class LegacyGroupedExhaustiveOracle {
             var stages=new ArrayList<Stage>();
             for(var seed:domain.seeds()) {
                 Object inventory=call("inventory",domain,budget,owner,null);
-                var evaluator=(NativeConnectorEvaluator)call("evaluator",f.input(),domain,inventory,LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC,null);
+                var evaluator=(NativeConnectorEvaluator)call("evaluator",f.input(),domain,inventory,query,execution,null);
                 evaluators.add(evaluator);var terminals=new ArrayList<Object>();
                 var starts=domain.unsupported(0)?List.of(carry(inventory,evaluator,0,seed.id(),seed.offsetRasterPixels())):domain.observedAt(0);
                 for(var state:starts)walk(call("initialProofNode",f.input(),domain,seed,state,owner,budget),null,null,0,inventory,evaluator,terminals);
@@ -70,8 +86,10 @@ final class LegacyGroupedExhaustiveOracle {
                 assertNotNull(prefix);assertNotNull(right);var terminals=new ArrayList<Object>();
                 walk(prefix,prefix,right,i+1,bestInventory,bestEvaluator,terminals);Object next=winner(terminals);assertNotNull(next);
                 stages.add(new Stage(chosen,i+1,costs(prefix),costs(next)));
-                for(Object node:oldChain)if(state(node).originalRow()>right.originalRow())
+                for(Object node:oldChain)if(state(node).originalRow()>right.originalRow()) {
+                    if(!admission.allowed(state(next),state(node)))throw new AssertionError("Independent admission refuses stitched ordinary edge");
                     next=call("advance",f.input(),domain,bestInventory,next,state(node),bestEvaluator,owner,CancellationProbe.NONE,i+1,pitch);
+                }
                 assertNotNull(next);best=next;
             }
             return new Result(chosen,first,costs(best),firstPoints,points(best),List.copyOf(stages),eligible.stream().map(LegacyEmissionKernel.AnchorProposal::originalRow).toList(),terminalPaths);
@@ -88,6 +106,7 @@ final class LegacyGroupedExhaustiveOracle {
                 :(LegacyEmissionDomain.State)call("intervalTarget",domain,inventory,evaluator,toRow,state(prefix),right,budget,owner));
             else choices=domain.observedAt(toRow);
             for(var to:choices) {
+                if(toRow==row+1&&!admission.allowed(state(from),to))continue;
                 Object next=call("advance",f.input(),domain,inventory,from,to,evaluator,owner,CancellationProbe.NONE,stage,pitch);
                 if(next!=null)walk(next,prefix,right,stage,inventory,evaluator,terminals);
             }

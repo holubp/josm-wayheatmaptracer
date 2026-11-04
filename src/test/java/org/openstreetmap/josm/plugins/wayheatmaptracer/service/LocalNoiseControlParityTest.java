@@ -124,7 +124,7 @@ class LocalNoiseControlParityTest {
                 for(var field:LegacyEmissionProgress.class.getDeclaredFields())if(!Modifier.isStatic(field.getModifiers())) {
                     fields+=8; // conservative slot for every primitive/reference, even a boolean
                     if(field.getType().isArray()){field.setAccessible(true);Object array=field.get(p);
-                        arrays+=AttemptMemoryLedger.arrayBytes(Array.getLength(array),field.getType().componentType()==int.class?4:8);}
+                        if(array!=null)arrays+=AttemptMemoryLedger.arrayBytes(Array.getLength(array),field.getType().componentType()==int.class?4:8);}
                 }
                 long bound=AttemptMemoryLedger.objectBytes(fields)+arrays+AttemptMemoryLedger.objectBytes(8);
                 // Also reserve room for the separately reviewed future borrowed input-binding reference.

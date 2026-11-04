@@ -1072,3 +1072,34 @@ owned raw-core threshold remain UNKNOWN; separate Mode-centre final-point
 proofs do not fix those native geometries. A real capped solver experiment
 and separately reviewed grouped composition remain required after source
 review. No private run, default adoption or Apply/release gate is closed here.
+
+### Explicit managed affinity with full grouped execution
+
+`LegacyEmissionKernel.solveManagedGroupedChartAffinity` and
+`RidgeTracker.trackManagedGroupedEmission` compose the reviewed local affinity
+proof with full grouped seed/base, anchored interval and suffix-stitch stages.
+They return the actual owned `GroupedResult` under the distinct
+`LEGACY_GROUPED_MANAGED_LOCAL_CONNECTOR_V1` model, recording the chosen grouped,
+native query/execution and affinity policies. The standalone v2 managed entry,
+old grouped entries, proof sidecars and ordinary tracker retain their policies.
+The ceiling census remains an explicit grouped choice; affinity does not enable
+it implicitly or strengthen native scalar admission.
+
+Every ordinary witness uses the same source-owned affinity admission as its
+stage. A refused witness supplies no finite upper bound. Existing grouped
+vectors, stable ties, strict Q0 bound and native optional certificates remain
+unchanged. Actual point reconstruction and whole-run raw retention use original
+row/native identity independently of emitted vertex indices, including protected
+boundaries, carry and interval targets.
+
+The composed publication boundary is outside both immutable result copies.
+Unpin, diagnostics, charged progress work and all copy/scan admission precede
+the final input-owned source/selection/profile/native ticket. After its scan,
+only owned scratch closure, charge-free observer compatibility/seal and direct
+return remain. A revoked observer is left untouched, and refusal closes the
+entire emission/sidecar/lease tree while preserving the primary failure.
+
+This explicit experiment adds no states, thresholds, optimizer or acquisition
+authority. The exact below-core native .30/.60 cases remain UNKNOWN, and global
+future Mode-family evidence remains unavailable. Local synthetic correctness
+does not qualify private Drasov geometry, default adoption or Apply/release.

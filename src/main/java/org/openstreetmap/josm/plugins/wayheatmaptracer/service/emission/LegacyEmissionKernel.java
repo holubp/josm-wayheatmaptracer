@@ -521,6 +521,45 @@ public final class LegacyEmissionKernel {
             throw failure;
         }
     }
+    /** Explicit composition; old grouped/affine/default policies keep their own entry and publication. */
+    public GroupedResult solveManagedGroupedChartAffinity(SampledEmissionInput input,List<CrossSectionProfile> suppressed,
+            List<Double> seeds,List<AnchorProposal> proposals,Smoother smoother,CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
+            GroupedExecution grouped,LegacyEmissionProgress progress){
+        Objects.requireNonNull(grouped);
+        if(progress!=null)progress.requireCompatible(input,queryPolicy,executionPolicy);
+        AttemptMemoryLedger.Owner factsOwner=null;EmissionResult emission=null;GroupedResult candidate=null;
+        try{
+            if(progress!=null){progress.begin(input,queryPolicy,executionPolicy);progress.groupedBegin(grouped);}
+            input.requireOpenAndUnchanged();factsOwner=input.openExecutionOwner("legacy-managed-grouped-provenance");
+            var budget=input.workBudget();budget.charge(EmissionWorkBudget.Operation.ALLOCATION,3);factsOwner.reserve(512);
+            var facts=new GroupedFacts(grouped,new ArrayList<>(),factsOwner);
+            emission=solveBody(input,suppressed,seeds,proposals,smoother,cancellation,queryPolicy,executionPolicy,false,true,progress,facts);
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION,6);factsOwner.reserve(1024L+32L*facts.stages().size());
+            cancellation.checkpoint();input.requireOpenAndUnchanged();
+            try(var publication=input.prepareManagedFinalPublication(factsOwner,256L+16L*facts.stages().size(),2048L+128L*facts.stages().size())){
+                candidate=new GroupedResult(grouped,emission,facts.stages(),factsOwner,budget.snapshot());
+                publication.validate();
+            }
+            // The ticket's owned scratch closes before success is sealed. No callback or source read remains.
+            if(progress!=null){progress.requireCompatible(input,queryPolicy,executionPolicy);progress.seal(null);}
+            return candidate;
+        }catch(RuntimeException failure){
+            if(candidate!=null)closeAfterFailure(candidate,failure);else closeAfterFailure(emission,failure);
+            closeAfterFailure(factsOwner,failure);
+            if(failure instanceof CancellationException||failure instanceof EmissionWorkBudget.LimitExceededException
+                    ||failure instanceof AttemptMemoryLedger.ResourceLimitException)input.recordTerminalExecutionFailure(failure);
+            if(progress!=null){
+                boolean live=false;try{progress.requireCompatible(input,queryPolicy,executionPolicy);live=true;}
+                catch(RuntimeException revoked){/* A revoked owner cannot publish a new terminal view. */}
+                if(live)try{progress.seal(failure);}catch(RuntimeException cleanup){if(cleanup!=failure)failure.addSuppressed(cleanup);}
+            }throw failure;
+        }
+    }
+    private static void closeAfterFailure(AutoCloseable resource,RuntimeException primary){
+        if(resource==null)return;
+        try{resource.close();}catch(Exception cleanup){if(cleanup!=primary)primary.addSuppressed(cleanup);}
+    }
     private EmissionResult solveBody(SampledEmissionInput input,List<CrossSectionProfile> suppressed,
             List<Double> seeds,List<AnchorProposal> proposals,Smoother smoother,CancellationProbe cancellation,
             NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
@@ -685,6 +724,15 @@ public final class LegacyEmissionKernel {
             }
             }
         } catch (RuntimeException failure) {
+            if(managedAffinity&&grouped!=null){
+                closeAfterFailure(managedClassifier,failure);closeAfterFailure(bestEvaluator,failure);
+                closeAfterFailure(owner,failure);closeAfterFailure(resultLease,failure);
+                if(failure instanceof CancellationException||failure instanceof EmissionWorkBudget.LimitExceededException
+                        ||failure instanceof AttemptMemoryLedger.ResourceLimitException
+                        ||failure instanceof LegacyEmissionDomain.StateFamilyLimitException
+                        ||failure instanceof NativeConnectorEvaluator.StateFamilyLimitException)input.recordTerminalExecutionFailure(failure);
+                throw failure;
+            }
             if(managedClassifier!=null)try{managedClassifier.close();}catch(RuntimeException cleanup){failure.addSuppressed(cleanup);}
             if (bestEvaluator != null) bestEvaluator.close();
             owner.close();
@@ -736,7 +784,11 @@ public final class LegacyEmissionKernel {
             else chosen=witnessObserved(domain,row,current==null?seed.offsetRasterPixels():current.key.last().offsetRasterPixels(),budget);
             Node next=current==null?initialProofNode(input,domain,seed,chosen,owner,budget)
                 :advance(input,domain,inventory,current,chosen,evaluator,owner,cancellation,stage,pitch);
-            if(next==null){releaseUnretained(current,budget);return Optional.empty();}
+            if(next==null){
+                releaseUnretained(current,budget);
+                if(inventory.managedAffinity()!=null&&progress!=null&&progress.ceilingEnabled())progress.ceilingWitness(input,Optional.empty());
+                return Optional.empty();
+            }
             current=next;
         }
         double upper=certifiedWitnessUpper(current);
@@ -1624,7 +1676,7 @@ public final class LegacyEmissionKernel {
         // The result retains immutable vertex/arc values, never the DP predecessor graph.
         unpinChain(best, budget);
         unpinChain(firstNode, budget);
-        try(var publication=inventory.managedAffinity()==null?null:input.prepareManagedFinalPublication(owner,
+        try(var publication=inventory.managedAffinity()==null||grouped!=null?null:input.prepareManagedFinalPublication(owner,
                 256L+16L*(sourceRecords.size()+vertices.size()+arcs.size()+smoothedArcs.size()+intervals.size()),
                 2048L+128L*(sourceRecords.size()+vertices.size()+arcs.size()+smoothedArcs.size()+intervals.size()))){
         var candidate=new EmissionResult(sourceRecords, mapping, vertices, smoothed,
@@ -1757,7 +1809,7 @@ public final class LegacyEmissionKernel {
         var source = new EmissionResult.SourceReference(context.sourceIdentity(),
             context.evidenceContentHash(), context.requestIdentity(),managed?context.policyId()+"/"+ManagedOrdinaryAffinity.POLICY_ID: revised
                 ? context.policyId() + "/" + ExperimentalMeasuredModeInventory.POLICY_ID : context.policyId(),
-            managed?"LEGACY_OPTIONAL_MANAGED_LOCAL_CONNECTOR_V1":revised ? "LEGACY_OPTIONAL_MEASURED_AFFINITY_V1"
+            managed?(grouped==null?"LEGACY_OPTIONAL_MANAGED_LOCAL_CONNECTOR_V1":managedGroupedModelPolicyId(grouped.execution(),queryPolicy,executionPolicy,owner,budget)):revised ? "LEGACY_OPTIONAL_MEASURED_AFFINITY_V1"
                 : grouped==null?modelPolicyId(queryPolicy, executionPolicy, owner, budget)
                 : groupedModelPolicyId(grouped.execution(),queryPolicy,executionPolicy,owner,budget), binding.trackerNormalizationRasterPx(),
             context.nativePitchMeters().orElseThrow(), binding.productionEligible());
@@ -1853,6 +1905,11 @@ public final class LegacyEmissionKernel {
             NativeConnectorEvaluator.ExecutionPolicy execution,AttemptMemoryLedger.Owner owner,EmissionWorkBudget budget) {
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);owner.reserve(1024);
         return "LEGACY_GROUPED_EXACT_V1/kernel="+grouped+"/query="+query+"/execution="+execution;
+    }
+    private static String managedGroupedModelPolicyId(GroupedExecution grouped,NativeConnectorEvaluator.QueryPolicy query,
+            NativeConnectorEvaluator.ExecutionPolicy execution,AttemptMemoryLedger.Owner owner,EmissionWorkBudget budget){
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);owner.reserve(1024);
+        return "LEGACY_GROUPED_MANAGED_LOCAL_CONNECTOR_V1/kernel="+grouped+"/query="+query+"/execution="+execution+"/affinity="+ManagedOrdinaryAffinity.POLICY_ID;
     }
     private static String modelPolicyId(NativeConnectorEvaluator.QueryPolicy queryPolicy,
             NativeConnectorEvaluator.ExecutionPolicy executionPolicy,

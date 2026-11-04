@@ -602,16 +602,16 @@ class ManagedOrdinaryAffinityTest {
     }
     private OptionalDouble sampleOffset(ManagedOrdinaryAffinity.PointFact p,int i){return i<0||i>=p.probe().samples().size()?OptionalDouble.empty():OptionalDouble.of(p.probe().samples().get(i).offsetMeters());}
     record Fixture(SampledEmissionInput input,AttemptMemoryLedger ledger,Way source,java.util.concurrent.atomic.AtomicReference<ManagedHeatmapConfig> settings,java.util.concurrent.atomic.AtomicReference<Runnable> settingsHook,AttemptMemoryLedger.Owner retainedOwner){}
-    private enum Defect { NONE, JOIN, WIDE, CURVE, SPARSE_STATIONS, SOURCE_TURN }
-    private record Spec(double weak,boolean rotated,boolean swapped,boolean broadOutside,CancellationProbe cancelled,double halfLength,boolean joinedEnds,Defect defect){
+    enum Defect { NONE, JOIN, WIDE, CURVE, SPARSE_STATIONS, SOURCE_TURN }
+    record Spec(double weak,boolean rotated,boolean swapped,boolean broadOutside,CancellationProbe cancelled,double halfLength,boolean joinedEnds,Defect defect){
         Spec(double weak,boolean rotated,boolean swapped,boolean broadOutside,CancellationProbe cancelled){this(weak,rotated,swapped,broadOutside,cancelled,60,false,Defect.NONE);}
         Spec(double weak,boolean rotated,boolean swapped,boolean broadOutside,CancellationProbe cancelled,double halfLength,boolean joinedEnds){this(weak,rotated,swapped,broadOutside,cancelled,halfLength,joinedEnds,Defect.NONE);}
     }
     @FunctionalInterface interface Check{void accept(Fixture fixture)throws Exception;}
-    private void managed(double weak,boolean rotated,Check check)throws Exception{
+    void managed(double weak,boolean rotated,Check check)throws Exception{
         managed(new Spec(weak,rotated,false,false,CancellationProbe.NONE),check);
     }
-    private void managed(Spec spec,Check check)throws Exception{
+    void managed(Spec spec,Check check)throws Exception{
         Config.setPreferencesInstance(new MemoryPreferences());
         Config.setBaseDirectoriesProvider(new IBaseDirectories(){
             public java.io.File getPreferencesDirectory(boolean create){return cache.toFile();}

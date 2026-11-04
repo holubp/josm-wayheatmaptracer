@@ -159,6 +159,41 @@ public final class RidgeTracker {
             queryPolicy,executionPolicy,grouped,progress);
     }
 
+    /** Explicit managed/full-grouped composition; returns the actual owned kernel result. */
+    public LegacyEmissionKernel.GroupedResult trackManagedGroupedEmission(SampledEmissionInput input,CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
+            LegacyEmissionKernel.GroupedExecution grouped,LegacyEmissionProgress progress){
+        if(progress!=null)progress.requireCompatible(input,queryPolicy,executionPolicy);
+        List<RenderedHeatmapSampler.CrossSectionProfile> suppressed;
+        List<Double> seeds;List<LegacyEmissionKernel.AnchorProposal> proposals;LegacyEmissionKernel.Smoother smoother;
+        try{
+            java.util.Objects.requireNonNull(input,"retained emission input");java.util.Objects.requireNonNull(cancellation,"cancellation probe");
+            java.util.Objects.requireNonNull(queryPolicy,"query policy");java.util.Objects.requireNonNull(executionPolicy,"execution policy");
+            java.util.Objects.requireNonNull(grouped,"grouped execution");
+            if(executionPolicy!=NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1
+                    &&queryPolicy!=NativeConnectorEvaluator.QueryPolicy.ZERO_GUARDED_LOCAL_V1)
+                throw new IllegalArgumentException("Stop-on-final-mode-failure requires the zero-guarded local query policy");
+            input.requireOpenAndUnchanged();var binding=input.legacyBinding().orElseThrow(()->new IllegalArgumentException("Original Legacy emission binding is required"));
+            var budget=input.workBudget();budget.charge(EmissionWorkBudget.Operation.PREPARATION,binding.observations().size());
+            List<RenderedHeatmapSampler.CrossSectionProfile> original=binding.observations().stream()
+                .map(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.LegacyEmissionBinding.OriginalObservation::profile).toList();
+            suppressed=suppressLongitudinalNoise(cancellableProfiles(original,cancellation));
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,suppressed.size());seeds=collectSeedOffsets(suppressed);
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,seeds.size());double normalization=binding.trackerNormalizationRasterPx();
+            proposals=reliableAnchors(suppressed,normalization,profileEdgeLimit(suppressed)).stream()
+                .map(anchor->new LegacyEmissionKernel.AnchorProposal(anchor.index(),anchor.peak())).toList();
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,proposals.size());
+            smoother=(runProfiles,offsets,intensities)->smoothOffsets(runProfiles,offsets,intensities,normalization,cancellation,budget);
+        }catch(RuntimeException failure){
+            if(failure instanceof CancellationException||failure instanceof EmissionWorkBudget.LimitExceededException
+                    ||failure instanceof AttemptMemoryLedger.ResourceLimitException)input.recordTerminalExecutionFailure(failure);
+            if(progress!=null){try{progress.requireCompatible(input,queryPolicy,executionPolicy);}catch(RuntimeException revoked){throw failure;}progress.seal(failure);}
+            throw failure;
+        }
+        return new LegacyEmissionKernel().solveManagedGroupedChartAffinity(input,suppressed,seeds,proposals,smoother,cancellation,
+            queryPolicy,executionPolicy,grouped,progress);
+    }
+
     /**
      * Tracks ridge candidates using a one-raster-pixel source-pixel fallback.
      *
