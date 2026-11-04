@@ -36,11 +36,14 @@ public final class NativeAEmissionSolver {
     public static final class NativeEndpointOwner {
         private final RowState state;
         private final RenderedHeatmapSampler.CrossSectionProfile profile;
+        private final RenderedHeatmapSampler.CrossSectionProfile measurementProfile;
+        private final int nativeRow;
         private final RasterPoint position;
         private final List<NativeCoreOwner> cores;
         private NativeEndpointOwner(RowState state,RenderedHeatmapSampler.CrossSectionProfile profile,
-                RasterPoint position,List<NativeCoreOwner> cores) {
-            this.state=state;this.profile=profile;this.position=position;this.cores=cores;
+                RenderedHeatmapSampler.CrossSectionProfile measurementProfile,int nativeRow,RasterPoint position,List<NativeCoreOwner> cores) {
+            this.state=state;this.profile=profile;this.measurementProfile=measurementProfile;this.nativeRow=nativeRow;
+            this.position=position;this.cores=cores;
         }
         public RasterPoint actualRasterPosition(){return position;}
         public List<NativeCoreOwner> directCores(){return cores;}
@@ -55,20 +58,31 @@ public final class NativeAEmissionSolver {
         private final Map<RowState,NativeEndpointOwner> owners=new IdentityHashMap<>();
         private boolean sealed;
         private NativeEndpointInventory(Engine issuer){this.issuer=issuer;}
-        private void issue(RowState state,RasterPoint point,List<NativeCoreOwner> cores) {
+        private void issue(RowState state,int nativeRow,RasterPoint point,List<NativeCoreOwner> cores) {
             if(sealed)throw new IllegalStateException("Native A owner inventory is sealed");
             issuer.reserve(256);issuer.work(1);
-            if(owners.put(state,new NativeEndpointOwner(state,issuer.profiles.get(state.row()).source(),point,cores))!=null)
+            if(owners.put(state,new NativeEndpointOwner(state,issuer.profiles.get(nativeRow).source(),
+                    issuer.input.profiles().levelZeroProfiles().get(state.row()),nativeRow,point,cores))!=null)
                 throw new IllegalStateException("Native A state owner was duplicated");
         }
         public boolean belongsTo(SampledEmissionInput input) {
-            return sealed&&!issuer.closed&&!issuer.owner.isClosed()&&issuer.input==input;
+            return sealed&&!issuer.closed&&!issuer.owner.isClosed()&&issuer.input==input
+                &&(issuer.binding==null||issuer.binding.belongsTo(input));
         }
         public NativeEndpointOwner ownerFor(RowState state) {
             if(!belongsTo(issuer.input))return null;
             NativeEndpointOwner owner=owners.get(state);
-            if(owner==null||owner.state!=state||owner.profile!=issuer.input.profiles().levelZeroProfiles().get(state.row()))return null;
+            if(owner==null||owner.state!=state||owner.profile!=issuer.profiles.get(owner.nativeRow).source()
+                    ||owner.measurementProfile!=issuer.input.profiles().levelZeroProfiles().get(state.row())
+                    ||issuer.retainedRow(owner.nativeRow)!=state.row())return null;
             return owner;
+        }
+        public void requireSourceUnchanged() {
+            if(!belongsTo(issuer.input))throw new IllegalStateException("Native A endpoint source is closed");
+            if(issuer.binding==null)issuer.input.requireOpenAndUnchanged();else issuer.binding.requireCurrent(issuer.input);
+        }
+        public AttemptMemoryLedger.Owner openExecutionOwner(String phase) {
+            requireSourceUnchanged();return issuer.binding==null?issuer.input.openExecutionOwner(phase):issuer.binding.openExecutionOwner(phase);
         }
     }
 
@@ -98,7 +112,7 @@ public final class NativeAEmissionSolver {
             engine.reserve(1024L+depth*512L+engine.profiles.size()*32L+engine.vertices.size()*128L);
             var states=new ArrayList<NativeStateInventory>();
             for(var vertex:engine.vertices)if(vertex.endpoint instanceof RowState row) {
-                engine.work(1);states.add(new NativeStateInventory(row.row(),row.nativeStateId(),row.offsetRasterPixels(),row.sourceClass()));
+                engine.work(1);states.add(new NativeStateInventory(vertex.row,row.nativeStateId(),row.offsetRasterPixels(),row.sourceClass()));
             }
             nativeStates=List.copyOf(states);
             var vertices=new ArrayList<Integer>(depth);var arcs=new ArrayList<Integer>(depth);
@@ -170,12 +184,21 @@ public final class NativeAEmissionSolver {
             Map<String,BandScaleEvidence> scale,List<Barrier> barriers,boolean competitive,
             QueryPolicy query,ExecutionPolicy execution,GeometryCleanupConfig cleanup,
             CorridorAwareTracker.NativeOwnerSource nativeSource) {
-        var admittedOwner=input.openExecutionOwner("native-a-optional-v2");
+        return solve(optimizer,input,track,profiles,sourcePixel,junctions,scale,barriers,competitive,query,execution,cleanup,nativeSource,null);
+    }
+
+    static Result solve(CorridorCenterlineOptimizer optimizer,SampledEmissionInput input,
+            CorridorTrack track,List<CorridorProfile> profiles,double sourcePixel,JunctionContext junctions,
+            Map<String,BandScaleEvidence> scale,List<Barrier> barriers,boolean competitive,
+            QueryPolicy query,ExecutionPolicy execution,GeometryCleanupConfig cleanup,
+            CorridorAwareTracker.NativeOwnerSource nativeSource,NativeAEmissionBinding binding) {
+        if(binding!=null)binding.requireCurrent(input);
+        var admittedOwner=binding==null?input.openExecutionOwner("native-a-optional-v2"):binding.openExecutionOwner("native-a-optional-v2");
         Engine engine=null;
         try {
             input.workBudget().charge(EmissionWorkBudget.Operation.ALLOCATION,1);
             admittedOwner.reserve(2048); // Engine/map/list shells, before construction.
-            engine=new Engine(optimizer,input,track,profiles,sourcePixel,junctions,scale,barriers,query,execution,cleanup,admittedOwner,nativeSource);
+            engine=new Engine(optimizer,input,track,profiles,sourcePixel,junctions,scale,barriers,query,execution,cleanup,admittedOwner,nativeSource,binding);
             var closure=competitive?new CompetitiveAdmissionExecutor(engine.graph,engine,engine.budget,engine.owner).run():null;
             Label best=engine.solveExact(closure);
             if(closure!=null&&(!closure.vertexIds().equals(engine.pathIds(best))
@@ -189,7 +212,7 @@ public final class NativeAEmissionSolver {
     }
 
     private record VertexFact(int id,int row,int group,double chainage,PhysicalEndpoint endpoint,
-            RasterPoint raster,MetricPoint metric,Double offset) { }
+            RasterPoint raster,RasterPoint measurementRaster,MetricPoint metric,Double offset) { }
     private record TransitionKey(CanonicalKey prefix,int arcId) { }
     private record ArcEvidence(BilinearSegmentIntegral.Result scalar,Receipt optional,Object direction) { }
     private record Label(CanonicalKey key,Label parent,Arc arc,Admission admission,double cost,
@@ -199,6 +222,7 @@ public final class NativeAEmissionSolver {
         final SampledEmissionInput input;
         final EmissionWorkBudget budget;
         final AttemptMemoryLedger.Owner owner;
+        final NativeAEmissionBinding binding;
         final List<CorridorProfile> profiles;
         final List<VertexFact> vertices=new ArrayList<>();
         final List<Arc> arcs=new ArrayList<>();
@@ -219,12 +243,13 @@ public final class NativeAEmissionSolver {
                 List<CorridorProfile> profiles,double sourcePixel,JunctionContext junctions,
                 Map<String,BandScaleEvidence> scale,List<Barrier> barriers,QueryPolicy query,
                 ExecutionPolicy execution,GeometryCleanupConfig cleanup,AttemptMemoryLedger.Owner admittedOwner,
-                CorridorAwareTracker.NativeOwnerSource nativeSource) {
+                CorridorAwareTracker.NativeOwnerSource nativeSource,NativeAEmissionBinding binding) {
             this.input=Objects.requireNonNull(input);budget=input.workBudget();
-            owner=admittedOwner;
+            owner=admittedOwner;this.binding=binding;
             try {
                 reserve(128L+profiles.size()*16L);this.profiles=List.copyOf(profiles);
                 if(!cleanup.isDisabled())throw new IllegalArgumentException("Native A optional cleanup is ineligible");
+                if(binding!=null&&!barriers.isEmpty())throw new IllegalArgumentException("Original A protected capture alias is unavailable");
                 var eligibility=input.context().eligibility();
                 if(!input.context().productionEligible()&&eligibility!=OptionalEmissionContext.Eligibility.DECLARED_SYNTHETIC)
                     throw new IllegalArgumentException("Native A optional source is ineligible");
@@ -233,8 +258,9 @@ public final class NativeAEmissionSolver {
                 this.sourcePixel=sourcePixel;pitch=input.context().nativePitchMeters().orElseThrow();
                 if(Double.doubleToLongBits(sourcePixel)!=Double.doubleToLongBits(input.context().trackerNormalizationRasterPx()))
                     throw new IllegalArgumentException("A tracker normalization must match its retained producer");
-                if(profiles.size()<2||profiles.size()!=input.context().observations().size()
-                        ||input.profiles().levels().get(0).profiles().size()!=profiles.size())
+                var nativeProfiles=binding==null?input.profiles():binding.profiles();
+                if(profiles.size()<2||profiles.size()!=nativeProfiles.levelZeroProfiles().size()
+                        ||binding==null&&profiles.size()!=input.context().observations().size())
                     throw new IllegalArgumentException("Native A requires the complete unchanged retained selection");
                 long samples=0;int maximumSamples=0;
                 int constraintCount=junctions.constraints().size();
@@ -250,7 +276,7 @@ public final class NativeAEmissionSolver {
                 }
                 for(int row=0;row<profiles.size();row++) {
                     work(1);
-                    if(profiles.get(row).source()!=input.profiles().levels().get(0).profiles().get(row))
+                    if(profiles.get(row).source()!=nativeProfiles.levelZeroProfiles().get(row))
                         throw new IllegalArgumentException("Extracted A profile belongs to another producer");
                     samples=Math.addExact(samples,profiles.get(row).source().intensitySamples().size());
                     maximumSamples=Math.max(maximumSamples,profiles.get(row).source().intensitySamples().size());
@@ -290,7 +316,7 @@ public final class NativeAEmissionSolver {
                 }
                 Set<Integer> mandatoryRows=new HashSet<>();
                 reserve(1024L+profiles.size()*64L+barriers.size()*512L);
-                for(int row=0;row<profiles.size();row++)if(junctions.at(row)!=null){work(1);mandatoryRows.add(row);}
+                for(int row=0;row<profiles.size();row++)if(junctions.at(row)!=null){work(1);mandatoryRows.add(retainedRow(row));}
                 for(Barrier barrier:barriers){work(1);mandatoryRows.add(barrier.leftRow());mandatoryRows.add(barrier.rightRow());}
                 reserve(512);endpointOwners=new NativeEndpointInventory(this);
                 List<RowState> states=new ArrayList<>();Set<Integer> mandatoryVertices=new HashSet<>();int group=0,barrierCursor=0;
@@ -315,19 +341,19 @@ public final class NativeAEmissionSolver {
                                     ||!Double.isFinite(band.coreMinPx())||!Double.isFinite(band.coreMaxPx())
                                     ||band.coreMinPx()>band.coreMaxPx())
                                 throw new IllegalArgumentException("Native direct core ownership is incomplete");
-                            if(seen.add(band))facts.add(new NativeCoreOwner(band,point(row.rowIndex(),band.coreMinPx()),
-                                point(row.rowIndex(),band.coreMaxPx())));
+                            if(seen.add(band))facts.add(new NativeCoreOwner(band,measurement(point(row.rowIndex(),band.coreMinPx())),
+                                measurement(point(row.rowIndex(),band.coreMaxPx()))));
                         }
                         if(facts.isEmpty())throw new IllegalArgumentException("Observed native A state has no direct core owner");
                         cores=List.copyOf(facts);
                     }
                     for(var state:row.states()) {
                         reserve(512);work(1);
-                        var endpoint=new RowState(row.rowIndex(),state.stateId(),state.offsetPx(),sourceClass,null);
+                        var endpoint=new RowState(retainedRow(row.rowIndex()),state.stateId(),state.offsetPx(),sourceClass,null);
                         states.add(endpoint);RasterPoint point=point(row.rowIndex(),state.offsetPx());
-                        endpointOwners.issue(endpoint,point,cores);
+                        endpointOwners.issue(endpoint,row.rowIndex(),measurement(point),cores);
                         vertices.add(new VertexFact(vertices.size(),row.rowIndex(),group,
-                            input.context().sourceChainageMeters(row.rowIndex()),endpoint,point,metric(point),state.offsetPx()));
+                            sourceChainage(row.rowIndex()),endpoint,point,measurement(point),metric(point),state.offsetPx()));
                     }
                     group++;
                     while(barrierCursor<barriers.size()&&barriers.get(barrierCursor).leftRow()==row.rowIndex()) {
@@ -336,12 +362,13 @@ public final class NativeAEmissionSolver {
                         RasterPoint point=input.context().rasterAt(event.exactPosition());
                         mandatoryVertices.add(vertices.size());
                         vertices.add(new VertexFact(vertices.size(),row.rowIndex(),group++,event.sourceChainageMeters(),
-                            event,point,event.exactPosition(),null));
+                            event,point,point,event.exactPosition(),null));
                     }
                 }
                 if(barrierCursor!=barriers.size())throw new IllegalArgumentException("Protected events are not in native source order");
                 endpointOwners.sealed=true;
-                evaluator=NativeConnectorEvaluator.forNativeA(input,new Domain(states,mandatoryRows.stream().sorted().toList(),barriers),
+                evaluator=NativeConnectorEvaluator.forNativeA(input,new Domain(states,mandatoryRows.stream().sorted().toList(),barriers,
+                        binding==null?Map.of():binding.originalOrdinalByContextRow()),
                     query,execution,endpointOwners);
                 var declared=new ArrayList<Vertex>();reserve(256L+vertices.size()*128L);
                 for(VertexFact v:vertices){work(1);declared.add(new Vertex(v.id,v.row,0,v.offset!=null,v.group==0,v.group==group-1,v.id));}
@@ -351,9 +378,9 @@ public final class NativeAEmissionSolver {
                     if(!ordinary&&consumed>16)break;
                     if(!ordinary) {
                         if(from.offset==null||to.offset==null||consumed<1||consumed>16
-                                ||input.context().sourceSpanUpperMeters(from.row,to.row)>20)continue;
+                                ||sourceSpanUpper(from.row,to.row)>20)continue;
                         boolean crosses=false;
-                        for(int row:mandatoryRows){work(1);if(row>from.row&&row<to.row){crosses=true;break;}}
+                        for(int row:mandatoryRows){work(1);if(row>retainedRow(from.row)&&row<retainedRow(to.row)){crosses=true;break;}}
                         if(crosses)continue;
                         for(int id:mandatoryVertices){work(1);if(id>from.id&&id<to.id){crosses=true;break;}}
                         if(crosses)continue;
@@ -373,18 +400,23 @@ public final class NativeAEmissionSolver {
             }catch(RuntimeException failure){recordTerminal(input,failure);close();throw failure;}
         }
 
-        void requireOpen(){if(closed)throw new IllegalStateException("Native A result is closed");input.context();}
+        void requireOpen(){if(closed)throw new IllegalStateException("Native A result is closed");input.context();if(binding!=null)binding.requireCurrent(input);}
         void work(long units){budget.charge(EmissionWorkBudget.Operation.PREPARATION,units);}
         void pair(EmissionWorkBudget.Operation op){budget.charge(op,1);}
         void reserve(long bytes){budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);owner.reserve(bytes);}
         RasterPoint point(int row,double offset) {
+            if(binding!=null)return binding.nativePoint(row,offset);
             var source=profiles.get(row).source();return new RasterPoint(source.anchorScreen().x+source.normalScreen().x*offset,
                 source.anchorScreen().y+source.normalScreen().y*offset);
         }
-        MetricPoint metric(RasterPoint p){return input.context().metricAt(p);}
+        int retainedRow(int row){return binding==null?row:binding.retainedRow(row);}
+        double sourceChainage(int row){return input.context().sourceChainageMeters(retainedRow(row));}
+        double sourceSpanUpper(int from,int to){return input.context().sourceSpanUpperMeters(retainedRow(from),retainedRow(to));}
+        RasterPoint measurement(RasterPoint p){return binding==null?p:binding.toMeasurement(p);}
+        MetricPoint metric(RasterPoint p){return input.context().metricAt(measurement(p));}
         @Override public BilinearSegmentIntegral.ReadOnlyScalarGrid nativeGrid(){return input.context().nativeGrid();}
         @Override public Admission certify(CanonicalKey key,Arc arc) {
-            requireOpen();input.requireOpenAndUnchanged();pair(EmissionWorkBudget.Operation.PAIR_LOOKUP);
+            requireOpen();if(binding==null)input.requireOpenAndUnchanged();pair(EmissionWorkBudget.Operation.PAIR_LOOKUP);
             if(key.cursorId()!=arc.fromId())throw new IllegalArgumentException("Native A prefix is misplaced");
             reserve(512);var cacheKey=new TransitionKey(key,arc.id());var cached=admissions.get(cacheKey);
             if(cached!=null)return cached;
@@ -411,7 +443,7 @@ public final class NativeAEmissionSolver {
                     }
                     evidence=new ArcEvidence(receipt.scalar().orElseThrow(),receipt,receipt);
                 } else {
-                    var scalar=integral(from.raster,to.raster);Object direction=null;
+                    var scalar=integral(from.measurementRaster,to.measurementRaster);Object direction=null;
                     if(!arc.zeroPhysical())direction=ordinaryLeg(from,to,referenceAvailable(arc));
                     else if(key.effectivePositiveArcId()>=0) {
                         Object incoming=directions.get(key);

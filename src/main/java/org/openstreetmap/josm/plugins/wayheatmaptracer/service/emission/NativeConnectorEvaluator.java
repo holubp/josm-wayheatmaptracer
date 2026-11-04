@@ -490,7 +490,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         if(executionPolicy!=ExecutionPolicy.EAGER_ALL_PROBES_V1
                 && queryPolicy!=QueryPolicy.ZERO_GUARDED_LOCAL_V1)
             throw new IllegalArgumentException("Stop-on-final-mode-failure requires the zero-guarded local query policy");
-        owner = input.openExecutionOwner("native-connector");
+        owner = nativeAOwners==null?input.openExecutionOwner("native-connector"):nativeAOwners.openExecutionOwner("native-connector");
         context = input.context(); budget = input.workBudget();
         stateFamilyLimit = budget.stateFamilyLimit();
         originalOrdinalByContextRow = domain.originalOrdinalByContextRow();
@@ -592,7 +592,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         requireLive();
         Objects.requireNonNull(state);
         try {
-            input.requireOpenAndUnchanged();
+            requireSourceUnchanged();
             work(EmissionWorkBudget.Operation.PAIR_INITIALIZATION, 1);
             if (state.row() >= context.observations().size()
                     || !originalOrdinalByContextRow.isEmpty()
@@ -639,7 +639,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         requireLive();
         Objects.requireNonNull(from); Objects.requireNonNull(to); Objects.requireNonNull(nativeReferenceStatus);
         try {
-            input.requireOpenAndUnchanged();
+            requireSourceUnchanged();
             work(EmissionWorkBudget.Operation.PAIR_INITIALIZATION, 1);
             if (!ordinaryAdjacent(from, to))
                 throw new IllegalArgumentException("Ordinary leg requires adjacent owned source occurrences");
@@ -697,7 +697,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         requireLive();
         Objects.requireNonNull(from); Objects.requireNonNull(to);
         try {
-            input.requireOpenAndUnchanged();
+            requireSourceUnchanged();
             work(EmissionWorkBudget.Operation.TRANSPORT, 1);
             Receipt positiveOptional = null;
             OrdinaryPhysicalLeg positiveOrdinary = null;
@@ -778,7 +778,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         requireLive();
         Objects.requireNonNull(from); Objects.requireNonNull(to);
         try {
-            input.requireOpenAndUnchanged();
+            requireSourceUnchanged();
             work(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
             reserve(owner, 384); // A bounded result shell is charged even on early refusal.
             if (!states.containsKey(from) || !states.containsKey(to))
@@ -1633,7 +1633,15 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private int originalOrdinal(int row) {
         return originalOrdinalByContextRow.isEmpty() ? row : originalOrdinalByContextRow.get(row);
     }
+    private void requireSourceUnchanged() {
+        if(nativeAOwners==null)input.requireOpenAndUnchanged();else nativeAOwners.requireSourceUnchanged();
+    }
     private RasterPoint point(RowState state) {
+        if(nativeAOwners!=null) {
+            var owner=nativeAOwners.ownerFor(state);
+            if(owner==null)throw new IllegalArgumentException("Native A endpoint has no current issued point");
+            return owner.actualRasterPosition();
+        }
         var fact=context.observations().get(state.row());var p=fact.location().rasterPoint();var n=fact.normal();
         return new RasterPoint(p.x()+n.x()*state.offsetRasterPixels(),p.y()+n.y()*state.offsetRasterPixels());
     }

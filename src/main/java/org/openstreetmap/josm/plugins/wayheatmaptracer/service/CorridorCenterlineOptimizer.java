@@ -28,10 +28,11 @@ public final class CorridorCenterlineOptimizer {
             GeometryCleanupConfig cleanup,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution,
-            CorridorAwareTracker.NativeOwnerSource nativeSource) {
+            CorridorAwareTracker.NativeOwnerSource nativeSource,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAEmissionBinding binding) {
         double sourcePixel=input.context().trackerNormalizationRasterPx();
         return NativeAEmissionSolver.solve(this,input,track,profiles,sourcePixel,junctions,scaleEvidence,
-            barriers,true,query,execution,cleanup,nativeSource);
+            barriers,true,query,execution,cleanup,nativeSource,binding);
     }
     private static final double NON_SUSTAINED_ACCELERATION_MULTIPLIER = 1.15;
     private static final double WEAK_UNSUPPORTED_TUBE_MULTIPLIER = 800.0;

@@ -56,13 +56,17 @@ public final class SampledEmissionInput implements AutoCloseable {
     }
     /** Required at each numerical entry, using the same admitted attempt budget. */
     public void requireOpenAndUnchanged() {
+        requireRetainedSourceUnchanged();
+        legacyBinding.ifPresent(binding -> binding.requireNativeProfilesUnchanged(workBudget));
+    }
+    /** Source-only freshness; a native engine must separately validate its own original state authority. */
+    public void requireRetainedSourceUnchanged() {
         requireOpen();
         RuntimeException failure = terminalExecutionFailure;
         if (failure != null) throw failure;
         workBudget.charge(EmissionWorkBudget.Operation.PREPARATION,
             Math.multiplyExact((long) context.observations().size(), profiles.levels().size()));
         context.requireProfilesUnchanged(profiles);
-        legacyBinding.ifPresent(binding -> binding.requireNativeProfilesUnchanged(workBudget));
     }
     /** First terminal admission failure belongs to the whole retained attempt, not one phase. */
     public synchronized void recordTerminalExecutionFailure(RuntimeException failure) {
@@ -73,6 +77,12 @@ public final class SampledEmissionInput implements AutoCloseable {
     public synchronized AttemptMemoryLedger.Owner openExecutionOwner(String phase) {
         requireOpenAndUnchanged();
         workBudget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+        return retainedOwner.child(phase);
+    }
+    /** Shares the unchanged retained source without granting Legacy or A original-state authority. */
+    public synchronized AttemptMemoryLedger.Owner openRetainedSourceExecutionOwner(String phase) {
+        requireRetainedSourceUnchanged();
+        workBudget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);
         return retainedOwner.child(phase);
     }
 

@@ -99,24 +99,50 @@ public final class CorridorAwareTracker {
     /** Runs the original extraction/association/grouping and explicit native optional-emission kernel. */
     public OptionalEmissionTracking trackOptionalEmission(
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAEmissionBinding binding,
             JunctionContext junctions,
             List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.Barrier> barriers,
             GeometryCleanupConfig cleanup,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution) {
-        input.requireOpenAndUnchanged();
+        java.util.Objects.requireNonNull(binding).requireCurrent(input);
+        return trackOptionalEmissionBound(input,binding,junctions,barriers,cleanup,query,execution);
+    }
+
+    /** Runs the original extraction/association/grouping and explicit native optional-emission kernel. */
+    public OptionalEmissionTracking trackOptionalEmission(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
+            JunctionContext junctions,
+            List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.Barrier> barriers,
+            GeometryCleanupConfig cleanup,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution) {
+        return trackOptionalEmissionBound(input,null,junctions,barriers,cleanup,query,execution);
+    }
+
+    private OptionalEmissionTracking trackOptionalEmissionBound(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAEmissionBinding binding,
+            JunctionContext junctions,
+            List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.Barrier> barriers,
+            GeometryCleanupConfig cleanup,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution) {
+        if(binding==null)input.requireOpenAndUnchanged();else binding.requireCurrent(input);
+        if(binding!=null&&!barriers.isEmpty())throw new IllegalArgumentException("Original A protected capture alias is unavailable");
         if(!cleanup.isDisabled())throw new IllegalArgumentException("Optional A cleanup adapter is unavailable");
         var budget=input.workBudget();
-        var owner=input.openExecutionOwner("native-a-extraction-and-association");
+        var owner=binding==null?input.openExecutionOwner("native-a-extraction-and-association")
+            :binding.openExecutionOwner("native-a-extraction-and-association");
         List<NativeAEmissionSolver.Result> results=null;
         try {
             budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.ALLOCATION,1);
             owner.reserve(4096);
             results=new ArrayList<>();List<String> ids=new ArrayList<>();
-            MultiScaleProfileSet profileSet=input.profiles();
+            MultiScaleProfileSet profileSet=binding==null?input.profiles():binding.profiles();
             var work=new NativeAPreprocessing(input,owner);
             work.reserve(256L+profileSet.levels().size()*64L);
-            double sourcePixel=input.context().trackerNormalizationRasterPx();
+            double sourcePixel=binding==null?input.context().trackerNormalizationRasterPx():binding.trackerNormalizationRasterPx();
             for(var level:profileSet.levels())validatePhysicalProfileSequence(level.profiles(),work);
             validateAlignedPhysicalSequences(profileSet,work);
             List<List<CorridorProfile>> extracted=profileSet.levels().stream()
@@ -131,7 +157,7 @@ public final class CorridorAwareTracker {
             for(CorridorTrack track:grouped.tracks()) {
                 budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.ALLOCATION,1);
                 owner.reserve(256);
-                results.add(optimizer.optimizeOptionalEmission(input,track,fine,junctions,evidence,barriers,cleanup,query,execution,nativeSource));
+                results.add(optimizer.optimizeOptionalEmission(input,track,fine,junctions,evidence,barriers,cleanup,query,execution,nativeSource,binding));
                 ids.add(track.id());
             }
             return new OptionalEmissionTracking(input,owner,results,ids);
