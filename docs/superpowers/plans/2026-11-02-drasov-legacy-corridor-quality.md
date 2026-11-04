@@ -16,10 +16,12 @@
 
 - Controller ledger HEAD updated continuously in v022-legacy-b-release; primary
   dirty user tree stays117baaf0, untouched. No RC/default adoption authorized.
-- Highest full-CI head88d4fa28: CI41833501937 PASS,2810tests/259XML, bothJOSM19555GUI PASS.
+- Highest full-CI headee94e707: CI41857618076 PASS,2875executions/264XML,
+  2780distinct,0failure/error/skip/malformed; bothGUI engines PASS. Public evidence
+  only downloaded, no private upload/JAR. Report drasov-ci-41857618076-report.md.
 - New reviewed-followups integration ee94e707 is independently CLOSED after one
   cross-Input progress fix;353combined then182affected tests GREEN. Branch
-  codex/drasov-reviewed-followups pushed; full CI41857618076 in progress. Old88
+  codex/drasov-reviewed-followups pushed; full CI41857618076 PASS. Old88
   source/classes and all measured worktrees/claims remain frozen.
 - Two originalR4/A screens (88 then435refusalreuse) BOTH hit128M, no geometry.
   Realized reuse counters unavailable after throw; no claimed speedup/zero hits.
