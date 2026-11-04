@@ -14,6 +14,59 @@
 
 ### Live execution map (read before older chronology)
 
+- Root ONE actual grouped32M run after R1 PASS: e4ac fingerprint,
+  claimgrouped-q0-d00-32m-001. Host/Java0 means receipts exported, NOT numerical
+  success. Typed kernel work refusal31,999,843, seed0BASErow12, no winner/M/QCTK,
+  67 complete evaluations,1 certified witness,0 strict certificate deferrals,
+  peak54508560B→0,6diskcache/0network/all24inputs unchanged. Result analysis and
+  independent output audit assigned. No automatic retry/cap increase/adoption;
+  next numerical decision must explain absent pruning from actual evidence.
+
+- Ordinary fast-path correction assigned a_native_integration in NEW b273-based
+  isolated tree: restore exact RC14 four-argument smoothing arithmetic, retain
+  current six-argument metered implementation/callers and factual filtered-profile
+  metadata. Bytecode diagnosis88db32a4 found2208 no-op checkpoints/null checks
+  per185-row ordinary track;35 common bodies/15 lambdas otherwise identical.
+  Timing warm drift prevents attributing all47% slowdown to those checks.
+  Regression/compiled-body parity and independent review precede new timing;
+  no arbitrary numeric slowdown tolerance waived or benchmark auto-retry.
+- Grouped32M helper fixR1 e4ac1d6b frozen, exactfixb135e5bc/wholee4683760,
+  actual synthetic success/prepayment/3observercap/cleanup controls GREEN,
+  Python5 GREEN. Scoped re-review assigned; actual private run still held.
+
+- M2 fix round1/5 at7d6: two P1s confirmed. Ruling: implement the smallest
+  managed-only prepaid final-publication split across existing source/witness/
+  Context/Input/Legacy receipt boundaries, because moving a charged freshness
+  call merely moves the mutation opportunity. All charges/copies/unpins precede
+  a complete charge-free freshness scan and publication; preserve old charged
+  callers, conservative work prepayment, sticky failure/cleanup. Synthetic-only
+  fa8 A publication helper is a precedent, not managed authority. Dependency
+  expansion is necessary to close P1 and will receive scoped independent review.
+
+- Ordinary Legacy comparison executed ONCE after cleanup under shared lock:
+  RC14 JAR af0fe6f4 versus b273,192 calls, full output bits/inputs/fences equal.
+  Three kernel-only median ratios current/RC14:1.470629 parallel,
+  0.856908 weak-gap,1.117316 reconstructed archive. NOT runtime preservation PASS;
+  real end-to-end still unmeasured. Report drasov-ordinary-legacy-runtime-report.md,
+  receipt b383f41d. Read-only diagnosis found actual added default smoothing
+  NONE-check/budget-null overhead and fuller suppressed-profile metadata; checking
+  callers before a bounded opt-in-only overhead repair. No blind timing retry.
+- M2 independent source audit identified unresolved alternative/uniqueness
+  tri-state handling and charged operations after final source validation;
+  exact findings being frozen. Do not adopt7d6 pending repair/re-review.
+
+- User-authorized cleanup restored experiment capacity: removed only registered
+  worktrees' build/tmp/compileJava and compileTestJava incremental caches/stashes,
+  generated Javadoc and HTML/CSS/JS test presentations. Source/classes/resources/
+  JARs/XML/logs/private captures/proofs/helpers preserved. Logical156042285B,
+  actual free441597952→666435584B; journal
+  drasov-temporary-cleanup-20261104.json. Legacy runtime hold lifted for ONE
+  prepared shared-lock comparison;512MiB guards unchanged.
+- M2 frozen7d6b81de from1b383d23, clean10-file delta45b513c8.366/30 tests
+  plus41/6 final stable-source tests green,367 unique. Independent substantive
+  source review assigned; .30/.60 native below-core UNKNOWN and missing grouped
+  composition remain explicit, no real Drasov improvement claim.
+
 - Recovery A db332b94 independently reviewed PASS; root ONE claim
   original-r4-host-export-recovery-01 completed exit0,13.239s host. Final report
   CERTIFIED/observation COMPLETE/gate true; per-track M3, J0.30259409391738523,
