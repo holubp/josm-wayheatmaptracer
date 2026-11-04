@@ -15,6 +15,26 @@ class OptionalEmissionContextTest {
     private static final String FIELD = "native";
 
     @Test
+    void detachedSourceChainageKeepsExactNativeMeasureAndSpan() {
+        Fixture f = fixture(EvidenceResolution.nativeSource(2, 1));
+        try (var owner = AttemptMemoryLedger.production().rootOwner();
+             var sampled = sample(f, budget(), owner)) {
+            var context = sampled.context();
+            var nativeS = context.profileChainage().cumulativeGroundMeters();
+            for (int row = 0; row < nativeS.size(); row++) {
+                assertEquals(Double.doubleToLongBits(nativeS.get(row)),
+                    Double.doubleToLongBits(context.sourceChainageMeters(row)));
+                assertEquals(0.0, context.sourceSpanUpperMeters(row, row));
+            }
+            double expected = nativeS.get(nativeS.size() - 1) - nativeS.get(0);
+            assertEquals(Double.doubleToLongBits(expected), Double.doubleToLongBits(
+                context.sourceSpanUpperMeters(0, nativeS.size() - 1)),
+                "Existing detached admission must not acquire an outward nextUp pad");
+            assertThrows(IllegalArgumentException.class, () -> context.sourceSpanUpperMeters(1, 0));
+        }
+    }
+
+    @Test
     void retainedInputKeepsActualNativeFieldAndUnchangedProfileEvidence() {
         Fixture f = fixture(EvidenceResolution.nativeSource(2, 1));
         var ledger = AttemptMemoryLedger.production();

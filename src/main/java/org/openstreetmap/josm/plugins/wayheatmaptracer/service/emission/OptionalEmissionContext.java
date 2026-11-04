@@ -109,6 +109,17 @@ public final class OptionalEmissionContext {
     public EvidenceResolution resolution() { return resolution; }
     public EvidenceFieldLineage lineage() { return lineage; }
     public ProfileChainage profileChainage() { return chainage; }
+    /** Source-position measure; detached and declared-synthetic inputs retain native row S exactly. */
+    public double sourceChainageMeters(int retainedRow) {
+        return observations.get(retainedRow).location().cumulativeGroundDistanceMeters();
+    }
+    /** Upper source-span admission; existing native-S inputs retain their exact historical difference. */
+    public double sourceSpanUpperMeters(int fromRetainedRow, int toRetainedRow) {
+        if (fromRetainedRow < 0 || toRetainedRow >= observations.size() || toRetainedRow < fromRetainedRow) {
+            throw new IllegalArgumentException("Source span rows are invalid");
+        }
+        return sourceChainageMeters(toRetainedRow) - sourceChainageMeters(fromRetainedRow);
+    }
     public double searchHalfWidthMeters() { return searchHalfWidthMeters; }
     public double lateralStepMeters() { return lateralStepMeters; }
     /** Maximum factual native pitch on the bound source interval; rendered fallback is never called native. */
