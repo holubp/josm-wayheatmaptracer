@@ -16,9 +16,10 @@
 
 - Controller ledger HEAD updated continuously in v022-legacy-b-release; primary
   dirty user tree stays117baaf0, untouched. No RC/default adoption authorized.
-- Highest full-CI headee94e707: CI41857618076 PASS,2875executions/264XML,
-  2780distinct,0failure/error/skip/malformed; bothGUI engines PASS. Public evidence
-  only downloaded, no private upload/JAR. Report drasov-ci-41857618076-report.md.
+- Highest full-CI heade774e364: CI41874502271 PASS,2944executions/272XML,
+  2843distinct,0failure/error/skip/malformed; bothJOSM19555GUI engines PASS.
+  Public evidence only downloaded, no private upload/JAR. Report
+  drasov-ci-41874502271-report.md. Earlier ee94 CI41857618076 also PASS.
 - New reviewed-followups integration ee94e707 is independently CLOSED after one
   cross-Input progress fix;353combined then182affected tests GREEN. Branch
   codex/drasov-reviewed-followups pushed; full CI41857618076 PASS. Old88
@@ -87,14 +88,34 @@
   captured monotone inverse; never equate native-straight census lines to actual
   query curves. Design/review drasov-managed-affinity-m1-m2-design-{packet,review}.md
   approve M1-only actual numeric Mode/point/support ownership; consumer disabled.
-  Implementer affinity_contract_probe assigned new isolated ee94-based worktree.
+  M1 source frozen775d5217 in josm-drasov-managed-affinity-m1 fromee94,
+  300tests/20XML0f/e/s. Actual query-point receipts/Mode numeric and physical
+  ownership only; consumer disabled. Original→retained peak-owner graph has
+  genuine RED/GREEN regression. Independent implementation review reconciles
+  numerical/query/owner contracts, initially NOT PASS: one terminal-cleanup finding
+  across Family.project, NativePointBinding.validate and metricAnchoredQuery.
+  Fixround1/5 CLOSED1b383d23,1addressed/0open: charged bodies abort immediately
+  on late work/cancel failure;38affectedtests/6XML0f/e/s, RED12/9fail. Review
+  drasov-managed-affinity-m1-implementation-review.md nowPASS. M1 integration
+  ontoe774 e074939f:393tests/33XML0f/e/s, independent merge audit CLOSED PASS
+  drasov-m1-integration-review.md. No production consumer or real run.
+  M2 bounded observed-only managed classifier assigned new1b-based isolatedtree,
+  no supplementary states/globalfuturefamily/threshold/optimizer changes. Typed
+  UNKNOWN/nativefallback retained wherever actual support/order/cut proof absent.
+  Concrete M2 geometry gap reviewedCLOSED for implementation in
+  drasov-managed-affinity-m2-dependency-design-review.md: charged continuous-F
+  inverse (not roundedmetricAt), actualnativeendpointbits, per-cell actual-piece
+  bounds for rotated usefulness; fixedinner/outer proof-only domains. Tested
+  connector must stay WHOLEinsideinner, with strict simple separating cut and
+  endpointoverhang. No source/authority/decisionwidth expansion; uncertainmargins
+  remainUNKNOWN. Couple minimaldependency+consumer, no unusedadapterframework.
   M2 remains conditional on independently reviewed M1; no user approval needed
   for this authorized experiment follow-on. Roundtrip differences remain factual.
 - New coherent A+noise integration e774e364 on9832 is frozen clean,
   406tests/31XML0f/e/s. Independent merge audit CLOSED; pushed development branch
   codex/drasov-a-noise-integration for full publicCI, noRC/release. Old8d source and
   classes remain frozen. Report drasov-a-noise-integration-report.md.
-  CI41874502271 at e774e364 now in progress; fullCIee94 remains highest verified.
+  CI41874502271 at e774e364 PASS; highest verified fullCI. Laterexperiments excluded.
   Strong A prefix-dominance packet drasov-a-prefix-dominance-diagnosis.md and
   independent drasov-a-prefix-dominance-design-review.md CLOSED for bounded
   implementation. Sufficient law requires BOTH cost and extension-stable tie
@@ -102,10 +123,31 @@
   obligations also filtered from final proof scans; freshness/replacement leases
   remain mandatory. Original A implementer assigned new isolated e774-based
   tree. No new R4 screen of this law yet.
+- Legacy competitive proof frozen8955baa5 in josm-drasov-legacy-competitive-proof,
+  parent678.206affected/18XML then19current/7XML and3vector checks GREEN (overlap,
+  not additive). Actual tiny raster2→1evals/92→33extracts,sameQCTK/winner for
+  seeds0/.25,maxfullKeylabels2. OnlyKernel/Progress+5newtests. Hard gates one seed,
+  2–3OBSERVEDrows,≤4paths,noevents/intervals,Qlower0. Whole source review active;
+  no real run or full adoption. Report drasov-legacy-competitive-proof-report.md.
+  Independent review CLOSED numerical core, NOT PASS solely inherited678
+  budget-only progress guard at new solveObservedSeedProof entry. Ruling: resolve
+  required ee94 dependency by integrating proof onto e774 (not copying guard back
+  into measured678). Exact-Input prevalidation must precede try/seal; retain
+  deterministic foreign same-budget proof-entry RED/GREEN. Fixround1/5 assigned.
+  Integration23bf48fb ontoe774 clean, ownership regression underverification.
+  Auto-review rejected temporary budget-only guard reenactment as integrity
+  weakening; edit NOT applied/no RED command executed. No retry/bypass. Preserve
+  current guard; use read-only8955 historical binary synthetic reproduction for
+  RED if cheap/compatible, otherwise retained source finding remains evidence.
+  Safe historical RED confirmed: expected IllegalArgumentException notthrown,
+  frozen8955 1177-class aggregateSHA unchanged before/after. Current guard never
+  modified. Integration current GREEN/regression batch underway.
 - Active owners: a_native_integration implements A-prefix dominance;
-  affinity_contract_probe implements reviewed M1 actual-Mode ownership with
-  consumer disabled; kernel_memory_closure implements a reviewed Legacy one-seed
-  cutoff proof slice from678. Ruling: exact grouped objective governs, do not
+  affinity_contract_probe implements conditional-approved M2;
+  managed_context_closure verifies M1 integration; kernel_memory_closure fixes
+  Legacy proof-entry dependency by integration ontoe774. Full-stage design/review
+  drasov-legacy-competitive-all-stage-design{,-review}.md CLOSED conditionally,
+  no full-stage code before core guard review. Ruling: exact grouped objective governs, do not
   claim old-bit parity for a prefix-merge exactness correction. Qlower0 allowed
   for minimal correctness slice only; not a Drasov feasibility result.
   Strong design/review drasov-legacy-competitive-strategy-{diagnosis,design-review}.md.
