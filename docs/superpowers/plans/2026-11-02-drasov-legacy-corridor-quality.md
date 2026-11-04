@@ -81,6 +81,62 @@ Implementation is authorized and active in the existing affinity worktree,
 preserving original source/geometry assertions and explicit policy identities.
 Affine-slab proof is an allowed first experiment, not a claim of real Drasov repair.
 
+Latest coherent evidence: managed safety follow-up3adc683d passes157tests/4suites,
+including identical acquisition/witness/factory budget ownership, sticky initial
+memory failure, factual minimum pitch, local actual-probe pitch, nonlinear physical
+spacing/authority and an actual source-arc>20m/chord<20m refusal. Independent review
+of49455 additionally found a valid36ULP endpoint example and below-one alias failure;
+the original one-ULP producer fix is NOT closed. The assigned replacement derives
+an outward error enclosure from actual final-row sum/target/division/interpolation
+arithmetic, preserving raw fraction/native point and separately proving endpoint
+alias. No larger arbitrary ULP band is authorized.
+
+The isolated kernel transport's two actual-managed tests now pass (source-S mass
+and analytic Q, exact boundary events, nonlinear smoothing/remeasurement). Its
+nonidentity original-row/source-origin control and neighboring suites remain in
+progress before independent review. A native solver has expanded focused evidence;
+its thin-strand test must inspect actual optimizer state geometry rather than infer
+representability from extractor-band or hypothesis counts alone. No real Drasov
+improvement, usable application integration, or release readiness is asserted yet.
+
+CI41803224213 at49d34e372a4329900b9872baa863c811c408e47c is now verified SUCCESS:
+239XMLsuites /2674executions /2580distincttests,0failures/errors/skips/malformed;
+public validation and both pinnedJOSM19555 GUI engines PASS. No private inputs
+executed, no RC/tag/release created. Report `drasov-ci-41803224213-report.md`.
+This qualifies the closed kernel/default-source-S integration only; later managed,
+affinity and A changes still require their own integrated regression evidence.
+
+Managed/source closure milestone: final91dee0d8 passes169tests/5suites and the
+independent `drasov-managed-final-resource-review.md` closes all scoped findings.
+Kernel managed transport ffeae28f passes159tests/9suites and its independent review
+is clean. Both are integrated at experimentala71708d3. GitHub's first push failed
+with server `commit_refs_rules`; one ordinary retry succeeded without changing any
+protection. CI41809033588 at exacta71708d328a17aff168bfe7e23cf804e6803c4ab is running.
+Tiny factual A normalization seam29bc1323 is integrated locally asa6c138bc, with
+11focusedtests; it is not included in that in-flight CI.
+
+Actual Drasov cache-only declared-fixture entry now reproduces185rows/301peaks
+exactly and old185-point ridge to1.068e-8 projected units. Dense/eager experimental
+Legacy reaches the unchanged128M work limit (127999933used,9041pairs,163715904bytes
+peak, zeroafterclose;39.5s kernel), no M/QCTK result. This is a negative practical
+result, not a quality pass. Six real disk-cache receipts, zero transport calls.
+Original archive lacks tags/full referrer/relation context: original-authority
+factory refusal stays explicit. Independent `drasov-real-image-fixture-ruling.md`
+permits a separately declared geometry/fixed-anchor fixture for read-only numerical
+testing; it cannot satisfy original Apply/strict-replay/release authority gates.
+Next bounded experiment exposes existing reviewed ZERO_GUARDED_LOCAL_V1 plus
+STOP_ON_FINAL_MODE_FAILURE_V1 through an explicit Legacy overload; default remains
+dense/eager. One source-bound capped comparison follows tests/review, not tuning.
+
+Affinity owner fixround1 e59a3780 addresses stale/terminal boundaries but introduced
+raw-reservation transfer undercount; fixround2 c0cdc60c adopts actual retained
+objects and is under scoped independent review. No global ledger change. Revised
+classifier/solver currently uncommitted:17combinedtests pass, including original
+.30/.60 geometry assertions through the explicitly revised entry. Each stays on
+one strand in inference/final geometry (Q31.6980385 /19.7705871,C/T/K0),38.33/38.34M
+work and42.64/42.77MB peak. Original v2 baseline remains callable. Remaining affine
+chart/cell/tie/oracle controls and actual-data fitting gates are still open.
+
 ## Prior execution evidence — 2026-11-03
 
 Execution resumed by explicit user instruction to finish remaining steps1–4.
