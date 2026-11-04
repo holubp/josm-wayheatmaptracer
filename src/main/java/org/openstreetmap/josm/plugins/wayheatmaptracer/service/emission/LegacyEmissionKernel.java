@@ -829,6 +829,10 @@ public final class LegacyEmissionKernel {
             List<NativeConnectorEvaluator.RowState> evaluatorStates, OrdinaryAffinityClassifier affinity,
             ManagedOrdinaryAffinity managedAffinity) { }
 
+    private Inventory inventory(LegacyEmissionDomain domain,EmissionWorkBudget budget,AttemptMemoryLedger.Owner owner,
+            OrdinaryAffinityClassifier affinity){
+        return inventory(domain,budget,owner,affinity,null);
+    }
     private Inventory inventory(LegacyEmissionDomain domain,
             EmissionWorkBudget budget, AttemptMemoryLedger.Owner owner, OrdinaryAffinityClassifier affinity,
             ManagedOrdinaryAffinity managedAffinity) {
