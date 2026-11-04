@@ -1318,7 +1318,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     }
 
     private double[] probeParameters(RasterPoint a,RasterPoint b,double length,double pitch,AttemptMemoryLedger.Owner evaluation) {
-        ScalarFieldGridView grid=context.nativeGrid();var ga=grid.toGrid(a);var gb=grid.toGrid(b);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.service.NativeScalarGridView grid=context.nativeGrid();var ga=grid.toGrid(a);var gb=grid.toGrid(b);
         double dx=gb.x()-ga.x(),dy=gb.y()-ga.y();
         int steps=Math.max(1,checkedCount(Math.ceil(length/(.5*pitch))));
         long capacity=Math.addExact(4L+steps,Math.addExact(checkedCount(Math.ceil(Math.abs(dx))),checkedCount(Math.ceil(Math.abs(dy)))));

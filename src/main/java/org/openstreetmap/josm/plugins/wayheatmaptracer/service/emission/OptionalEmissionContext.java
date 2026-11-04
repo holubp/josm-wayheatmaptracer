@@ -12,6 +12,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.DetachedProfileSamplingLocation;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.MultiScaleProfileSet;
@@ -19,6 +20,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PolylineMath;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.RetainedScalarProfiles;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ScalarFieldGridView;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ScalarIntensityField;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.NativeScalarGridView;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ProfileSamplingLocation;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /** Immutable source facts; neither factual eligibility nor this context grants admitted execution. */
 public final class OptionalEmissionContext {
@@ -27,10 +32,10 @@ public final class OptionalEmissionContext {
     public enum Eligibility { FACTUAL_DETACHED, DECLARED_SYNTHETIC, SYNTHETIC_SOURCE,
         NATIVE_PITCH_UNAVAILABLE, FILTERED_SOURCE }
     /** Original observation identity within this source binding, with a frozen normal. */
-    public record Observation(int index, DetachedProfileSamplingLocation location, RasterPoint normal) { }
+    public record Observation(int index, ProfileSamplingLocation location, RasterPoint normal) { }
 
     private final ScalarIntensityField nativeField;
-    private final ScalarFieldGridView nativeGrid;
+    private final NativeScalarGridView nativeGrid;
     private final List<Observation> observations;
     private final MultiScaleProfileSet producedProfiles;
     private final MetricRegion decisionRegion;
@@ -100,7 +105,7 @@ public final class OptionalEmissionContext {
     }
 
     public ScalarIntensityField nativeField() { return nativeField; }
-    public ScalarFieldGridView nativeGrid() { return nativeGrid; }
+    public NativeScalarGridView nativeGrid() { return nativeGrid; }
     public List<Observation> observations() { return observations; }
     public MetricRegion decisionRegion() { return decisionRegion; }
     public MetricRegion evidenceRegion() { return evidenceRegion; }
@@ -127,6 +132,47 @@ public final class OptionalEmissionContext {
     public double outputRasterPitchMeters() { return resolution.outputRasterPitchMeters(); }
     /** Detached producer coordinates already use the L0 raster frame. */
     public double profileCoordinateScale() { return 1.0; }
+    /** Maps original producer raster coordinates, including its normal/offset units. */
+    public MetricPoint metricAt(RasterPoint point) {
+        return rasterTransform.pixelCenterToMetric(point.x(), point.y());
+    }
+    public RasterPoint rasterAt(MetricPoint point) { return rasterTransform.metricToPixelCenter(point); }
+    /** Factual source-pitch lookup in the source chainage measure. */
+    public double nativePitchAtSourceChainage(double sourceMeters) {
+        return resolution.effectivePitchMetersAt(chainage.sourceOriginGroundMeters() + sourceMeters);
+    }
+    public double outputPitchAt(MetricPoint point) { return resolution.outputRasterPitchMeters(); }
+    /** Captured displacement of one original normal-offset unit; preserves detached affine arithmetic. */
+    public double metricNormalPitchAtRow(int row) {
+        var normal = observations.get(row).normal();
+        var transform = rasterTransform;
+        double scale = transform.axisUnit() == RasterMetricTransform.AxisUnit.SOURCE_PIXEL
+            ? transform.rasterPixelsPerSourcePixel() : 1;
+        return Math.hypot((normal.x() * transform.xAxisEastMetersPerSourcePixel()
+                + normal.y() * transform.yAxisEastMetersPerSourcePixel()) / scale,
+            (normal.x() * transform.xAxisNorthMetersPerSourcePixel()
+                + normal.y() * transform.yAxisNorthMetersPerSourcePixel()) / scale);
+    }
+    public boolean routePositionAuthorized(MetricPoint point, EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner scratchOwner) {
+        return decisionRegion.containsConservatively(point, CancellationProbe.NONE,
+            units -> budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, units));
+    }
+    public boolean evidencePositionAuthorized(MetricPoint point, EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner scratchOwner) {
+        return evidenceRegion.containsConservatively(point, CancellationProbe.NONE,
+            units -> budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, units));
+    }
+    public boolean routeSegmentAuthorized(RasterPoint from, RasterPoint to, EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner scratchOwner) {
+        return decisionRegion.containsSegment(metricAt(from), metricAt(to), CancellationProbe.NONE,
+            units -> budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, units), scratchOwner);
+    }
+    public boolean evidenceSegmentAuthorized(RasterPoint from, RasterPoint to, EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner scratchOwner) {
+        return evidenceRegion.containsSegment(metricAt(from), metricAt(to), CancellationProbe.NONE,
+            units -> budget.charge(EmissionWorkBudget.Operation.REGION_QUERY, units), scratchOwner);
+    }
     public String sourceIdentity() { return sourceIdentity; }
     public String evidenceContentHash() { return evidenceContentHash; }
     public String requestIdentity() { return requestIdentity; }
