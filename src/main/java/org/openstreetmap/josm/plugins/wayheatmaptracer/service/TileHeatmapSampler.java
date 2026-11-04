@@ -194,6 +194,16 @@ public final class TileHeatmapSampler {
         }
         public TileMosaicSet mosaics() { request.requireMatches(selectedMosaic); return mosaics; }
         public TileMosaic selectedMosaic() { request.requireMatches(selectedMosaic); return selectedMosaic; }
+        /** Same captured EffectiveSampling value consumed by the normal managed Legacy tracker. */
+        public double trackerNormalizationRasterPx() {
+            request.requireMatches(selectedMosaic);
+            return AlignmentService.fixedTileEffectiveSampling(selectedMosaic).trackerNormalizationRasterPx();
+        }
+        public int originalProfileCount() {
+            request.requireMatches(selectedMosaic);
+            return legacySamplingShape(PolylineMath.length(request.originalSource()),
+                    request.originalSource().size(), selectedMosaic.parameters()).profiles();
+        }
         public ManagedSourceRequestReceipt originalRequest() {
             request.requireMatches(selectedMosaic);
             return request;
@@ -384,6 +394,11 @@ public final class TileHeatmapSampler {
             if (witness != null) capture.requireSelectionCurrent(budget, parentOwner);
             complete = true;
             return capture;
+        } catch (RuntimeException failure) {
+            if (failure instanceof AttemptMemoryLedger.ResourceLimitException
+                    || failure instanceof EmissionWorkBudget.LimitExceededException
+                    || failure instanceof java.util.concurrent.CancellationException) budget.failTerminally(failure);
+            throw failure;
         } finally {
             if (!complete) { mosaicOwner.close(); request.close(); }
         }
@@ -481,6 +496,24 @@ public final class TileHeatmapSampler {
     }
 
     /** Experimental retained scalar source for the existing managed Legacy profile path. */
+    public org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput
+            sampleProfilesForEmission(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.OptionalEmissionContextFactory.ManagedCaptureBinding binding,
+            CancellationProbe cancellation) {
+        java.util.Objects.requireNonNull(binding, "managed source binding");
+        binding.beginProduction();
+        try {
+            var retained = sampleProfilesRetainingL0(binding.capture(), binding.detectorMode(),
+                    IntensitySamplingMode.COLOR_MAPPING, binding.workBudget(), binding.retainedOwner(), cancellation);
+            return org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.OptionalEmissionContextFactory
+                    .fromManagedCapture(binding, retained);
+        } catch (RuntimeException failure) {
+            binding.failProduction(failure);
+            throw failure;
+        }
+    }
+
+    /** Experimental retained scalar source for the existing managed Legacy profile path. */
     public RetainedManagedScalarProfiles sampleProfilesRetainingL0(
             TileMosaic mosaic, List<EastNorth> sourcePolyline, String detectorMode,
             IntensitySamplingMode intensityMode, Projection projection, EmissionWorkBudget budget,
@@ -565,13 +598,17 @@ public final class TileHeatmapSampler {
                     : ManagedGroundTransform.fromPreparedCapture(capture, budget, owner);
             SourceParameterCertificate certificate = capture == null ? null
                     : SourceParameterCertificate.fromManagedProducer(capture, sourceParameters,
-                            dense, ground, budget, owner);
+                            dense, anchors, ground, budget, owner);
             var retained = new RetainedManagedScalarProfiles(mosaic, grid, profileSet, owner,
-                    capture, certificate, ground);
+                    capture, certificate, ground, parentOwner, budget);
             profileReservation.adopt(retained);
             return retained;
         } catch (RuntimeException | Error failure) {
             owner.close();
+            if (failure instanceof AttemptMemoryLedger.ResourceLimitException
+                    || failure instanceof EmissionWorkBudget.LimitExceededException
+                    || failure instanceof java.util.concurrent.CancellationException)
+                budget.failTerminally((RuntimeException) failure);
             throw failure;
         }
     }

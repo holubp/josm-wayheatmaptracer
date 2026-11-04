@@ -98,6 +98,8 @@ public final class LegacyEmissionBinding {
     private final boolean productionEligible;
     private final AttemptMemoryLedger.Reservation retainedMetadata;
     private final DeclaredSyntheticRasterReceipt syntheticRasterReceipt;
+    private final OptionalEmissionContextFactory.ManagedCaptureBinding managedPermit;
+    private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.SourceParameterCertificate managedSourceParameters;
 
     LegacyEmissionBinding(
         OptionalEmissionContextFactory.SourceBinding sourcePermit,
@@ -135,6 +137,8 @@ public final class LegacyEmissionBinding {
         this.protectedOccurrences = List.copyOf(protectedOccurrences);
         this.sourceChainageOriginMeters = sourcePermit.chainage().sourceOriginGroundMeters();
         this.sourcePermit = sourcePermit;
+        this.managedPermit = null;
+        this.managedSourceParameters = null;
         this.producedProfiles = producedProfiles;
         this.origin = sourcePermit.origin();
         this.productionAttestation = java.util.Optional.empty();
@@ -146,6 +150,76 @@ public final class LegacyEmissionBinding {
         validateProtectedOccurrences();
         this.nativeProfileSnapshots = syntheticRasterReceipt == null ? List.of()
             : observations.stream().map(NativeProfileSnapshot::capture).toList();
+    }
+
+    private LegacyEmissionBinding(OptionalEmissionContextFactory.ManagedCaptureBinding permit,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.RetainedManagedScalarProfiles retained,
+            OptionalEmissionContext context, AttemptMemoryLedger.Reservation metadata) {
+        sourcePermit = null;
+        managedPermit = permit;
+        managedSourceParameters = retained.sourceParameters().orElseThrow();
+        producedProfiles = retained.profileSet();
+        origin = OptionalEmissionContext.Origin.MANAGED_CAPTURE;
+        trackerNormalizationRasterPx = permit.capture().trackerNormalizationRasterPx();
+        sourceChainageOriginMeters = 0.0;
+        List<Integer> mapping = new java.util.ArrayList<>();
+        List<OriginalObservation> rows = new java.util.ArrayList<>();
+        for (int row = 0; row < retained.profiles().size(); row++) {
+            permit.workBudget().charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            var profile = retained.profiles().get(row);
+            List<PeakOwner> peaks = new java.util.ArrayList<>();
+            for (int peak = 0; peak < profile.peaks().size(); peak++) {
+                permit.workBudget().charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+                peaks.add(new PeakOwner(peak, profile.peaks().get(peak)));
+            }
+            boolean censored = !profile.anchorWithinRaster()
+                || profile.intensitySamples().stream().anyMatch(sample -> !sample.insideRaster());
+            SourceClass sourceClass = censored ? SourceClass.CENSORED
+                : isUnsupportedProfile(profile) ? SourceClass.GAP : SourceClass.OBSERVED;
+            mapping.add(row);
+            rows.add(new OriginalObservation(row, row, profile, sourceClass, peaks));
+        }
+        originalRowToRetainedObservation = List.copyOf(mapping);
+        observations = List.copyOf(rows);
+        List<ProtectedOccurrence> events = new java.util.ArrayList<>();
+        for (var occurrence : managedSourceParameters.originalOccurrences()) {
+            permit.workBudget().charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            if (occurrence.protectedOccurrence()) events.add(new ProtectedOccurrence(
+                occurrence.occurrenceId(), occurrence.leftRow(), occurrence.rightRow(),
+                occurrence.sourceChainageMeters(), occurrence.exactMetric(), true));
+        }
+        protectedOccurrences = List.copyOf(events);
+        if (events.size() < 2 || !context.productionEligible()) {
+            throw new IllegalArgumentException("Managed mandatory occurrence authority is incomplete");
+        }
+        retainedMetadata = metadata;
+        syntheticRasterReceipt = null;
+        productionAttestation = java.util.Optional.of(new ProductionAttestation());
+        productionEligible = true;
+        validateRowSequence();
+        validateProtectedOccurrences();
+        nativeProfileSnapshots = observations.stream().map(NativeProfileSnapshot::capture).toList();
+        context.requireProfilesUnchanged(producedProfiles);
+    }
+
+    static LegacyEmissionBinding fromManagedCapture(
+            OptionalEmissionContextFactory.ManagedCaptureBinding permit,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.RetainedManagedScalarProfiles retained,
+            OptionalEmissionContext context) {
+        permit.workBudget().charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+        long peaks = 0;
+        for (var profile : retained.profiles()) {
+            permit.workBudget().charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            peaks = Math.addExact(peaks, profile.peaks().size());
+        }
+        var reservation = permit.retainedOwner().reserve(Math.addExact(8192L,
+            Math.addExact(Math.multiplyExact((long) retained.profiles().size(), 1024L),
+                Math.multiplyExact(peaks, 96L))));
+        try {
+            var result = new LegacyEmissionBinding(permit, retained, context, reservation);
+            reservation.adopt(result);
+            return result;
+        } catch (RuntimeException failure) { reservation.close(); throw failure; }
     }
 
     private final List<NativeProfileSnapshot> nativeProfileSnapshots;
@@ -220,17 +294,19 @@ public final class LegacyEmissionBinding {
                     && !occurrence.exactPosition().equals(previous.exactPosition())) {
                 throw new IllegalArgumentException("Equal-chainage protected occurrences conflict in exact position");
             }
-            double left = sourceChainageOriginMeters
-                + localChainage(observations.get(occurrence.leftOriginalRow()).profile());
-            double right = sourceChainageOriginMeters
-                + localChainage(observations.get(occurrence.rightOriginalRow()).profile());
+            double left = managedSourceParameters == null ? sourceChainageOriginMeters
+                + localChainage(observations.get(occurrence.leftOriginalRow()).profile())
+                : managedSourceParameters.sourceChainageMeters(occurrence.leftOriginalRow());
+            double right = managedSourceParameters == null ? sourceChainageOriginMeters
+                + localChainage(observations.get(occurrence.rightOriginalRow()).profile())
+                : managedSourceParameters.sourceChainageMeters(occurrence.rightOriginalRow());
             if (occurrence.sourceChainageMeters() < left || occurrence.sourceChainageMeters() > right) {
                 throw new IllegalArgumentException("Legacy protected occurrence is outside its original-row bracket");
             }
-            if (Double.doubleToLongBits(occurrence.sourceChainageMeters()) == Double.doubleToLongBits(left)) {
+            if (managedSourceParameters == null && Double.doubleToLongBits(occurrence.sourceChainageMeters()) == Double.doubleToLongBits(left)) {
                 requireExactPosition(occurrence, observations.get(occurrence.leftOriginalRow()).profile());
             }
-            if (Double.doubleToLongBits(occurrence.sourceChainageMeters()) == Double.doubleToLongBits(right)) {
+            if (managedSourceParameters == null && Double.doubleToLongBits(occurrence.sourceChainageMeters()) == Double.doubleToLongBits(right)) {
                 requireExactPosition(occurrence, observations.get(occurrence.rightOriginalRow()).profile());
             }
             previousId = occurrence.occurrenceId();
@@ -285,7 +361,8 @@ public final class LegacyEmissionBinding {
     }
 
     void requireNativeProfilesUnchanged(EmissionWorkBudget budget) {
-        if (syntheticRasterReceipt == null) return;
+        if (managedPermit != null) managedPermit.requireCurrent();
+        if (syntheticRasterReceipt == null && managedPermit == null) return;
         for (int index = 0; index < observations.size(); index++) {
             budget.charge(EmissionWorkBudget.Operation.PREPARATION,
                 1L + nativeProfileSnapshots.get(index).peaks().size());

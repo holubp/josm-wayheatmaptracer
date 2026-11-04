@@ -61,7 +61,7 @@ public final class PolylineMath {
     public record SourceParameter(int segmentIndex, double fraction, EastNorth point) {
         public SourceParameter {
             if (segmentIndex < 0 || !Double.isFinite(fraction) || fraction < 0.0
-                    || fraction > 1.0 || point == null) {
+                    || fraction > Math.nextUp(1.0) || point == null) {
                 throw new IllegalArgumentException("Invalid source parameter");
             }
         }

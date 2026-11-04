@@ -26,6 +26,9 @@ public final class SourceParameterCertificate {
             }
         }
     }
+    /** Producer-parameter alias with explicit outward coordinate roundoff enclosures. */
+    public record SourceAlias(int row, int originalVertex, double rawFraction,
+            double projectedErrorUpper, double metricErrorUpperMeters) { }
 
     /** Frozen original selected occurrence and its source-parameter bracket. */
     public record OriginalOccurrence(String occurrenceId, int fullWayIndex, long osmNodeId,
@@ -46,12 +49,16 @@ public final class SourceParameterCertificate {
     private final List<Double> sourceVertexS;
     private final List<Double> adjacentUpper;
     private final List<OriginalOccurrence> originalOccurrences;
+    private final List<Arc> rowArcs;
+    private final List<Arc> vertexArcs;
+    private final List<SourceAlias> aliases;
     private final EmissionWorkBudget budget;
     private final AttemptMemoryLedger.Owner owner;
 
     private SourceParameterCertificate(List<PolylineMath.SourceParameter> rows,
             List<Double> rowS, List<Double> sourceVertexS, List<Double> adjacentUpper,
-            List<OriginalOccurrence> originalOccurrences,
+            List<OriginalOccurrence> originalOccurrences, List<Arc> rowArcs,
+            List<Arc> vertexArcs, List<SourceAlias> aliases,
             EmissionWorkBudget budget,
             AttemptMemoryLedger.Owner owner) {
         this.rows = rows;
@@ -59,6 +66,7 @@ public final class SourceParameterCertificate {
         this.sourceVertexS = sourceVertexS;
         this.adjacentUpper = adjacentUpper;
         this.originalOccurrences = originalOccurrences;
+        this.rowArcs = rowArcs; this.vertexArcs = vertexArcs; this.aliases = aliases;
         this.budget = budget;
         this.owner = owner;
     }
@@ -67,6 +75,7 @@ public final class SourceParameterCertificate {
     public static SourceParameterCertificate fromManagedProducer(
             TileHeatmapSampler.PreparedManagedCapture capture,
             List<PolylineMath.SourceParameter> producedRows, List<EastNorth> dense,
+            List<ProfileSamplingAnchor> anchors,
             ManagedGroundTransform ground, EmissionWorkBudget budget,
             AttemptMemoryLedger.Owner parent) {
         Objects.requireNonNull(capture, "prepared capture");
@@ -86,14 +95,16 @@ public final class SourceParameterCertificate {
         boolean complete = false;
         try {
             long bytes = Math.addExact(4096L, Math.addExact(
-                    Math.multiplyExact((long) producedRows.size(), 160L),
-                    Math.multiplyExact((long) original.size(), 256L)));
+                    Math.multiplyExact((long) producedRows.size(), 384L),
+                    Math.multiplyExact((long) original.size(), 512L)));
             var reservation = owner.reserve(bytes);
             double worldSize = TileHeatmapSampler.TILE_SIZE * Math.scalb(1.0, capture.selectedMosaic().zoom());
             double eastScale = ground.frame().distortionCertificate().eastMetersPerRadian();
             double northScale = ground.frame().distortionCertificate().northMetersPerRadian();
             List<Arc> segments = new ArrayList<>(world.size() - 1);
             List<Double> vertexS = new ArrayList<>(world.size());
+            List<Arc> vertexArcs = new ArrayList<>(world.size());
+            vertexArcs.add(new Arc(0, 0, 0));
             vertexS.add(0.0);
             for (int segment = 0; segment < world.size() - 1; segment++) {
                 budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
@@ -102,9 +113,12 @@ public final class SourceParameterCertificate {
                 if (full.lower() <= 0.0) throw new IllegalArgumentException("Source segment has no ground length");
                 segments.add(full);
                 vertexS.add(vertexS.get(segment) + full.numerical());
+                vertexArcs.add(add(vertexArcs.get(segment), full));
             }
             List<Double> rowS = new ArrayList<>(producedRows.size());
             List<Double> adjacentUpper = new ArrayList<>(producedRows.size() - 1);
+            List<Arc> rowArcs = new ArrayList<>(producedRows.size());
+            List<SourceAlias> aliases = new ArrayList<>();
             PolylineMath.SourceParameter previous = null;
             for (int row = 0; row < producedRows.size(); row++) {
                 budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
@@ -116,15 +130,29 @@ public final class SourceParameterCertificate {
                 }
                 int segment = parameter.segmentIndex();
                 double t = parameter.fraction();
-                Arc partial = integrate(world.get(segment), world.get(segment + 1), 0.0, t,
+                // Preserve the native fraction/point; only its certified source parameter aliases
+                // the original final boundary under a separately retained roundoff enclosure.
+                boolean finalAlias = row == producedRows.size() - 1
+                    && segment == segments.size() - 1 && Math.abs(t - 1.0) <= Math.ulp(1.0);
+                if (t > 1.0 && !finalAlias) throw new IllegalArgumentException("Nonterminal source parameter exceeds segment");
+                double certifiedT = finalAlias ? 1.0 : t;
+                Arc partial = integrate(world.get(segment), world.get(segment + 1), 0.0, certifiedT,
                         worldSize, eastScale, northScale, budget);
-                double s = vertexS.get(segment) + partial.numerical();
+                if (finalAlias) partial = segments.get(segment);
+                Arc rowArc = add(vertexArcs.get(segment), partial);
+                double s = certifiedT == 1.0 ? vertexS.get(segment + 1) : rowArc.numerical();
+                rowArcs.add(new Arc(s, rowArc.lower(), rowArc.upper()));
+                int aliasVertex = certifiedT == 0.0 ? segment : certifiedT == 1.0 ? segment + 1 : -1;
+                if (aliasVertex >= 0) aliases.add(certifyAlias(row, aliasVertex, parameter,
+                    original, anchors.get(row).rasterPoint(), ground, capture, budget));
                 if (previous != null) {
                     if (segment < previous.segmentIndex()
                             || segment == previous.segmentIndex() && t <= previous.fraction()) {
                         throw new IllegalArgumentException("Dense source parameters are not strictly ordered");
                     }
-                    Arc span = span(world, previous, parameter, worldSize, eastScale, northScale, budget);
+                    var certifiedPrevious = normalizedBoundary(previous, row == producedRows.size() - 1);
+                    var certifiedCurrent = normalizedBoundary(parameter, finalAlias);
+                    Arc span = span(world, certifiedPrevious, certifiedCurrent, worldSize, eastScale, northScale, budget);
                     adjacentUpper.add(span.upper());
                     if (span.lower() <= 0.0 || s <= rowS.get(row - 1)) {
                         throw new IllegalArgumentException("Dense source arclength is ambiguous");
@@ -175,6 +203,7 @@ public final class SourceParameterCertificate {
             }
             var result = new SourceParameterCertificate(List.copyOf(producedRows), List.copyOf(rowS),
                     List.copyOf(vertexS), List.copyOf(adjacentUpper), List.copyOf(originalOccurrences),
+                    List.copyOf(rowArcs), List.copyOf(vertexArcs), List.copyOf(aliases),
                     budget, owner);
             reservation.adopt(result);
             complete = true;
@@ -182,6 +211,40 @@ public final class SourceParameterCertificate {
         } finally {
             if (!complete) owner.close();
         }
+    }
+    private static PolylineMath.SourceParameter normalizedBoundary(PolylineMath.SourceParameter p, boolean alias) {
+        return alias && Math.abs(p.fraction() - 1.0) <= Math.ulp(1.0)
+            ? new PolylineMath.SourceParameter(p.segmentIndex(), 1.0, p.point()) : p;
+    }
+    private static Arc add(Arc a, Arc b) {
+        double numerical = a.numerical() + b.numerical();
+        return new Arc(numerical, Math.max(0, Math.nextDown(a.lower() + b.lower())),
+                Math.nextUp(a.upper() + b.upper()));
+    }
+    private static SourceAlias certifyAlias(int row, int vertex, PolylineMath.SourceParameter parameter,
+            List<EastNorth> original, RasterPoint actualRaster, ManagedGroundTransform ground,
+            TileHeatmapSampler.PreparedManagedCapture capture, EmissionWorkBudget budget) {
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+        EastNorth target = original.get(vertex), point = parameter.point();
+        double coordinateRoundoff = 32.0 * Math.max(Math.ulp(Math.abs(target.east())),
+                Math.ulp(Math.abs(target.north())));
+        double fractionRoundoff = Math.abs(parameter.fraction() - (vertex == parameter.segmentIndex() ? 0.0 : 1.0))
+                * original.get(parameter.segmentIndex()).distance(original.get(parameter.segmentIndex() + 1));
+        double projectedUpper = Math.nextUp(coordinateRoundoff + fractionRoundoff);
+        if (point.distance(target) > projectedUpper) {
+            throw new IllegalArgumentException("Producer endpoint alias exceeds its arithmetic roundoff enclosure");
+        }
+        // EPSG:3857 projected metres bound local ground displacement. The captured frame
+        // certificate provides the geographic scale; 2x encloses that scale plus inverse roundoff.
+        double metricUpper = Math.nextUp(projectedUpper * 2.0 + 1e-6);
+        if (capture.selectionWitness().isPresent()) {
+            var coordinate = capture.selectionWitness().orElseThrow().frozenSelectedFacts().get(vertex).coordinate();
+            MetricPoint exact = ground.frame().toMetric(new GeographicPoint(coordinate.lat(), coordinate.lon()));
+            if (ground.metricAt(actualRaster).distanceTo(exact) > metricUpper) {
+                throw new IllegalArgumentException("Source-parameter alias exceeds its retained metric roundoff enclosure");
+            }
+        }
+        return new SourceAlias(row, vertex, parameter.fraction(), projectedUpper, metricUpper);
     }
 
     private static Arc span(List<RasterPoint> world, PolylineMath.SourceParameter first,
@@ -273,6 +336,9 @@ public final class SourceParameterCertificate {
     public List<OriginalOccurrence> originalOccurrences() {
         requireOpen(); return originalOccurrences;
     }
+    public Arc rowArc(int row) { requireOpen(); return rowArcs.get(row); }
+    public Arc originalVertexArc(int vertex) { requireOpen(); return vertexArcs.get(vertex); }
+    public List<SourceAlias> aliases() { requireOpen(); return aliases; }
     /** Adds direct per-row arc upper bounds, never subtracts independent prefix enclosures. */
     public double sourceSpanUpperMeters(int fromRow, int toRow) {
         requireOpen();

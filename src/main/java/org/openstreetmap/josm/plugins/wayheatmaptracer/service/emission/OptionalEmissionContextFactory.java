@@ -24,6 +24,124 @@ public final class OptionalEmissionContextFactory {
     private OptionalEmissionContextFactory() { }
     private static final double R4_SYNTHETIC_ROUNDOFF_BOUND = 1.0e-12;
 
+    /** Opaque, single-use permit for the actual prepared managed source and its live selection. */
+    public static final class ManagedCaptureBinding implements AutoCloseable {
+        private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler.PreparedManagedCapture capture;
+        private final java.util.function.Supplier<org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig> currentSettings;
+        private final EmissionWorkBudget budget;
+        private final AttemptMemoryLedger.Owner owner;
+        private final AttemptMemoryLedger.Reservation metadata;
+        private final org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode alignmentMode;
+        private boolean producing, published;
+        private RuntimeException terminalFailure;
+
+        private ManagedCaptureBinding(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler.PreparedManagedCapture capture,
+                java.util.function.Supplier<org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig> currentSettings,
+                EmissionWorkBudget budget, AttemptMemoryLedger.Owner owner,
+                AttemptMemoryLedger.Reservation metadata) {
+            this.capture = capture; this.currentSettings = currentSettings;
+            this.budget = budget; this.owner = owner; this.metadata = metadata;
+            this.alignmentMode = currentSettings.get().alignmentMode();
+        }
+        public org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler.PreparedManagedCapture capture() { return capture; }
+        public String detectorMode() { return capture.originalRequest().selectedColor(); }
+        public EmissionWorkBudget workBudget() { return budget; }
+        public AttemptMemoryLedger.Owner retainedOwner() { return owner; }
+        public synchronized void beginProduction() {
+            requireCurrent();
+            if (producing || published) throw new IllegalStateException("Managed source permit is single use");
+            producing = true;
+        }
+        synchronized void requireCurrent() {
+            if (terminalFailure != null) throw terminalFailure;
+            if (owner.isClosed()) throw new IllegalStateException("Managed source permit is closed");
+            var settings = currentSettings.get();
+            capture.requireSourceCurrent(settings, budget);
+            if (settings.trackerMode() != org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.LEGACY_V02
+                    || settings.alignmentMode() != alignmentMode || settings.adjustJunctionNodes()) {
+                throw new IllegalStateException("Managed captured alignment permissions changed");
+            }
+            capture.requireSelectionCurrent(budget, owner);
+            var witness = capture.selectionWitness().orElseThrow();
+            if (org.openstreetmap.josm.gui.MainApplication.getLayerManager().getEditDataSet() != witness.dataSet()) {
+                throw new IllegalStateException("Managed selected dataset is not the active edit layer");
+            }
+        }
+        public synchronized void failProduction(RuntimeException failure) {
+            if (terminalFailure == null) terminalFailure = failure;
+            budget.failTerminally(failure);
+            owner.close();
+        }
+        @Override public synchronized void close() { if (!published) owner.close(); }
+    }
+
+    /** Admits source-owned metadata before the one native grid/profile producer. No acquisition is added. */
+    public static ManagedCaptureBinding bindManagedCapture(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler.PreparedManagedCapture capture,
+            java.util.function.Supplier<org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig> currentSettings,
+            EmissionWorkBudget budget, AttemptMemoryLedger.Owner parent) {
+        java.util.Objects.requireNonNull(capture, "prepared capture");
+        java.util.Objects.requireNonNull(currentSettings, "current managed settings");
+        java.util.Objects.requireNonNull(budget, "shared budget");
+        java.util.Objects.requireNonNull(parent, "attempt owner");
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+        var settings = currentSettings.get();
+        if (settings == null || settings.trackerMode()
+                != org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.LEGACY_V02
+                || settings.intensitySamplingMode()
+                    != org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode.COLOR_MAPPING
+                || settings.adjustJunctionNodes() || capture.selectionWitness().isEmpty()) {
+            throw new IllegalArgumentException("Managed emission requires native Legacy source and fixed selected occurrences");
+        }
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+        var owner = parent.child("managed-emission-input");
+        try {
+            var reservation = owner.reserve(Math.addExact(16384L, Math.addExact(Math.multiplyExact(
+                    (long) capture.originalRequest().originalSource().size(), 2048L),
+                    Math.multiplyExact((long) capture.originalProfileCount(), 1024L))));
+            var binding = new ManagedCaptureBinding(capture, currentSettings, budget, owner, reservation);
+            binding.requireCurrent();
+            return binding;
+        } catch (RuntimeException failure) {
+            if (failure instanceof AttemptMemoryLedger.ResourceLimitException
+                    || failure instanceof EmissionWorkBudget.LimitExceededException
+                    || failure instanceof CancellationException) budget.failTerminally(failure);
+            owner.close(); throw failure;
+        }
+    }
+
+    /** Publishes only profiles produced on this opaque actual-source permit. */
+    public static SampledEmissionInput fromManagedCapture(ManagedCaptureBinding binding,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.RetainedManagedScalarProfiles retained) {
+        java.util.Objects.requireNonNull(binding, "managed binding");
+        synchronized (binding) {
+            binding.requireCurrent();
+            if (!binding.producing || binding.published || retained == null
+                    || retained.sourceCapture().orElse(null) != binding.capture
+                    || !retained.boundTo(binding.owner, binding.budget)
+                    || retained.sourceParameters().isEmpty() || retained.groundTransform().isEmpty()) {
+                throw new IllegalArgumentException("Managed retained producer differs from its actual-source permit");
+            }
+            var mosaic = retained.sourceMosaic();
+            int tileCount = Math.multiplyExact(mosaic.image().getWidth() / 512,
+                    mosaic.image().getHeight() / 512);
+            if (tileCount == 0 || mosaic.tiles().size() != tileCount
+                    || mosaic.tileImages().size() != tileCount
+                    || mosaic.tiles().stream().anyMatch(tile -> !tile.usable())) {
+                throw new IllegalArgumentException("Managed production requires every acquired usable tile receipt");
+            }
+            var context = new OptionalEmissionContext(binding, retained);
+            var legacy = LegacyEmissionBinding.fromManagedCapture(binding, retained, context);
+            var result = new SampledEmissionInput(retained.profileSet(), context, binding.budget,
+                    binding.owner, Optional.of(legacy));
+            binding.metadata.adopt(context);
+            binding.published = true;
+            binding.producing = false;
+            return result;
+        }
+    }
+
     /** Declared facts needed to validate the synthetic R4 full-raster to crop mapping. */
     public record DeclaredSyntheticRasterTruth(
         org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField fullSourceGrid,

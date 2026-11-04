@@ -36,6 +36,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.ManagedSelectionWitness;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.OptionalEmissionContextFactory;
+import org.openstreetmap.josm.gui.MainApplication;
+import org.openstreetmap.josm.gui.layer.OsmDataLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
@@ -56,6 +59,71 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 class ManagedSourceRequestReceiptTest {
     @TempDir Path cache;
+
+    @Test void actualManagedFactoryRetainsSourceSExactRowsAndCapturedNormalization() throws Exception {
+        Config.setPreferencesInstance(new MemoryPreferences());
+        Config.setBaseDirectoriesProvider(new org.openstreetmap.josm.spi.preferences.IBaseDirectories() {
+            public java.io.File getPreferencesDirectory(boolean create) { return cache.toFile(); }
+            public java.io.File getUserDataDirectory(boolean create) { return cache.toFile(); }
+            public java.io.File getCacheDirectory(boolean create) { return cache.toFile(); }
+        });
+        var projection = Projections.getProjectionByCode("EPSG:3857");
+        ProjectionRegistry.setProjection(projection);
+        var dataSet = new DataSet();
+        Node a = new Node(new LatLon(49.44, 14.0));
+        Node corner = new Node(new LatLon(49.44013, 14.0));
+        Node b = new Node(new LatLon(49.44, 14.0001));
+        dataSet.addPrimitive(a); dataSet.addPrimitive(corner); dataSet.addPrimitive(b);
+        Way way = new Way(); way.setNodes(List.of(a, corner, b)); dataSet.addPrimitive(way);
+        dataSet.setSelected(way);
+        var layer = new OsmDataLayer(dataSet, "managed factory synthetic transport", null);
+        MainApplication.getLayerManager().addLayer(layer);
+        var selection = SelectionResolver.resolve(dataSet, false);
+        var source = selection.segmentNodes().stream().map(n -> n.getEastNorth(projection)).toList();
+        var ledger = AttemptMemoryLedger.production();
+        var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+        var settings = new AtomicReference<>(managedSettings());
+        var decoder = new TileDecoderClassifier(); byte[] png = colorRoutePng();
+        var fetches = new AtomicInteger();
+        try (var owner = ledger.rootOwner(); var coordinator = new TileFetchCoordinator((request, credentials) -> {
+                    fetches.incrementAndGet();
+                    return new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                            png, null, Duration.ZERO, "");
+                }, new ManagedTileCache(cache, decoder), decoder, TileReliabilityPolicy.defaults())) {
+            var sampler = new TileHeatmapSampler(coordinator);
+            var witness = ManagedSelectionWitness.capture(dataSet, selection, projection, source, budget, owner);
+            try (var capture = sampler.prepareForEmission(settings.get(), witness, List.of("hot"), "hot", false, budget, owner);
+                 var binding = OptionalEmissionContextFactory.bindManagedCapture(capture, settings::get, budget, owner)) {
+                int alreadyFetched = fetches.get();
+                var nativeProfiles = sampler.sampleProfiles(capture.selectedMosaic(), source, "hot",
+                        IntensitySamplingMode.COLOR_MAPPING, projection, CancellationProbe.NONE);
+                try (var input = sampler.sampleProfilesForEmission(binding, CancellationProbe.NONE)) {
+                    assertEquals(alreadyFetched, fetches.get(), "Publishing must add no source acquisition");
+                    assertTrue(input.context().productionEligible());
+                    assertTrue(input.legacyBinding().orElseThrow().productionEligible());
+                    assertEquals(capture.trackerNormalizationRasterPx(),
+                            input.legacyBinding().orElseThrow().trackerNormalizationRasterPx());
+                    for (int row = 0; row < nativeProfiles.size(); row++) {
+                        var actual = input.profiles().levelZeroProfiles().get(row);
+                        var expected = nativeProfiles.get(row);
+                        assertEquals(expected.samplingAnchor(), actual.samplingAnchor());
+                        assertEquals(expected.normalScreen(), actual.normalScreen());
+                        assertEquals(expected.peaks(), actual.peaks());
+                        assertEquals(expected.intensitySamples(), actual.intensitySamples());
+                    }
+                    int last = nativeProfiles.size() - 1;
+                    assertTrue(input.context().sourceChainageMeters(last)
+                            > nativeProfiles.get(last).cumulativeGroundDistanceMeters());
+                    var events = input.legacyBinding().orElseThrow().protectedOccurrences();
+                    assertEquals(input.context().sourceChainageMeters(last), events.get(events.size() - 1).sourceChainageMeters());
+                    assertThrows(IllegalStateException.class, () -> sampler.sampleProfilesForEmission(binding, CancellationProbe.NONE));
+                    a.setCoor(new LatLon(49.440001, 14.0));
+                    assertThrows(IllegalStateException.class, input::requireOpenAndUnchanged);
+                }
+            }
+        } finally { MainApplication.getLayerManager().removeLayer(layer); }
+        assertEquals(0, ledger.currentBytes());
+    }
 
     @Test void cancellationDetachesOnlyManagedSubscriberDuringBlockedSharedFetch() throws Exception {
         var projection = Projections.getProjectionByCode("EPSG:3857");
@@ -144,6 +212,14 @@ class ManagedSourceRequestReceiptTest {
             var retained = sampler.sampleProfilesRetainingL0(capture, "hot",
                     IntensitySamplingMode.COLOR_MAPPING, budget, owner, CancellationProbe.NONE);
             var parameters = retained.sourceParameters().orElseThrow();
+            assertFalse(parameters.aliases().isEmpty());
+            for (int row = 0; row < parameters.rowCount(); row++) {
+                assertTrue(parameters.rowArc(row).lower() <= parameters.sourceChainageMeters(row));
+                assertTrue(parameters.rowArc(row).upper() >= parameters.sourceChainageMeters(row));
+            }
+            assertEquals(0, parameters.aliases().get(0).originalVertex());
+            assertEquals(source.size() - 1,
+                    parameters.aliases().get(parameters.aliases().size() - 1).originalVertex());
             assertEquals(retained.profiles().size(), parameters.rowCount());
             assertEquals(source.size(), parameters.sourceVertexCount());
             assertEquals(source.size(), parameters.originalOccurrences().size());

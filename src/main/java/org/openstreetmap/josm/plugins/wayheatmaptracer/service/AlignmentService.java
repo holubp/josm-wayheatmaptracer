@@ -3072,7 +3072,7 @@ public final class AlignmentService {
         );
     }
 
-    private EffectiveSampling fixedTileEffectiveSampling(TileHeatmapSampler.TileMosaic mosaic) {
+    static EffectiveSampling fixedTileEffectiveSampling(TileHeatmapSampler.TileMosaic mosaic) {
         double targetHalfWidthMeters = mosaic.parameters().halfWidthMeters();
         double targetStepMeters = mosaic.parameters().sampleStepMeters();
         int referenceHalfWidthPx = Math.max(1, (int) Math.round(targetHalfWidthMeters / REFERENCE_VIEW_METERS_PER_PIXEL));
@@ -3947,7 +3947,7 @@ public final class AlignmentService {
     ) {
     }
 
-    private record EffectiveSampling(
+    record EffectiveSampling(
         int configuredHalfWidthPx,
         int configuredStepPx,
         int effectiveHalfWidthPx,
