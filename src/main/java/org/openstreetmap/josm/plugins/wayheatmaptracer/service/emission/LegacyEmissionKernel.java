@@ -25,6 +25,30 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 public final class LegacyEmissionKernel {
     /** Bounded first-stage experiment; never selected by the ordinary consumer overloads. */
     public enum CompetitiveExecution { EXACT_VERSIONS_PROOF_V1, EXACT_CUTOFF_PROOF_V1 }
+    /** Explicit grouped-objective repair; Q0 is a correctness bound, not source-completion evidence. */
+    public enum GroupedExecution { EXACT_VERSIONS_V1, EXACT_Q0_CUTOFF_V1 }
+    /** Exact stored absolute vectors; interval increments and post-smoothing evidence are distinct. */
+    public record GroupedStageReference(int seedId,int ordinal,Optional<EmissionResult.Costs> prefix,
+            Optional<EmissionResult.Costs> terminal,Optional<EmissionResult.Costs> ordinaryWitness) { }
+    public static final class GroupedResult implements AutoCloseable {
+        private final GroupedExecution execution;private final EmissionResult emission;
+        private final List<GroupedStageReference> stages;private final AttemptMemoryLedger.Owner owner;private boolean closed;
+        private final EmissionWorkBudget.Snapshot work;private final long peakRetainedBytes;
+        private GroupedResult(GroupedExecution execution,EmissionResult emission,List<GroupedStageReference> stages,
+                AttemptMemoryLedger.Owner owner,EmissionWorkBudget.Snapshot work) {
+            this.execution=execution;this.emission=emission;this.stages=List.copyOf(stages);this.owner=owner;
+            this.work=work;this.peakRetainedBytes=owner.peakBytes();
+        }
+        private void live(){if(closed)throw new IllegalStateException("Grouped result is closed");}
+        public GroupedExecution execution(){live();return execution;}
+        public EmissionResult emission(){live();return emission;}
+        public List<GroupedStageReference> stages(){live();return stages;}
+        /** Authoritative attempt work including sidecar publication; emission.work is the earlier controller boundary. */
+        public EmissionWorkBudget.Snapshot work(){live();return work;}
+        public long peakRetainedBytes(){live();return peakRetainedBytes;}
+        @Override public void close(){if(!closed){closed=true;try{emission.close();}finally{owner.close();}}}
+    }
+    private record GroupedFacts(GroupedExecution execution,List<GroupedStageReference> stages,AttemptMemoryLedger.Owner owner) { }
 
     /** An owned proof-stage path, explicitly not a multi-stage/smoothed emission result. */
     public static final class ObservedSeedProof implements AutoCloseable {
@@ -425,6 +449,38 @@ public final class LegacyEmissionKernel {
             List<Double> seeds,List<AnchorProposal> proposals,Smoother smoother,CancellationProbe cancellation,
             NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
             boolean measuredAffinity, LegacyEmissionProgress progress) {
+        return solveBody(input,suppressed,seeds,proposals,smoother,cancellation,queryPolicy,executionPolicy,measuredAffinity,progress,null);
+    }
+
+    /** Opt-in all-stage grouped execution. Compatibility, affinity and UI consumers never select it implicitly. */
+    public GroupedResult solveGrouped(SampledEmissionInput input,List<CrossSectionProfile> suppressed,
+            List<Double> seeds,List<AnchorProposal> proposals,Smoother smoother,CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
+            GroupedExecution grouped,LegacyEmissionProgress progress) {
+        Objects.requireNonNull(grouped);
+        if(progress!=null)progress.requireCompatible(input,queryPolicy,executionPolicy);
+        AttemptMemoryLedger.Owner factsOwner=null;EmissionResult emission=null;
+        try {
+            if(progress!=null){progress.begin(input,queryPolicy,executionPolicy);progress.groupedBegin(grouped);}
+            input.requireOpenAndUnchanged();factsOwner=input.openExecutionOwner("legacy-grouped-provenance");
+            var budget=input.workBudget();budget.charge(EmissionWorkBudget.Operation.ALLOCATION,3);factsOwner.reserve(512);
+            var facts=new GroupedFacts(grouped,new ArrayList<>(),factsOwner);
+            emission=solveBody(input,suppressed,seeds,proposals,smoother,cancellation,queryPolicy,executionPolicy,false,progress,facts);
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION,6);factsOwner.reserve(1024L+32L*facts.stages().size());
+            cancellation.checkpoint();input.requireOpenAndUnchanged();
+            var result=new GroupedResult(grouped,emission,facts.stages(),factsOwner,budget.snapshot());
+            if(progress!=null)progress.seal(null);return result;
+        } catch(RuntimeException failure){
+            if(emission!=null)emission.close();if(factsOwner!=null)factsOwner.close();
+            if(failure instanceof CancellationException||failure instanceof EmissionWorkBudget.LimitExceededException
+                    ||failure instanceof AttemptMemoryLedger.ResourceLimitException)input.recordTerminalExecutionFailure(failure);
+            if(progress!=null)progress.seal(failure);throw failure;
+        }
+    }
+    private EmissionResult solveBody(SampledEmissionInput input,List<CrossSectionProfile> suppressed,
+            List<Double> seeds,List<AnchorProposal> proposals,Smoother smoother,CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy queryPolicy,NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
+            boolean measuredAffinity,LegacyEmissionProgress progress,GroupedFacts grouped) {
         Objects.requireNonNull(input); Objects.requireNonNull(suppressed); Objects.requireNonNull(seeds);
         Objects.requireNonNull(proposals); Objects.requireNonNull(smoother); Objects.requireNonNull(cancellation);
         Objects.requireNonNull(queryPolicy); Objects.requireNonNull(executionPolicy);
@@ -469,8 +525,9 @@ public final class LegacyEmissionKernel {
                     var inventory = inventory(domain, budget, seedOwner, affinity);
                     if(progress!=null)progress.inventoryComplete(inventory.evaluatorStates().size());
                     evaluator = evaluator(input, domain, inventory, queryPolicy, executionPolicy,progress);
-                    Node candidate = solveBase(input, domain, seed, inventory, evaluator,
-                        seedOwner, cancellation, pitch);
+                    Node candidate = grouped==null ? solveBase(input, domain, seed, inventory, evaluator,
+                        seedOwner, cancellation, pitch) : solveGroupedBase(input,domain,seed,inventory,evaluator,
+                            seedOwner,cancellation,pitch,grouped);
                     if (candidate != null && better(candidate, best, budget, seedOwner)) {
                         if (bestEvaluator != null) bestEvaluator.close();
                         if (bestSeedOwner != null) bestSeedOwner.close();
@@ -526,8 +583,15 @@ public final class LegacyEmissionKernel {
                 if (rightState.peakOwner() != right.peakOwner())
                     throw new IllegalStateException("Anchored endpoint lost its exact native peak");
                 Node previousBest = best;
-                Node intervalWinner = solveInterval(input, domain, prefix, rightState, left, right,
+                Node intervalWinner;
+                if(grouped==null)intervalWinner=solveInterval(input, domain, prefix, rightState, left, right,
                     index + 1, bestInventory, bestEvaluator, bestSeedOwner, cancellation, pitch);
+                else {
+                    var witness=groupedWitness(input,domain,null,prefix,rightState,index+1,bestInventory,bestEvaluator,bestSeedOwner,cancellation,pitch);
+                    intervalWinner=solveGroupedStage(input,domain,null,prefix,rightState,index+1,bestInventory,bestEvaluator,bestSeedOwner,
+                        cancellation,pitch,grouped.execution(),witness.map(EmissionResult.Costs::total).orElse(Double.POSITIVE_INFINITY));
+                    groupedStageFact(grouped,prefix,intervalWinner,witness,best.seedId,index+1,budget);
+                }
                 if(progress!=null)progress.phaseComplete();
                 if (intervalWinner == null) throw new UnavailableException(UnavailableReason.NO_ADMITTED_PATH);
                 Node interval = intervalWinner;
@@ -563,7 +627,7 @@ public final class LegacyEmissionKernel {
             if(progress!=null)progress.phase(LegacyEmissionProgress.Phase.RESULT,0,-1,-1);
             var result = result(input, domain, stitchedPath, path, firstStage, best, intervalCosts,
                 intervalReferences, eligible, bestInventory,
-                smoother, bestSeedOwner, owner, bestEvaluator, budget, cancellation, resultLease, queryPolicy, executionPolicy,progress);
+                smoother, bestSeedOwner, owner, bestEvaluator, budget, cancellation, resultLease, queryPolicy, executionPolicy,progress,grouped);
             if(progress!=null)progress.phaseComplete();
             return result;
             }
@@ -579,6 +643,118 @@ public final class LegacyEmissionKernel {
                     || failure instanceof NativeConnectorEvaluator.StateFamilyLimitException)
                 input.recordTerminalExecutionFailure(failure);
             throw failure;
+        }
+    }
+
+    private static Optional<EmissionResult.Costs> storedCosts(Node node) {
+        return node!=null&&finiteComponents(node)?Optional.of(new EmissionResult.Costs(node.q,node.c,node.t,node.k)):Optional.empty();
+    }
+    private static void groupedStageFact(GroupedFacts facts,Node prefix,Node terminal,
+            Optional<EmissionResult.Costs> witness,int seed,int ordinal,EmissionWorkBudget budget) {
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION,4);facts.owner().reserve(512);
+        facts.stages().add(new GroupedStageReference(seed,ordinal,storedCosts(prefix),storedCosts(terminal),witness));
+    }
+    private static LegacyEmissionDomain.State witnessObserved(LegacyEmissionDomain domain,int row,double desired,EmissionWorkBudget budget) {
+        LegacyEmissionDomain.State chosen=null;
+        for(var state:domain.observedAt(row)) {
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,1);
+            if(chosen==null||Math.abs(state.offsetRasterPixels()-desired)<Math.abs(chosen.offsetRasterPixels()-desired)
+                    ||Math.abs(state.offsetRasterPixels()-desired)==Math.abs(chosen.offsetRasterPixels()-desired)
+                        &&state.nativeStateId()<chosen.nativeStateId())chosen=state;
+        }
+        return chosen;
+    }
+    /** One actual ordinary proposal, never an optimization or admission substitute. */
+    private Optional<EmissionResult.Costs> groupedWitness(SampledEmissionInput input,LegacyEmissionDomain domain,
+            LegacyEmissionDomain.Seed seed,Node prefix,LegacyEmissionDomain.State right,int stage,Inventory inventory,
+            NativeConnectorEvaluator evaluator,AttemptMemoryLedger.Owner owner,CancellationProbe cancellation,double pitch) {
+        var budget=input.workBudget();var progress=evaluator.progress();
+        if(progress!=null)progress.witnessBegin();
+        Node current=prefix;int first=prefix==null?0:prefix.key.last().originalRow()+1;
+        int end=right==null?domain.rowCount()-1:right.originalRow();
+        for(int row=first;row<=end;row++) {
+            input.requireOpenAndUnchanged();cancellation.checkpoint();
+            LegacyEmissionDomain.State chosen;
+            if(right!=null&&row==end)chosen=right;
+            else if(domain.unsupported(row))chosen=prefix==null
+                ?reachedCarry(domain,inventory,evaluator,row,current==null?seed.id():current.key.last().offsetOriginId(),
+                    current==null?seed.offsetRasterPixels():current.key.last().offsetRasterPixels(),budget,owner)
+                :intervalTarget(domain,inventory,evaluator,row,prefix.key.last(),right,budget,owner);
+            else chosen=witnessObserved(domain,row,current==null?seed.offsetRasterPixels():current.key.last().offsetRasterPixels(),budget);
+            Node next=current==null?initialProofNode(input,domain,seed,chosen,owner,budget)
+                :advance(input,domain,inventory,current,chosen,evaluator,owner,cancellation,stage,pitch);
+            if(next==null){releaseUnretained(current,budget);return Optional.empty();}
+            current=next;
+        }
+        double upper=certifiedWitnessUpper(current);
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION,2);owner.reserve(96);
+        var costs=Double.isFinite(upper)?storedCosts(current):Optional.<EmissionResult.Costs>empty();
+        releaseUnretained(current,budget);
+        input.requireOpenAndUnchanged();cancellation.checkpoint();
+        if(costs.isPresent()&&progress!=null)progress.witnessCertified(upper);
+        return costs;
+    }
+    private Node solveGroupedBase(SampledEmissionInput input,LegacyEmissionDomain domain,LegacyEmissionDomain.Seed seed,
+            Inventory inventory,NativeConnectorEvaluator evaluator,AttemptMemoryLedger.Owner owner,CancellationProbe cancellation,
+            double pitch,GroupedFacts facts) {
+        var witness=groupedWitness(input,domain,seed,null,null,0,inventory,evaluator,owner,cancellation,pitch);
+        Node best=solveGroupedStage(input,domain,seed,null,null,0,inventory,evaluator,owner,cancellation,pitch,facts.execution(),
+            witness.map(EmissionResult.Costs::total).orElse(Double.POSITIVE_INFINITY));
+        groupedStageFact(facts,null,best,witness,seed.id(),0,input.workBudget());return best;
+    }
+    private Node solveGroupedStage(SampledEmissionInput input,LegacyEmissionDomain domain,LegacyEmissionDomain.Seed seed,
+            Node prefix,LegacyEmissionDomain.State right,int stage,Inventory inventory,NativeConnectorEvaluator evaluator,
+            AttemptMemoryLedger.Owner owner,CancellationProbe cancellation,double pitch,GroupedExecution execution,double upper) {
+        var budget=input.workBudget();var progress=evaluator.progress();int n=domain.rowCount();
+        int start=prefix==null?0:prefix.key.last().originalRow(),end=right==null?n-1:right.originalRow();
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION,end-start+2L);
+        try(var layerMemory=owner.reserve(256L*(end-start+1))) {
+            var layers=new ArrayList<Map<Key,ExactFront>>(end-start+1);
+            for(int row=start;row<=end;row++)layers.add(new LinkedHashMap<>());
+            if(prefix!=null)insertExact(layers.get(0),prefix,budget,owner,progress);
+            else {
+                var choices=domain.unsupported(0)?List.of(reachedCarry(domain,inventory,evaluator,0,seed.id(),seed.offsetRasterPixels(),budget,owner)):inventory.byRow().get(0);
+                for(var first:choices)insertExact(layers.get(0),initialProofNode(input,domain,seed,first,owner,budget),budget,owner,progress);
+            }
+            for(int row=start;row<end;row++) {
+                if(progress!=null)progress.row(row);
+                for(var front:layers.get(row-start).values())for(var label=front.first;label!=null;label=label.next) {
+                    Node from=label.node;budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP,1);cancellation.checkpoint();
+                    for(int toRow=row+1;toRow<=end&&toRow<=row+17;toRow++) {
+                        budget.charge(EmissionWorkBudget.Operation.PREPARATION,1);
+                        if(toRow>row+1&&sourceSpanUpper(domain,input.context(),row,toRow)>20)break;
+                        if(toRow>row+1&&crossesMandatory(domain,row,toRow))continue;
+                        List<LegacyEmissionDomain.State> choices;
+                        if(right!=null&&toRow==end)choices=List.of(right);
+                        else if(domain.unsupported(toRow))choices=List.of(prefix==null
+                            ?reachedCarry(domain,inventory,evaluator,toRow,from.key.last().offsetOriginId(),from.key.last().offsetRasterPixels(),budget,owner)
+                            :intervalTarget(domain,inventory,evaluator,toRow,prefix.key.last(),right,budget,owner));
+                        else choices=inventory.byRow().get(toRow);
+                        for(var to:choices) {
+                            budget.charge(EmissionWorkBudget.Operation.TRANSITION,1);
+                            if(toRow>row+1&&execution==GroupedExecution.EXACT_Q0_CUTOFF_V1
+                                    &&deferOptional(input,domain,from,to,pitch,upper,budget,cancellation,progress))continue;
+                            Node candidate=advance(input,domain,inventory,from,to,evaluator,owner,cancellation,stage,pitch);
+                            if(candidate!=null)insertExact(layers.get(toRow-start),candidate,budget,owner,progress);
+                        }
+                    }
+                }
+            }
+            Node best=null;
+            for(var front:layers.get(end-start).values())for(var label=front.first;label!=null;label=label.next)
+                if(finiteComponents(label.node)&&better(label.node,best,budget,owner))best=label.node;
+            if(best!=null)pinChain(best,budget);
+            for(int row=end;row>=start;row--)for(var front:layers.get(row-start).values())for(var label=front.first;label!=null;label=label.next) {
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION,1);label.node.inLayer=false;
+            }
+            for(int row=end;row>=start;row--) {
+                for(var front:layers.get(row-start).values()) {
+                    for(var label=front.first;label!=null;) {releaseUnretained(label.node,budget);var next=label.next;label.memory.close();label=next;}
+                    front.first=null;front.memory.close();
+                }
+                layers.get(row-start).clear();
+            }
+            return best;
         }
     }
 
@@ -1308,7 +1484,7 @@ public final class LegacyEmissionKernel {
             NativeConnectorEvaluator evaluator, EmissionWorkBudget budget,
             CancellationProbe cancellation, SampledEmissionInput.ResultLease resultLease,
             NativeConnectorEvaluator.QueryPolicy queryPolicy, NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
-            LegacyEmissionProgress progress) {
+            LegacyEmissionProgress progress,GroupedFacts grouped) {
         if (domain.measuredModes() != null) input.requireOpenAndUnchanged();
         int n = domain.rowCount();
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 6);
@@ -1372,7 +1548,7 @@ public final class LegacyEmissionKernel {
                 observation.producerPeaks().stream().map(LegacyEmissionBinding.PeakOwner::originalPeakId).toList()));
         }
         var provenance = provenance(input, domain, firstPath, firstNode, best,
-            intervalReferences, eligible, inventory, owner, budget, queryPolicy, executionPolicy);
+            intervalReferences, eligible, inventory, owner, budget, queryPolicy, executionPolicy,grouped);
         var affinityDiagnostics = affinityDiagnostics(domain, inventory, path, vertices, smoothed,
             owner, budget, smoothingOutcomes);
         if (domain.measuredModes() != null) input.requireOpenAndUnchanged();
@@ -1457,7 +1633,7 @@ public final class LegacyEmissionKernel {
             List<EmissionResult.IntervalStageReference> intervalReferences,
             List<AnchorProposal> eligible, Inventory inventory,
             AttemptMemoryLedger.Owner owner, EmissionWorkBudget budget,
-            NativeConnectorEvaluator.QueryPolicy queryPolicy, NativeConnectorEvaluator.ExecutionPolicy executionPolicy) {
+            NativeConnectorEvaluator.QueryPolicy queryPolicy, NativeConnectorEvaluator.ExecutionPolicy executionPolicy,GroupedFacts grouped) {
         var binding = domain.binding();
         long peakCount = binding.observations().stream()
             .mapToLong(observation -> observation.producerPeaks().size()).sum();
@@ -1472,7 +1648,8 @@ public final class LegacyEmissionKernel {
             context.evidenceContentHash(), context.requestIdentity(), revised
                 ? context.policyId() + "/" + ExperimentalMeasuredModeInventory.POLICY_ID : context.policyId(),
             revised ? "LEGACY_OPTIONAL_MEASURED_AFFINITY_V1"
-                : modelPolicyId(queryPolicy, executionPolicy, owner, budget), binding.trackerNormalizationRasterPx(),
+                : grouped==null?modelPolicyId(queryPolicy, executionPolicy, owner, budget)
+                : groupedModelPolicyId(grouped.execution(),queryPolicy,executionPolicy,owner,budget), binding.trackerNormalizationRasterPx(),
             context.nativePitchMeters().orElseThrow(), binding.productionEligible());
         var seeds = domain.seeds().stream().map(seed ->
             new EmissionResult.SeedReference(seed.id(), seed.offsetRasterPixels())).toList();
@@ -1562,6 +1739,11 @@ public final class LegacyEmissionKernel {
             intervalReferences);
     }
 
+    private static String groupedModelPolicyId(GroupedExecution grouped,NativeConnectorEvaluator.QueryPolicy query,
+            NativeConnectorEvaluator.ExecutionPolicy execution,AttemptMemoryLedger.Owner owner,EmissionWorkBudget budget) {
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);owner.reserve(1024);
+        return "LEGACY_GROUPED_EXACT_V1/kernel="+grouped+"/query="+query+"/execution="+execution;
+    }
     private static String modelPolicyId(NativeConnectorEvaluator.QueryPolicy queryPolicy,
             NativeConnectorEvaluator.ExecutionPolicy executionPolicy,
             AttemptMemoryLedger.Owner owner, EmissionWorkBudget budget) {

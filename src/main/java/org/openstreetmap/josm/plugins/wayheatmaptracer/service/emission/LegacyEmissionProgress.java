@@ -71,6 +71,8 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     private int failureFields;
     private int noiseSamples,noiseValid,noiseZeros,noiseRank;
     private LegacyEmissionKernel.CompetitiveExecution competitiveExecution;
+    private LegacyEmissionKernel.GroupedExecution groupedExecution;
+    private boolean currentWitnessAvailable;
     private double witnessUpper;
     private int maxCompetitiveKeyLabels;
     private ProfileBackend backend;
@@ -151,6 +153,7 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     void cacheLookup(boolean zero){pay(24);add(zero?Counter.ZERO_LOOKUP:Counter.POSITIVE_LOOKUP,1);}
     void cacheResult(boolean zero,boolean hit){add(zero?(hit?Counter.ZERO_HIT:Counter.ZERO_MISS):(hit?Counter.POSITIVE_HIT:Counter.POSITIVE_MISS),1);}
     void phase(Phase next,int ordinal,int left,int right) {
+        if(groupedExecution!=null)currentWitnessAvailable=false;
         pay(16);phase=next;stage=ordinal;stageSlot=selectStage(ordinal);this.left=left;this.right=right;
         row=from=to=fromId=toId=-1;add(Counter.PHASE_ENTERED,1);milestone(0);
     }
@@ -163,6 +166,7 @@ public final class LegacyEmissionProgress implements AutoCloseable {
         stageOverflow++;return STAGE_SLOTS;
     }
     void seedBegin(int id) {
+        if(groupedExecution!=null)currentWitnessAvailable=false;
         pay(16);seed=id;seedSlot=SEED_SLOTS;phase=Phase.BASE;stage=0;stageSlot=selectStage(0);inventoryAvailable=false;
         for(int i=0;i<SEED_SLOTS;i++)if(seedIds[i]==id){seedSlot=i;break;}
         if(seedSlot==SEED_SLOTS)for(int i=0;i<SEED_SLOTS;i++)if(seedIds[i]<0){seedIds[i]=id;seedSlot=i;break;}
@@ -170,7 +174,7 @@ public final class LegacyEmissionProgress implements AutoCloseable {
         add(Counter.SEEDS_STARTED,1);
     }
     void seedComplete(){add(Counter.SEEDS_COMPLETED,1);}
-    void seedSelect(int id){pay(8);seed=id;seedSlot=SEED_SLOTS;inventoryAvailable=false;for(int i=0;i<SEED_SLOTS;i++)if(seedIds[i]==id){seedSlot=i;break;}}
+    void seedSelect(int id){if(groupedExecution!=null)currentWitnessAvailable=false;pay(8);seed=id;seedSlot=SEED_SLOTS;inventoryAvailable=false;for(int i=0;i<SEED_SLOTS;i++)if(seedIds[i]==id){seedSlot=i;break;}}
     void row(int value){pay(8);row=value;milestone(0);}
     void edge(int a,int b,int ai,int bi){pay(8);row=from=a;to=b;fromId=ai;toId=bi;}
     private void milestone(int completed) {
@@ -273,7 +277,8 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     }
     void competitiveBegin(LegacyEmissionKernel.CompetitiveExecution execution){pay(8);competitiveExecution=execution;}
     void witnessBegin(){event(Counter.WITNESS_ATTEMPTED);}
-    void witnessCertified(double upper){pay(8);witnessUpper=upper;add(Counter.WITNESS_CERTIFIED,1);}
+    void groupedBegin(LegacyEmissionKernel.GroupedExecution execution){pay(8);groupedExecution=execution;}
+    void witnessCertified(double upper){pay(8);witnessUpper=upper;currentWitnessAvailable=true;add(Counter.WITNESS_CERTIFIED,1);}
     void competitiveFront(int size){pay(8);maxCompetitiveKeyLabels=Math.max(maxCompetitiveKeyLabels,size);}
 
     /** Allocation/charge-free: only already prepaid primitive storage is sealed. Original error is not replaced. */
@@ -320,9 +325,12 @@ public final class LegacyEmissionProgress implements AutoCloseable {
         public long count(Counter c){return p.counts[c.ordinal()];}
         public boolean hasCompetitiveExecution(){return p.competitiveExecution!=null;}
         public LegacyEmissionKernel.CompetitiveExecution competitiveExecution(){if(!hasCompetitiveExecution())throw new IllegalStateException("Competitive proof execution is unavailable");return p.competitiveExecution;}
-        public boolean hasWitnessUpper(){return count(Counter.WITNESS_CERTIFIED)>0;}
+        public boolean hasGroupedExecution(){return p.groupedExecution!=null;}
+        public LegacyEmissionKernel.GroupedExecution groupedExecution(){if(!hasGroupedExecution())throw new IllegalStateException("Grouped execution is unavailable");return p.groupedExecution;}
+        public boolean hasWitnessUpper(){return p.currentWitnessAvailable;}
         public double witnessUpper(){if(!hasWitnessUpper())throw new IllegalStateException("Witness upper is unavailable");return p.witnessUpper;}
         public int maxCompetitiveKeyLabels(){competitiveExecution();return p.maxCompetitiveKeyLabels;}
+        public int maxGroupedKeyLabels(){groupedExecution();return p.maxCompetitiveKeyLabels;}
         public boolean hasInitialLocalNoiseProof(){return count(Counter.INITIAL_LOCAL_NOISE_SKIPS)>0;}
         private void requireNoiseProof(){if(!hasInitialLocalNoiseProof())throw new IllegalStateException("Sampled noise proof is unavailable");}
         public int lastNoiseSampleCount(){requireNoiseProof();return p.noiseSamples;}public int lastNoiseValidCount(){requireNoiseProof();return p.noiseValid;}
