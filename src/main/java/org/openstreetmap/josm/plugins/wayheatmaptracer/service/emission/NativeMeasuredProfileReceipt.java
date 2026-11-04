@@ -42,6 +42,7 @@ public final class NativeMeasuredProfileReceipt {
         public boolean continuousTransportCertified(){issuer.live();return transportCertified;}
         /** Correct dual-basis parameters, with no assumed-unit dot product. */
         public ParameterBox project(MetricPoint point){
+            try{
             issuer.fresh();issuer.work(64);
             var dx=new BigDecimal(point.xMeters()).subtract(new BigDecimal(origin.xMeters()));
             var dy=new BigDecimal(point.yMeters()).subtract(new BigDecimal(origin.yMeters()));
@@ -52,6 +53,7 @@ public final class NativeMeasuredProfileReceipt {
             var math=new CensusGeometry(issuer.budget);
             var s=math.ratio(a,denominator);var u=math.ratio(b,denominator);
             return new ParameterBox(s.lower(),s.upper(),u.lower(),u.upper());
+            }catch(RuntimeException failure){issuer.abort(failure);throw failure;}
         }
         public MetricPoint numericAnchor(double s){
             issuer.live();if(!Double.isFinite(s)||s<first||s>last)throw new IllegalArgumentException("Family station outside frozen domain");
@@ -153,7 +155,13 @@ public final class NativeMeasuredProfileReceipt {
         }
         public PointObservation observation(){issuer.live();return point;}
         public LegacyEmissionDomain.State state(){issuer.live();return state;}
-        public void validate(){issuer.fresh();var current=domain.get();if(current==null)throw new IllegalStateException("Original native domain unavailable");issuer.requireIssued(current,state);}
+        public void validate(){
+            try{
+                issuer.fresh();var current=domain.get();
+                if(current==null)throw new IllegalStateException("Original native domain unavailable");
+                issuer.requireIssued(current,state);
+            }catch(RuntimeException failure){issuer.abort(failure);throw failure;}
+        }
     }
 
     private record Query(int row,MetricPoint center,MetricPoint normal,Optional<RasterPoint> anchor) { }
@@ -205,7 +213,9 @@ public final class NativeMeasuredProfileReceipt {
         }
         public Profile query(int row,MetricPoint center,MetricPoint normal){return query(row,center,normal,Optional.empty());}
         public Profile metricAnchoredQuery(int row,RasterPoint authoritativePoint,MetricPoint normal){
-            fresh();work(2);return query(row,context.metricAt(authoritativePoint),normal,Optional.of(authoritativePoint));
+            try{
+                fresh();work(2);return query(row,context.metricAt(authoritativePoint),normal,Optional.of(authoritativePoint));
+            }catch(RuntimeException failure){abort(failure);throw failure;}
         }
         private Profile query(int row,MetricPoint center,MetricPoint normal,Optional<RasterPoint> anchor){
             try{
