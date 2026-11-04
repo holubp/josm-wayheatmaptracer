@@ -146,7 +146,13 @@ public final class RidgeTracker {
             // Preparation has no execution owner to transfer and has not entered a kernel stage.
             if(failure instanceof CancellationException||failure instanceof EmissionWorkBudget.LimitExceededException
                     ||failure instanceof AttemptMemoryLedger.ResourceLimitException)input.recordTerminalExecutionFailure(failure);
-            if(progress!=null)progress.seal(failure);throw failure;
+            if(progress!=null) {
+                // The refusing callback may also revoke this observer. This check never charges a poisoned budget.
+                try {progress.requireCompatible(input,queryPolicy,executionPolicy);}
+                catch(RuntimeException revoked){throw failure;}
+                progress.seal(failure);
+            }
+            throw failure;
         }
         // Kernel alone owns admission/begin/seal and final publication. No work/callback follows this return.
         return new LegacyEmissionKernel().solveGrouped(input,suppressed,seeds,proposals,smoother,cancellation,

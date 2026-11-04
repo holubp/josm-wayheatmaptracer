@@ -6,6 +6,8 @@ import java.util.*;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.*;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
@@ -28,6 +30,42 @@ class LegacyGroupedForwarderTest {
     }
 
     enum Refusal { WORK, PAIRS, CANCEL, MEMORY }
+    @ParameterizedTest @EnumSource(Refusal.class)
+    void closedObserverDoesNotPublishWhenPreparationRefuses(Refusal refusal) throws Exception {
+        revokedObserverRefusal(refusal,false);
+    }
+    @ParameterizedTest @EnumSource(Refusal.class)
+    void sealedObserverRemainsUnchangedWhenPreparationRefuses(Refusal refusal) throws Exception {
+        revokedObserverRefusal(refusal,true);
+    }
+    static void revokedObserverRefusal(Refusal refusal,boolean seal) throws Exception {
+        try(var f=fixture(false);var p=LegacyEmissionProgress.open(f.input(),QUERY,EXEC)) {
+            var fired=new AtomicBoolean();var budget=f.input().workBudget();
+            var revoked=new AtomicReference<LegacyProofProgressOwnershipTest.Snapshot>();
+            CancellationProbe probe=()->{
+                if(fired.get()||!StackWalker.getInstance().walk(s->s.anyMatch(frame->frame.getMethodName().equals("suppressLongitudinalNoise"))))return false;
+                fired.set(true);if(seal)p.seal(null);else p.close();
+                try{revoked.set(LegacyProofProgressOwnershipTest.snapshot(p,f,f,budget));}catch(Exception failure){throw new AssertionError(failure);}
+                switch(refusal) {
+                    case CANCEL->{return true;}
+                    case WORK->budget.charge(EmissionWorkBudget.Operation.PREPARATION,budget.workLimit()+1);
+                    case PAIRS->budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP,budget.pairLimit()+1);
+                    case MEMORY->f.owner().reserve(Long.MAX_VALUE);
+                }return false;
+            };
+            var primary=assertThrows(RuntimeException.class,()->forward(f.input(),probe,p));assertTrue(fired.get());
+            assertEquals(switch(refusal){case WORK,PAIRS->EmissionWorkBudget.LimitExceededException.class;case CANCEL->CancellationException.class;case MEMORY->AttemptMemoryLedger.ResourceLimitException.class;},primary.getClass());
+            assertSame(primary,assertThrows(RuntimeException.class,f.input()::requireOpenAndUnchanged));
+            assertSame(primary,assertThrows(RuntimeException.class,()->forward(f.input(),CancellationProbe.NONE,null)));
+            LegacyProofProgressOwnershipTest.assertUnchanged(revoked.get(),LegacyProofProgressOwnershipTest.snapshot(p,f,f,budget));
+            if(seal) {
+                assertEquals(LegacyEmissionProgress.Termination.SUCCESS,p.view().termination());assertNoStage(p);
+                assertFalse(p.view().hasFailureRequested());assertFalse(p.view().hasFailureUsed());assertFalse(p.view().hasFailureLimit());
+            } else assertThrows(IllegalStateException.class,p::view,"Closed owner must not gain a terminal receipt after revocation");
+            assertEquals(LegacyEmissionProgress.Phase.NOT_ENTERED,p.currentPhase());
+            assertEquals(0,p.currentCount(LegacyEmissionProgress.Counter.WITNESS_ATTEMPTED));
+        }
+    }
     @Test void observerClosedDuringPreparationIsNotResealedByTheForwarder() throws Exception {
         try(var f=fixture(false);var p=LegacyEmissionProgress.open(f.input(),QUERY,EXEC)) {
             var closed=new AtomicBoolean();var bytes=new AtomicLong();CancellationProbe probe=()->{
