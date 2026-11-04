@@ -109,6 +109,17 @@
   connector must stay WHOLEinsideinner, with strict simple separating cut and
   endpointoverhang. No source/authority/decisionwidth expansion; uncertainmargins
   remainUNKNOWN. Couple minimaldependency+consumer, no unusedadapterframework.
+  M2straightrotated diagnostic:289queryslots,only0/288 u±28 refused original
+  metricroute; acquiredgeometrytrue/scalarUNQUERIED.2acceptedrawModes havecomplete
+  bodies. Specific correction independently reviewed in
+  drasov-managed-affinity-m2-tail-relevance-design-review.md: LOCAL fixed-connector
+  positive-cut proof may replace blanket allqueryslot-valid gate; never claim
+  tailsabsent/globalfamilycomplete. Freezeport-derivedinnerbeforeextraction,
+  requirewholeconnectorinsideinner, M1rawcore portownership, simplelongitudinal
+  overhangingcut and strictclosedcelldarkness belowMINfour actualownershoulder
+  thresholds. Everyusedfootprint/link/corner/connector/cut authorized/supported;
+  relevantunknown/equality/escape→UNKNOWN. Straightrotatedpositive mustretain
+  refusedtails explicitly. No width/acquisition/authority expansion.
   M2 remains conditional on independently reviewed M1; no user approval needed
   for this authorized experiment follow-on. Roundtrip differences remain factual.
 - New coherent A+noise integration e774e364 on9832 is frozen clean,
@@ -141,19 +152,27 @@
   RED if cheap/compatible, otherwise retained source finding remains evidence.
   Safe historical RED confirmed: expected IllegalArgumentException notthrown,
   frozen8955 1177-class aggregateSHA unchanged before/after. Current guard never
-  modified. Integration current GREEN/regression batch underway.
+  modified. Integration b587f0a9 CLOSED PASS round1/5,1addressed/0open;
+  334tests/31XML plus19focused/7XML0f/e/s,layout63152/65536. Full-stage prerequisite
+  now satisfied, original implementer assigned newb587-based all-stage tree.
+- Composite reviewed M1+Legacyproof batch8c37c900 frome074 combines DISJOINT
+  components without conflict;19finalblob hashes equal closed e074/b587 inputs.
+  345tests/30XML0f/e/s and independent combined merge audit CLOSED PASS.
+  Pushed codex/drasov-m1-proof-integration for unattendedpublicCI; noRC/release,
+  no M2/newdominance/defaultadoption. Report drasov-m1-proof-integration-report.md.
+  CI41889814347 at8c37c900 in progress; highest fullCI remains e774e364.
 - Active owners: a_native_integration implements A-prefix dominance;
   affinity_contract_probe implements conditional-approved M2;
-  managed_context_closure verifies M1 integration; kernel_memory_closure fixes
-  Legacy proof-entry dependency by integration ontoe774. Full-stage design/review
+  managed_context_closure verifies composite batch; kernel_memory_closure
+  implements full-stage Legacy in newb587 tree. Full-stage design/review
   drasov-legacy-competitive-all-stage-design{,-review}.md CLOSED conditionally,
-  no full-stage code before core guard review. Ruling: exact grouped objective governs, do not
+  core guard prerequisite CLOSED; source/allstage audit still required. Ruling: exact grouped objective governs, do not
   claim old-bit parity for a prefix-merge exactness correction. Qlower0 allowed
   for minimal correctness slice only; not a Drasov feasibility result.
   Strong design/review drasov-legacy-competitive-strategy-{diagnosis,design-review}.md.
   No user approval needed for authorized follow-on experiments. Other actors idle
   unless explicitly followed up. No Astra; requested Sol6.1/high, focused xhigh
-  only for two hard execution diagnoses; actual routing/weekly usage unknown.
+  for focused execution-obstacle consultations; actual routing/weekly usage unknown.
 
 Older milestone details below preserve evidence; this map is the current state.
 
