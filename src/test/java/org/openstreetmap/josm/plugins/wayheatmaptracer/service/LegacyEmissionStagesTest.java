@@ -125,6 +125,62 @@ class LegacyEmissionStagesTest {
     }
 
     @Test
+    void supersededAnchoredStageNodesDoNotExhaustAResultSizedMemoryCap() {
+        var source = fixture();
+        int rows = 30;
+        var frame = source.evidence().coordinateFrame();
+        var transform = source.evidence().transform();
+        var locations = new ArrayList<DetachedProfileSamplingLocation>();
+        var events = new ArrayList<LegacyEmissionBinding.ProtectedOccurrence>();
+        for (int row = 0; row < rows; row++) {
+            var point = new MetricPoint(24 + .25 * row, 64.22);
+            locations.add(DetachedProfileSamplingLocation.at(frame.toGeographic(point), frame,
+                transform, .25 * row));
+            if (row + 1 < rows)
+                events.add(new LegacyEmissionBinding.ProtectedOccurrence("fixed-" + row,
+                    row, row + 1, .25 * row + .125,
+                    new MetricPoint(24 + .25 * row + .125, 64.35), true));
+        }
+        var trace = new CorridorTraceInput(locations, 1);
+        var chainage = new ProfileChainage(locations.stream()
+            .map(DetachedProfileSamplingLocation::cumulativeGroundDistanceMeters).toList(), .25 * (rows - 1));
+        // A cap below the obsolete-stage-chain peak must still admit the complete
+        // result, first-stage provenance, and every live stitched predecessor.
+        var ledger = new AttemptMemoryLedger(2_994_218);
+        var budget = new EmissionWorkBudget(TraceBudgets.defaults(), CancellationProbe.NONE);
+        try (var root = ledger.rootOwner();
+             var permit = OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(
+                 source.evidence(), FIELD, trace, chainage, 25, budget, root)) {
+            var retained = new RenderedHeatmapSampler().sampleDetachedRetainingL0(
+                source.evidence(), FIELD, trace.profileLocations(), 25, 1, 1, budget, permit);
+            var binding = OptionalEmissionContextFactory.createLegacyBinding(permit, retained,
+                java.util.stream.IntStream.range(0, rows).boxed().toList(), 1, events);
+            try (var input = OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit,
+                    retained, binding);
+                 var result = new RidgeTracker().trackEmission(input, CancellationProbe.NONE)) {
+                assertEquals(rows, result.originalObservations().size());
+                assertEquals(rows + events.size(), result.inferenceVertices().size());
+                assertEquals(29, result.intervalStageReferences().size());
+                assertEquals(30, result.selectedAnchors().size());
+                assertEquals(result.firstStageVertices(), result.inferenceVertices(),
+                    "The single native ridge has the same exact winner through all anchor stages");
+                assertEquals(result.firstStage(), result.stitched(),
+                    "Reservation ownership must not change any objective component");
+                assertTrue(result.peakRetainedBytes() < ledger.limitBytes());
+                assertEquals(result.intervalStages(), result.intervalStageReferences().stream()
+                    .map(EmissionResult.IntervalStageReference::costs).toList());
+                for (int row = 0; row < events.size(); row++) {
+                    var vertex = result.inferenceVertices().get(2 * row + 1);
+                    assertEquals(new EmissionMapping.BoundaryVertex(events.get(row).occurrenceId()),
+                        vertex.owner());
+                    assertEquals(events.get(row).exactPosition(), vertex.position());
+                }
+            }
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
+    @Test
     void kernelWorkRefusalIsTerminalForTheRetainedAttempt() {
         var fixture = fixture();
         var ledger = AttemptMemoryLedger.production();

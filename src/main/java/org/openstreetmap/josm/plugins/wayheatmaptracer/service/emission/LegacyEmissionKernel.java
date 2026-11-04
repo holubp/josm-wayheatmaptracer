@@ -86,7 +86,7 @@ public final class LegacyEmissionKernel {
         final AttemptMemoryLedger.Reservation memory;
         int retainedChildren;
         boolean inLayer;
-        boolean pinned;
+        int pinCount;
         boolean released;
         Node(Node previous, Key key, List<PointDraft> addedPoints, List<ArcDraft> addedArcs,
                 double q, double c, double t, double k, int consumed,
@@ -162,6 +162,9 @@ public final class LegacyEmissionKernel {
                 throw new UnavailableException(UnavailableReason.NO_POSITIVE_PHYSICAL_LEG);
 
             Node firstStage = best;
+            // First-stage flattening retains its drafts until provenance is copied into the
+            // result. Keep that ownership separate from the current stitched winner.
+            pinChain(firstStage, budget);
             try (var path = flatten(firstStage, budget, bestSeedOwner)) {
             verifyCosts(path.arcs(), firstStage, budget);
             // Anchors are computed on the unchanged original N profiles. A proposal is eligible only
@@ -189,9 +192,11 @@ public final class LegacyEmissionKernel {
                     .map(node -> node.key.last()).findFirst().orElseThrow();
                 if (rightState.peakOwner() != right.peakOwner())
                     throw new IllegalStateException("Anchored endpoint lost its exact native peak");
-                Node interval = solveInterval(input, domain, prefix, rightState, left, right,
+                Node previousBest = best;
+                Node intervalWinner = solveInterval(input, domain, prefix, rightState, left, right,
                     index + 1, bestInventory, bestEvaluator, bestSeedOwner, cancellation, pitch);
-                if (interval == null) throw new UnavailableException(UnavailableReason.NO_ADMITTED_PATH);
+                if (intervalWinner == null) throw new UnavailableException(UnavailableReason.NO_ADMITTED_PATH);
+                Node interval = intervalWinner;
                 var intervalCost = intervalIncrement(prefix, interval, budget);
                 intervalCosts.add(intervalCost);
                 intervalReferences.add(intervalStage(prefix, interval, left, right,
@@ -209,6 +214,10 @@ public final class LegacyEmissionKernel {
                     }
                 }
                 pinChain(interval, budget);
+                // Transfer the selected interval's ownership to the stitched path before
+                // releasing either predecessor chain; their prefixes may be shared.
+                unpinChain(intervalWinner, budget);
+                unpinChain(previousBest, budget);
                 best = interval;
             }
             try (var stitchedPath = flatten(best, budget, bestSeedOwner)) {
@@ -818,7 +827,7 @@ public final class LegacyEmissionKernel {
     }
 
     private static void releaseUnretained(Node node, EmissionWorkBudget budget) {
-        while (node != null && !node.inLayer && !node.pinned
+        while (node != null && !node.inLayer && node.pinCount == 0
                 && node.retainedChildren == 0 && !node.released) {
             budget.charge(EmissionWorkBudget.Operation.BACKPOINTER_VISIT, 1);
             node.released = true;
@@ -832,8 +841,19 @@ public final class LegacyEmissionKernel {
     private static void pinChain(Node terminal, EmissionWorkBudget budget) {
         for (Node node = terminal; node != null; node = node.previous) {
             budget.charge(EmissionWorkBudget.Operation.BACKPOINTER_VISIT, 1);
-            node.pinned = true;
+            if (node.released) throw new IllegalStateException("Cannot pin a released Legacy predecessor");
+            node.pinCount = Math.addExact(node.pinCount, 1);
         }
+    }
+
+    private static void unpinChain(Node terminal, EmissionWorkBudget budget) {
+        for (Node node = terminal; node != null; node = node.previous) {
+            budget.charge(EmissionWorkBudget.Operation.BACKPOINTER_VISIT, 1);
+            if (node.pinCount <= 0 || node.released)
+                throw new IllegalStateException("Legacy predecessor pin lifetime is unbalanced");
+            node.pinCount--;
+        }
+        releaseUnretained(terminal, budget);
     }
 
     private static boolean better(Node left, Node right, EmissionWorkBudget budget,
@@ -968,6 +988,9 @@ public final class LegacyEmissionKernel {
         }
         var provenance = provenance(input, domain, firstPath, firstNode, best,
             intervalReferences, eligible, inventory, owner, budget);
+        // The result retains immutable vertex/arc values, never the DP predecessor graph.
+        unpinChain(best, budget);
+        unpinChain(firstNode, budget);
         return new EmissionResult(sourceRecords, mapping, vertices, smoothed,
             arcs, smoothedArcs, first, intervals, stitched, post, source, measured, length,
             budget.snapshot(), owner.peakBytes(), provenance, () -> {
