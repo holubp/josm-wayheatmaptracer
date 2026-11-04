@@ -228,6 +228,9 @@ public final class TileHeatmapSampler {
             java.util.Objects.requireNonNull(budget, "shared work budget");
             if (budget != attemptBudget) throw new IllegalArgumentException("Managed capture belongs to a different work attempt");
             budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            checkSourceCurrent(current);
+        }
+        private void checkSourceCurrent(ManagedHeatmapConfig current){
             if (current == null || !sameSourceConfig(sourceConfig, current)
                     || !coordinator.isActiveGenerationAtEpoch(
                             new ManagedTileGeneration(Math.max(0L, sourceConfig.cacheBuster())),
@@ -235,6 +238,24 @@ public final class TileHeatmapSampler {
                 throw new IllegalStateException("Managed source settings or tile generation changed");
             }
             request.requireMatches(selectedMosaic);
+        }
+        /** Opaque credit for one source-plus-selection final scan; old charged callers are unchanged. */
+        public FinalPublicationCheck prepareFinalPublicationCheck(
+                EmissionWorkBudget budget,AttemptMemoryLedger.Owner parent){
+            if(budget!=attemptBudget)throw new IllegalArgumentException("Managed capture belongs to a different work attempt");
+            if(selectionWitness==null)throw new IllegalStateException("Managed capture has no selected-source witness");
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,16);
+            return new FinalPublicationCheck(selectionWitness.prepareFinalPublicationCheck(budget,parent));
+        }
+        public final class FinalPublicationCheck implements AutoCloseable{
+            private final ManagedSelectionWitness.FinalPublicationCheck selection;
+            private boolean used;
+            private FinalPublicationCheck(ManagedSelectionWitness.FinalPublicationCheck selection){this.selection=selection;}
+            public void validate(ManagedHeatmapConfig current){
+                if(used)throw new IllegalStateException("Managed final capture check is consumed");used=true;
+                checkSourceCurrent(current);selection.validate();
+            }
+            @Override public void close(){selection.close();}
         }
 
         private static boolean sameSourceConfig(ManagedHeatmapConfig a, ManagedHeatmapConfig b) {

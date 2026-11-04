@@ -1047,6 +1047,10 @@ has original-route and acquired support separately. Native subsegment bounds
 use the continuous captured F inverse with distinct D/R/K constants and
 exp/asin enclosures; rounded G and metric endpoint chords are not substitutes.
 COMPATIBLE requires its own actual continuation/core/scalar witness.
+Every relevant local link matrix entry must be settled before association is
+unique. Continuation admits only an outward upper displacement within the
+lower limit, excludes only a lower displacement beyond the upper limit, and
+otherwise remains unavailable. A sufficient source-box refusal is unavailable.
 
 One unchanged smoothing proposal is checked using actual original-row/offset
 raster construction and fresh moved-point ownership. Any uncertified incident
@@ -1054,6 +1058,13 @@ edge restores the complete raw consecutive run, retaining proposed evidence;
 there is no second solve or smoother. Original N row ownership stays separate
 from emitted M vertex indices. All work, storage and terminal cleanup share
 the same existing attempt caps.
+Managed result publication prepays its final copy and complete captured
+source/selection/profile/native scans, completes charged unpin and immutable
+result construction, then uses one source-owned callback-free final check.
+Incoming referrers are compared lazily against the captured closure under the
+dataset read lock and the existing witness bound. Refusal closes the candidate
+and preserves the original terminal failure. Default charged callers retain
+their existing validation and work paths.
 
 This is a synthetic-tested experimental component, not general managed or
 Drasov qualification. Exact .30/.60 native swap controls with P below the

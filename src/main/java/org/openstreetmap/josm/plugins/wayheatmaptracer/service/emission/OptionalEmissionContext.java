@@ -371,6 +371,14 @@ public final class OptionalEmissionContext {
     /** Revalidates the producer/row/normal association at a future engine boundary. */
     public void requireProfilesUnchanged(MultiScaleProfileSet profiles) {
         if (managedBinding != null) managedBinding.requireCurrent();
+        requireProfilesUnchangedForFinalPublication(profiles);
+    }
+    OptionalEmissionContextFactory.ManagedCaptureBinding.FinalPublicationCheck prepareFinalPublication(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner){
+        return managedBinding==null?null:managedBinding.prepareFinalPublication(owner);
+    }
+    /** Source validation is owned separately by the prepared final ticket. No callbacks. */
+    void requireProfilesUnchangedForFinalPublication(MultiScaleProfileSet profiles){
         if (profiles != producedProfiles || profiles.levels().isEmpty()
                 || profiles.levels().get(0).level() != 0 || profiles.levels().get(0).reduction() != 1) {
             throw new IllegalStateException("Optional-emission profiles do not belong to their retained producer");

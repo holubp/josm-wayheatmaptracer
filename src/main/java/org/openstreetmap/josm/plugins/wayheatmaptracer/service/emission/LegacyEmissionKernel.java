@@ -1585,7 +1585,10 @@ public final class LegacyEmissionKernel {
         // The result retains immutable vertex/arc values, never the DP predecessor graph.
         unpinChain(best, budget);
         unpinChain(firstNode, budget);
-        return new EmissionResult(sourceRecords, mapping, vertices, smoothed,
+        try(var publication=inventory.managedAffinity()==null?null:input.prepareManagedFinalPublication(owner,
+                256L+16L*(sourceRecords.size()+vertices.size()+arcs.size()+smoothedArcs.size()+intervals.size()),
+                2048L+128L*(sourceRecords.size()+vertices.size()+arcs.size()+smoothedArcs.size()+intervals.size()))){
+        var candidate=new EmissionResult(sourceRecords, mapping, vertices, smoothed,
             arcs, smoothedArcs, first, intervals, stitched, post, source, measured, length,
             budget.snapshot(), owner.peakBytes(), provenance, () -> {
                 try {
@@ -1603,6 +1606,11 @@ public final class LegacyEmissionKernel {
                     }
                 }
             }, affinityDiagnostics,managedDiagnostics);
+        if(publication!=null)try{publication.validate();}
+        catch(RuntimeException failure){try{candidate.close();}catch(RuntimeException cleanup){failure.addSuppressed(cleanup);}throw failure;}
+        // Only uncharged ownership closes remain on the managed route (progress is absent).
+        return candidate;
+        }
     }
 
     private Optional<EmissionResult.ManagedAffinityDiagnostics> managedAffinityDiagnostics(LegacyEmissionDomain domain,

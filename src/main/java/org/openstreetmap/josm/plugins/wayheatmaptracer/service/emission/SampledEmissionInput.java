@@ -59,6 +59,34 @@ public final class SampledEmissionInput implements AutoCloseable {
         requireRetainedSourceUnchanged();
         legacyBinding.ifPresent(binding -> binding.requireNativeProfilesUnchanged(workBudget));
     }
+    /** Package-owned single-use ticket; no caller-supplied source facts or budget bypass. */
+    FinalPublication prepareManagedFinalPublication(AttemptMemoryLedger.Owner owner,long copyWork,long copyBytes){
+        requireOpen();if(terminalExecutionFailure!=null)throw terminalExecutionFailure;
+        workBudget.charge(EmissionWorkBudget.Operation.PREPARATION,32L+legacyBinding.map(value->value.observations().size()).orElse(0));
+        workBudget.charge(EmissionWorkBudget.Operation.PREPARATION,Math.addExact(copyWork,
+            Math.addExact(Math.multiplyExact(8L*context.observations().size(),profiles.levels().size()),legacyBinding.map(LegacyEmissionBinding::finalPublicationWork).orElse(0L))));
+        workBudget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);
+        var scratch=owner.child("managed-final-publication");
+        try{scratch.reserve(copyBytes);return new FinalPublication(scratch,context.prepareFinalPublication(scratch));}
+        catch(RuntimeException failure){scratch.close();if(ExperimentalMeasuredModeInventory.terminal(failure))recordTerminalExecutionFailure(failure);throw failure;}
+    }
+    final class FinalPublication implements AutoCloseable{
+        private final AttemptMemoryLedger.Owner scratch;
+        private final OptionalEmissionContextFactory.ManagedCaptureBinding.FinalPublicationCheck source;
+        private boolean used;
+        private FinalPublication(AttemptMemoryLedger.Owner scratch,OptionalEmissionContextFactory.ManagedCaptureBinding.FinalPublicationCheck source){this.scratch=scratch;this.source=source;}
+        void validate(){
+            if(used||scratch.isClosed())throw new IllegalStateException("Managed final publication is closed or consumed");used=true;
+            requireOpen();if(terminalExecutionFailure!=null)throw terminalExecutionFailure;
+            workBudget.requireActiveForFinalPublication();
+            if(source!=null)source.validate();
+            requireOpen();if(terminalExecutionFailure!=null)throw terminalExecutionFailure;
+            workBudget.requireActiveForFinalPublication();
+            context.requireProfilesUnchangedForFinalPublication(profiles);
+            legacyBinding.ifPresent(LegacyEmissionBinding::requireNativeProfilesUnchangedForFinalPublication);
+        }
+        @Override public void close(){try{if(source!=null)source.close();}finally{scratch.close();}}
+    }
     /** Source-only freshness; a native engine must separately validate its own original state authority. */
     public void requireRetainedSourceUnchanged() {
         requireOpen();

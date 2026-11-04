@@ -37,9 +37,13 @@ public final class ManagedOrdinaryAffinity implements AutoCloseable {
         List<QueryPoint> queries,List<ModeFact> modes,Optional<List<Integer>> localModeIndices) {
         public StationFact { queries=List.copyOf(queries);modes=List.copyOf(modes);localModeIndices=localModeIndices.map(List::copyOf); }
     }
+    public record ContinuationBounds(double separationLower,double separationUpper,double limitLower,double limitUpper){
+        public LinkStatus status(){return separationUpper<=limitLower?LinkStatus.ADMITTED:
+            separationLower>limitUpper?LinkStatus.REJECTED:LinkStatus.UNAVAILABLE;}
+    }
     public record DirectLink(int fromStation,int toStation,int fromMode,int toMode,
         AcceptedModeThresholdReceipt fromOwner,AcceptedModeThresholdReceipt toOwner,double threshold,
-        LinkStatus status,LinkReason reason,Optional<BilinearSegmentIntegral.Result> scalar) { }
+        LinkStatus status,LinkReason reason,Optional<BilinearSegmentIntegral.Result> scalar,Optional<ContinuationBounds> continuation) { }
     public record PointFact(int originalRow,int retainedRow,boolean moved,RasterPoint actualRaster,
         MetricPoint actualMetric,RasterPoint inverseZero,Availability availability,
         NativeMeasuredProfileReceipt.Reason reason,Optional<AcceptedModeThresholdReceipt> component,
@@ -384,7 +388,7 @@ public final class ManagedOrdinaryAffinity implements AutoCloseable {
         if(previous==null)return;reserve(192L*previous.modes().size()*current.modes().size());
         for(int i=0;i<previous.modes().size();i++)for(int j=0;j<current.modes().size();j++){
             work(1);var a=previous.modes().get(i).accepted();var b=current.modes().get(j).accepted();
-            out.links.add(new DirectLink(station-1,station,i,j,a,b,Math.min(a.shoulderThreshold(),b.shoulderThreshold()),LinkStatus.NOT_QUERIED,reason,Optional.empty()));
+            out.links.add(new DirectLink(station-1,station,i,j,a,b,Math.min(a.shoulderThreshold(),b.shoulderThreshold()),LinkStatus.NOT_QUERIED,reason,Optional.empty(),Optional.empty()));
         }
     }
     private DirectLink link(Family family,Domain geometry,int fromStation,int toStation,int i,int j,Profile previous,Profile current){
@@ -393,19 +397,25 @@ public final class ManagedOrdinaryAffinity implements AutoCloseable {
         var ua=family.project(a.metricPosition());var ub=family.project(b.metricPosition());
         double difference=Math.max(Math.abs(Math.nextDown(ua.minimumU()-ub.maximumU())),Math.abs(Math.nextUp(ua.maximumU()-ub.minimumU())));
         double normalLength=Math.nextUp(Math.nextUp(Math.hypot(previous.probe().metricNormal().xMeters(),previous.probe().metricNormal().yMeters())));
-        if(Math.nextUp(difference*normalLength)>Math.nextDown(1.5*Math.min(previous.probe().nativePitchMeters(),current.probe().nativePitchMeters())))
-            return new DirectLink(fromStation,toStation,i,j,a.accepted(),b.accepted(),threshold,LinkStatus.REJECTED,LinkReason.CONTINUATION_BOUND,Optional.empty());
+        double separation=Math.max(0,Math.max(Math.nextDown(ua.minimumU()-ub.maximumU()),Math.nextDown(ub.minimumU()-ua.maximumU())));
+        double normalLower=Math.max(0,Math.nextDown(Math.nextDown(Math.hypot(previous.probe().metricNormal().xMeters(),previous.probe().metricNormal().yMeters()))));
+        double limit=1.5*Math.min(previous.probe().nativePitchMeters(),current.probe().nativePitchMeters());
+        var continuation=new ContinuationBounds(Math.max(0,Math.nextDown(separation*normalLower)),Math.nextUp(difference*normalLength),Math.nextDown(limit),Math.nextUp(limit));
+        if(continuation.status()!=LinkStatus.ADMITTED)
+            return new DirectLink(fromStation,toStation,i,j,a.accepted(),b.accepted(),threshold,continuation.status(),LinkReason.CONTINUATION_BOUND,Optional.empty(),Optional.of(continuation));
         var ga=a.nativeGridPosition();var gb=b.nativeGridPosition();
         if(!pathWithin(family,ga,gb,geometry.outerFirst(),geometry.outerLast(),geometry.localLowerU(),geometry.localUpperU(),null))
-            return new DirectLink(fromStation,toStation,i,j,a.accepted(),b.accepted(),threshold,LinkStatus.UNAVAILABLE,LinkReason.DOMAIN_UNRESOLVED,Optional.empty());
-        if(!authority(ga,gb))return new DirectLink(fromStation,toStation,i,j,a.accepted(),b.accepted(),threshold,LinkStatus.REJECTED,LinkReason.SOURCE_AUTHORITY,Optional.empty());
+            return new DirectLink(fromStation,toStation,i,j,a.accepted(),b.accepted(),threshold,LinkStatus.UNAVAILABLE,LinkReason.DOMAIN_UNRESOLVED,Optional.empty(),Optional.of(continuation));
+        if(!authority(ga,gb))return new DirectLink(fromStation,toStation,i,j,a.accepted(),b.accepted(),threshold,LinkStatus.UNAVAILABLE,LinkReason.SOURCE_AUTHORITY,Optional.empty(),Optional.of(continuation));
         var scalar=integral(ga,gb);
         var status=scalar.status()!=BilinearSegmentIntegral.Status.COMPLETE?LinkStatus.UNAVAILABLE:scalar.minimum().orElseThrow()>=threshold?LinkStatus.ADMITTED:LinkStatus.REJECTED;
         var reason=status==LinkStatus.UNAVAILABLE?LinkReason.SCALAR_SUPPORT:status==LinkStatus.ADMITTED?LinkReason.NONE:LinkReason.BELOW_THRESHOLD;
-        return new DirectLink(fromStation,toStation,i,j,a.accepted(),b.accepted(),threshold,status,reason,Optional.of(scalar));
+        return new DirectLink(fromStation,toStation,i,j,a.accepted(),b.accepted(),threshold,status,reason,Optional.of(scalar),Optional.of(continuation));
     }
     private boolean uniqueIdentity(List<DirectLink> links,int base,int rows,int cols){
         if(rows!=cols)return false;
+        for(int i=0;i<rows*cols;i++){work(1);var status=links.get(base+i).status;
+            if(status!=LinkStatus.ADMITTED&&status!=LinkStatus.REJECTED)return false;}
         for(int i=0;i<rows;i++){int outgoing=0,incoming=0;for(int j=0;j<cols;j++){work(2);
             if(links.get(base+i*cols+j).status==LinkStatus.ADMITTED)outgoing++;
             if(links.get(base+j*cols+i).status==LinkStatus.ADMITTED)incoming++;}

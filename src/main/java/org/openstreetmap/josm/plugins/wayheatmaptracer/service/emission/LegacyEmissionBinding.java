@@ -372,6 +372,19 @@ public final class LegacyEmissionBinding {
             validateSourceClass(observations.get(index));
         }
     }
+    long finalPublicationWork(){
+        long work=32;
+        for(var observation:observations)work=Math.addExact(work,8L+observation.profile().intensitySamples().size()+observation.producerPeaks().size());
+        return work;
+    }
+    /** Callback-free scan admitted by the owning input's final publication ticket. */
+    void requireNativeProfilesUnchangedForFinalPublication(){
+        if(syntheticRasterReceipt==null&&managedPermit==null)return;
+        for(int i=0;i<observations.size();i++){
+            if(!nativeProfileSnapshots.get(i).unchanged(observations.get(i)))throw new IllegalStateException("Original Legacy profile changed after binding publication");
+            validateSourceClass(observations.get(i));
+        }
+    }
 
     private static void validateSourceClass(OriginalObservation observation) {
         boolean censored = !observation.profile().anchorWithinRaster()

@@ -13,6 +13,8 @@ import java.util.concurrent.CancellationException;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
@@ -32,6 +34,39 @@ import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 class ManagedSelectionWitnessTest {
+    @ParameterizedTest @ValueSource(strings={"coordinate","tag","node-identity","relation-role","new-referrer","branch-coordinate","projection"})
+    void prepaidFinalComparisonRetainsEveryCapturedDependency(String change){
+        Fixture fixture=fixture();var selection=SelectionResolver.resolve(fixture.dataSet,false);
+        Way branch=way(fixture.middle,node(.003));fixture.dataSet.addPrimitive(branch.getNode(1));fixture.dataSet.addPrimitive(branch);
+        Relation route=new Relation();route.setMembers(List.of(new RelationMember("selected",selection.way())));fixture.dataSet.addPrimitive(route);
+        var ledger=AttemptMemoryLedger.production();
+        try(var owner=ledger.rootOwner();var witness=ManagedSelectionWitness.capture(fixture.dataSet,selection,ProjectionRegistry.getProjection(),source(selection),fixture.budget(),owner)){
+            try(var first=witness.prepareFinalPublicationCheck(fixture.budget(),owner)){
+                var before=fixture.budget().snapshot();first.validate();assertEquals(before,fixture.budget().snapshot());
+            }
+            try(var check=witness.prepareFinalPublicationCheck(fixture.budget(),owner)){
+                switch(change){
+                    case "coordinate" -> fixture.middle.setCoor(new LatLon(.000001,.001));
+                    case "tag" -> fixture.middle.put("synthetic","changed");
+                    case "node-identity" -> {Node replacement=node(.001);fixture.dataSet.addPrimitive(replacement);var nodes=new ArrayList<>(selection.way().getNodes());nodes.set(1,replacement);selection.way().setNodes(nodes);}
+                    case "relation-role" -> route.setMembers(List.of(new RelationMember("changed",selection.way())));
+                    case "new-referrer" -> {Way added=way(fixture.middle,node(.004));fixture.dataSet.addPrimitive(added.getNode(1));fixture.dataSet.addPrimitive(added);}
+                    case "branch-coordinate" -> branch.getNode(1).setCoor(new LatLon(.000001,.003));
+                    case "projection" -> ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:4326"));
+                }
+                var before=fixture.budget().snapshot();assertThrows(IllegalStateException.class,check::validate);assertEquals(before,fixture.budget().snapshot());
+            }
+        }finally{ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));}
+        assertEquals(0,ledger.currentBytes());
+    }
+    @Test void finalComparisonRejectsForeignAttemptAndClosedTicket(){
+        Fixture fixture=fixture();var selection=SelectionResolver.resolve(fixture.dataSet,false);
+        try(var owner=AttemptMemoryLedger.production().rootOwner();var witness=ManagedSelectionWitness.capture(fixture.dataSet,selection,ProjectionRegistry.getProjection(),source(selection),fixture.budget(),owner)){
+            var foreign=new EmissionWorkBudget(TraceBudgets.defaults(),CancellationProbe.NONE);var before=fixture.budget().snapshot();
+            assertThrows(IllegalArgumentException.class,()->witness.prepareFinalPublicationCheck(foreign,owner));assertEquals(before,fixture.budget().snapshot());
+            var check=witness.prepareFinalPublicationCheck(fixture.budget(),owner);check.close();assertThrows(IllegalStateException.class,check::validate);
+        }
+    }
     @BeforeAll
     static void configure() {
         Config.setPreferencesInstance(new MemoryPreferences());

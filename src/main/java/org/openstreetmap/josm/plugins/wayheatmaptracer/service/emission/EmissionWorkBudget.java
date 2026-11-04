@@ -144,6 +144,8 @@ public final class EmissionWorkBudget {
     public synchronized long pairVisits() { return pairVisits; }
     public long workLimit() { return workLimit; }
     public long pairLimit() { return pairLimit; }
+    /** Read-only final publication guard: no new admission or cancellation callback. */
+    synchronized void requireActiveForFinalPublication(){if(terminalFailure!=null)throw terminalFailure;}
 
     /** Effective original-row state-family ceiling, including a stricter caller limit. */
     public int stateFamilyLimit() { return stateFamilyLimit; }

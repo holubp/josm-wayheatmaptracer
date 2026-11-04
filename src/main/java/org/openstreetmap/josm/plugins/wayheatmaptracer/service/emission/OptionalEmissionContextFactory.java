@@ -75,6 +75,32 @@ public final class OptionalEmissionContextFactory {
                 throw failure;
             }
         }
+        /** Opaque same-attempt final check; all scratch and scan work precedes candidate copy. */
+        synchronized FinalPublicationCheck prepareFinalPublication(AttemptMemoryLedger.Owner parent){
+            if(terminalFailure!=null)throw terminalFailure;
+            if(owner.isClosed())throw new IllegalStateException("Managed source permit is closed");
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,16);
+            return new FinalPublicationCheck(capture.prepareFinalPublicationCheck(budget,parent));
+        }
+        final class FinalPublicationCheck implements AutoCloseable{
+            private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler.PreparedManagedCapture.FinalPublicationCheck selection;
+            private boolean used;
+            private FinalPublicationCheck(org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler.PreparedManagedCapture.FinalPublicationCheck selection){this.selection=selection;}
+            void validate(){
+                if(used)throw new IllegalStateException("Managed final source check is consumed");used=true;
+                if(terminalFailure!=null)throw terminalFailure;
+                if(owner.isClosed())throw new IllegalStateException("Managed source permit is closed");
+                // The supplier is resolved first. Every source/selection/profile read follows it;
+                // no caller callback occurs after this complete final scan.
+                var settings=currentSettings.get();
+                selection.validate(settings);
+                if(settings.trackerMode()!=org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.LEGACY_V02
+                        ||settings.alignmentMode()!=alignmentMode||settings.adjustJunctionNodes())throw new IllegalStateException("Managed captured alignment permissions changed");
+                if(org.openstreetmap.josm.gui.MainApplication.getLayerManager().getEditDataSet()!=capture.selectionWitness().orElseThrow().dataSet())
+                    throw new IllegalStateException("Managed selected dataset is not the active edit layer");
+            }
+            @Override public void close(){selection.close();}
+        }
         public synchronized void failProduction(RuntimeException failure) {
             if (terminalFailure == null) terminalFailure = failure;
             budget.failTerminally(failure);

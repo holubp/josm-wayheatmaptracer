@@ -25,6 +25,167 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.*;
 
 class ManagedOrdinaryAffinityTest {
     @TempDir Path cache;
+    @Test void unresolvedRelevantCrossLinksCannotProveLocalIdentity()throws Exception{
+        managed(.60,true,f->{try(var owner=f.input.openExecutionOwner("settled-matrix-domain")){
+            var domain=new LegacyEmissionDomain(f.input.legacyBinding().orElseThrow(),f.input.profiles().levelZeroProfiles(),List.of(0.0),f.input.workBudget(),owner);
+            int row=domain.rowCount()/2;
+            var a=domain.observedAt(row).stream().min(Comparator.comparingDouble(LegacyEmissionDomain.State::offsetRasterPixels)).orElseThrow();
+            var b=domain.observedAt(row+1).stream().max(Comparator.comparingDouble(LegacyEmissionDomain.State::offsetRasterPixels)).orElseThrow();
+            try(var classifier=new ManagedOrdinaryAffinity(f.input,domain)){
+                var actual=classifier.classify(a,b);assertEquals(OrdinaryAffinityClassifier.Status.INCOMPATIBLE,actual.status());
+                var links=new ArrayList<>(actual.proof().links().subList(0,4));
+                var identity=ManagedOrdinaryAffinity.class.getDeclaredMethod("uniqueIdentity",List.class,int.class,int.class,int.class);identity.setAccessible(true);
+                assertEquals(true,identity.invoke(classifier,links,0,2,2),"Issued ordinary rotated alternatives must be settled");
+                var old=links.get(1);
+                for(var unavailable:List.of(ManagedOrdinaryAffinity.LinkStatus.UNAVAILABLE,ManagedOrdinaryAffinity.LinkStatus.NOT_QUERIED)){
+                    links.set(1,new ManagedOrdinaryAffinity.DirectLink(old.fromStation(),old.toStation(),old.fromMode(),old.toMode(),old.fromOwner(),old.toOwner(),old.threshold(),unavailable,ManagedOrdinaryAffinity.LinkReason.DOMAIN_UNRESOLVED,Optional.empty(),old.continuation()));
+                    assertEquals(false,identity.invoke(classifier,links,0,2,2),"An unresolved issued relevant alternative cannot establish uniqueness: "+unavailable);
+                }
+            }
+        }});
+    }
+    @Test void continuationEnclosureEqualityAndStraddlingAreNotExclusion(){
+        assertEquals(ManagedOrdinaryAffinity.LinkStatus.UNAVAILABLE,new ManagedOrdinaryAffinity.ContinuationBounds(1,2,1.5,1.6).status());
+        assertEquals(ManagedOrdinaryAffinity.LinkStatus.UNAVAILABLE,new ManagedOrdinaryAffinity.ContinuationBounds(1.6,2,1.5,1.6).status());
+        assertEquals(ManagedOrdinaryAffinity.LinkStatus.ADMITTED,new ManagedOrdinaryAffinity.ContinuationBounds(1,1.5,1.5,1.6).status());
+        assertEquals(ManagedOrdinaryAffinity.LinkStatus.REJECTED,new ManagedOrdinaryAffinity.ContinuationBounds(Math.nextUp(1.6),2,1.5,1.6).status());
+    }
+    @Test void realIssuedModeLinkAcrossOriginalSourceVoidIsUnavailableNotExcluded()throws Exception{
+        managed(new Spec(.60,true,false,false,CancellationProbe.NONE,60,false,Defect.SOURCE_TURN),f->{try(var owner=f.input.openExecutionOwner("source-void-link")){
+            var binding=f.input.legacyBinding().orElseThrow();var domain=new LegacyEmissionDomain(binding,f.input.profiles().levelZeroProfiles(),List.of(0.0),f.input.workBudget(),owner);
+            var context=f.input.context();int last=binding.observations().size()-1;
+            var ra=binding.observations().get(0).measurementProfile().samplingAnchor().rasterPoint();var rb=binding.observations().get(last).measurementProfile().samplingAnchor().rasterPoint();
+            var a=context.metricAt(ra);var b=context.metricAt(rb);double length=a.distanceTo(b);
+            var v=new MetricPoint((b.xMeters()-a.xMeters())/length,(b.yMeters()-a.yMeters())/length);var n=new MetricPoint(-v.yMeters(),v.xMeters());
+            try(var session=NativeConnectorEvaluator.openAffinityProfiles(f.input);var classifier=new ManagedOrdinaryAffinity(f.input,domain)){
+                var pa=session.metricAnchoredQuery(0,ra,n);var pb=session.metricAnchoredQuery(binding.observations().get(last).retainedObservationIndex(),rb,n);
+                assertEquals(2,pa.modes().size());assertEquals(2,pb.modes().size());
+                assertEquals(NativeMeasuredProfileReceipt.Availability.COMPLETE,pa.modes().get(0).support().availability());assertEquals(NativeMeasuredProfileReceipt.Availability.COMPLETE,pb.modes().get(0).support().availability());
+                var family=session.freezeFamily(a,v,n,-100,length+100);
+                var geometry=new ManagedOrdinaryAffinity.Domain(a,v,n,-90,length+90,-100,length+100,28,context.minimumNativePitchMeters().orElseThrow(),-28,28,4);
+                var method=ManagedOrdinaryAffinity.class.getDeclaredMethod("link",NativeMeasuredProfileReceipt.Family.class,ManagedOrdinaryAffinity.Domain.class,int.class,int.class,int.class,int.class,NativeMeasuredProfileReceipt.Profile.class,NativeMeasuredProfileReceipt.Profile.class);method.setAccessible(true);
+                var link=(ManagedOrdinaryAffinity.DirectLink)method.invoke(classifier,family,geometry,0,1,0,0,pa,pb);
+                assertEquals(ManagedOrdinaryAffinity.LinkStatus.ADMITTED,link.continuation().orElseThrow().status());
+                assertEquals(ManagedOrdinaryAffinity.LinkReason.SOURCE_AUTHORITY,link.reason());assertEquals(ManagedOrdinaryAffinity.LinkStatus.UNAVAILABLE,link.status());
+                assertTrue(link.scalar().isEmpty(),"An unavailable original-route proof never authorizes scalar sampling of this link");
+            }
+        }});
+    }
+    @Test void nativeProfileMutationDuringFinalUnpinCannotPublishAResult()throws Exception{
+        var armed=new AtomicBoolean();var changed=new AtomicBoolean();
+        var target=new java.util.concurrent.atomic.AtomicReference<java.awt.geom.Point2D.Double>();
+        var work=new java.util.concurrent.atomic.AtomicReference<EmissionWorkBudget>();var backpointers=new java.util.concurrent.atomic.AtomicLong();
+        CancellationProbe callback=()->{
+            long count=work.get()==null?0:work.get().operationUnits(EmissionWorkBudget.Operation.BACKPOINTER_VISIT);
+            var stack=armed.get()&&!changed.get()&&backpointers.getAndSet(count)!=count?Arrays.asList(Thread.currentThread().getStackTrace()):List.<StackTraceElement>of();
+            if(stack.stream().anyMatch(s->s.getMethodName().equals("unpinChain")&&s.getClassName().equals(LegacyEmissionKernel.class.getName()))
+                    &&stack.stream().anyMatch(s->s.getMethodName().equals("result")&&s.getClassName().equals(LegacyEmissionKernel.class.getName()))){
+                changed.set(true);target.get().x=Math.nextUp(target.get().x);
+            }return false;
+        };
+        managed(new Spec(.60,true,false,false,callback,12,true),f->{
+            var profiles=f.input.profiles().levelZeroProfiles();target.set(profiles.get(0).normalScreen());long baseline=f.ledger.currentBytes();
+            work.set(f.input.workBudget());
+            armed.set(true);
+            var seeds=profiles.get(0).peaks().stream().map(p->p.offsetPx()).toList();
+            RuntimeException refusal=null;
+            try(var unexpected=new LegacyEmissionKernel().solveManagedChartAffinity(f.input,profiles,seeds,List.of(),(p,o,s)->{armed.set(true);return o;},CancellationProbe.NONE)){}
+            catch(RuntimeException failure){refusal=failure;}
+            assertTrue(changed.get(),"Actual final charged unpin must execute the deterministic mutation");
+            assertInstanceOf(IllegalStateException.class,refusal,"Publication must refuse the actual late-mutated producer profile");
+            assertEquals(baseline,f.ledger.currentBytes(),"Refused publication closes every kernel/classifier/result payload");
+        });
+    }
+    @ParameterizedTest @ValueSource(strings={"profile","selection","settings","input-close"})
+    void laterFinalPrepaymentMutationCannotPublishEarlierValidatedFacts(String layer)throws Exception{
+        var armed=new AtomicBoolean();var changed=new AtomicBoolean();var fixture=new java.util.concurrent.atomic.AtomicReference<Fixture>();
+        var finalPhase=new AtomicBoolean();var backpointers=new java.util.concurrent.atomic.AtomicLong();
+        var work=new java.util.concurrent.atomic.AtomicReference<EmissionWorkBudget>();
+        CancellationProbe callback=()->{
+            long count=work.get()==null?0:work.get().operationUnits(EmissionWorkBudget.Operation.BACKPOINTER_VISIT);
+            var stack=armed.get()&&!changed.get()&&(finalPhase.get()||backpointers.getAndSet(count)!=count)?Arrays.asList(Thread.currentThread().getStackTrace()):List.<StackTraceElement>of();
+            if(stack.stream().anyMatch(s->s.getMethodName().equals("prepareManagedFinalPublication")))finalPhase.set(true);
+            if(stack.stream().anyMatch(s->s.getMethodName().equals("prepareFinalPublicationCheck")&&s.getClassName().equals(ManagedSelectionWitness.class.getName()))){
+                changed.set(true);var f=fixture.get();
+                switch(layer){
+                    case "profile" -> {var n=f.input.profiles().levelZeroProfiles().get(0).normalScreen();n.x=Math.nextUp(n.x);}
+                    case "selection" -> {var n=f.source.getNode(0);var c=n.getCoor();n.setCoor(new LatLon(c.lat()+.000001,c.lon()));}
+                    case "settings" -> f.settings.set(f.settings.get().withSearchHalfWidthMeters(29));
+                    case "input-close" -> f.input.close();
+                    default -> throw new AssertionError(layer);
+                }
+            }return false;
+        };
+        managed(new Spec(.60,true,false,false,callback,12,true),f->{fixture.set(f);
+            work.set(f.input.workBudget());
+            armed.set(true);
+            var profiles=f.input.profiles().levelZeroProfiles();long baseline=f.ledger.currentBytes();
+            assertThrows(IllegalStateException.class,()->{try(var unexpected=new LegacyEmissionKernel().solveManagedChartAffinity(f.input,profiles,profiles.get(0).peaks().stream().map(p->p.offsetPx()).toList(),List.of(),(p,o,s)->{armed.set(true);return o;},CancellationProbe.NONE)){} });
+            assertTrue(changed.get(),"Mutation must occur in the later source/witness prepayment");
+            if(layer.equals("input-close")){
+                assertTrue(f.retainedOwner.isClosed(),"Refused candidate must release the lease that deferred closed-input ownership");
+                assertTrue(f.ledger.currentBytes()<baseline,"Only the independently open synthetic capture/witness remains");
+            }else assertEquals(baseline,f.ledger.currentBytes());
+        });
+    }
+    @ParameterizedTest @ValueSource(strings={"work","pair","cancel","memory"})
+    void finalPublicationAdmissionRefusalsKeepPrimaryAndReleaseEveryPayload(String kind)throws Exception{
+        var armed=new AtomicBoolean();var fired=new AtomicBoolean();var fixture=new java.util.concurrent.atomic.AtomicReference<Fixture>();
+        var pressure=new java.util.concurrent.atomic.AtomicReference<AttemptMemoryLedger.Owner>();
+        var primary=new java.util.concurrent.atomic.AtomicReference<RuntimeException>();
+        var backpointers=new java.util.concurrent.atomic.AtomicLong();
+        CancellationProbe callback=()->{
+            var f0=fixture.get();long count=f0==null?0:f0.input.workBudget().operationUnits(EmissionWorkBudget.Operation.BACKPOINTER_VISIT);
+            if(armed.get()&&!fired.get()&&backpointers.getAndSet(count)!=count&&Arrays.stream(Thread.currentThread().getStackTrace()).anyMatch(s->s.getMethodName().equals("prepareManagedFinalPublication")&&s.getClassName().equals(SampledEmissionInput.class.getName()))){
+                fired.set(true);var f=fixture.get();var budget=f.input.workBudget();
+                try{switch(kind){
+                    case "work" -> budget.charge(EmissionWorkBudget.Operation.PREPARATION,budget.workLimit()-budget.workUsed()+1);
+                    case "pair" -> budget.charge(EmissionWorkBudget.Operation.TRANSITION,budget.pairLimit()-budget.pairVisits()+1);
+                    case "cancel" -> throw new CancellationException("synthetic final publication cancel");
+                    case "memory" -> pressure.get().reserve(AttemptMemoryLedger.MAX_BYTES-f.ledger.currentBytes()-64);
+                    default -> throw new AssertionError(kind);
+                }}catch(RuntimeException failure){primary.set(failure);throw failure;}
+            }return false;
+        };
+        managed(new Spec(.60,true,false,false,callback,12,true),f->{fixture.set(f);
+            armed.set(true);
+            var profiles=f.input.profiles().levelZeroProfiles();long baseline=f.ledger.currentBytes();
+            try(var owner=f.input.openExecutionOwner("synthetic-final-admission-pressure")){pressure.set(owner);
+                var failure=assertThrows(RuntimeException.class,()->{try(var unexpected=new LegacyEmissionKernel().solveManagedChartAffinity(f.input,profiles,profiles.get(0).peaks().stream().map(p->p.offsetPx()).toList(),List.of(),(p,o,s)->{armed.set(true);return o;},CancellationProbe.NONE)){} });
+                assertTrue(fired.get());if(primary.get()!=null)assertSame(primary.get(),failure);
+                switch(kind){
+                    case "work" -> assertEquals(EmissionWorkBudget.LimitKind.TOTAL_WORK,((EmissionWorkBudget.LimitExceededException)failure).kind());
+                    case "pair" -> assertEquals(EmissionWorkBudget.LimitKind.PAIR_VISITS,((EmissionWorkBudget.LimitExceededException)failure).kind());
+                    case "cancel" -> assertInstanceOf(CancellationException.class,failure);
+                    case "memory" -> assertInstanceOf(AttemptMemoryLedger.ResourceLimitException.class,failure);
+                }
+                assertSame(failure,assertThrows(RuntimeException.class,f.input::requireOpenAndUnchanged));
+            }assertEquals(baseline,f.ledger.currentBytes());
+        });
+    }
+    @Test void prepaidFinalScanHasNoBudgetCallbackAndCannotBeReused()throws Exception{
+        managed(.60,true,f->{try(var owner=f.input.openExecutionOwner("direct-final-ticket")){
+            long baseline=f.ledger.currentBytes();
+            try(var publication=f.input.prepareManagedFinalPublication(owner,64,1024)){
+                var before=f.input.workBudget().snapshot();publication.validate();assertEquals(before,f.input.workBudget().snapshot());
+                assertThrows(IllegalStateException.class,publication::validate);
+            }assertEquals(baseline,f.ledger.currentBytes());
+        }});
+    }
+    @Test void candidateFinalSettingsReadCannotHideAnAlreadyStickyTerminalFailure()throws Exception{
+        managed(new Spec(.60,true,false,false,CancellationProbe.NONE,12,true),f->{
+            var primary=new CancellationException("synthetic terminal source callback");var fired=new AtomicBoolean();
+            var profiles=f.input.profiles().levelZeroProfiles();long baseline=f.ledger.currentBytes();
+            f.settingsHook.set(()->{
+                if(!fired.get()&&Arrays.stream(Thread.currentThread().getStackTrace()).anyMatch(s->s.getClassName().equals(OptionalEmissionContextFactory.ManagedCaptureBinding.class.getName()+"$FinalPublicationCheck")&&s.getMethodName().equals("validate"))){
+                    fired.set(true);f.input.workBudget().failTerminally(primary);
+                }
+            });
+            var failure=assertThrows(CancellationException.class,()->{try(var unexpected=new LegacyEmissionKernel().solveManagedChartAffinity(f.input,profiles,profiles.get(0).peaks().stream().map(p->p.offsetPx()).toList(),List.of(),(p,o,s)->o,CancellationProbe.NONE)){} });
+            assertTrue(fired.get(),"The candidate exists before the final source/settings read");assertSame(primary,failure);
+            assertSame(primary,assertThrows(CancellationException.class,f.input::requireOpenAndUnchanged));assertEquals(baseline,f.ledger.currentBytes());
+        });
+    }
     @Test void simpleCutRejectsAdjacentNativeReversalDegeneracyAndNonadjacentContact()throws Exception{
         managed(.60,true,f->{try(var owner=f.input.openExecutionOwner("simple-cut-domain")){
             var domain=new LegacyEmissionDomain(f.input.legacyBinding().orElseThrow(),f.input.profiles().levelZeroProfiles(),List.of(0.0),f.input.workBudget(),owner);
@@ -440,8 +601,8 @@ class ManagedOrdinaryAffinityTest {
             +",rawCoreBrackets="+extraction.result().rawCoreReceipts().stream().map(c->List.of(sampleOffset(p,c.leftAdjacentSampleIndex()),sampleOffset(p,c.rightAdjacentSampleIndex()),c.leftAdjacentBelowCore(),c.rightAdjacentBelowCore())).toList();
     }
     private OptionalDouble sampleOffset(ManagedOrdinaryAffinity.PointFact p,int i){return i<0||i>=p.probe().samples().size()?OptionalDouble.empty():OptionalDouble.of(p.probe().samples().get(i).offsetMeters());}
-    record Fixture(SampledEmissionInput input,AttemptMemoryLedger ledger){}
-    private enum Defect { NONE, JOIN, WIDE, CURVE, SPARSE_STATIONS }
+    record Fixture(SampledEmissionInput input,AttemptMemoryLedger ledger,Way source,java.util.concurrent.atomic.AtomicReference<ManagedHeatmapConfig> settings,java.util.concurrent.atomic.AtomicReference<Runnable> settingsHook,AttemptMemoryLedger.Owner retainedOwner){}
+    private enum Defect { NONE, JOIN, WIDE, CURVE, SPARSE_STATIONS, SOURCE_TURN }
     private record Spec(double weak,boolean rotated,boolean swapped,boolean broadOutside,CancellationProbe cancelled,double halfLength,boolean joinedEnds,Defect defect){
         Spec(double weak,boolean rotated,boolean swapped,boolean broadOutside,CancellationProbe cancelled){this(weak,rotated,swapped,broadOutside,cancelled,60,false,Defect.NONE);}
         Spec(double weak,boolean rotated,boolean swapped,boolean broadOutside,CancellationProbe cancelled,double halfLength,boolean joinedEnds){this(weak,rotated,swapped,broadOutside,cancelled,halfLength,joinedEnds,Defect.NONE);}
@@ -460,7 +621,8 @@ class ManagedOrdinaryAffinityTest {
         var projection=Projections.getProjectionByCode("EPSG:3857");ProjectionRegistry.setProjection(projection);
         var center=new LatLon(49.44,14);var midpoint=projection.latlon2eastNorth(center);
         double angle=spec.rotated?.47:0,dx=spec.halfLength*Math.cos(angle),dy=spec.halfLength*Math.sin(angle);
-        var source=List.of(new EastNorth(midpoint.east()-dx,midpoint.north()-dy),new EastNorth(midpoint.east()+dx,midpoint.north()+dy));
+        var start=new EastNorth(midpoint.east()-dx,midpoint.north()-dy);var end=new EastNorth(midpoint.east()+dx,midpoint.north()+dy);
+        var source=spec.defect==Defect.SOURCE_TURN?List.of(start,new EastNorth(midpoint.east()-100*Math.sin(angle),midpoint.north()+100*Math.cos(angle)),end):List.of(start,end);
         var dataSet=new DataSet();var nodes=source.stream().map(p->new Node(projection.eastNorth2latlon(p))).toList();nodes.forEach(dataSet::addPrimitive);
         var way=new Way();way.setNodes(nodes);dataSet.addPrimitive(way);dataSet.setSelected(way);
         var layer=new OsmDataLayer(dataSet,"synthetic managed affinity",null);MainApplication.getLayerManager().addLayer(layer);
@@ -475,6 +637,8 @@ class ManagedOrdinaryAffinityTest {
         double tipX=(tip.lon()+180)/360*size,tipY=(.5-Math.log((1+tipSine)/(1-tipSine))/(4*Math.PI))*size;
         double nativeExtent=(tipX-cx)*Math.cos(angle)-(tipY-cy)*Math.sin(angle);
         var ledger=AttemptMemoryLedger.production();var budget=new EmissionWorkBudget(TraceBudgets.defaults(),spec.cancelled);var decoder=new TileDecoderClassifier();
+        var currentSettings=new java.util.concurrent.atomic.AtomicReference<>(settings);
+        var settingsHook=new java.util.concurrent.atomic.AtomicReference<Runnable>();
         try(var owner=ledger.rootOwner();var coordinator=new TileFetchCoordinator((request,credentials)->{
             int width=TileHeatmapSampler.TILE_SIZE;var image=new BufferedImage(width,width,BufferedImage.TYPE_INT_ARGB);
             for(int y=0;y<width;y++)for(int x=0;x<width;x++){
@@ -499,8 +663,8 @@ class ManagedOrdinaryAffinityTest {
         },new ManagedTileCache(cache,decoder),decoder,TileReliabilityPolicy.defaults())){
             var sampler=new TileHeatmapSampler(coordinator);var witness=ManagedSelectionWitness.capture(dataSet,selection,projection,projected,budget,owner);
             try(var capture=sampler.prepareForEmission(settings,witness,List.of("hot"),"hot",false,budget,owner);
-                var permit=OptionalEmissionContextFactory.bindManagedCapture(capture,()->settings,budget,owner);
-                var input=sampler.sampleProfilesForEmission(permit,CancellationProbe.NONE)){check.accept(new Fixture(input,ledger));}
+                var permit=OptionalEmissionContextFactory.bindManagedCapture(capture,()->{var hook=settingsHook.get();if(hook!=null)hook.run();return currentSettings.get();},budget,owner);
+                var input=sampler.sampleProfilesForEmission(permit,CancellationProbe.NONE)){check.accept(new Fixture(input,ledger,way,currentSettings,settingsHook,permit.retainedOwner()));}
         }finally{MainApplication.getLayerManager().removeLayer(layer);}
         assertEquals(0,ledger.currentBytes());
     }

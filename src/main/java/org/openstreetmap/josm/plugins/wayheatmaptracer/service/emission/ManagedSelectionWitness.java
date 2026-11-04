@@ -140,6 +140,97 @@ public final class ManagedSelectionWitness implements AutoCloseable {
         }
     }
 
+    /** Same-attempt credit for one final callback-free comparison of the captured closure. */
+    public FinalPublicationCheck prepareFinalPublicationCheck(EmissionWorkBudget budget,AttemptMemoryLedger.Owner parent){
+        if(budget!=attemptBudget)throw new IllegalArgumentException("Managed witness belongs to a different work attempt");
+        requireLive();
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION,4L+frozen.fullWay().size()+frozen.incidentWays().size()+frozen.incomingRelations().size());
+        long entries=frozen.fullWay().size()+frozen.incidentWays().size()+frozen.incomingRelations().size()+selectedOccurrences.size()+1L;
+        for(var fact:frozen.fullWay())entries=Math.addExact(entries,fact.tags().size());
+        for(var fact:frozen.incidentWays().values())entries=Math.addExact(entries,fact.nodes().size()+fact.tags().size());
+        for(var fact:frozen.incomingRelations().values())entries=Math.addExact(entries,fact.members().size()+fact.tags().size());
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION,Math.addExact(256L+MAX_RELEVANT_MEMBERS,Math.multiplyExact(64,entries)));
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);
+        var scratch=parent.child("managed-selection-final-publication");
+        try{scratch.retain(this);scratch.reserve(Math.addExact(16384,Math.multiplyExact(512,entries)));
+            return new FinalPublicationCheck(scratch);
+        }catch(RuntimeException failure){scratch.close();if(failure instanceof AttemptMemoryLedger.ResourceLimitException)budget.failTerminally(failure);throw failure;}
+    }
+    public final class FinalPublicationCheck implements AutoCloseable{
+        private final AttemptMemoryLedger.Owner scratch;
+        private final Map<OsmPrimitive,Set<OsmPrimitive>> expected=new IdentityHashMap<>();
+        private final int referrerVisitCredit;
+        private boolean used;
+        private FinalPublicationCheck(AttemptMemoryLedger.Owner scratch){
+            this.scratch=scratch;
+            int memberVisits=0;
+            for(var way:frozen.incidentWays().values())memberVisits=Math.addExact(memberVisits,way.nodes().size());
+            for(var relation:frozen.incomingRelations().values())memberVisits=Math.addExact(memberVisits,relation.members().size());
+            referrerVisitCredit=MAX_RELEVANT_MEMBERS-memberVisits;
+            expected.put(selection.way(),Collections.newSetFromMap(new IdentityHashMap<>()));
+            for(var node:selectedOccurrences)expected.put(node,Collections.newSetFromMap(new IdentityHashMap<>()));
+            for(var way:frozen.incidentWays().keySet())expected.put(way,Collections.newSetFromMap(new IdentityHashMap<>()));
+            for(var relation:frozen.incomingRelations().keySet())expected.put(relation,Collections.newSetFromMap(new IdentityHashMap<>()));
+            for(var way:frozen.incidentWays().values())for(var node:way.nodes()){
+                var refs=expected.get(node);if(refs!=null)refs.add(way.way());}
+            for(var relation:frozen.incomingRelations().values())for(var member:relation.members()){
+                var refs=expected.get(member.primitive());if(refs!=null)refs.add(relation.relation());}
+        }
+        /** No work charge, cancellation/supplier callback, new traversal or capture. */
+        public void validate(){
+            if(used||scratch.isClosed())throw new IllegalStateException("Managed final selection check is closed or consumed");
+            used=true;requireLive();Lock lock=dataSet.getReadLock();lock.lock();
+            try{
+                if(ProjectionRegistry.getProjection()!=projection||selection.way().getNodesCount()!=frozen.fullWay().size()
+                        ||selection.endIndex()-selection.startIndex()+1!=originalSource.size()
+                        ||selection.segmentNodes().size()!=selectedOccurrences.size())throw changed();
+                var current=selection.way().getNodes();
+                for(int i=0;i<frozen.fullWay().size();i++){
+                    var fact=frozen.fullWay().get(i);var node=current.get(i);
+                    if(node!=fact.node()||!valid(node)||node.getUniqueId()!=fact.uniqueId()||!sameCoordinate(node.getCoor(),fact.coordinate())
+                            ||node.getNumKeys()!=fact.tags().size()||!node.getKeys().equals(fact.tags())||selection.fixedNodes().contains(node)!=fact.fixed())throw changed();
+                    if(i>=selection.startIndex()&&i<=selection.endIndex()){
+                        int row=i-selection.startIndex();var projected=node.getEastNorth(projection);var original=originalSource.get(row);
+                        if(selection.segmentNodes().get(row)!=node||projected==null
+                                ||Double.doubleToLongBits(projected.east())!=Double.doubleToLongBits(original.east())
+                                ||Double.doubleToLongBits(projected.north())!=Double.doubleToLongBits(original.north()))throw changed();
+                    }
+                }
+                for(var fact:frozen.incidentWays().values()){
+                    var way=fact.way();if(!valid(way)||way.getUniqueId()!=fact.uniqueId()||way.hasIncompleteNodes()
+                            ||way.getNodesCount()!=fact.nodes().size()||way.getNumKeys()!=fact.tags().size()||!way.getKeys().equals(fact.tags()))throw changed();
+                    var nodes=way.getNodes();for(int i=0;i<nodes.size();i++)if(nodes.get(i)!=fact.nodes().get(i)
+                            ||!valid(nodes.get(i))||!sameCoordinate(nodes.get(i).getCoor(),fact.coordinates().get(i)))throw changed();
+                }
+                for(var fact:frozen.incomingRelations().values()){
+                    var relation=fact.relation();if(!valid(relation)||relation.getUniqueId()!=fact.uniqueId()
+                            ||relation.getMembersCount()!=fact.members().size()||relation.getNumKeys()!=fact.tags().size()||!relation.getKeys().equals(fact.tags()))throw changed();
+                    var members=relation.getMembers();for(int i=0;i<members.size();i++){
+                        var member=members.get(i);var frozenMember=fact.members().get(i);
+                        if(member.getMember()!=frozenMember.primitive()||member.getMember().getUniqueId()!=frozenMember.uniqueId()
+                                ||!member.getRole().equals(frozenMember.role()))throw changed();}
+                }
+                int remainingReferrers=referrerVisitCredit;
+                for(var entry:expected.entrySet()){
+                    if(!valid(entry.getKey()))throw changed();int live=0;
+                    // JOSM's stream reads the stored reference array lazily; getReferrers()
+                    // collects the whole mutable list before a bound can be checked.
+                    try(var stream=entry.getKey().referrers(OsmPrimitive.class)){
+                    var refs=stream.iterator();while(refs.hasNext()){
+                        if(--remainingReferrers<0)throw changed();var ref=refs.next();
+                        if(ref==null||ref.getDataSet()!=dataSet||ref.isIncomplete())throw changed();
+                        if(ref.isDeleted())continue;
+                        if(!entry.getValue().contains(ref))throw changed();live++;
+                    }}if(live!=entry.getValue().size())throw changed();
+                }
+            }finally{lock.unlock();}
+        }
+        private boolean valid(OsmPrimitive value){return value!=null&&value.getDataSet()==dataSet&&!value.isDeleted()&&!value.isIncomplete()
+            &&(!(value instanceof Node node)||node.getCoor()!=null);}
+        private IllegalStateException changed(){return new IllegalStateException("Managed selected source or relevant referrers changed");}
+        @Override public void close(){scratch.close();}
+    }
+
     private static Snapshot snapshot(DataSet dataSet, SelectionContext selection,
             Projection projection, List<EastNorth> originalSource,
             EmissionWorkBudget budget) {
