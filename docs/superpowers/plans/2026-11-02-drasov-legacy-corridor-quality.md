@@ -12,6 +12,35 @@
 
 ## Resume checkpoint — 2026-11-04
 
+### Live execution map (read before older chronology)
+
+- Controller ledger HEAD updated continuously in v022-legacy-b-release; primary
+  dirty user tree stays117baaf0, untouched. No RC/default adoption authorized.
+- Highest full-CI head88d4fa28: CI41833501937 PASS,2810tests/259XML, bothJOSM19555GUI PASS.
+- New reviewed-followups integration ee94e707 is independently CLOSED after one
+  cross-Input progress fix;353combined then182affected tests GREEN. Branch
+  codex/drasov-reviewed-followups pushed; full CI pending run discovery. Old88
+  source/classes and all measured worktrees/claims remain frozen.
+- Two originalR4/A screens (88 then435refusalreuse) BOTH hit128M, no geometry.
+  Realized reuse counters unavailable after throw; no claimed speedup/zero hits.
+  Sol6.1/xhigh found missing pre-mode endpoint-specific scalar-bound stage.
+  Packet drasov-a-workcap-strong-diagnosis.md under independent source/FP review;
+  no new graph or scalar-refinement implementation/run yet.
+- Legacy32M P0 completed as typed work refusal,seed0 BASErow11→16. All852local
+  windows fell back for NOISE_FLOOR_NONZERO;zero repeats. Do NOT implement P1
+  nested sample cache. Exact valid/zero-count shortcut under TDD in isolated
+  josm-drasov-local-noise-precheck,base6d6; no new private run.
+- Curved-census source dc1bd5c6 independently CLOSED; private helperc43ba649
+  FIXROUND1 repairs torn CSV recovery/uncharged output work. No actual184/21
+  census. Helper report drasov-curved-census-execution-preparation-report.md.
+- Active owners: managed_source_audit reviews A scalar-bound design;
+  kernel_memory_closure implements noise shortcut; affinity_contract_probe fixes
+  private census helper. Source integration ee94 is frozen. All other actors idle
+  unless explicitly followed up. No Astra; requested Sol6.1/high, focused xhigh
+  only for two hard execution diagnoses; actual routing/weekly usage unknown.
+
+Older milestone details below preserve evidence; this map is the current state.
+
 User instruction: finish remaining steps1–4 autonomously. Preserve root dirty/private
 artifacts; no RC/default adoption authorized. No Astra used. Requested workers are
 Sol6.1/high; actual runtime model/weekly usage telemetry unavailable. All local
