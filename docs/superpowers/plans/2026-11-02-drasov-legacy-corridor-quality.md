@@ -33,9 +33,18 @@
   windows fell back for NOISE_FLOOR_NONZERO;zero repeats. Do NOT implement P1
   nested sample cache. Exact valid/zero-count shortcut under TDD in isolated
   josm-drasov-local-noise-precheck,base6d6; no new private run.
-- Curved-census source dc1bd5c6 independently CLOSED; private helperc43ba649
-  FIXROUND1 repairs torn CSV recovery/uncharged output work. No actual184/21
-  census. Helper report drasov-curved-census-execution-preparation-report.md.
+- Curved-census source dc1bd5c6 and helper R1 independently CLOSED. Root's ONE
+  fad79c35 replacement invocation completed184/184 pairs:7,870,402work,
+  41,129,312Bpeak/0after,4.915s,0network,all24hashes unchanged. Fresh21folds
+  reproduce saved21; producer-port support all available; positive-run envelope
+  has one conservative route refusal. This is a diagnostic index-domain census,
+  NOT full future-domain proof or fitting improvement. affinity_contract_probe
+  result report drasov-curved-census-execution-result-report.md confirms184/184
+  EXACT_POSITIVE_DYADIC auxiliary charts including all21 original-normal folds.
+  Only pair5→6 has2/26 positive-run route refusals despite acquired support;
+  16producer stations there pass. Actual rounded Mode placement/fullfuturedomain
+  remain UNAVAILABLE. Next bounded managed-classifier ownership design assigned;
+  no adapter or rerun yet.
 - Active owners: a_native_integration implements reviewed A scalar-bound stage;
   managed_source_audit available for scoped census-helper repair review;
   kernel_memory_closure implements noise shortcut; affinity_contract_probe fixes
