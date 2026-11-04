@@ -43,8 +43,17 @@ def test_public_artifact_upload_is_exactly_allowlisted_and_gated() -> None:
     )
 
     uploads = [step for step in steps if step.get("uses") == "actions/upload-artifact@v4"]
-    assert len(uploads) == 2
-    report_upload, jar_upload = uploads
+    assert len(uploads) == 3
+    benchmark_upload, report_upload, jar_upload = uploads
+    assert benchmark_upload["if"] == "always() && github.event_name == 'workflow_dispatch' && inputs.ordinary_legacy_benchmark"
+    assert benchmark_upload["with"]["path"].splitlines() == [
+        "${{ runner.temp }}/ordinary-legacy-benchmark/summary.json",
+        "${{ runner.temp }}/ordinary-legacy-benchmark/protocol.json",
+        "${{ runner.temp }}/ordinary-legacy-benchmark/environment.json",
+        "${{ runner.temp }}/ordinary-legacy-benchmark/samples.jsonl",
+        "${{ runner.temp }}/ordinary-legacy-benchmark/runtime.log",
+        "${{ runner.temp }}/ordinary-legacy-benchmark/controls.log",
+    ]
     assert report_upload["if"] == "always()"
     assert report_upload["with"]["path"].splitlines() == [
         f"{ARTIFACT_OUTPUT}/reports/java/junit-xml/",

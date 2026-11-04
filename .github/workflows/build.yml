@@ -5,6 +5,13 @@ on:
     branches: ["**"]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      ordinary_legacy_benchmark:
+        description: Compare public ordinary Legacy kernels without a speed qualification
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -31,6 +38,31 @@ jobs:
       - name: Run public validation
         id: public-validation
         run: python3 scripts/run-validation.py --profile public --output "$RUNNER_TEMP/josm-public-validation"
+      - name: Compare public ordinary Legacy kernels
+        id: ordinary-legacy-benchmark
+        if: github.event_name == 'workflow_dispatch' && inputs.ordinary_legacy_benchmark && steps.public-validation.outcome == 'success'
+        timeout-minutes: 9
+        env:
+          ORDINARY_LEGACY_BENCHMARK: ${{ inputs.ordinary_legacy_benchmark }}
+        run: |
+          python3 scripts/ordinary-legacy-benchmark.py --execute \
+            --validation-output "$RUNNER_TEMP/josm-public-validation" \
+            --host-jar "$ORG_GRADLE_PROJECT_josm19555HostJar" \
+            --output "$RUNNER_TEMP/ordinary-legacy-benchmark"
+      - name: Upload public ordinary Legacy benchmark evidence
+        uses: actions/upload-artifact@v4
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.ordinary_legacy_benchmark
+        with:
+          name: ordinary-legacy-benchmark-evidence
+          path: |
+            ${{ runner.temp }}/ordinary-legacy-benchmark/summary.json
+            ${{ runner.temp }}/ordinary-legacy-benchmark/protocol.json
+            ${{ runner.temp }}/ordinary-legacy-benchmark/environment.json
+            ${{ runner.temp }}/ordinary-legacy-benchmark/samples.jsonl
+            ${{ runner.temp }}/ordinary-legacy-benchmark/runtime.log
+            ${{ runner.temp }}/ordinary-legacy-benchmark/controls.log
+          if-no-files-found: ignore
+          retention-days: 5
       - name: Include JOSM host receipt in public evidence
         if: always()
         run: |
