@@ -12,7 +12,149 @@
 
 ## Resume checkpoint — 2026-11-04
 
-### Live execution map (read before older chronology)
+### Current resume card — authoritative; prior notes below are historical
+
+- User: finish remaining points1–4, preserve fast ordinary Legacy, clean obsolete
+  temporaries; continue autonomously. No RC/default adoption or Astra authorized.
+  Primary dirty117baaf0 untouched. Controller docs branch last79786aa2 plus this
+  ledger; three original untracked handoff/plan files preserved.
+- Point1 original evaluator findings CLOSED. Point2 full grouped kernel/forwarder
+  CLOSED d00, but actual geometry and managed composition remain. Point3 real
+  Drasov improvement OPEN. Point4 A synthetic R4 certified; managed A producer/
+  consumers OPEN. Consumer/Apply/private visual gates remain; no completion claim.
+- Highest full publicCI b27310b0/run41912441658 PASS:3060executions/287XML,
+  2950distinct,0f/e/s and bothJOSM19555 GUI PASS. Public artifacts retained only;
+  no private uploads/JAR/release. Does not cover later323/M2/census changes.
+- Ordinary fastpath323c2874 CLOSED independent PASS: exactRC14 four-arg smoother,
+  other65compiledbodies unchanged,136/20tests GREEN. RC14 publicJAR af0fe6f4
+  frozen. First minimal benchmark ratios1.47/.86/1.12 were unstable; second
+  protocol2f64 ONE INCONCLUSIVE320warmcalls/no measured pairs, fullbits equal.
+  NO local retry/no runtime PASS. a_native_integration implementing PUBLIC-ONLY
+  optional existingBuild CI benchmark, source-only descendant323, exactproduction
+  blobguard/pinnedRC14,3literalpublicfixtures, fixed100x32warm/16x64pairs,
+  eight-minute bound, readiness/INCONCLUSIVE/no retry. Independent review before
+  root push/ONE dispatch. No accepted slowdown tolerance; no private parser/data.
+- M2 actual managed local classifier1802ac1e CLOSED independent PASS after2P1s:
+  tri-state uniqueness + prepaid complete callback-free publication ticket.
+  Final85/7 GREEN, covering133/12 reused. Native .30/.60 below-core UNKNOWN;
+  no private improvement/composition claim. Reports drasov-managed-affinity-m2-*.
+- A recoverydb332b ONE original-r4-host-export-recovery-01 completedCERTIFIED,
+  M3/J.30259409391738523/y64error.002923m,95.58Mwork/180241744Bpeak→0;
+  output auditPASS. Synthetic originalR4 ONLY. Old32MFAIL and interrupted128M
+  UNVERIFIED retained. Managed-A next producer dependency map saved, no code yet.
+- Legacy e4ac ONE grouped-q0-d00-32m-001: numericalFAIL31,999,843,next258,
+  BASEseed0row12, noM/winner; U1056.4837149472492,188bounds/0deferrals,
+  67eval13admit54reject,production20,582,036/tax11,417,807,peak54508560→0.
+  Output auditPASS; matched63 production+4.28%. No cap retry/adoption.
+- Approved next discriminator: exactQcap=span/pitch groupedLcap; only count
+  scalar-useful candidates, NEVER dropcandidate. Census a8ff4301 source math/
+  default parity closed but2 boundary findings OPEN (later-row mutation and tax
+  writes to revokedobserver). R1 assigned kernel_memory_closure in NEWtree from
+  88cdc below, reuse CLOSEDM2 ticket and exact observer authority, no duplicated
+  handwritten validator. No helper/private run until scopedsourcePASS.
+- Composition contract c7f9f546 independentlyPASS. affinity_contract_probe owns
+  josm-drasov-managed-grouped-composition: base323 +M2imports9fbd42a8/d8c4f287
+  +census4aeec970 +4-line nocharge inventorywrapper88cdc5f13895b8e763493f7dd86e18259d172409.
+  Seven guardfiles EXACT1802; compileJavaPASS. Future composition uncommitted,
+  tests starting; broad/freeze held for correctedcensus. ExplicitGroupExecution+
+  composedidentity, sameadmissionwitness/Q0U, allstages/edges/rawretention,
+  outercopyprep→finalticket→chargefreecompatible/SUCCESSseal; revokeduntouched.
+- 88cdc prerequisite independently conditionalPASS exactunion/manualKernelmerge:
+ 20changedpaths/834unaffected blobs,7guardfiles EXACT1802, Ridge EXACT323,
+  inventorywrapperpure null delegation. Report drasov-managed-grouped-prerequisite-integration-review.md;
+  compileJava/compileTestJava verified only; runtime compatibility pending.
+  kernel_memory_audit
+  owns censusR1 scopedreview next. managed_source_audit closedM2 andcompositiondesign.
+  No new children/delegation recursion. Requested Sol6.1/high; telemetry unknown.
+- Storage cleanup journals drasov-temporary-cleanup-20261104{,-pass2,-pass3}.json:
+  only generatedJavadoc/HTML/compiler/projectGradlecaches removed under sharedflock;
+  source/classes/resources/JAR/XML/logs/privateinputs/proofs/helpers preserved.
+  512MiB execution admission/256MiBbuild safety unchanged; caches can regrow.
+  AllGradle offline/JDK17/max-workers1/sharedflock. No globaldependencies deleted.
+- Next: closeCensusR1+prereqmerge review; adapt ONEdiscriminator32M helper only
+  after sourcePASS; finish/review fullmanaged composition and actual geometry;
+  publicCI runtime benchmark; managedA producer; consumer/Apply/integration/private
+  quality/fullreview gates. Update this card at coherent milestones. Do not
+  rerun consumed claims, edit frozen trees/classes, or equate source/tests with
+  real geometry/runtime acceptance. Exact commands/reports remain below/tmp.
+
+### Prior execution notes — historical; current card above takes precedence
+
+- M2 R1 FINAL independently CLOSED PASS1802ac1e, report
+  drasov-managed-affinity-m2-source-review.md. BothP1s addressed; no new blocker.
+  Next composition contract c7f9f546,680words, file
+  drasov-managed-grouped-composition-contract.md: explicit chosen GroupedExecution
+  plus composed identity, same-managed-admission witnesses/Q0U, fullseed/interval/
+  stitch/smoothing and outer final-ticket publication. managed_source_audit
+  assigned focused design review; no composition code yet.
+- Ordinary fastpath public-only CI proposal6454f7c3 approved for implementation,
+  a_native_integration new helper/workflow-only descendant323. Existing Build
+  default-off workflow_dispatch option; exact323 production-blob guard; reuse
+  validatedJAR/JOSM and publicRC14 SHA. ONLY3literalpublicgenerators, no private
+  parser/input/path/upload. Fixed100x32 warmup, late20+20/readiness10%,16x64 paired
+  cells, max25344calls/eight-minute timeout, retained allcells/counters/bitchecks,
+  INCONCLUSIVE no retry. No accepted slowdown tolerance or default adoption.
+  Independent review precedes root push/ONE dispatch; no local timing rerun/RC.
+
+- Steady benchmark2f64 root ONE COMPLETED INCONCLUSIVE:320 warm calls, no measured
+  samples, all full bits/fences equal. RC14 readiness medianRatio0.5313246895/
+  drift−0.1093457979; corrected323 0.6936229212/−0.1123210416. First public parallel
+  fixture stopped, no retry. Ordinary runtime gate remains OPEN, not failed
+  geometry or PASS. After two unstable local protocols, route next public-only
+  timing assessment to finite unattended GitHub CI; a_native_integration assigned
+  small reuse-of-existing-workflow proposal and frozen-result report, no new local
+  timing or private upload. Do not weaken readiness or invent slowdown tolerance.
+- M2 R1 frozen1802ac1e, clean. Repair2c6ce07e, whole35a1cb62, reportd4693cf3,
+  manifestf93a5615. Final85/7 GREEN plus covering133/12 reused; exact staged repair
+  independently reconciled, source2P1s ADDRESSED, reviewer final report closure
+  after producer append. No unresolved native-below-core cases reclassified.
+
+- CURRENT active closure: ordinary steady benchmark root ONE launched session40504
+  at fingerprint2f64ea20f36c9ac7a0320f3a4060f321af39510908633ecc3f0c3a10996bfbe3,
+  directory drasov-ordinary-fastpath-steady-benchmark. DO NOT reexecute; poll/inspect
+  onceclaims/output. Root inspected fixed10x16 warm/12x32 balanced paired protocol,
+  synthetic controls and recomputed exact fingerprint/free559673344B. Readiness
+  failure means INCONCLUSIVE/no auto-retry, never a timing PASS. Corrected323 source
+  independently CLOSED PASS, report drasov-ordinary-fastpath-source-review.md.
+- M2 R1: staged stable12files430+/13- at7d6 base, genuine matrix and final-unpin
+  stale-publication REDs saved, covering133/12 GREEN. Final7 suites pending after
+  invalid new cap-fixture experiment removed (JOSM deletes its assumed backlinks;
+  not counted as RED, original tests preserved). Producer affinity_contract_probe;
+  scoped reviewer managed_source_audit reading stable repair in parallel; final
+  PASS must await commit/fingerprint/final GREEN. No default/weak-bound relaxation.
+- Ceiling-census-only implementation active kernel_memory_closure fromd00 in
+  josm-drasov-legacy-ceiling-census.9controls GREEN; actual managed source-check
+  ALLOCATION diagnostic-tax control being corrected before freeze. One CURRENT
+  seed/stage summary only, no8-stage cap/history truncation; whole-visited totals
+  distinct. No scalar preflight/producer query/pruning, private run or helper yet.
+- Cleanup2/3 removed regenerated project-local Gradle/compiler caches only,
+  preserving global dependencies/classes/source/evidence. Journals
+  drasov-temporary-cleanup-20261104-pass{2,3}.json. Sharedlock serializes builds,
+  measurements and cleanup;512MiB execution admission remains unchanged.
+
+- Legacy actual32M result audit PASS for evidence, numerical FAIL: Q0 saved no
+  evaluated work; matched63 production+771467 (+4.28%). Exact U1056.4837149472492,
+  188 bound preparations/0deferrals, witness component/margins unavailable.
+  Focused Sol diagnosis/design review CLOSED:
+  drasov-legacy-q0-next-obstacle-{diagnosis,design-review}.md. Ruling: implement
+  packet stages1–2 FIRST as explicit charged ceiling-census only, before any
+  complex scalar adapter. Actual Qcap=sourceSpan/nativePitch, grouped Lcap<=U
+  proves only that one-edge scalar preflight cannot defer THAT candidate; never
+  drop/native-reject candidate. Record actual stageU vector/L0/Lcap/eligibility;
+  build scalar refinement only if evidence justifies. If no eligible candidates,
+  next lever is one exact-owned/replayed native ordinary guide, not another cap.
+  kernel_memory_closure assigned newd00-based isolated implementation, no private
+  run/helper adaptation until source review. Original solver/consumer scope stays.
+- Ordinary fastpath323c2874 fromb273 frozen clean,136affected/20XML GREEN,
+  exactRC14core324instructions/other65compiledbodies unchanged. Independent
+  source review assigned managed_context_closure, no new timing yet.
+
+- Highest full CI now b27310b0, run41912441658 SUCCESS:3060 executions/287XML,
+  2950distinct,0failure/error/skip. All7 public stages and bothJOSM19555 GUI
+  engines PASS, officialhostd2e2310e...40338e. Downloaded public evidence and GUI
+  summaries/receipts only; no JAR/privateupload. Report drasov-ci-41912441658-report.md.
+  Regenerable461HTML/CSS/JS files2095703B removed after extraction; XML/JSON/logs
+  retained. Does NOT cover M2 or new ordinary fast-path repair.
 
 - Root ONE actual grouped32M run after R1 PASS: e4ac fingerprint,
   claimgrouped-q0-d00-32m-001. Host/Java0 means receipts exported, NOT numerical
