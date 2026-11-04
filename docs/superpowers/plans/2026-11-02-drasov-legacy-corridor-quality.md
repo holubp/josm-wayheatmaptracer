@@ -29,8 +29,18 @@
   Packet drasov-a-workcap-strong-diagnosis.md independently approved by
   drasov-a-scalar-refinement-design-review.md with exact native-Q/Result identity,
   finite-bound, same Pending serial/lease and strict-closure guards. Bounded
-  opt-in implementation assigned to a_native_integration in a new isolated
-  worktree from435; no new numerical graph or actual R4 run authorized yet.
+  opt-in implementation frozenaf233c64 in josm-drasov-a-scalar-refinement
+  from435.315broad/18XML then67current/5XML=316unique0f/e/s. Source review active;
+  new ONE32M R4 helper preparation assigned, no invocation yet. Same native
+  scalar Result/Qbits, Pending/Prefix/serial/lease and old paths retained by tests.
+  Source auditor found foreign-input census poisoning and terminal strong-Input
+  retention; consolidated review pending. Helper fingerprint held for correction.
+  R4 helper ruling: no duplicate unbudgeted trackDetailed/nativeStateDomain
+  reference solve. Charge fresh pixels/sourceS/scalaridentity/original17binding
+  checks;239states/26098pairs/statehash/strand-3 are labelled HISTORICAL expected
+  controls from unchanged native producer and closed binding tests. Fresh native
+  inventory/hash UNAVAILABLE after a throw; compare actual returned state data
+  only on success. This is explicit new32M experiment protocol, not old128M parity.
 - Legacy32M P0 completed as typed work refusal,seed0 BASErow11→16. All852local
   windows fell back for NOISE_FLOOR_NONZERO;zero repeats. Do NOT implement P1
   nested sample cache. Exact valid/zero-count shortcut67856654 in isolated
@@ -64,11 +74,15 @@
   Implementer affinity_contract_probe assigned new isolated ee94-based worktree.
   M2 remains conditional on independently reviewed M1; no user approval needed
   for this authorized experiment follow-on. Roundtrip differences remain factual.
-- Active owners: a_native_integration implements reviewed A scalar-bound stage;
-  managed_source_audit available for scoped census-helper repair review;
-  kernel_memory_audit closes noise-source review; managed_context_closure prepares
-  ONE32M noise helper; affinity_contract_probe designs next actual-Mode ownership
-  slice from the completed census. Source integration ee94 is frozen. Other actors idle
+- Active owners: kernel_memory_audit reviews frozenA af233c64;
+  managed_context_closure prepares its ONE32M R4 helper;
+  affinity_contract_probe implements reviewed M1 actual-Mode ownership with
+  consumer disabled; kernel_memory_closure implements a reviewed Legacy one-seed
+  cutoff proof slice from678. Ruling: exact grouped objective governs, do not
+  claim old-bit parity for a prefix-merge exactness correction. Qlower0 allowed
+  for minimal correctness slice only; not a Drasov feasibility result.
+  Strong design/review drasov-legacy-competitive-strategy-{diagnosis,design-review}.md.
+  No user approval needed for authorized follow-on experiments. Other actors idle
   unless explicitly followed up. No Astra; requested Sol6.1/high, focused xhigh
   only for two hard execution diagnoses; actual routing/weekly usage unknown.
 
