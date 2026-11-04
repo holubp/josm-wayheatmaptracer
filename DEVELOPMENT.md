@@ -935,3 +935,34 @@ Q/C/T/K arithmetic, the exact pair-state solve and caller/production caps
 are unchanged. Synthetic geometry and source-pitch controls do not qualify
 general curved Drasov behavior or release readiness; fresh Drasov/Omice and
 application/Hybrid acceptance remain separate gates.
+
+### P0 native-grid chart and authority census
+
+`CurvedChartCensus.scan` is an explicitly invoked diagnostic with borrowed,
+synchronous pair/station callbacks and an owned, closeable summary. It does not
+run a tracker or extractor, create states or owners, change ordinary eligibility,
+or acquire imagery. Producer peak ports retain their exact source identities and
+floating positions; they are distinct from a complete issued state family.
+Generated carry/target, supplementary accepted positions, mode support and moved
+final domains remain explicitly unavailable.
+
+The fixed native-grid basis uses the captured rounded chord and its perpendicular.
+Its determinant and coordinate-ratio bounds use exact dyadic arithmetic; directed
+source-line/grid conversion bounds include actual floating construction. Actual
+transverse extent must be nonzero independently of rounding uncertainty. Both
+valid sample runs and the narrower positive raw runs are retained without filling
+gaps. The positive bound requires nonnegative valid raw values and the unchanged
+default shoulder fraction strictly above one half, including the smallest
+subnormal case. Neither bound asserts accepted mode ownership or physical inverse
+placement. Producer-only and declared possible-center-line station queries retain
+separate original-route, acquired-envelope and exact closed-cell support results.
+
+All input scans, arithmetic, stations, authority visits and streamed support visits
+consume the existing attempt budget. One admitted scratch scope is reused; there
+is no image copy or image-sized cell map. Work/memory/cancellation failures remain
+sticky and rethrow their original type while reporting the first unvisited pair.
+A conservative plan refusal does not prove a narrower accepted domain impossible;
+a center-only pass leaves full proof/endpoint feasibility unavailable. External
+profile artifact hashes and saved fold labels are frozen provenance, not original
+OSM attestation. Private replay/census invocation requires its separately reviewed
+source packet; this diagnostic implementation alone does not qualify Drasov.

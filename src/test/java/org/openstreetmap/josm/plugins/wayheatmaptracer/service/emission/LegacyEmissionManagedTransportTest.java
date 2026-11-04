@@ -33,6 +33,38 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 class LegacyEmissionManagedTransportTest {
     @TempDir Path cache;
 
+    @Test void p0CensusUsesActualManagedNativeGridScaleAndCapturedPixelCenterFrame() throws Exception {
+        var projection = Projections.getProjectionByCode("EPSG:3857");
+        var start = projection.latlon2eastNorth(new LatLon(49.44, 14.0));
+        withManaged(List.of(start, new EastNorth(start.east() + 150, start.north() + 150)), 35, fixture -> {
+            var input = fixture.input(); var context = input.context(); var grid = context.nativeGrid();
+            double scale = fixture.capture().selectedMosaic().virtualRasterScale();
+            assertNotEquals(1, scale);
+            long modes = input.workBudget().snapshot().operationUnits().get(EmissionWorkBudget.Operation.MODE_EXTRACTION);
+            var stationCount = new AtomicInteger(); var observed = new AtomicInteger();
+            try (var result = CurvedChartCensus.scan(input, new CurvedChartCensus.Metadata("synthetic-managed", "synthetic-managed", List.of()), new CurvedChartCensus.Sink() {
+                public void pair(CurvedChartCensus.Pair pair) {
+                    assertSame(context, pair.source().contextOwner()); assertSame(grid, pair.source().gridOwner());
+                    assertEquals(scale, pair.source().producerUnitsPerGridPixel().orElseThrow(), 0);
+                    assertEquals(CurvedChartCensus.Reason.NONE, pair.chartReason());
+                    for (var row : List.of(pair.left(), pair.right())) for (var port : row.producerPorts()) {
+                        observed.incrementAndGet();
+                        assertEquals(new RasterPoint(port.actualRaster().x() / scale, port.actualRaster().y() / scale), port.actualNativeGrid());
+                        assertMetricClose(expectedMetric(fixture, port.actualRaster()), context.metricAt(port.actualRaster()));
+                    }
+                    assertEquals(CurvedChartCensus.Availability.UNAVAILABLE, pair.fullFutureDomain());
+                }
+                public void station(CurvedChartCensus.Station station) {
+                    stationCount.incrementAndGet();
+                    assertEquals(grid.toGrid(station.actualRasterFrom()), station.actualNativeFrom());
+                    assertEquals(grid.toGrid(station.actualRasterTo()), station.actualNativeTo());
+                }
+            })) { assertEquals(fixture.nativeProfiles().size() - 1, result.visitedPairs()); }
+            assertTrue(observed.get() > 0); assertTrue(stationCount.get() > 0);
+            assertEquals(modes, input.workBudget().snapshot().operationUnits().get(EmissionWorkBudget.Operation.MODE_EXTRACTION));
+        });
+    }
+
     @Test void affineAffinityRejectsManagedChartWithoutInventingMeasuredOwners() throws Exception {
         withManaged(List.of(new EastNorth(500, 500), new EastNorth(650, 500)), 30, fixture -> {
             var input = fixture.input();
