@@ -134,6 +134,48 @@ and review the next execution contract and common-progress measurement.
 Reviewed slab integrated836b07ee passes166focusedtests/5XML (native A and evaluator
 neighbors included),0failure/error/skip. Log drasov-integrated-exact-slab-test.log.
 
+Follow-on performance ruling: no global-Q bound pruning or same-Key shortcut.
+Current grouped floating component accumulation and receipt-owned Keys prevent
+the claimed first-certificate saving. Focused Sol6.1/xhigh packet
+`drasov-legacy-exact-execution-design.md` selects bounded P0 progress/repeated
+local-query census first. Independent design review APPROVES with fixed-capacity
+overflow, exact sample-block boundaries, allocation-free per-operation diagnostic
+tax, and pre-admitted terminal sealing clarifications. kernel_memory_closure now
+implements P0 atb87d6ad4, no cache/model change; code review precedes ONE cache-only
+32M local/STOP screen, not another128M retry. Conditional exact sample reuse stays
+unimplemented until measured evidence supports it. Default observer-disabled path
+must remain exact. Report `drasov-failure-progress-packet.md` defines bounded scope.
+
+Actual curved-source gap: saved185profile metadata has21/184 bit-identical-normal
+adjacent pairs,163rotated,21folded full-width ruled charts. Native configured search
+is384 original virtual-raster units from legacy sampling shape; nominal25m setting
+is not substituted for factual ground units. `drasov-affinity-managed-proof-gap.md`
+records the source/hash/formula without claiming new fitting success. A convex-only
+port misses the hard subset. kernel_memory_audit prepares one bounded native-grid
+fixed-chart/interior-port design packet for independent review; no fabricated
+affine managed transform, moved states, fake endpoint owner or new geometry pass.
+
+Consumer readiness inventory `drasov-current-consumer-readiness.md` confirms N/M/K
+adapters, actual managed-A configuration, rendered capture, movable junctions,
+cleanup, Hybrid and export remain code gates. Original-context authority is a
+separate factual evidence requirement; deterministic fixtures can test mechanics
+but cannot grant historical authority. Substantial consumers stay behind positive
+numerical evidence, as the existing plan requires.
+
+Integration snapshot a8c098fc frozen: exact836b..a8 whole diff and focused
+managed API adaptation in `drasov-affinity-managed-integration{,-adaptation}.diff`;
+managed_context_closure independently audits it while25named regression suites run.
+Native A binding first GREEN reproduces239states/26098potentialpairs and4frozen
+hashes; broader validation continues. Ruling: permit a narrow retained-source-only
+Input validator for A, preserving every sticky/open/source/witness/geometry check
+and default Legacy validation; A owns its own complete native semantic checks.
+This removes incidental Legacy-only authority and repeated uncharged scans, not
+source protections. Input delta and tampering tests require independent review.
+Curved-affinity design packet is drafted, not approved: its proposed new physical
+line arclength/inverse certificate is absent. managed_source_audit now gives a
+decisive feasibility review (including the alternative unit-typed native-grid
+proof receipt), rather than treating conditional API assumptions as implemented.
+
 Use existing actors/reports; one writer per isolated worktree. No recursive agents.
 `managed_source_audit` performs source/A/proof reviews; `kernel_memory_audit` closed
 pin/transport/owner/policy reviews. Pause writers for review snapshots. Exact
