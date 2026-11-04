@@ -12,6 +12,7 @@ import java.util.concurrent.CancellationException;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionPeak;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.NativeAEmissionSolver.NativeEndpointInventory;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor.AcceptedModeThresholdReceipt;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor.AcceptedThresholdExtraction;
@@ -243,6 +244,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     }
 
     private final SampledEmissionInput input;
+    private final NativeEndpointInventory nativeAOwners;
     private final OptionalEmissionContext context;
     private final EmissionWorkBudget budget;
     private final int stateFamilyLimit;
@@ -267,7 +269,20 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     public NativeConnectorEvaluator(SampledEmissionInput input, Domain domain, QueryPolicy queryPolicy,
             ExecutionPolicy executionPolicy) {
+        this(input,domain,queryPolicy,executionPolicy,(NativeEndpointInventory)null);
+    }
+
+    /** Uses opaque original-A state/core ownership, leaving the Legacy peak route unchanged. */
+    public static NativeConnectorEvaluator forNativeA(SampledEmissionInput input,Domain domain,
+            QueryPolicy queryPolicy,ExecutionPolicy executionPolicy,NativeEndpointInventory owners) {
+        if(owners==null||!owners.belongsTo(input))throw new IllegalArgumentException("Native A endpoint inventory is foreign or closed");
+        return new NativeConnectorEvaluator(input,domain,queryPolicy,executionPolicy,owners);
+    }
+
+    private NativeConnectorEvaluator(SampledEmissionInput input,Domain domain,QueryPolicy queryPolicy,
+            ExecutionPolicy executionPolicy,NativeEndpointInventory nativeAOwners) {
         this.input = Objects.requireNonNull(input);
+        this.nativeAOwners=nativeAOwners;
         Objects.requireNonNull(domain);
         this.queryPolicy = Objects.requireNonNull(queryPolicy, "queryPolicy");
         this.executionPolicy=Objects.requireNonNull(executionPolicy,"executionPolicy");
@@ -311,6 +326,8 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                 work(EmissionWorkBudget.Operation.PREPARATION, 1);
                 if (states.put(state, Boolean.TRUE) != null || state.row() >= context.observations().size())
                     throw new IllegalArgumentException("Duplicate or out-of-range native state");
+                if(nativeAOwners!=null&&(state.peakOwner()!=null||nativeAOwners.ownerFor(state)==null))
+                    throw new IllegalArgumentException("Native A domain state has no exact issued A owner");
                 nativeIds[nativeIdIndex++] = ((long) state.row() << 32) | state.nativeStateId();
             }
             work(EmissionWorkBudget.Operation.PREPARATION, Math.multiplyExact((long) nativeIds.length,
@@ -1205,6 +1222,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     }
 
     private boolean endpointOwned(RowState state,Probe probe) {
+        if(nativeAOwners!=null)return nativeAEndpointOwned(state,probe);
         if(state.sourceClass()!=SourceClass.OBSERVED)return true; // Fresh measured complete port, never an old position.
         var peak=state.peakOwner(); if(peak==null || peak.syntheticCenter())return false;
         var observation=context.observations().get(state.row());
@@ -1221,12 +1239,53 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
         double physicalPitch = metricNormalPitch(state.row());
         if (!Double.isFinite(physicalPitch) || physicalPitch <= 0
                 || Math.abs(state.offsetRasterPixels()) > context.searchHalfWidthMeters() / physicalPitch) return false;
+        if(nativeAOwners!=null) {
+            work(EmissionWorkBudget.Operation.PREPARATION,1);
+            var owner=nativeAOwners.ownerFor(state);
+            return owner!=null&&state.peakOwner()==null&&owner.actualRasterPosition().equals(point(state));
+        }
         if(state.sourceClass()!=SourceClass.OBSERVED)return state.peakOwner()==null;
         for(var peak:input.profiles().levelZeroProfiles().get(state.row()).peaks()) {
             work(EmissionWorkBudget.Operation.PREPARATION,1);
             if(peak==state.peakOwner())return !peak.syntheticCenter();
         }
         return false;
+    }
+
+    private boolean nativeAEndpointOwned(RowState state,Probe probe) {
+        work(EmissionWorkBudget.Operation.PREPARATION,1);
+        var endpoint=nativeAOwners.ownerFor(state);
+        if(endpoint==null||!endpoint.actualRasterPosition().equals(point(state))||probe.selectedMode()==null)return false;
+        if(state.sourceClass()!=SourceClass.OBSERVED)return true; // Existing complete fresh-port proof only.
+        double normalPitch=metricNormalPitch(state.row());
+        MetricPoint actual=context.metricAt(endpoint.actualRasterPosition());
+        var mode=probe.selectedMode();
+        double nx=probe.metricNormal().xMeters(),ny=probe.metricNormal().yMeters();
+        double px=probe.metricPosition().xMeters(),py=probe.metricPosition().yMeters();
+        double mx0=px+nx*mode.coreMinimumMeters(),my0=py+ny*mode.coreMinimumMeters();
+        double mx1=px+nx*mode.coreMaximumMeters(),my1=py+ny*mode.coreMaximumMeters();
+        int matches=0;
+        for(var core:endpoint.directCores()) {
+            work(EmissionWorkBudget.Operation.PREPARATION,8);
+            MetricPoint a=context.metricAt(core.minimumRaster()),b=context.metricAt(core.maximumRaster());
+            double uncertainty=core.uncertaintyRasterPixels()*normalPitch;
+            double reach=1.5*probe.nativePitchMeters()+uncertainty;
+            if(!Double.isFinite(uncertainty)||uncertainty<0||!Double.isFinite(reach))return false;
+            double stateDistance=java.awt.geom.Line2D.ptSegDist(a.xMeters(),a.yMeters(),b.xMeters(),b.yMeters(),
+                actual.xMeters(),actual.yMeters());
+            if(stateDistance>reach)continue;
+            double freshDistance=segmentDistance(a.xMeters(),a.yMeters(),b.xMeters(),b.yMeters(),mx0,my0,mx1,my1);
+            if(freshDistance<=mode.localizationSigmaMeters()+uncertainty)matches++;
+        }
+        return matches==1;
+    }
+
+    private static double segmentDistance(double ax,double ay,double bx,double by,
+            double cx,double cy,double dx,double dy) {
+        if(java.awt.geom.Line2D.linesIntersect(ax,ay,bx,by,cx,cy,dx,dy))return 0;
+        return Math.min(Math.min(java.awt.geom.Line2D.ptSegDist(ax,ay,bx,by,cx,cy),
+            java.awt.geom.Line2D.ptSegDist(ax,ay,bx,by,dx,dy)),Math.min(
+                java.awt.geom.Line2D.ptSegDist(cx,cy,dx,dy,ax,ay),java.awt.geom.Line2D.ptSegDist(cx,cy,dx,dy,bx,by)));
     }
 
     /** Captured displacement of one offset unit on this row's frozen raster normal. */

@@ -47,18 +47,26 @@ public final class CorridorTracker {
         double sourcePixelSizePx,
         Map<String, BandScaleEvidence> scaleEvidence
     ) {
+        return track(profiles,sourcePixelSizePx,scaleEvidence,null);
+    }
+
+    List<CorridorTrack> track(List<CorridorProfile> profiles,double sourcePixelSizePx,
+            Map<String,BandScaleEvidence> scaleEvidence,NativeAPreprocessing work) {
         if (profiles.isEmpty()) {
             return List.of();
         }
-        List<Seed> seeds = collectSeeds(profiles);
+        if(work!=null)work.admitSeedCollection(profiles);
+        List<Seed> seeds = collectSeeds(profiles,work);
         if (seeds.isEmpty()) {
             return List.of();
         }
         double sourcePixel = validSourcePixel(sourcePixelSizePx);
+        if(work!=null)work.admitSeeds(seeds.size());
         List<CorridorTrack> tracks = new ArrayList<>();
         int trackIndex = 1;
         for (Seed seed : seeds) {
-            PathState best = solveSeed(profiles, seed.profileIndex(), seed.band(), sourcePixel, scaleEvidence);
+            checkpoint(work);
+            PathState best = solveSeed(profiles, seed.profileIndex(), seed.band(), sourcePixel, scaleEvidence,work);
             int minimumSupport = Math.max(2, (int) Math.ceil(profiles.size() * 0.03));
             if (best.points().size() < minimumSupport) {
                 continue;
@@ -69,8 +77,10 @@ public final class CorridorTracker {
         }
         List<CorridorTrack> ranked = tracks.stream()
             .sorted(Comparator.comparingDouble(CorridorTrack::score).reversed()).toList();
-        return deduplicate(ranked, sourcePixel);
+        if(work!=null)work.admitTrackDeduplication(ranked.size());
+        return deduplicate(ranked, sourcePixel,work);
     }
+    private static void checkpoint(NativeAPreprocessing work){if(work!=null)work.checkpoint();}
 
     /**
      * Tracks one explicit seed for deterministic direction and bridge-contract tests.
@@ -93,7 +103,7 @@ public final class CorridorTracker {
         if (!seed.hasMeasuredCenter()) {
             throw new IllegalArgumentException("A boundary-censored core cannot seed a positional corridor track");
         }
-        PathState state = solveSeed(profiles, seedProfile, seed, validSourcePixel(sourcePixelSizePx), Map.of());
+        PathState state = solveSeed(profiles, seedProfile, seed, validSourcePixel(sourcePixelSizePx), Map.of(),null);
         return new CorridorTrack("seed-track", state.points(), state.score(),
             state.points().size() / (double) profiles.size(), false, List.of(), "");
     }
@@ -103,17 +113,18 @@ public final class CorridorTracker {
         int seedProfile,
         CorridorBand seed,
         double sourcePixel,
-        Map<String, BandScaleEvidence> scaleEvidence
+        Map<String, BandScaleEvidence> scaleEvidence,NativeAPreprocessing work
     ) {
+        checkpoint(work);
         Map<Integer, CorridorTrackPoint> seedPoints = new LinkedHashMap<>();
         seedPoints.put(seedProfile, new CorridorTrackPoint(seedProfile, seed, false));
         Point2D.Double seedCenter = centerPoint(profiles.get(seedProfile), seed);
         PathState seedState = new PathState(seedProfile, -1, seed, seedCenter, null, Double.NaN,
             bandReward(seed), 0, seedPoints);
         PathState forward = advance(profiles, seedState, seedProfile + 1, profiles.size(), 1, sourcePixel,
-            scaleEvidence);
+            scaleEvidence,work);
         PathState backward = advance(profiles, seedState, seedProfile - 1, -1, -1, sourcePixel,
-            scaleEvidence);
+            scaleEvidence,work);
         Map<Integer, CorridorTrackPoint> merged = mergeTrackPoints(backward.points(), forward.points());
         return new PathState(forward.lastProfileIndex(), forward.previousProfileIndex(), forward.band(),
             forward.centerPoint(), forward.previousCenterPoint(), forward.previousOffsetPx(),
@@ -127,22 +138,27 @@ public final class CorridorTracker {
         int endExclusive,
         int direction,
         double sourcePixel,
-        Map<String, BandScaleEvidence> scaleEvidence
+        Map<String, BandScaleEvidence> scaleEvidence,NativeAPreprocessing work
     ) {
+        checkpoint(work);
         List<PathState> states = List.of(seedState);
         for (int profileIndex = start; profileIndex != endExclusive; profileIndex += direction) {
+            checkpoint(work);
             CorridorProfile profile = profiles.get(profileIndex);
             List<CorridorBand> observations = elementaryBands(profile);
+            if(work!=null)work.admitTrackingRow(states.size(),observations.size());
             List<PathState> next = new ArrayList<>();
             for (PathState state : states) {
+                checkpoint(work);
                 double gapDistanceMeters = profileDistanceMeters(
                     profiles, state.lastProfileIndex(), profileIndex);
                 if (state.gapCount() < MAX_GAP_PROFILES && gapDistanceMeters <= MAX_GAP_METERS + 1e-9) {
                     next.add(state.withGap());
                 }
                 for (CorridorBand observation : observations) {
+                    checkpoint(work);
                     PathState extended = extend(state, profiles, profileIndex, profile, observation, sourcePixel,
-                        direction, scaleEvidence);
+                        direction, scaleEvidence,work);
                     if (extended != null) {
                         next.add(extended);
                     }
@@ -167,8 +183,9 @@ public final class CorridorTracker {
         CorridorBand observation,
         double sourcePixel,
         int direction,
-        Map<String, BandScaleEvidence> scaleEvidence
+        Map<String, BandScaleEvidence> scaleEvidence,NativeAPreprocessing work
     ) {
+        checkpoint(work);
         if (state.gapCount() > 0
             && profileDistanceMeters(profiles, state.lastProfileIndex(), profileIndex) > MAX_GAP_METERS + 1e-9) {
             return null;
@@ -434,15 +451,18 @@ public final class CorridorTracker {
             .toList();
     }
 
-    private List<Seed> collectSeeds(List<CorridorProfile> profiles) {
+    private List<Seed> collectSeeds(List<CorridorProfile> profiles,NativeAPreprocessing work) {
+        checkpoint(work);
         List<Seed> seeds = new ArrayList<>();
         int stride = Math.max(1, (profiles.size() - 1) / 8);
         for (int target = 0; target < profiles.size(); target += stride) {
-            int profileIndex = nearestInformativeProfile(profiles, target);
+            checkpoint(work);
+            int profileIndex = nearestInformativeProfile(profiles, target,work);
             if (profileIndex < 0) {
                 continue;
             }
             for (CorridorBand band : elementaryBands(profiles.get(profileIndex))) {
+                checkpoint(work);
                 boolean duplicate = seeds.stream().anyMatch(seed -> seed.profileIndex() == profileIndex
                     && seed.band().id().equals(band.id()));
                 if (!duplicate) {
@@ -456,8 +476,9 @@ public final class CorridorTracker {
         return seeds;
     }
 
-    private int nearestInformativeProfile(List<CorridorProfile> profiles, int target) {
+    private int nearestInformativeProfile(List<CorridorProfile> profiles, int target,NativeAPreprocessing work) {
         for (int radius = 0; radius < profiles.size(); radius++) {
+            checkpoint(work);
             int left = target - radius;
             if (left >= 0 && !elementaryBands(profiles.get(left)).isEmpty()) {
                 return left;
@@ -477,11 +498,13 @@ public final class CorridorTracker {
         );
     }
 
-    private List<CorridorTrack> deduplicate(List<CorridorTrack> tracks, double sourcePixel) {
+    private List<CorridorTrack> deduplicate(List<CorridorTrack> tracks,double sourcePixel,NativeAPreprocessing work) {
+        checkpoint(work);
         List<CorridorTrack> retained = new ArrayList<>();
         for (CorridorTrack candidate : tracks) {
-            boolean duplicate = retained.stream().anyMatch(existing -> sameLongitudinalIdentity(
-                existing, candidate, sourcePixel));
+            checkpoint(work);
+            boolean duplicate = retained.stream().anyMatch(existing -> {checkpoint(work);return sameLongitudinalIdentity(
+                existing, candidate, sourcePixel);});
             if (!duplicate) {
                 retained.add(candidate);
             }

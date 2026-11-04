@@ -41,12 +41,18 @@ public final class CorridorExtractor {
      * @return profile-aligned corridor observations
      */
     public List<CorridorProfile> extract(List<CrossSectionProfile> profiles, double sourcePixelSizePx) {
+        return extract(profiles,sourcePixelSizePx,null);
+    }
+
+    List<CorridorProfile> extract(List<CrossSectionProfile> profiles,double sourcePixelSizePx,NativeAPreprocessing work) {
+        if(work!=null)work.reserve(128L+profiles.size()*32L);
         List<CorridorProfile> result = new ArrayList<>(profiles.size());
         for (int i = 0; i < profiles.size(); i++) {
-            result.add(extract(i, profiles.get(i), sourcePixelSizePx));
+            checkpoint(work);result.add(extract(i, profiles.get(i), sourcePixelSizePx,work));
         }
         return List.copyOf(result);
     }
+    private static void checkpoint(NativeAPreprocessing work){if(work!=null)work.checkpoint();}
 
     /**
      * Extracts corridor observations from one sampled profile.
@@ -68,6 +74,11 @@ public final class CorridorExtractor {
      * @return corridor profile with explicit search-boundary evidence
      */
     public CorridorProfile extract(int index, CrossSectionProfile profile, double sourcePixelSizePx) {
+        return extract(index,profile,sourcePixelSizePx,null);
+    }
+
+    private CorridorProfile extract(int index,CrossSectionProfile profile,double sourcePixelSizePx,NativeAPreprocessing work) {
+        if(work!=null)work.admitExtraction(profile.intensitySamples().size());
         List<IntensitySample> samples = profile.intensitySamples().stream()
             .sorted(Comparator.comparingDouble(IntensitySample::offsetPx))
             .toList();
@@ -84,13 +95,17 @@ public final class CorridorExtractor {
 
         List<List<Interval>> levels = new ArrayList<>(RELATIVE_LEVELS.length);
         for (double relativeLevel : RELATIVE_LEVELS) {
+            checkpoint(work);
             double threshold = stats.noiseFloor() + relativeLevel * stats.prominence();
-            levels.add(intervals(samples, threshold));
+            levels.add(intervals(samples, threshold,work));
         }
+
+        if(work!=null)work.admitNestedIntervals(levels.get(0).size(),levels.stream().mapToLong(List::size).sum());
 
         List<CorridorBand> bands = new ArrayList<>();
         int lowIndex = 0;
         for (Interval shoulder : levels.get(0)) {
+            checkpoint(work);
             List<Interval> highestChildren = levels.get(levels.size() - 1).stream()
                 .filter(interval -> overlaps(shoulder, interval))
                 .toList();
@@ -100,10 +115,11 @@ public final class CorridorExtractor {
             List<String> childIds = new ArrayList<>();
             int childIndex = 0;
             for (Interval childCore : highestChildren) {
+                checkpoint(work);
                 String id = "band-" + lowIndex + '-' + childIndex++;
                 childIds.add(id);
                 bands.add(buildBand(id, samples, stats, shoulder, childCore, levels, false, List.of(),
-                    sourcePixelSizePx));
+                    sourcePixelSizePx,work));
             }
             if (highestChildren.size() > 1) {
                 Interval combinedCore = new Interval(
@@ -113,7 +129,7 @@ public final class CorridorExtractor {
                     highestChildren.get(highestChildren.size() - 1).maximumOffsetPx()
                 );
                 bands.add(buildBand("parent-" + lowIndex, samples, stats, shoulder, combinedCore,
-                    levels, true, childIds, sourcePixelSizePx));
+                    levels, true, childIds, sourcePixelSizePx,work));
             }
             lowIndex++;
         }
@@ -129,12 +145,15 @@ public final class CorridorExtractor {
         List<List<Interval>> levels,
         boolean parent,
         List<String> childIds,
-        double sourcePixelSizePx
+        double sourcePixelSizePx,NativeAPreprocessing work
     ) {
+        if(work!=null)work.admitBand(samples.size(),levels.stream().mapToLong(List::size).sum());
         List<WeightedCenter> centers = new ArrayList<>();
         for (int level = 0; level < levels.size(); level++) {
+            checkpoint(work);
             double weight = RELATIVE_LEVELS[level] * RELATIVE_LEVELS[level];
             for (Interval interval : levels.get(level)) {
+                checkpoint(work);
                 if (overlaps(core, interval) && overlaps(shoulder, interval)) {
                     centers.add(new WeightedCenter(midpoint(interval), weight));
                 }
@@ -213,11 +232,13 @@ public final class CorridorExtractor {
         return new ProfileStatistics(maximum, noiseFloor, Math.max(0.0, maximum - noiseFloor));
     }
 
-    private List<Interval> intervals(List<IntensitySample> samples, double threshold) {
+    private List<Interval> intervals(List<IntensitySample> samples,double threshold,NativeAPreprocessing work) {
+        checkpoint(work);
         List<Interval> result = new ArrayList<>();
         int start = -1;
         double minimumOffset = Double.NaN;
         for (int i = 0; i < samples.size(); i++) {
+            checkpoint(work);
             IntensitySample sample = samples.get(i);
             if (sample.insideRaster() && sample.standardFilteredIntensity() >= threshold) {
                 if (start < 0) {

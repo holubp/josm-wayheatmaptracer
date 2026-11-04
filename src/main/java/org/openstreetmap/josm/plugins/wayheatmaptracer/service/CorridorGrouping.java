@@ -56,6 +56,12 @@ public final class CorridorGrouping {
         List<CorridorProfile> profiles,
         double sourcePixelSizePx
     ) {
+        return group(elementaryTracks,profiles,sourcePixelSizePx,null);
+    }
+
+    GroupingResult group(List<CorridorTrack> elementaryTracks,List<CorridorProfile> profiles,
+            double sourcePixelSizePx,NativeAPreprocessing work) {
+        if(work!=null)work.admitGrouping(elementaryTracks,profiles);
         double sourcePixel = validSourcePixel(sourcePixelSizePx);
         List<CorridorTrack> sorted = elementaryTracks.stream()
             .sorted(Comparator.comparingDouble(this::meanOffset).thenComparing(CorridorTrack::id)).toList();
@@ -64,10 +70,12 @@ public final class CorridorGrouping {
         List<SparseCorridorBundle> bundles = new ArrayList<>();
         Map<TrackPair, PairEvidence> pairEvidence = new LinkedHashMap<>();
         for (int leftIndex = 0; leftIndex < sorted.size(); leftIndex++) {
+            checkpoint(work);
             for (int rightIndex = leftIndex + 1; rightIndex < sorted.size(); rightIndex++) {
+                checkpoint(work);
                 CorridorTrack left = sorted.get(leftIndex);
                 CorridorTrack right = sorted.get(rightIndex);
-                PairEvidence evidence = pairEvidence(left, right, profiles, sourcePixel);
+                PairEvidence evidence = pairEvidence(left, right, profiles, sourcePixel,work);
                 pairEvidence.put(TrackPair.ordered(left.id(), right.id()), evidence);
                 String decision = classify(evidence, sourcePixel);
                 decisions.add(new GroupingDecision(left.id(), right.id(), evidence.commonProfiles(),
@@ -78,10 +86,11 @@ public final class CorridorGrouping {
             }
         }
         int parentIndex = 1;
-        for (List<CorridorTrack> children : compatibleGroups(sorted, pairEvidence, profiles, sourcePixel)) {
-            GroupEvidence evidence = groupEvidence(children, pairEvidence, profiles, sourcePixel);
+        for (List<CorridorTrack> children : compatibleGroups(sorted, pairEvidence, profiles, sourcePixel,work)) {
+            if(work!=null)work.admitParent(children,profiles);
+            GroupEvidence evidence = groupEvidence(children, pairEvidence, profiles, sourcePixel,work);
             String id = "bundle-" + parentIndex++;
-            BundleResult result = bundle(id, children, profiles, sourcePixel, evidence);
+            BundleResult result = bundle(id, children, profiles, sourcePixel, evidence,work);
             if (result != null) {
                 bundles.add(result.bundle());
                 tracks.add(result.parentTrack());
@@ -90,19 +99,25 @@ public final class CorridorGrouping {
         return new GroupingResult(tracks, decisions, bundles);
     }
 
+    private static void checkpoint(NativeAPreprocessing work){if(work!=null)work.checkpoint();}
+
     private List<List<CorridorTrack>> compatibleGroups(
         List<CorridorTrack> sorted,
         Map<TrackPair, PairEvidence> pairEvidence,
         List<CorridorProfile> profiles,
-        double sourcePixel
+        double sourcePixel,NativeAPreprocessing work
     ) {
+        checkpoint(work);
         Map<String, List<CorridorTrack>> unique = new LinkedHashMap<>();
         for (int seedIndex = 0; seedIndex < sorted.size(); seedIndex++) {
+            checkpoint(work);
             List<CorridorTrack> group = new ArrayList<>();
             group.add(sorted.get(seedIndex));
             for (CorridorTrack candidate : sorted) {
-                if (group.contains(candidate) || group.stream().allMatch(member -> pairCompatible(
-                    evidenceFor(member, candidate, pairEvidence), sourcePixel))) {
+                checkpoint(work);
+                if (group.contains(candidate) || group.stream().allMatch(member -> {
+                    checkpoint(work);return pairCompatible(evidenceFor(member, candidate, pairEvidence), sourcePixel);
+                })) {
                     if (!group.contains(candidate)) {
                         group.add(candidate);
                     }
@@ -147,8 +162,9 @@ public final class CorridorGrouping {
         CorridorTrack left,
         CorridorTrack right,
         List<CorridorProfile> profiles,
-        double sourcePixel
+        double sourcePixel,NativeAPreprocessing work
     ) {
+        checkpoint(work);
         List<Integer> union = java.util.stream.Stream.concat(left.points().keySet().stream(),
             right.points().keySet().stream()).distinct().sorted().toList();
         if (union.isEmpty() || profiles.isEmpty()) {
@@ -163,6 +179,7 @@ public final class CorridorGrouping {
         int commonEnvelope = 0;
         int stableOrder = 0;
         for (int profileIndex : union) {
+            checkpoint(work);
             CorridorTrackPoint leftPoint = left.points().get(profileIndex);
             CorridorTrackPoint rightPoint = right.points().get(profileIndex);
             if (leftPoint == null || rightPoint == null) {
@@ -170,7 +187,7 @@ public final class CorridorGrouping {
             }
             CorridorBand leftBand = leftPoint.band();
             CorridorBand rightBand = rightPoint.band();
-            valleys.add(valleyRatio(profiles.get(profileIndex), leftBand, rightBand));
+            valleys.add(valleyRatio(profiles.get(profileIndex), leftBand, rightBand,work));
             separations.add(Math.abs(rightBand.centerOffsetPx() - leftBand.centerOffsetPx()));
             if (envelopesTouch(leftBand, rightBand)) {
                 commonEnvelope++;
@@ -247,15 +264,19 @@ public final class CorridorGrouping {
         List<CorridorTrack> children,
         Map<TrackPair, PairEvidence> pairEvidence,
         List<CorridorProfile> profiles,
-        double sourcePixel
+        double sourcePixel,NativeAPreprocessing work
     ) {
+        checkpoint(work);
         List<PairEvidence> pairs = new ArrayList<>();
         for (int left = 0; left < children.size(); left++) {
+            checkpoint(work);
             for (int right = left + 1; right < children.size(); right++) {
+                checkpoint(work);
                 pairs.add(evidenceFor(children.get(left), children.get(right), pairEvidence));
             }
         }
         long jointProfiles = java.util.stream.IntStream.range(0, profiles.size())
+            .peek(ignored->checkpoint(work))
             .filter(profile -> children.stream().filter(track -> track.points().containsKey(profile)).count() >= 2)
             .count();
         double unionSupport = unionSupport(children, profiles.size());
@@ -280,18 +301,22 @@ public final class CorridorGrouping {
         List<CorridorTrack> children,
         List<CorridorProfile> profiles,
         double sourcePixel,
-        GroupEvidence evidence
+        GroupEvidence evidence,NativeAPreprocessing work
     ) {
+        checkpoint(work);
         Map<Integer, SparseCorridorBundlePoint> bundlePoints = new LinkedHashMap<>();
         Map<Integer, CorridorTrackPoint> parentPoints = new LinkedHashMap<>();
         for (int profileIndex = 0; profileIndex < profiles.size(); profileIndex++) {
+            checkpoint(work);
             List<Contributor> contributors = new ArrayList<>();
             for (CorridorTrack child : children) {
+                checkpoint(work);
                 addContributor(contributors, child, profileIndex);
             }
             boolean direct = contributors.stream().anyMatch(Contributor::direct);
             if (contributors.size() < children.size()) {
                 for (CorridorTrack child : children) {
+                    checkpoint(work);
                     addPredictedContributor(contributors, child, profileIndex, profiles);
                 }
             }
@@ -562,10 +587,11 @@ public final class CorridorGrouping {
         return Math.max(1e-6, weight);
     }
 
-    private double valleyRatio(CorridorProfile profile, CorridorBand left, CorridorBand right) {
+    private double valleyRatio(CorridorProfile profile, CorridorBand left, CorridorBand right,NativeAPreprocessing work) {
         double from = Math.min(left.centerOffsetPx(), right.centerOffsetPx());
         double to = Math.max(left.centerOffsetPx(), right.centerOffsetPx());
         List<IntensitySample> between = profile.source().intensitySamples().stream()
+            .peek(ignored->checkpoint(work))
             .filter(IntensitySample::insideRaster)
             .filter(sample -> sample.offsetPx() >= from && sample.offsetPx() <= to).toList();
         if (between.isEmpty()) {

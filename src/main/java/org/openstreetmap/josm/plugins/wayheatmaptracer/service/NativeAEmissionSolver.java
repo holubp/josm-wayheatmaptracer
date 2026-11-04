@@ -19,6 +19,59 @@ public final class NativeAEmissionSolver {
     public static final String EXECUTION_VERSION="native-a-certified-competitive-v1";
     private NativeAEmissionSolver() { }
 
+    /** Read-only native core evidence. Only the private A pipeline creates these facts. */
+    public static final class NativeCoreOwner {
+        private final CorridorBand band;
+        private final RasterPoint minimum,maximum;
+        private NativeCoreOwner(CorridorBand band,RasterPoint minimum,RasterPoint maximum) {
+            this.band=band;this.minimum=minimum;this.maximum=maximum;
+        }
+        public RasterPoint minimumRaster(){return minimum;}
+        public RasterPoint maximumRaster(){return maximum;}
+        public double uncertaintyRasterPixels(){return band.uncertaintyPx();}
+        public String bandId(){return band.id();}
+    }
+
+    /** Exact original A state authority, distinct from a Legacy peak or a parent midpoint. */
+    public static final class NativeEndpointOwner {
+        private final RowState state;
+        private final RenderedHeatmapSampler.CrossSectionProfile profile;
+        private final RasterPoint position;
+        private final List<NativeCoreOwner> cores;
+        private NativeEndpointOwner(RowState state,RenderedHeatmapSampler.CrossSectionProfile profile,
+                RasterPoint position,List<NativeCoreOwner> cores) {
+            this.state=state;this.profile=profile;this.position=position;this.cores=cores;
+        }
+        public RasterPoint actualRasterPosition(){return position;}
+        public List<NativeCoreOwner> directCores(){return cores;}
+    }
+
+    /**
+     * Opaque side table issued by a private, retained-source A domain. No public descriptor or
+     * foreign/equal-valued RowState can mint an entry or extend this inventory's lifetime.
+     */
+    public static final class NativeEndpointInventory {
+        private final Engine issuer;
+        private final Map<RowState,NativeEndpointOwner> owners=new IdentityHashMap<>();
+        private boolean sealed;
+        private NativeEndpointInventory(Engine issuer){this.issuer=issuer;}
+        private void issue(RowState state,RasterPoint point,List<NativeCoreOwner> cores) {
+            if(sealed)throw new IllegalStateException("Native A owner inventory is sealed");
+            issuer.reserve(256);issuer.work(1);
+            if(owners.put(state,new NativeEndpointOwner(state,issuer.profiles.get(state.row()).source(),point,cores))!=null)
+                throw new IllegalStateException("Native A state owner was duplicated");
+        }
+        public boolean belongsTo(SampledEmissionInput input) {
+            return sealed&&!issuer.closed&&!issuer.owner.isClosed()&&issuer.input==input;
+        }
+        public NativeEndpointOwner ownerFor(RowState state) {
+            if(!belongsTo(issuer.input))return null;
+            NativeEndpointOwner owner=owners.get(state);
+            if(owner==null||owner.state!=state||owner.profile!=issuer.input.profiles().levelZeroProfiles().get(state.row()))return null;
+            return owner;
+        }
+    }
+
     /** Complete original numeric state inventory, before ordinary/optional image admission. */
     public record NativeStateInventory(int row,int nativeStateId,double offsetPx,SourceClass sourceClass) { }
 
@@ -109,12 +162,20 @@ public final class NativeAEmissionSolver {
             CorridorTrack track,List<CorridorProfile> profiles,double sourcePixel,JunctionContext junctions,
             Map<String,BandScaleEvidence> scale,List<Barrier> barriers,boolean competitive,
             QueryPolicy query,ExecutionPolicy execution,GeometryCleanupConfig cleanup) {
+        return solve(optimizer,input,track,profiles,sourcePixel,junctions,scale,barriers,competitive,query,execution,cleanup,null);
+    }
+
+    static Result solve(CorridorCenterlineOptimizer optimizer,SampledEmissionInput input,
+            CorridorTrack track,List<CorridorProfile> profiles,double sourcePixel,JunctionContext junctions,
+            Map<String,BandScaleEvidence> scale,List<Barrier> barriers,boolean competitive,
+            QueryPolicy query,ExecutionPolicy execution,GeometryCleanupConfig cleanup,
+            CorridorAwareTracker.NativeOwnerSource nativeSource) {
         var admittedOwner=input.openExecutionOwner("native-a-optional-v2");
         Engine engine=null;
         try {
             input.workBudget().charge(EmissionWorkBudget.Operation.ALLOCATION,1);
             admittedOwner.reserve(2048); // Engine/map/list shells, before construction.
-            engine=new Engine(optimizer,input,track,profiles,sourcePixel,junctions,scale,barriers,query,execution,cleanup,admittedOwner);
+            engine=new Engine(optimizer,input,track,profiles,sourcePixel,junctions,scale,barriers,query,execution,cleanup,admittedOwner,nativeSource);
             var closure=competitive?new CompetitiveAdmissionExecutor(engine.graph,engine,engine.budget,engine.owner).run():null;
             Label best=engine.solveExact(closure);
             if(closure!=null&&(!closure.vertexIds().equals(engine.pathIds(best))
@@ -150,13 +211,15 @@ public final class NativeAEmissionSolver {
         final LongitudinalCorridorTube tube;
         final Graph graph;
         final int[] arcStarts;
+        final NativeEndpointInventory endpointOwners;
         NativeConnectorEvaluator evaluator;
         boolean closed;
 
         Engine(CorridorCenterlineOptimizer optimizer,SampledEmissionInput input,CorridorTrack track,
                 List<CorridorProfile> profiles,double sourcePixel,JunctionContext junctions,
                 Map<String,BandScaleEvidence> scale,List<Barrier> barriers,QueryPolicy query,
-                ExecutionPolicy execution,GeometryCleanupConfig cleanup,AttemptMemoryLedger.Owner admittedOwner) {
+                ExecutionPolicy execution,GeometryCleanupConfig cleanup,AttemptMemoryLedger.Owner admittedOwner,
+                CorridorAwareTracker.NativeOwnerSource nativeSource) {
             this.input=Objects.requireNonNull(input);budget=input.workBudget();
             owner=admittedOwner;
             try {
@@ -229,19 +292,40 @@ public final class NativeAEmissionSolver {
                 reserve(1024L+profiles.size()*64L+barriers.size()*512L);
                 for(int row=0;row<profiles.size();row++)if(junctions.at(row)!=null){work(1);mandatoryRows.add(row);}
                 for(Barrier barrier:barriers){work(1);mandatoryRows.add(barrier.leftRow());mandatoryRows.add(barrier.rightRow());}
+                reserve(512);endpointOwners=new NativeEndpointInventory(this);
                 List<RowState> states=new ArrayList<>();Set<Integer> mandatoryVertices=new HashSet<>();int group=0,barrierCursor=0;
                 for(var row:domain.rows()) {
                     work(1);
                     var sourceClass=row.bandOwner()==null||row.trackPointOwner().support()!=CorridorPointSupport.DIRECT_UNION
                         ?SourceClass.GAP:!row.bandOwner().hasMeasuredCenter()?SourceClass.CENSORED:SourceClass.OBSERVED;
+                    List<NativeCoreOwner> cores=List.of();
+                    if(sourceClass==SourceClass.OBSERVED) {
+                        List<CorridorBand> direct;
+                        if(nativeSource!=null)direct=nativeSource.directBands(input,track,row.rowIndex());
+                        else {
+                            if(track.parent()||profiles.get(row.rowIndex()).bands().stream().noneMatch(band->band==row.bandOwner()))
+                                throw new IllegalArgumentException("Native parent ownership requires the original grouped source");
+                            direct=List.of(row.bandOwner());
+                        }
+                        reserve(128L+direct.size()*256L);var facts=new ArrayList<NativeCoreOwner>();
+                        Set<CorridorBand> seen=Collections.newSetFromMap(new IdentityHashMap<>());
+                        for(CorridorBand band:direct) {
+                            work(1);
+                            if(!band.hasMeasuredCenter()||!Double.isFinite(band.uncertaintyPx())||band.uncertaintyPx()<0
+                                    ||!Double.isFinite(band.coreMinPx())||!Double.isFinite(band.coreMaxPx())
+                                    ||band.coreMinPx()>band.coreMaxPx())
+                                throw new IllegalArgumentException("Native direct core ownership is incomplete");
+                            if(seen.add(band))facts.add(new NativeCoreOwner(band,point(row.rowIndex(),band.coreMinPx()),
+                                point(row.rowIndex(),band.coreMaxPx())));
+                        }
+                        if(facts.isEmpty())throw new IllegalArgumentException("Observed native A state has no direct core owner");
+                        cores=List.copyOf(facts);
+                    }
                     for(var state:row.states()) {
                         reserve(512);work(1);
-                        var peak=profiles.get(row.rowIndex()).source().peaks().stream().filter(p->sourceClass==SourceClass.OBSERVED
-                            &&row.bandOwner()!=null
-                            &&p.offsetPx()>=row.bandOwner().shoulderMinPx()&&p.offsetPx()<=row.bandOwner().shoulderMaxPx())
-                            .findFirst().orElse(null);
-                        var endpoint=new RowState(row.rowIndex(),state.stateId(),state.offsetPx(),sourceClass,peak);
+                        var endpoint=new RowState(row.rowIndex(),state.stateId(),state.offsetPx(),sourceClass,null);
                         states.add(endpoint);RasterPoint point=point(row.rowIndex(),state.offsetPx());
+                        endpointOwners.issue(endpoint,point,cores);
                         vertices.add(new VertexFact(vertices.size(),row.rowIndex(),group,
                             input.context().sourceChainageMeters(row.rowIndex()),endpoint,point,metric(point),state.offsetPx()));
                     }
@@ -256,7 +340,9 @@ public final class NativeAEmissionSolver {
                     }
                 }
                 if(barrierCursor!=barriers.size())throw new IllegalArgumentException("Protected events are not in native source order");
-                evaluator=new NativeConnectorEvaluator(input,new Domain(states,mandatoryRows.stream().sorted().toList(),barriers),query,execution);
+                endpointOwners.sealed=true;
+                evaluator=NativeConnectorEvaluator.forNativeA(input,new Domain(states,mandatoryRows.stream().sorted().toList(),barriers),
+                    query,execution,endpointOwners);
                 var declared=new ArrayList<Vertex>();reserve(256L+vertices.size()*128L);
                 for(VertexFact v:vertices){work(1);declared.add(new Vertex(v.id,v.row,0,v.offset!=null,v.group==0,v.group==group-1,v.id));}
                 for(VertexFact from:vertices)for(int destination=from.id+1;destination<vertices.size();destination++) {

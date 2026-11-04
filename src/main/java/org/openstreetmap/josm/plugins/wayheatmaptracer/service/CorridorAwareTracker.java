@@ -17,6 +17,66 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
  * Orchestrates extraction, longitudinal association, grouping, and stable corridor optimization.
  */
 public final class CorridorAwareTracker {
+    /** Original grouped A provenance; only this tracker's private native pipeline can issue it. */
+    static final class NativeOwnerSource {
+        private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input;
+        private final List<CorridorProfile> profiles;
+        private final CorridorGrouping.GroupingResult grouped;
+        private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner;
+        private NativeOwnerSource(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
+                List<CorridorProfile> profiles,CorridorGrouping.GroupingResult grouped,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner) {
+            this.input=input;this.profiles=profiles;this.grouped=grouped;this.owner=owner;
+        }
+        List<CorridorBand> directBands(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput expected,
+                CorridorTrack track,int row) {
+            if(owner.isClosed()||input!=expected)throw new IllegalArgumentException("Native A grouped source is foreign or closed");
+            var budget=input.workBudget();boolean known=false;
+            for(var candidate:grouped.tracks()) {
+                budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.PREPARATION,1);
+                known|=candidate==track;
+            }
+            if(!known)throw new IllegalArgumentException("Native A track is not the issued original hypothesis");
+            var point=track.points().get(row);
+            if(point==null||point.support()!=CorridorPointSupport.DIRECT_UNION)return List.of();
+            if(!track.parent()) {
+                if(!ownsBand(row,point.band()))
+                    throw new IllegalArgumentException("Native elementary core is foreign");
+                return List.of(point.band());
+            }
+            SparseCorridorBundle bundle=null;
+            for(var candidate:grouped.bundles()) {
+                budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.PREPARATION,1);
+                if(candidate.id().equals(track.id()))bundle=candidate;
+            }
+            if(bundle==null||bundle.points().get(row)==null)throw new IllegalArgumentException("Native parent has no owned bundle point");
+            var direct=bundle.points().get(row).directContributorTrackIds();
+            budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.ALLOCATION,1);
+            owner.reserve(128L+direct.size()*32L);var bands=new ArrayList<CorridorBand>();
+            for(String id:direct) {
+                CorridorTrack child=null;
+                for(var candidate:grouped.tracks()) {
+                    budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.PREPARATION,1);
+                    if(candidate.id().equals(id))child=candidate;
+                }
+                var childPoint=child==null?null:child.points().get(row);
+                if(childPoint==null||childPoint.support()!=CorridorPointSupport.DIRECT_UNION
+                        ||!ownsBand(row,childPoint.band()))
+                    throw new IllegalArgumentException("Native parent contributor has no original direct core");
+                bands.add(childPoint.band());
+            }
+            return List.copyOf(bands);
+        }
+        private boolean ownsBand(int row,CorridorBand expected) {
+            for(var band:profiles.get(row).bands()) {
+                input.workBudget().charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.PREPARATION,1);
+                if(band==expected)return true;
+            }
+            return false;
+        }
+    }
     /** Explicit experimental native-A result lifetime, separate from ordinary candidates. */
     public static final class OptionalEmissionTracking implements AutoCloseable {
         private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input;
@@ -54,30 +114,24 @@ public final class CorridorAwareTracker {
             owner.reserve(4096);
             results=new ArrayList<>();List<String> ids=new ArrayList<>();
             MultiScaleProfileSet profileSet=input.profiles();
-            long samples=0;int rows=input.context().observations().size();
-            for(var level:profileSet.levels())for(var profile:level.profiles()) {
-                budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.PREPARATION,1);
-                samples=Math.addExact(samples,profile.intensitySamples().size());
-            }
-            long rowPairs=Math.multiplyExact((long)rows,rows);
-            budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.ALLOCATION,1);
-            owner.reserve(Math.addExact(Math.multiplyExact(samples,512L),Math.multiplyExact(rowPairs,64L)));
-            budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.MODE_EXTRACTION,
-                Math.addExact(Math.multiplyExact(samples,128L),Math.multiplyExact(rowPairs,profileSet.levels().size())));
+            var work=new NativeAPreprocessing(input,owner);
+            work.reserve(256L+profileSet.levels().size()*64L);
             double sourcePixel=input.context().trackerNormalizationRasterPx();
-            for(var level:profileSet.levels())validatePhysicalProfileSequence(level.profiles());
-            validateAlignedPhysicalSequences(profileSet);
+            for(var level:profileSet.levels())validatePhysicalProfileSequence(level.profiles(),work);
+            validateAlignedPhysicalSequences(profileSet,work);
             List<List<CorridorProfile>> extracted=profileSet.levels().stream()
-                .map(level->extractor.extract(level.profiles(),sourcePixel)).toList();
+                .map(level->extractor.extract(level.profiles(),sourcePixel,work)).toList();
             List<CorridorProfile> fine=extracted.get(0);
-            var association=associateScales(profileSet,extracted,sourcePixel);
-            List<CorridorTrack> elementary=tracker.track(fine,sourcePixel,association.evidence());
-            var grouped=grouping.group(elementary,fine,sourcePixel);
-            var evidence=parentScaleEvidence(grouped.tracks(),association.evidence());
+            var association=associateScales(profileSet,extracted,sourcePixel,work);
+            List<CorridorTrack> elementary=tracker.track(fine,sourcePixel,association.evidence(),work);
+            var grouped=grouping.group(elementary,fine,sourcePixel,work);
+            var evidence=parentScaleEvidence(grouped.tracks(),association.evidence(),work);
+            budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.ALLOCATION,1);
+            owner.reserve(256);var nativeSource=new NativeOwnerSource(input,fine,grouped,owner);
             for(CorridorTrack track:grouped.tracks()) {
                 budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.ALLOCATION,1);
                 owner.reserve(256);
-                results.add(optimizer.optimizeOptionalEmission(input,track,fine,junctions,evidence,barriers,cleanup,query,execution));
+                results.add(optimizer.optimizeOptionalEmission(input,track,fine,junctions,evidence,barriers,cleanup,query,execution,nativeSource));
                 ids.add(track.id());
             }
             return new OptionalEmissionTracking(input,owner,results,ids);
@@ -365,8 +419,15 @@ public final class CorridorAwareTracker {
     private void validatePhysicalProfileSequence(
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles
     ) {
+        validatePhysicalProfileSequence(profiles,null);
+    }
+
+    private void validatePhysicalProfileSequence(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,NativeAPreprocessing work
+    ) {
         double previous = -1.0;
         for (int index = 0; index < profiles.size(); index++) {
+            if(work!=null)work.work(8);
             double current = profiles.get(index).cumulativeGroundDistanceMeters();
             if (!Double.isFinite(current) || current < 0.0 || current + 1e-9 < previous) {
                 throw new IllegalArgumentException(
@@ -378,12 +439,17 @@ public final class CorridorAwareTracker {
     }
 
     private void validateAlignedPhysicalSequences(MultiScaleProfileSet profileSet) {
+        validateAlignedPhysicalSequences(profileSet,null);
+    }
+
+    private void validateAlignedPhysicalSequences(MultiScaleProfileSet profileSet,NativeAPreprocessing work) {
         List<RenderedHeatmapSampler.CrossSectionProfile> reference = profileSet.levelZeroProfiles();
         for (MultiScaleProfileSet.ScaleProfileLevel level : profileSet.levels()) {
             if (level.profiles().size() != reference.size()) {
                 throw new IllegalArgumentException("Corridor scale levels must have identical profile counts.");
             }
             for (int index = 0; index < reference.size(); index++) {
+                if(work!=null)work.work(8);
                 double expected = reference.get(index).cumulativeGroundDistanceMeters();
                 double actual = level.profiles().get(index).cumulativeGroundDistanceMeters();
                 if (Math.abs(expected - actual) > 1e-6) {
@@ -504,13 +570,23 @@ public final class CorridorAwareTracker {
         List<CorridorTrack> tracks,
         Map<String, BandScaleEvidence> childEvidence
     ) {
+        return parentScaleEvidence(tracks,childEvidence,null);
+    }
+
+    private Map<String, BandScaleEvidence> parentScaleEvidence(
+        List<CorridorTrack> tracks,Map<String, BandScaleEvidence> childEvidence,NativeAPreprocessing work
+    ) {
+        if(work!=null)work.admitParentEvidence(tracks,childEvidence);
         Map<String, BandScaleEvidence> result = new LinkedHashMap<>(childEvidence);
         for (CorridorTrack track : tracks) {
+            if(work!=null)work.checkpoint();
             if (!track.parent()) {
                 continue;
             }
             for (CorridorTrackPoint point : track.points().values()) {
+                if(work!=null)work.checkpoint();
                 List<BandScaleEvidence> contributors = point.band().childIds().stream()
+                    .peek(ignored->{if(work!=null)work.checkpoint();})
                     .map(id -> childEvidence.get(CorridorCenterlineOptimizer.scaleEvidenceKey(
                         point.profileIndex(), id)))
                     .filter(java.util.Objects::nonNull).toList();
@@ -603,12 +679,20 @@ public final class CorridorAwareTracker {
         List<List<CorridorProfile>> extractedLevels,
         double sourcePixelSizePx
     ) {
+        return associateScales(profileSet,extractedLevels,sourcePixelSizePx,null);
+    }
+
+    ScaleAssociation associateScales(MultiScaleProfileSet profileSet,List<List<CorridorProfile>> extractedLevels,
+            double sourcePixelSizePx,NativeAPreprocessing work) {
+        if(work!=null)work.admitAssociation(extractedLevels);
         List<MultiScaleCorridorProfile> diagnostics = new ArrayList<>();
         Map<String, BandScaleEvidence> evidence = new LinkedHashMap<>();
         List<CorridorProfile> fineProfiles = extractedLevels.get(0);
         for (int profileIndex = 0; profileIndex < fineProfiles.size(); profileIndex++) {
+            if(work!=null)work.checkpoint();
             List<ScaleCorridorObservation> observations = new ArrayList<>();
             for (int levelIndex = 0; levelIndex < extractedLevels.size(); levelIndex++) {
+                if(work!=null)work.checkpoint();
                 CorridorProfile profile = extractedLevels.get(levelIndex).get(profileIndex);
                 MultiScaleProfileSet.ScaleProfileLevel level = profileSet.levels().get(levelIndex);
                 observations.add(new ScaleCorridorObservation(level.level(), level.reduction(),
@@ -616,9 +700,10 @@ public final class CorridorAwareTracker {
             }
             diagnostics.add(new MultiScaleCorridorProfile(profileIndex, observations));
             for (CorridorBand fineBand : fineProfiles.get(profileIndex).bands()) {
+                if(work!=null)work.checkpoint();
                 evidence.put(CorridorCenterlineOptimizer.scaleEvidenceKey(profileIndex, fineBand.id()),
                     associateBand(fineBand, fineProfiles.get(profileIndex).bands(), observations,
-                        sourcePixelSizePx));
+                        sourcePixelSizePx,work));
             }
         }
         return new ScaleAssociation(Map.copyOf(evidence), List.copyOf(diagnostics));
@@ -628,8 +713,9 @@ public final class CorridorAwareTracker {
         CorridorBand fineBand,
         List<CorridorBand> fineBands,
         List<ScaleCorridorObservation> observations,
-        double sourcePixelSizePx
+        double sourcePixelSizePx,NativeAPreprocessing work
     ) {
+        if(work!=null)work.checkpoint();
         double persistence = 0.50;
         double weightedCenter = 0.0;
         double centerWeight = 0.0;
@@ -638,8 +724,10 @@ public final class CorridorAwareTracker {
         boolean parentMerge = false;
         List<Integer> participating = new ArrayList<>(List.of(0));
         for (int level = 1; level < observations.size(); level++) {
+            if(work!=null)work.checkpoint();
             ScaleCorridorObservation observation = observations.get(level);
             List<CorridorBand> matches = observation.bands().stream()
+                .peek(ignored->{if(work!=null)work.checkpoint();})
                 .filter(coarse -> compatible(fineBand, coarse, sourcePixelSizePx))
                 .sorted(Comparator.comparingDouble(coarse -> Math.abs(
                     coarse.centerOffsetPx() - fineBand.centerOffsetPx())))
@@ -652,7 +740,8 @@ public final class CorridorAwareTracker {
             double levelWeight = level == 1 ? 0.35 : 0.15;
             persistence += levelWeight;
             participating.add(level);
-            long fineChildren = fineBands.stream().filter(fine -> compatible(fine, match, sourcePixelSizePx)).count();
+            long fineChildren = fineBands.stream().peek(ignored->{if(work!=null)work.checkpoint();})
+                .filter(fine -> compatible(fine, match, sourcePixelSizePx)).count();
             boolean merged = match.parentHypothesis() || fineChildren > 1;
             parentMerge |= merged;
             if (!merged) {
