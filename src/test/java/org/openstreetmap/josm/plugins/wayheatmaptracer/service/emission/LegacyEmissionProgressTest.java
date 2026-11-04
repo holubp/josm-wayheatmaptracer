@@ -13,7 +13,7 @@ import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.L
 class LegacyEmissionProgressTest {
     @Test void nativeStateFamilyCannotPublishAnInferredUsedQuantity() {
         try(var f=fixture();var p=LegacyEmissionProgress.open(f.input(),QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1);
-            var e=new NativeConnectorEvaluator(f.input(),new Domain(List.of(),List.of(),List.of(),Map.of(0,0)),
+            var e=NativeConnectorEvaluator.forLegacyProgress(f.input(),new Domain(List.of(),List.of(),List.of(),Map.of(0,0)),
                 QueryPolicy.ZERO_GUARDED_LOCAL_V1,ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1,p)) {
             for(int id=0;id<96;id++)e.registerState(new RowState(0,id,0,SourceClass.GAP,null),0);
             var failure=assertThrows(StateFamilyLimitException.class,()->e.registerState(new RowState(0,96,0,SourceClass.GAP,null),0));
