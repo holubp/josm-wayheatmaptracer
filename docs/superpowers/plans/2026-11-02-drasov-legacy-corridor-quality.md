@@ -37,7 +37,15 @@
   poisoning and terminal strong-Input retention,77affectedtests/6XML0f/e/s.
   Native-Q/sameResult/PendingPrefixseriallease proofs CLOSED. Whole-source review
   drasov-a-scalar-refinement-review.md PASS. No repeated broad315matrix.
-  Helper finalsameHEAD controls/fingerprint nowallowed; no actualR4 invocation yet.
+  Helper final8d/source protocol review CLOSED; root ONE32M R4 invoked snapshot
+  ee3e47575545b4d74c532079825de2bb95bdde1d2171d3ece6ef749d36cad528,
+  claimscalar-r4-8d65-32m-001. TypedTOTAL_WORK31,999,989,next16;6.130549s
+  production,87,312,920Bpeak/0after. Has certified incumbentU0.30259409391738523
+  but pendingLB0.23148363422984822,166791queued/2737reached, no finalM/QCTK.
+  278evals allADMITTED,4495positive scalar integrals/3395hits,7890reinserts.
+  PREPARATION20,899,797 dominates versusMODE7,800,095. Prefix version explosion
+  is now the measured blocker. Strong focused exact cost+tie dominance diagnosis
+  assigned; no higher cap, blind retry or incumbent-as-preview claim.
   R4 helper ruling: no duplicate unbudgeted trackDetailed/nativeStateDomain
   reference solve. Charge fresh pixels/sourceS/scalaridentity/original17binding
   checks;239states/26098pairs/statehash/strand-3 are labelled HISTORICAL expected
@@ -82,8 +90,18 @@
   Implementer affinity_contract_probe assigned new isolated ee94-based worktree.
   M2 remains conditional on independently reviewed M1; no user approval needed
   for this authorized experiment follow-on. Roundtrip differences remain factual.
-- Active owners: a_native_integration integrates closedA8d onto9832 in newtree;
-  managed_context_closure finalizes its ONE32M R4 helper at8d;
+- New coherent A+noise integration e774e364 on9832 is frozen clean,
+  406tests/31XML0f/e/s. Independent merge audit CLOSED; pushed development branch
+  codex/drasov-a-noise-integration for full publicCI, noRC/release. Old8d source and
+  classes remain frozen. Report drasov-a-noise-integration-report.md.
+  CI41874502271 at e774e364 now in progress; fullCIee94 remains highest verified.
+  Strong A prefix-dominance packet drasov-a-prefix-dominance-diagnosis.md under
+  independent design review. Sufficient law requires BOTH cost and extension-
+  stable tie preference dominance at identical FULL key, in closure and finalDP.
+  No implementation or new R4 screen of that law yet.
+- Active owners: kernel_memory_audit reviews integration e774;
+  managed_source_audit writes actual R4 result report; legacy_exact_execution_design
+  examines exact A-prefix dominance after the measured32M failure;
   affinity_contract_probe implements reviewed M1 actual-Mode ownership with
   consumer disabled; kernel_memory_closure implements a reviewed Legacy one-seed
   cutoff proof slice from678. Ruling: exact grouped objective governs, do not
