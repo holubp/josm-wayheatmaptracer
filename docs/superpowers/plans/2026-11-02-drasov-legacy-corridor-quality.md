@@ -281,6 +281,27 @@ pendingresults/independentintegrationaudit. No private files imported/new releas
 Full88CI41833501937 now VERIFIED SUCCESS:259XML/2810executions/2715distinct,
 0failure/error/skip/malformed; bothpinned19555GUI engines PASS andhostreceipt
 verified. Evidence/report drasov-ci-41833501937-report.md. Excludeslaterfollowups.
+New integration7202ba1a has353tests/30suites GREEN and correct feature routes,
+but independent audit holds ONE importedP0 owner issue: progress checks budget
+identity rather than exactInput, permitting A's buffer on B with shared budget.
+Fixround1 active in newintegration only: transientInput identity clearedonseal/
+close; prevalidate foreignprogress beforeTracker/Kernel mayseal it. Oldcorrectly
+bound6d32Mmeasurement remainsvalid. No unrelatedmodel reopening.
+
+R4 refusal-reuse source435 and separatehelper BOTH independently CLOSED; root
+ran ONE new screen against534262e7snapshot/newclaim. It stillreachedTOTAL_WORK
+128000000,next1,253285pairs,19.400sproduction,peak128967912B/final0. NoM/QCTK
+or returnedreusecounters (throwingAPI); neither speedup nor zero-hit claim follows.
+Both consumedR4claims/artifacts/source88and435 baselines retained. Stop more
+large runs/guessing. FocusedSol6.1/xhigh strongerdiagnosis active aftertwofailures:
+actual executorenqueueOutgoing has near-zero Q lowerbounds, no discriminating
+pre-mode scalar stage/witness; exactnative scalar is computedonlyaftercertify
+selection. Minimal on-popscalarrefinement/reinsert +smallfailurecounters packet
+is beingproved againstallprefixversions/strictclosure. No new source/model/cap.
+
+Privatecurved-census standalonehelper frozenfingerprintc43ba649,33Java+3Python
+controls with0capture/producer/census. sourceauditor reviewsactualcode/scope;
+no184/21privateinvocation. NewR4outcomeandSourceFullCI neitherqualifyrealquality.
 
 Use existing actors/reports; one writer per isolated worktree. No recursive agents.
 `managed_source_audit` performs source/A/proof reviews; `kernel_memory_audit` closed
