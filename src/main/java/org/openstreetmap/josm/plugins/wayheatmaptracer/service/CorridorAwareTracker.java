@@ -17,6 +17,77 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
  * Orchestrates extraction, longitudinal association, grouping, and stable corridor optimization.
  */
 public final class CorridorAwareTracker {
+    /** Explicit experimental native-A result lifetime, separate from ordinary candidates. */
+    public static final class OptionalEmissionTracking implements AutoCloseable {
+        private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input;
+        private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner;
+        private final List<NativeAEmissionSolver.Result> results;
+        private final List<String> trackIds;
+        private boolean closed;
+        private OptionalEmissionTracking(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner,
+                List<NativeAEmissionSolver.Result> results,List<String> trackIds) {
+            this.input=input;this.owner=owner;this.results=List.copyOf(results);this.trackIds=List.copyOf(trackIds);
+        }
+        public List<NativeAEmissionSolver.Result> results(){requireOpen();return results;}
+        public List<String> trackIds(){requireOpen();return trackIds;}
+        private void requireOpen(){if(closed)throw new IllegalStateException("Optional A tracking is closed");input.context();}
+        @Override public void close(){if(!closed){closed=true;for(var result:results)result.close();owner.close();}}
+    }
+
+    /** Runs the original extraction/association/grouping and explicit native optional-emission kernel. */
+    public OptionalEmissionTracking trackOptionalEmission(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
+            JunctionContext junctions,
+            List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.Barrier> barriers,
+            GeometryCleanupConfig cleanup,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution) {
+        input.requireOpenAndUnchanged();
+        if(!cleanup.isDisabled())throw new IllegalArgumentException("Optional A cleanup adapter is unavailable");
+        var budget=input.workBudget();
+        var owner=input.openExecutionOwner("native-a-extraction-and-association");
+        List<NativeAEmissionSolver.Result> results=null;
+        try {
+            budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.ALLOCATION,1);
+            owner.reserve(4096);
+            results=new ArrayList<>();List<String> ids=new ArrayList<>();
+            MultiScaleProfileSet profileSet=input.profiles();
+            long samples=0;int rows=input.context().observations().size();
+            for(var level:profileSet.levels())for(var profile:level.profiles()) {
+                budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.PREPARATION,1);
+                samples=Math.addExact(samples,profile.intensitySamples().size());
+            }
+            long rowPairs=Math.multiplyExact((long)rows,rows);
+            budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.ALLOCATION,1);
+            owner.reserve(Math.addExact(Math.multiplyExact(samples,512L),Math.multiplyExact(rowPairs,64L)));
+            budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.MODE_EXTRACTION,
+                Math.addExact(Math.multiplyExact(samples,128L),Math.multiplyExact(rowPairs,profileSet.levels().size())));
+            double sourcePixel=input.context().trackerNormalizationRasterPx();
+            for(var level:profileSet.levels())validatePhysicalProfileSequence(level.profiles());
+            validateAlignedPhysicalSequences(profileSet);
+            List<List<CorridorProfile>> extracted=profileSet.levels().stream()
+                .map(level->extractor.extract(level.profiles(),sourcePixel)).toList();
+            List<CorridorProfile> fine=extracted.get(0);
+            var association=associateScales(profileSet,extracted,sourcePixel);
+            List<CorridorTrack> elementary=tracker.track(fine,sourcePixel,association.evidence());
+            var grouped=grouping.group(elementary,fine,sourcePixel);
+            var evidence=parentScaleEvidence(grouped.tracks(),association.evidence());
+            for(CorridorTrack track:grouped.tracks()) {
+                budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.ALLOCATION,1);
+                owner.reserve(256);
+                results.add(optimizer.optimizeOptionalEmission(input,track,fine,junctions,evidence,barriers,cleanup,query,execution));
+                ids.add(track.id());
+            }
+            return new OptionalEmissionTracking(input,owner,results,ids);
+        }catch(RuntimeException failure) {
+            if(failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.LimitExceededException
+                    ||failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.ResourceLimitException
+                    ||failure instanceof java.util.concurrent.CancellationException)input.recordTerminalExecutionFailure(failure);
+            if(results!=null)for(var result:results)result.close();owner.close();throw failure;
+        }
+    }
     private final CorridorExtractor extractor = new CorridorExtractor();
     private final CorridorTracker tracker = new CorridorTracker();
     private final CorridorGrouping grouping = new CorridorGrouping();

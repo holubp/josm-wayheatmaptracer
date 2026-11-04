@@ -16,6 +16,22 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSa
  * Selects a stable centerline inside one longitudinal corridor using second-order dynamic programming.
  */
 public final class CorridorCenterlineOptimizer {
+    /**
+     * Explicit optional-emission v2 experiment over the exact native state constructor. The result
+     * owns execution storage and must close before its retained input. Cleanup is currently ineligible.
+     */
+    NativeAEmissionSolver.Result optimizeOptionalEmission(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
+            CorridorTrack track,List<CorridorProfile> profiles,JunctionContext junctions,
+            Map<String,BandScaleEvidence> scaleEvidence,
+            List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.Barrier> barriers,
+            GeometryCleanupConfig cleanup,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution) {
+        double sourcePixel=input.context().trackerNormalizationRasterPx();
+        return NativeAEmissionSolver.solve(this,input,track,profiles,sourcePixel,junctions,scaleEvidence,
+            barriers,true,query,execution,cleanup);
+    }
     private static final double NON_SUSTAINED_ACCELERATION_MULTIPLIER = 1.15;
     private static final double WEAK_UNSUPPORTED_TUBE_MULTIPLIER = 800.0;
     private static final Comparator<PairState> PAIR_STATE_COMPARATOR = Comparator
