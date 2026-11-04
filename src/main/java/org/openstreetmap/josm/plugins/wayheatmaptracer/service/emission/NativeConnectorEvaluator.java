@@ -30,6 +30,138 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
  * Returned receipts borrow this session's retained lifetime; close it before closing its input.
  */
 public final class NativeConnectorEvaluator implements AutoCloseable {
+    /** Opaque exact native scalar fact; no caller can construct one from a raw Result or Q. */
+    public static final class NativeScalarPreparation {
+        private final NativeScalarPreparations cache;
+        private final CompetitiveAdmissionExecutor.Arc arc;
+        private final RowState from,to;
+        private final RasterPoint a,b;
+        private final MetricPoint ma,mb;
+        private final NativeScalarGridView grid;
+        private final double span,pitch,probePitch,q;
+        private final BilinearSegmentIntegral.Result scalar;
+        private NativeScalarPreparation(NativeScalarPreparations cache,CompetitiveAdmissionExecutor.Arc arc,
+                RowState from,RowState to,RasterPoint a,RasterPoint b,MetricPoint ma,MetricPoint mb,
+                double span,double pitch,double probePitch,BilinearSegmentIntegral.Result scalar) {
+            this.cache=cache;this.arc=arc;this.from=from;this.to=to;this.a=a;this.b=b;this.ma=ma;this.mb=mb;
+            this.span=span;this.pitch=pitch;this.probePitch=probePitch;this.scalar=scalar;
+            grid=cache.evaluator.context.nativeGrid();
+            q=nativeScalarQ(arc.sourceSpanMeters(),pitch,scalar);
+        }
+        public BilinearSegmentIntegral.Result scalar(){cache.evaluator.requireLive();return scalar;}
+        public boolean hasFiniteNativeQ(){cache.evaluator.requireLive();return Double.isFinite(q);}
+        public double nativeQ(){if(!hasFiniteNativeQ())throw new IllegalStateException("Native scalar Q is unknown");return q;}
+        /** Only the sealed A provider may use this fact to justify a closure bound. */
+        public void requireFor(CompetitiveAdmissionExecutor.TransitionProvider provider,CompetitiveAdmissionExecutor.Arc arc) {
+            var evaluator=cache.evaluator;evaluator.requireLive();evaluator.requireSourceUnchanged();
+            evaluator.work(EmissionWorkBudget.Operation.PREPARATION,1);
+            if(cache.provider!=provider||this.arc!=arc||cache.facts[arc.id()]!=this)
+                throw new CompetitiveAdmissionExecutor.InvalidCertificateException("Native scalar token is foreign");
+            double current=evaluator.nativeAOwners.requireScalarArc(provider,arc,from,to);
+            if(grid!=evaluator.context.nativeGrid()||!same(q,nativeScalarQ(arc.sourceSpanMeters(),pitch,scalar))
+                    ||!same(pitch,current)||!same(span,evaluator.chainage(to.row())-evaluator.chainage(from.row()))
+                    ||!same(arc.sourceSpanMeters(),span)||!same(probePitch,evaluator.minimumPitch())
+                    ||!a.equals(evaluator.point(from))||!b.equals(evaluator.point(to))
+                    ||!ma.equals(evaluator.metric(a))||!mb.equals(evaluator.metric(b)))
+                throw new CompetitiveAdmissionExecutor.InvalidCertificateException("Native scalar source geometry changed");
+        }
+        private BilinearSegmentIntegral.Result consume(NativeConnectorEvaluator evaluator,RowState from,RowState to) {
+            if(cache.evaluator!=evaluator||this.from!=from||this.to!=to)
+                throw new CompetitiveAdmissionExecutor.InvalidCertificateException("Native scalar endpoints are foreign");
+            requireFor(cache.provider,arc);return scalar;
+        }
+        private static boolean same(double a,double b){return Double.doubleToLongBits(a)==Double.doubleToLongBits(b);}
+    }
+    // One factual expression, with no issuer/bound authority; package controls exercise IEEE edges.
+    static double nativeScalarQ(double span,double pitch,BilinearSegmentIntegral.Result scalar) {
+        return scalar.status()==BilinearSegmentIntegral.Status.COMPLETE
+            ?span/pitch*(1.0-scalar.mean().orElseThrow()):Double.NaN;
+    }
+    /** Same-evaluator/source cache; it owns its facts through evaluator close. */
+    public static final class NativeScalarPreparations {
+        private final NativeConnectorEvaluator evaluator;
+        private final CompetitiveAdmissionExecutor.TransitionProvider provider;
+        private final AttemptMemoryLedger.Owner owner;
+        private final NativeAExecutionCensus census;
+        private final NativeScalarPreparation[] facts;
+        private long started,completed,complete,unknown,hits;
+        private NativeScalarPreparations(NativeConnectorEvaluator evaluator,
+                CompetitiveAdmissionExecutor.TransitionProvider provider,int arcs,NativeAExecutionCensus census) {
+            this.evaluator=evaluator;this.provider=provider;this.census=census;owner=evaluator.owner.child("native-scalar-facts");
+            try {
+                evaluator.reserve(owner,Math.addExact(512,AttemptMemoryLedger.referenceArrayBytes(arcs)));
+                evaluator.work(EmissionWorkBudget.Operation.PREPARATION,arcs);facts=new NativeScalarPreparation[arcs];
+            }catch(RuntimeException failure){owner.close();throw failure;}
+        }
+        public long started(){return started;}
+        public long completed(){return completed;}
+        public long complete(){return complete;}
+        public long unknown(){return unknown;}
+        public long hits(){return hits;}
+        /** Full evaluation revalidates the fact at its original scalar boundary. */
+        public NativeScalarPreparation prepared(CompetitiveAdmissionExecutor.Arc arc) {
+            evaluator.requireLive();
+            if(arc.id()<0||arc.id()>=facts.length)throw new CompetitiveAdmissionExecutor.InvalidCertificateException("Foreign scalar arc index");
+            var fact=facts[arc.id()];
+            if(fact!=null&&fact.arc!=arc)throw new CompetitiveAdmissionExecutor.InvalidCertificateException("Foreign scalar arc identity");
+            return fact;
+        }
+        public NativeScalarPreparation prepare(CompetitiveAdmissionExecutor.Arc arc,RowState from,RowState to) {
+            var e=evaluator;e.requireLive();Objects.requireNonNull(arc);Objects.requireNonNull(from);Objects.requireNonNull(to);
+            try {
+                e.requireSourceUnchanged();e.work(EmissionWorkBudget.Operation.PAIR_LOOKUP,1);started++;
+                double nativePitch=e.nativeAOwners.requireScalarArc(provider,arc,from,to);
+                if(!e.states.containsKey(from)||!e.states.containsKey(to))throw new CompetitiveAdmissionExecutor.InvalidCertificateException("Foreign scalar state");
+                double span=e.chainage(to.row())-e.chainage(from.row());
+                if(!NativeScalarPreparation.same(span,arc.sourceSpanMeters()))throw new CompetitiveAdmissionExecutor.InvalidCertificateException("Native scalar span differs");
+                if(to.row()<=from.row()||e.originalOrdinal(to.row())-e.originalOrdinal(from.row())-1>16
+                        ||span<0||e.context.sourceSpanUpperMeters(from.row(),to.row())>20||e.barrierBetween(from.row(),to.row())
+                        ||!e.validState(from)||!e.validState(to))return unavailable();
+                RasterPoint a=e.point(from),b=e.point(to);MetricPoint ma=e.metric(a),mb=e.metric(b);
+                if(!e.context.productionEligible()&&e.context.eligibility()!=OptionalEmissionContext.Eligibility.DECLARED_SYNTHETIC)return unavailable();
+                double probePitch=e.minimumPitch();if(!(probePitch>0))return unavailable();
+                try(var traversal=owner.child("native-scalar-traversal")) {
+                    if(!e.context.routeSegmentAuthorized(a,b,e.budget,traversal)
+                            ||!e.context.evidenceSegmentAuthorized(a,b,e.budget,traversal))return unavailable();
+                    var existing=facts[arc.id()];
+                    if(existing!=null){existing.requireFor(provider,arc);hits++;completed++;if(census!=null)census.scalarHit();return existing;}
+                    // The result and token remain under this cache; traversal owns only scratch.
+                    e.reserve(owner,1024);
+                    if(census!=null)census.scalarStarted();
+                    var scalar=e.integral(a,b,traversal);
+                    if(census!=null)census.scalarReturned(scalar.status()==BilinearSegmentIntegral.Status.COMPLETE);
+                    e.work(EmissionWorkBudget.Operation.PREPARATION,1);
+                    var token=new NativeScalarPreparation(this,arc,from,to,a,b,ma,mb,span,nativePitch,probePitch,scalar);
+                    if(census!=null)census.scalarQ(token.hasFiniteNativeQ(),token.hasFiniteNativeQ()&&token.nativeQ()>0,
+                        scalar.status()==BilinearSegmentIntegral.Status.COMPLETE);
+                    facts[arc.id()]=token;completed++;if(token.hasFiniteNativeQ())complete++;else unknown++;
+                    return token;
+                }
+            }catch(EmissionWorkBudget.LimitExceededException|AttemptMemoryLedger.ResourceLimitException|CancellationException failure) {
+                e.terminalFailure=failure;e.input.recordTerminalExecutionFailure(failure);throw failure;
+            }
+        }
+        private NativeScalarPreparation unavailable(){completed++;unknown++;if(census!=null)census.scalarUnknown();return null;}
+    }
+    private NativeScalarPreparations nativeScalarPreparations;
+    public NativeScalarPreparations openNativeScalarPreparations(CompetitiveAdmissionExecutor.TransitionProvider provider,int arcs) {
+        return openNativeScalarPreparations(provider,arcs,null);
+    }
+    public NativeScalarPreparations openNativeScalarPreparations(CompetitiveAdmissionExecutor.TransitionProvider provider,int arcs,NativeAExecutionCensus census) {
+        requireLive();if(nativeAOwners==null)throw new IllegalArgumentException("Scalar preparation requires issued native A owners");
+        try {
+            if(census!=null)census.requireActive(input);
+            nativeAOwners.requireScalarProvider(provider,arcs);
+            if(nativeScalarPreparations==null)nativeScalarPreparations=new NativeScalarPreparations(this,provider,arcs,census);
+            else if(nativeScalarPreparations.census!=census)throw new IllegalArgumentException("Native scalar census differs");
+            return nativeScalarPreparations;
+        }catch(EmissionWorkBudget.LimitExceededException|AttemptMemoryLedger.ResourceLimitException|CancellationException failure) {
+            terminalFailure=failure;input.recordTerminalExecutionFailure(failure);throw failure;
+        }
+    }
+    public Receipt evaluateWithNativeScalar(RowState from,RowState to,NativeScalarPreparation scalar) {
+        return evaluateInternal(from,to,null,null,null,Objects.requireNonNull(scalar));
+    }
     public enum QueryPolicy {
         DENSE_EIGHTH_NATIVE_V1, HALF_NATIVE_L0_V1, PIXEL_CAPPED_L0_V1, ZERO_GUARDED_LOCAL_V1
     }
@@ -804,7 +936,11 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
 
     private Receipt evaluateInternal(RowState from, RowState to, Receipt incoming,
             OrdinaryPhysicalLeg incomingOrdinary, PhysicalDirectionCursor incomingDirection) {
-        if(progress==null)return evaluateBody(from,to,incoming,incomingOrdinary,incomingDirection);
+        return evaluateInternal(from,to,incoming,incomingOrdinary,incomingDirection,null);
+    }
+    private Receipt evaluateInternal(RowState from, RowState to, Receipt incoming,
+            OrdinaryPhysicalLeg incomingOrdinary, PhysicalDirectionCursor incomingDirection,NativeScalarPreparation prepared) {
+        if(progress==null)return evaluateBody(from,to,incoming,incomingOrdinary,incomingDirection,prepared);
         requireLive();Objects.requireNonNull(from);Objects.requireNonNull(to);
         try {
             Receipt origin=incoming;OrdinaryPhysicalLeg ordinary=incomingOrdinary;
@@ -816,7 +952,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             PhysicalEndpoint b=origin!=null?origin.to():ordinary!=null?ordinary.to:null;
             progress.evaluationBegin(progressOrdinal(from.row()),progressOrdinal(to.row()),from.nativeStateId(),to.nativeStateId(),
                 incoming!=null||incomingOrdinary!=null||incomingDirection!=null,kind,progressEndpoint(a),progressEndpoint(b));
-            var result=evaluateBody(from,to,incoming,incomingOrdinary,incomingDirection);
+            var result=evaluateBody(from,to,incoming,incomingOrdinary,incomingDirection,prepared);
             progress.evaluationComplete(result);return result;
         } catch(EmissionWorkBudget.LimitExceededException|AttemptMemoryLedger.ResourceLimitException
                 |LocalScalarProfileExtractor.ResourceLimitException|CancellationException failure) {
@@ -833,7 +969,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     LegacyEmissionProgress progress(){return progress;}
 
     private Receipt evaluateBody(RowState from, RowState to, Receipt incoming,
-            OrdinaryPhysicalLeg incomingOrdinary, PhysicalDirectionCursor incomingDirection) {
+            OrdinaryPhysicalLeg incomingOrdinary, PhysicalDirectionCursor incomingDirection,NativeScalarPreparation prepared) {
         requireLive();
         Objects.requireNonNull(from); Objects.requireNonNull(to);
         try {
@@ -864,7 +1000,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
                     return receipt(Status.REJECTED, Reason.DECISION_AUTHORITY, from, to, span, length, pitch, null, false, false, List.of(), null);
                 if (!context.evidenceSegmentAuthorized(a, b, budget, evaluation))
                     return receipt(Status.REJECTED, Reason.ACQUISITION_AUTHORITY, from, to, span, length, pitch, null, false, false, List.of(), null);
-                var scalar = integral(a, b, evaluation);
+                var scalar = prepared==null?integral(a, b, evaluation):prepared.consume(this,from,to);
                 if (scalar.status() != BilinearSegmentIntegral.Status.COMPLETE)
                     return receipt(Status.UNAVAILABLE, Reason.SCALAR_SUPPORT, from, to, span, length, pitch, scalar, false, false, List.of(), null);
                 Receipt transport = null;

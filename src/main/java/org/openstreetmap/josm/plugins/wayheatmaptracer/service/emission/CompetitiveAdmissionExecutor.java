@@ -99,6 +99,10 @@ public final class CompetitiveAdmissionExecutor {
         /** Certifies actual admission and unchanged cost, retaining any receipt under the source owner. */
         Admission certify(CanonicalKey prefix, Arc arc);
     }
+    /** Explicit native-A-only refinement seam; returned facts are evaluator-issued and opaque. */
+    public interface NativeScalarRefinementProvider extends TransitionProvider {
+        NativeConnectorEvaluator.NativeScalarPreparation prepareScalar(CanonicalKey prefix,Arc arc);
+    }
 
     /** An actual measured admission or refusal, with source-bound Q on success. */
     public static final class Admission {
@@ -176,7 +180,12 @@ public final class CompetitiveAdmissionExecutor {
     public record PendingProof(CanonicalKey prefix, int arcId, double certifiedPrefixCost,
             double sourceSpanMeters, double scalarLowerBound, double lowerBound,
             boolean laterIncrementsNonnegative, boolean admissionAlreadyMeasured,
-            long prefixVersion) { }
+            long prefixVersion, boolean scalarRefinementAttempted, boolean nativeQAvailable,long pendingSerial) {
+        public PendingProof(CanonicalKey prefix,int arcId,double cost,double span,double scalar,double lower,
+                boolean nonnegative,boolean measured,long version) {
+            this(prefix,arcId,cost,span,scalar,lower,nonnegative,measured,version,false,false,-1);
+        }
+    }
 
     /** Charged closure snapshot; this is not yet a production A candidate. */
     public record Result(Status status, List<Integer> vertexIds, List<Integer> arcIds,
@@ -226,8 +235,10 @@ public final class CompetitiveAdmissionExecutor {
     private static final class Pending {
         final Prefix prefix;
         final Arc arc;
-        final double scalarLower;
-        final double lower;
+        double scalarLower;
+        double lower;
+        boolean refinementAttempted;
+        NativeConnectorEvaluator.NativeScalarPreparation scalar;
         final boolean laterIncrementsNonnegative;
         final long serial;
         AttemptMemoryLedger.MemoryLease lease;
@@ -247,15 +258,26 @@ public final class CompetitiveAdmissionExecutor {
     private final TransitionProvider provider;
     private final EmissionWorkBudget budget;
     private final AttemptMemoryLedger.Owner parentOwner;
+    private final NativeScalarRefinementProvider refinement;
+    private final NativeAExecutionCensus census;
     private boolean used;
     private long serial;
 
     public CompetitiveAdmissionExecutor(Graph graph, TransitionProvider provider,
             EmissionWorkBudget budget, AttemptMemoryLedger.Owner parentOwner) {
+        this(graph,provider,budget,parentOwner,null,null);
+    }
+    public CompetitiveAdmissionExecutor(Graph graph, NativeScalarRefinementProvider provider,
+            EmissionWorkBudget budget,AttemptMemoryLedger.Owner parentOwner,NativeAExecutionCensus census) {
+        this(graph,provider,budget,parentOwner,provider,Objects.requireNonNull(census,"native A census"));
+    }
+    private CompetitiveAdmissionExecutor(Graph graph,TransitionProvider provider,EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner parentOwner,NativeScalarRefinementProvider refinement,NativeAExecutionCensus census) {
         this.graph = Objects.requireNonNull(graph, "graph");
         this.provider = Objects.requireNonNull(provider, "provider");
         this.budget = Objects.requireNonNull(budget, "budget");
         this.parentOwner = Objects.requireNonNull(parentOwner, "parentOwner");
+        this.refinement=refinement;this.census=census;
     }
 
     /** Runs one charged attempt; a cap/cancel/source contradiction publishes no partial winner. */
@@ -278,6 +300,7 @@ public final class CompetitiveAdmissionExecutor {
             PriorityQueue<Pending> queue = new PriorityQueue<>(pendingOrder());
             Map<TransitionKey, Admission> measured = new HashMap<>();
             List<Prefix> reached = new ArrayList<>();
+            if(census!=null)census.trackFrontier(queue,reached);
             int[] edgeStarts = edgeStarts(scope);
             for (Vertex vertex : graph.vertices()) {
                 budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
@@ -291,10 +314,13 @@ public final class CompetitiveAdmissionExecutor {
             int admitted = 0;
             int refused = 0;
             while (!queue.isEmpty()) {
+                if(census!=null){var current=queue.peek();census.frontier(queue.size(),reached.size(),best!=null,best==null?Double.NaN:best.cost,current.lower);
+                    census.boundary(NativeAExecutionCensus.Phase.CLOSURE,current.arc.id(),current.prefix.key.cursorId(),current.prefix.serial,current.serial);}
                 budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
                 Pending pending = queue.peek();
                 if (best != null && pending.lower > best.cost) break;
                 pending = queue.remove();
+                boolean reinserted=false;
                 try {
                     budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP, 1);
                     budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
@@ -303,6 +329,25 @@ public final class CompetitiveAdmissionExecutor {
                         TransitionKey cacheKey = new TransitionKey(pending.prefix.key, pending.arc.id());
                         admission = measured.get(cacheKey);
                         if (admission == null) {
+                            if(refinement!=null&&!pending.refinementAttempted&&pending.arc.optional()&&!pending.arc.zeroPhysical()) {
+                                census.boundary(NativeAExecutionCensus.Phase.SCALAR,pending.arc.id(),pending.prefix.key.cursorId(),pending.prefix.serial,pending.serial);
+                                pending.refinementAttempted=true;census.refinement();
+                                var scalar=refinement.prepareScalar(pending.prefix.key,pending.arc);
+                                if(scalar!=null) {
+                                    scalar.requireFor(provider,pending.arc);pending.scalar=scalar;
+                                    if(scalar.hasFiniteNativeQ()) {
+                                        pending.scalarLower=Math.max(pending.scalarLower,scalar.nativeQ());
+                                        double refined=OutwardCostBounds.completedPathLower(pending.prefix.cost,scalar.nativeQ(),pending.laterIncrementsNonnegative);
+                                        if(refined>pending.lower) {
+                                            pending.lower=refined;
+                                            census.pendingLower(pending.lower);
+                                            census.boundary(NativeAExecutionCensus.Phase.REINSERT,pending.arc.id(),pending.prefix.key.cursorId(),pending.prefix.serial,pending.serial);
+                                            queue.add(pending);reinserted=true;census.reinserted();continue;
+                                        }
+                                    }
+                                }
+                            }
+                            if(census!=null)census.boundary(NativeAExecutionCensus.Phase.CERTIFY,pending.arc.id(),pending.prefix.key.cursorId(),pending.prefix.serial,pending.serial);
                             budget.charge(EmissionWorkBudget.Operation.TRANSITION, 1);
                             admission = Objects.requireNonNull(provider.certify(pending.prefix.key, pending.arc),
                                 "provider admission");
@@ -314,15 +359,21 @@ public final class CompetitiveAdmissionExecutor {
                     }
                     if (admission.admitted()) {
                         verifyAdmitted(pending.arc, admission, upperIntensity);
+                        if(pending.scalar!=null&&pending.scalar.hasFiniteNativeQ()
+                                &&(Double.doubleToLongBits(pending.scalar.nativeQ())!=Double.doubleToLongBits(admission.q())
+                                    ||admission.scalar().orElse(null)!=pending.scalar.scalar()))
+                            throw new InvalidCertificateException("Native scalar preparation disagrees with admission");
+                        if(census!=null)census.boundary(NativeAExecutionCensus.Phase.EXTEND,pending.arc.id(),pending.prefix.key.cursorId(),pending.prefix.serial,pending.serial);
                         Prefix next = extend(scope, reached, pending.prefix, pending.arc, admission);
                         if (graph.vertices().get(next.key.cursorId()).terminal()) {
                             if (best == null || compareTerminal(next, best) < 0) best = next;
+                            if(census!=null)census.frontier(queue.size(),reached.size(),true,best.cost,pending.lower);
                         } else {
                             enqueueOutgoing(scope, queue, next, edgeStarts, upperIntensity);
                         }
                     }
                 } finally {
-                    pending.lease.close();
+                    if(!reinserted)pending.lease.close();
                 }
             }
             int unmeasured = 0;
@@ -339,8 +390,9 @@ public final class CompetitiveAdmissionExecutor {
                 throw new InvalidCertificateException("frontier cannot close without a feasible incumbent");
             if (best != null && !(minLower > best.cost))
                 throw new InvalidCertificateException("unmeasured frontier is not strictly worse");
-            return snapshotResult(best, admitted, refused, unmeasured, minLower,
+            var result=snapshotResult(best, admitted, refused, unmeasured, minLower,
                 upperIntensity, measured, queue);
+            if(census!=null)census.closeFrontier();return result;
         }
     }
 
@@ -601,7 +653,8 @@ public final class CompetitiveAdmissionExecutor {
                 boolean known = measured.containsKey(new TransitionKey(source, pending.arc.id()));
                 pendingRows.add(new PendingProof(copy, pending.arc.id(), pending.prefix.cost,
                     pending.arc.sourceSpanMeters(), pending.scalarLower, pending.lower,
-                    pending.laterIncrementsNonnegative, known, pending.prefix.serial));
+                    pending.laterIncrementsNonnegative, known, pending.prefix.serial,pending.refinementAttempted,
+                    pending.scalar!=null&&pending.scalar.hasFiniteNativeQ(),refinement==null?-1:pending.serial));
             }
             pendingRows.sort((a, b) -> {
                 budget.charge(EmissionWorkBudget.Operation.TIE_COMPARISON, 1);

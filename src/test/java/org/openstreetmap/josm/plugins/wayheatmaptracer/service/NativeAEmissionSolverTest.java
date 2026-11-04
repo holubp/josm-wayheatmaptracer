@@ -324,6 +324,10 @@ class NativeAEmissionSolverTest {
         }
         Fixture(List<RasterPoint> anchors,java.util.function.DoubleBinaryOperator signal,double halfWidth,
                 EmissionWorkBudget budget,double sourceOrigin,boolean unavailableCell) {
+            this(anchors,signal,halfWidth,budget,sourceOrigin,unavailableCell,EvidenceResolution.nativeSource(1,1));
+        }
+        Fixture(List<RasterPoint> anchors,java.util.function.DoubleBinaryOperator signal,double halfWidth,
+                EmissionWorkBudget budget,double sourceOrigin,boolean unavailableCell,EvidenceResolution resolution) {
             int width=40,height=40;
             double[] values=new double[width*height];
             for(int y=0;y<height;y++) for(int x=0;x<width;x++)
@@ -337,7 +341,7 @@ class NativeAEmissionSolverTest {
             var field=new ScalarEvidenceField(width,height,values,valid,cells,new EvidenceFieldLineage(
                 EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,
                 "native",EvidenceCorrelationGroup.SYNTHETIC_TRUTH,false));
-            var evidence=new EvidenceSnapshot("a-synthetic",frame,transform,EvidenceResolution.nativeSource(1,1),
+            var evidence=new EvidenceSnapshot("a-synthetic",frame,transform,resolution,
                 MetricRegion.rectangle(5,5,35,35),MetricRegion.rectangle(-.5,-.5,39.5,39.5),
                 Map.of("native",field),"declared-synthetic-a");
             List<DetachedProfileSamplingLocation> locations=new ArrayList<>();

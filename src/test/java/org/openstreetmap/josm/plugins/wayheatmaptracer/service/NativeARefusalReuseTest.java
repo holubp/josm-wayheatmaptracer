@@ -34,7 +34,8 @@ class NativeARefusalReuseTest {
             assertTrue(paths.size()>1);expected=paths.stream().min(NativeARefusalReuseTest::compare).orElseThrow();
         }
         List<?> referenceReasons=null;
-        for(boolean competitive:new boolean[]{false,true})for(var choice:NativeAEmissionSolver.ExecutionChoice.values()) {
+        for(boolean competitive:new boolean[]{false,true})for(var choice:new NativeAEmissionSolver.ExecutionChoice[]{
+                NativeAEmissionSolver.ExecutionChoice.UNCHANGED_V1,NativeAEmissionSolver.ExecutionChoice.POSITIVE_ARC_REFUSAL_REUSE_V1}) {
             try(var fixture=tiny(variant);var result=solve(fixture,junctions,competitive,choice)) {
                 assertEquals(expected.ids(),result.vertexIds());assertEquals(expected.cost(),result.cost(),0);
                 assertEquals(expected.consumed(),result.consumedRows().size());
@@ -335,14 +336,20 @@ class NativeARefusalReuseTest {
             this(f,choice,JunctionContext.empty());
         }
         NativeEngine(NativeAEmissionSolverTest.Fixture f,NativeAEmissionSolver.ExecutionChoice choice,JunctionContext junctions) throws Exception {
-            var profiles=new CorridorExtractor().extract(f.input.profiles().levelZeroProfiles(),1);
+            this(f,choice,junctions,null);
+        }
+        NativeEngine(NativeAEmissionSolverTest.Fixture f,NativeAEmissionSolver.ExecutionChoice choice,JunctionContext junctions,NativeAExecutionCensus census) throws Exception {
+            double sourcePixel=f.input.context().trackerNormalizationRasterPx();
+            var profiles=new CorridorExtractor().extract(f.input.profiles().levelZeroProfiles(),sourcePixel);
             var owner=f.input.openExecutionOwner("tiny-native-refusal-test");owner.reserve(2048);
             var type=Class.forName(NativeAEmissionSolver.class.getName()+"$Engine");
-            var constructor=Arrays.stream(type.getDeclaredConstructors()).filter(c->c.getParameterCount()==15).findFirst().orElseThrow();
+            var constructor=Arrays.stream(type.getDeclaredConstructors()).filter(c->c.getParameterCount()==(census==null?15:16)).findFirst().orElseThrow();
             constructor.setAccessible(true);
-            try {actual=constructor.newInstance(new CorridorCenterlineOptimizer(),f.input,NativeAEmissionSolverTest.track(profiles),
-                profiles,1.,junctions,Map.of(),List.of(),QueryPolicy.DENSE_EIGHTH_NATIVE_V1,
-                ExecutionPolicy.EAGER_ALL_PROBES_V1,GeometryCleanupConfig.disabled(),owner,null,null,choice);}
+            var args=new ArrayList<Object>(Arrays.asList(new CorridorCenterlineOptimizer(),f.input,NativeAEmissionSolverTest.track(profiles),
+                profiles,sourcePixel,junctions,Map.of(),List.of(),QueryPolicy.DENSE_EIGHTH_NATIVE_V1,
+                ExecutionPolicy.EAGER_ALL_PROBES_V1,GeometryCleanupConfig.disabled(),owner,null,null,choice));
+            if(census!=null)args.add(census);
+            try {actual=constructor.newInstance(args.toArray());}
             catch(InvocationTargetException failure){owner.close();throw (Exception)failure.getCause();}
             provider=(TransitionProvider)actual;arcs=((Graph)field(actual,"graph")).arcs();vertices=(List<?>)field(actual,"vertices");
         }

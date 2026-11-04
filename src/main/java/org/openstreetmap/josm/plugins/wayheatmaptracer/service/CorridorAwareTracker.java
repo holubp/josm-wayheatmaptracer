@@ -155,6 +155,41 @@ public final class CorridorAwareTracker {
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution,
             NativeAEmissionSolver.ExecutionChoice choice) {
+        if(choice==NativeAEmissionSolver.ExecutionChoice.POSITIVE_ARC_SCALAR_REFINEMENT_V1)
+            throw new IllegalArgumentException("Scalar refinement requires the explicit prepaid-census entry");
+        return trackOptionalEmissionBound(input,binding,junctions,barriers,cleanup,query,execution,choice,null);
+    }
+
+    /** Explicit opt-in, with failure facts retained independently of failed native Engines. */
+    public OptionalEmissionTracking trackOptionalEmissionWithScalarRefinement(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAEmissionBinding binding,
+            JunctionContext junctions,
+            List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.Barrier> barriers,
+            GeometryCleanupConfig cleanup,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAExecutionCensus census) {
+        java.util.Objects.requireNonNull(census,"native A census");
+        census.requireCanBegin(input);
+        try {
+            census.begin(input);
+            census.boundary(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAExecutionCensus.Phase.PREPROCESSING,-1,-1,-1,-1);
+            var result=trackOptionalEmissionBound(input,binding,junctions,barriers,cleanup,query,execution,
+                NativeAEmissionSolver.ExecutionChoice.POSITIVE_ARC_SCALAR_REFINEMENT_V1,census);
+            census.finish();return result;
+        }catch(RuntimeException failure){census.fail(failure);throw failure;}
+    }
+    private OptionalEmissionTracking trackOptionalEmissionBound(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAEmissionBinding binding,
+            JunctionContext junctions,
+            List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.Barrier> barriers,
+            GeometryCleanupConfig cleanup,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution,
+            NativeAEmissionSolver.ExecutionChoice choice,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAExecutionCensus census) {
         if(binding==null)input.requireOpenAndUnchanged();else binding.requireCurrent(input);
         if(binding!=null&&!barriers.isEmpty())throw new IllegalArgumentException("Original A protected capture alias is unavailable");
         if(!cleanup.isDisabled())throw new IllegalArgumentException("Optional A cleanup adapter is unavailable");
@@ -187,7 +222,7 @@ public final class CorridorAwareTracker {
                 results.add(choice==NativeAEmissionSolver.ExecutionChoice.UNCHANGED_V1
                     ?optimizer.optimizeOptionalEmission(input,track,fine,junctions,evidence,barriers,cleanup,query,execution,nativeSource,binding)
                     :NativeAEmissionSolver.solve(optimizer,input,track,fine,sourcePixel,junctions,evidence,barriers,true,
-                        query,execution,cleanup,nativeSource,binding,choice));
+                        query,execution,cleanup,nativeSource,binding,choice,census));
                 ids.add(track.id());
             }
             return new OptionalEmissionTracking(input,owner,results,ids);

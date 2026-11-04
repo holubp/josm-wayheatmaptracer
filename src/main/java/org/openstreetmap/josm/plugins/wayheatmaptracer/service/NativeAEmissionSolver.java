@@ -19,7 +19,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 public final class NativeAEmissionSolver {
     public static final String EXECUTION_VERSION="native-a-certified-competitive-v1";
     /** A-only execution choice; it does not change numerical or connector query policies. */
-    public enum ExecutionChoice { UNCHANGED_V1, POSITIVE_ARC_REFUSAL_REUSE_V1 }
+    public enum ExecutionChoice { UNCHANGED_V1, POSITIVE_ARC_REFUSAL_REUSE_V1, POSITIVE_ARC_SCALAR_REFINEMENT_V1 }
     /** Enabled-path counters; disabled execution has no fabricated physical-evaluation census. */
     public record RefusalReuseDiagnostics(long positiveArcLookups,long evaluatorMissCalls,
             long admittedEvidenceReuseHits,long refusalReuseHits,long returnedAdmitted,long returnedRejected,
@@ -97,6 +97,21 @@ public final class NativeAEmissionSolver {
         public AttemptMemoryLedger.Owner openExecutionOwner(String phase) {
             requireSourceUnchanged();return issuer.binding==null?issuer.input.openExecutionOwner(phase):issuer.binding.openExecutionOwner(phase);
         }
+        /** Exact private-engine identity gate for the opt-in evaluator scalar cache. */
+        public void requireScalarProvider(TransitionProvider provider,int arcCount) {
+            requireSourceUnchanged();
+            if(provider!=issuer||arcCount!=issuer.arcs.size())
+                throw new InvalidCertificateException("Native scalar provider is foreign");
+        }
+        public double requireScalarArc(TransitionProvider provider,Arc arc,RowState from,RowState to) {
+            requireScalarProvider(provider,issuer.arcs.size());
+            if(arc.id()<0||arc.id()>=issuer.arcs.size()||issuer.arcs.get(arc.id())!=arc
+                    ||issuer.vertices.get(arc.fromId()).endpoint()!=from
+                    ||issuer.vertices.get(arc.toId()).endpoint()!=to
+                    ||!issuer.positiveOptional(arc,issuer.vertices.get(arc.fromId()),issuer.vertices.get(arc.toId())))
+                throw new InvalidCertificateException("Native scalar arc is foreign or nonpositive");
+            return issuer.pitch;
+        }
     }
 
     /** Complete original numeric state inventory, before ordinary/optional image admission. */
@@ -172,7 +187,8 @@ public final class NativeAEmissionSolver {
         public String sourceIdentity(){requireOpen();return engine.input.context().sourceIdentity();}
         public String sourceContentHash(){requireOpen();return engine.input.context().evidenceContentHash();}
         public String executionVersion(){requireOpen();return engine.choice==ExecutionChoice.UNCHANGED_V1?EXECUTION_VERSION
-            :"native-a-certified-competitive-positive-refusal-reuse-v1";}
+            :engine.choice==ExecutionChoice.POSITIVE_ARC_REFUSAL_REUSE_V1?"native-a-certified-competitive-positive-refusal-reuse-v1"
+            :"native-a-certified-competitive-positive-scalar-refinement-v1";}
         public ExecutionChoice executionChoice(){requireOpen();return engine.choice;}
         public Optional<RefusalReuseDiagnostics> refusalReuseDiagnostics(){requireOpen();return engine.reuseDiagnostics();}
         public String numericalPolicyId(){requireOpen();return engine.input.context().policyId();}
@@ -217,23 +233,39 @@ public final class NativeAEmissionSolver {
             Map<String,BandScaleEvidence> scale,List<Barrier> barriers,boolean competitive,
             QueryPolicy query,ExecutionPolicy execution,GeometryCleanupConfig cleanup,
             CorridorAwareTracker.NativeOwnerSource nativeSource,NativeAEmissionBinding binding,ExecutionChoice choice) {
+        return solve(optimizer,input,track,profiles,sourcePixel,junctions,scale,barriers,competitive,query,execution,cleanup,nativeSource,binding,choice,null);
+    }
+    static Result solve(CorridorCenterlineOptimizer optimizer,SampledEmissionInput input,
+            CorridorTrack track,List<CorridorProfile> profiles,double sourcePixel,JunctionContext junctions,
+            Map<String,BandScaleEvidence> scale,List<Barrier> barriers,boolean competitive,
+            QueryPolicy query,ExecutionPolicy execution,GeometryCleanupConfig cleanup,
+            CorridorAwareTracker.NativeOwnerSource nativeSource,NativeAEmissionBinding binding,ExecutionChoice choice,NativeAExecutionCensus census) {
         Objects.requireNonNull(choice,"A execution choice");
-        if(binding!=null)binding.requireCurrent(input);
-        var admittedOwner=binding==null?input.openExecutionOwner("native-a-optional-v2"):binding.openExecutionOwner("native-a-optional-v2");
+        if(choice==ExecutionChoice.POSITIVE_ARC_SCALAR_REFINEMENT_V1) {
+            Objects.requireNonNull(census,"Scalar refinement requires a prepaid census").requireActive(input);
+            if(!competitive)throw new IllegalArgumentException("Scalar refinement requires competitive execution");
+        }else if(census!=null)throw new IllegalArgumentException("Census is only available for scalar refinement");
+        AttemptMemoryLedger.Owner admittedOwner=null;
         Engine engine=null;
         try {
+            if(census!=null)census.beginEngine();
+            if(binding!=null)binding.requireCurrent(input);
+            admittedOwner=binding==null?input.openExecutionOwner("native-a-optional-v2"):binding.openExecutionOwner("native-a-optional-v2");
             input.workBudget().charge(EmissionWorkBudget.Operation.ALLOCATION,1);
             admittedOwner.reserve(2048); // Engine/map/list shells, before construction.
-            engine=new Engine(optimizer,input,track,profiles,sourcePixel,junctions,scale,barriers,query,execution,cleanup,admittedOwner,nativeSource,binding,choice);
-            var closure=competitive?new CompetitiveAdmissionExecutor(engine.graph,engine,engine.budget,engine.owner).run():null;
+            engine=new Engine(optimizer,input,track,profiles,sourcePixel,junctions,scale,barriers,query,execution,cleanup,admittedOwner,nativeSource,binding,choice,census);
+            var closure=competitive?(census==null?new CompetitiveAdmissionExecutor(engine.graph,engine,engine.budget,engine.owner)
+                :new CompetitiveAdmissionExecutor(engine.graph,engine,engine.budget,engine.owner,census)).run():null;
+            if(census!=null)census.boundary(NativeAExecutionCensus.Phase.FINAL_EXACT,-1,-1,-1,-1);
             Label best=engine.solveExact(closure);
             if(closure!=null&&(!closure.vertexIds().equals(engine.pathIds(best))
                     ||Double.doubleToLongBits(closure.cost())!=Double.doubleToLongBits(best==null?Double.POSITIVE_INFINITY:best.cost)))
                 throw new InvalidCertificateException("Native canonical DP disagrees with closure");
+            if(census!=null)census.boundary(NativeAExecutionCensus.Phase.RESULT,-1,-1,-1,-1);
             return new Result(engine,best,closure);
         } catch(RuntimeException failure){
-            recordTerminal(input,failure);
-            if(engine!=null)engine.close();else admittedOwner.close();throw failure;
+            if(census!=null)input.recordTerminalExecutionFailure(failure);else recordTerminal(input,failure);
+            if(engine!=null)engine.close();else if(admittedOwner!=null)admittedOwner.close();if(census!=null)census.fail(failure);throw failure;
         }
     }
 
@@ -265,13 +297,15 @@ public final class NativeAEmissionSolver {
     private record Label(CanonicalKey key,Label parent,Arc arc,Admission admission,double cost,
             double q,double c,double t,double k,int consumed,int depth) { }
 
-    private static final class Engine implements TransitionProvider,AutoCloseable {
+    private static final class Engine implements NativeScalarRefinementProvider,AutoCloseable {
         final SampledEmissionInput input;
         final EmissionWorkBudget budget;
         final AttemptMemoryLedger.Owner owner;
         final NativeAEmissionBinding binding;
         final ExecutionChoice choice;
         final RefusalMemo refusalMemo;
+        final NativeAExecutionCensus census;
+        NativeScalarPreparations scalarPreparations;
         final List<CorridorProfile> profiles;
         final List<VertexFact> vertices=new ArrayList<>();
         final List<Arc> arcs=new ArrayList<>();
@@ -302,7 +336,16 @@ public final class NativeAEmissionSolver {
                 Map<String,BandScaleEvidence> scale,List<Barrier> barriers,QueryPolicy query,
                 ExecutionPolicy execution,GeometryCleanupConfig cleanup,AttemptMemoryLedger.Owner admittedOwner,
                 CorridorAwareTracker.NativeOwnerSource nativeSource,NativeAEmissionBinding binding,ExecutionChoice choice) {
+            this(optimizer,input,track,profiles,sourcePixel,junctions,scale,barriers,query,execution,cleanup,
+                admittedOwner,nativeSource,binding,choice,null);
+        }
+        Engine(CorridorCenterlineOptimizer optimizer,SampledEmissionInput input,CorridorTrack track,
+                List<CorridorProfile> profiles,double sourcePixel,JunctionContext junctions,
+                Map<String,BandScaleEvidence> scale,List<Barrier> barriers,QueryPolicy query,
+                ExecutionPolicy execution,GeometryCleanupConfig cleanup,AttemptMemoryLedger.Owner admittedOwner,
+                CorridorAwareTracker.NativeOwnerSource nativeSource,NativeAEmissionBinding binding,ExecutionChoice choice,NativeAExecutionCensus census) {
             this.input=Objects.requireNonNull(input);budget=input.workBudget();
+            this.census=census;
             owner=admittedOwner;this.binding=binding;this.choice=Objects.requireNonNull(choice,"A execution choice");
             try {
                 reserve(128L+profiles.size()*16L);this.profiles=List.copyOf(profiles);
@@ -455,7 +498,7 @@ public final class NativeAEmissionSolver {
                     while(edge<arcs.size()&&arcs.get(edge).fromId()==vertex){work(1);edge++;}
                 }
                 arcStarts[vertices.size()]=edge;
-                if(choice==ExecutionChoice.POSITIVE_ARC_REFUSAL_REUSE_V1) {
+                if(choice!=ExecutionChoice.UNCHANGED_V1) {
                     // Shell and current fixed enum metadata, then exact arc-indexed slots/counters,
                     // all before allocation. No slot, scan or counter allocation on the old path.
                     reserve(4096);work(64);int reasons=Reason.values().length;
@@ -482,6 +525,23 @@ public final class NativeAEmissionSolver {
         RasterPoint measurement(RasterPoint p){return binding==null?p:binding.toMeasurement(p);}
         MetricPoint metric(RasterPoint p){return input.context().metricAt(measurement(p));}
         @Override public BilinearSegmentIntegral.ReadOnlyScalarGrid nativeGrid(){return input.context().nativeGrid();}
+        @Override public NativeScalarPreparation prepareScalar(CanonicalKey key,Arc arc) {
+            requireOpen();
+            if(choice!=ExecutionChoice.POSITIVE_ARC_SCALAR_REFINEMENT_V1||census==null)
+                throw new IllegalStateException("Native scalar refinement is not enabled");
+            census.requireActive(input);endpointOwners.requireScalarProvider(this,arcs.size());
+            pair(EmissionWorkBudget.Operation.PAIR_LOOKUP);
+            if(key.cursorId()!=arc.fromId()||arc.id()<0||arc.id()>=arcs.size()||arcs.get(arc.id())!=arc)
+                throw new InvalidCertificateException("Native scalar obligation is foreign");
+            // Already settled source facts always precede any new scalar traversal.
+            // The closure checked its canonical measured map first. Every completed positive
+            // optional outcome is also represented by one of these same-engine source facts.
+            if(positiveEvidence.containsKey(arc.id())||refusalMemo.slots[arc.id()]!=null)return null;
+            var from=vertices.get(arc.fromId());var to=vertices.get(arc.toId());
+            if(!positiveOptional(arc,from,to))throw new InvalidCertificateException("Native scalar obligation is not positive optional");
+            if(scalarPreparations==null)scalarPreparations=evaluator.openNativeScalarPreparations(this,arcs.size(),census);
+            return scalarPreparations.prepare(arc,(RowState)from.endpoint,(RowState)to.endpoint);
+        }
         @Override public Admission certify(CanonicalKey key,Arc arc) {
             try {
             requireOpen();if(binding==null)input.requireOpenAndUnchanged();pair(EmissionWorkBudget.Operation.PAIR_LOOKUP);
@@ -501,17 +561,23 @@ public final class NativeAEmissionSolver {
                 if(reused!=null) {
                     if(reused.arc()!=arc)throw new InvalidCertificateException("Refusal entry belongs to another arc");
                     work(3);var refused=Admission.refused(reused.receipt().reason().name());
-                    admissions.put(cacheKey,refused);refusalMemo.refusalHits++;refusalMemo.canonicalRefusal(reused.receipt());return refused;
+                    admissions.put(cacheKey,refused);refusalMemo.refusalHits++;if(census!=null)census.refusalHit();refusalMemo.canonicalRefusal(reused.receipt());return refused;
                 }
             }
             ArcEvidence evidence=positiveEvidence.get(arc.id());
-            if(reusable&&evidence!=null)refusalMemo.admittedHits++;
+            if(reusable&&evidence!=null){refusalMemo.admittedHits++;if(census!=null)census.admittedHit();}
             if(evidence==null) {
                 if(arc.optional()) {
+                    if(census!=null)census.boundary(NativeAExecutionCensus.Phase.CERTIFY,arc.id(),key.cursorId(),census.prefixVersion(),census.pendingSerial());
                     if(reusable)refusalMemo.evaluations++;
                     else if(refusalMemo!=null){work(1);refusalMemo.excludedEvaluations++;}
                     Receipt receipt;
-                    if(!arc.zeroPhysical())receipt=evaluator.evaluate((RowState)from.endpoint,(RowState)to.endpoint);
+                    if(census!=null)census.evaluateStarted();
+                    if(!arc.zeroPhysical()) {
+                        var scalar=scalarPreparations==null?null:scalarPreparations.prepared(arc);
+                        receipt=scalar==null?evaluator.evaluate((RowState)from.endpoint,(RowState)to.endpoint)
+                            :evaluator.evaluateWithNativeScalar((RowState)from.endpoint,(RowState)to.endpoint,scalar);
+                    }
                     else {
                         Object direction=directions.get(key);
                         if(direction instanceof Receipt incoming)receipt=evaluator.evaluate((RowState)from.endpoint,(RowState)to.endpoint,incoming);
@@ -521,6 +587,7 @@ public final class NativeAEmissionSolver {
                             receipt=evaluator.evaluateWithDirectionCursor((RowState)from.endpoint,(RowState)to.endpoint,incoming);
                         else receipt=evaluator.evaluate((RowState)from.endpoint,(RowState)to.endpoint);
                     }
+                    if(census!=null)census.evaluateReturned(receipt.status());
                     if(receipt.context()!=input.context()||receipt.from()!=from.endpoint||receipt.to()!=to.endpoint
                             ||Double.doubleToLongBits(receipt.sourceSpanMeters())!=Double.doubleToLongBits(arc.sourceSpanMeters()))
                         throw new InvalidCertificateException("Native optional receipt has a foreign source/span");
