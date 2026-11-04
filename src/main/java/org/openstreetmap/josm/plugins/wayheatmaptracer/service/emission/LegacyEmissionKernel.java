@@ -21,8 +21,280 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSa
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
-/** Exact, bounded opt-in Legacy row-emission solve. No old candidate path calls this service. */
+/** Bounded Legacy compatibility solve and separately named exact proof execution. */
 public final class LegacyEmissionKernel {
+    /** Bounded first-stage experiment; never selected by the ordinary consumer overloads. */
+    public enum CompetitiveExecution { EXACT_VERSIONS_PROOF_V1, EXACT_CUTOFF_PROOF_V1 }
+
+    /** An owned proof-stage path, explicitly not a multi-stage/smoothed emission result. */
+    public static final class ObservedSeedProof implements AutoCloseable {
+        private final CompetitiveExecution execution;
+        private final List<EmissionResult.Vertex> vertices,witnessVertices;
+        private final List<EmissionResult.Arc> arcs;
+        private final EmissionResult.Costs costs;
+        private final Optional<EmissionResult.Costs> witnessCosts;
+        private final NativeConnectorEvaluator evaluator;
+        private final AttemptMemoryLedger.Owner owner;
+        private final SampledEmissionInput.ResultLease lease;
+        private boolean closed;
+        private ObservedSeedProof(CompetitiveExecution execution,List<EmissionResult.Vertex> vertices,
+                List<EmissionResult.Arc> arcs,EmissionResult.Costs costs,List<EmissionResult.Vertex> witnessVertices,
+                Optional<EmissionResult.Costs> witnessCosts,NativeConnectorEvaluator evaluator,
+                AttemptMemoryLedger.Owner owner,SampledEmissionInput.ResultLease lease) {
+            this.execution=execution;this.vertices=vertices;this.arcs=arcs;this.costs=costs;
+            this.witnessVertices=witnessVertices;this.witnessCosts=witnessCosts;
+            this.evaluator=evaluator;this.owner=owner;this.lease=lease;
+        }
+        private void live(){if(closed)throw new IllegalStateException("Proof-stage result is closed");}
+        public CompetitiveExecution execution(){live();return execution;}
+        public List<EmissionResult.Vertex> vertices(){live();return vertices;}
+        public List<EmissionResult.Arc> arcs(){live();return arcs;}
+        public EmissionResult.Costs costs(){live();return costs;}
+        public List<EmissionResult.Vertex> witnessVertices(){live();return witnessVertices;}
+        public Optional<EmissionResult.Costs> witnessCosts(){live();return witnessCosts;}
+        @Override public void close(){if(!closed){closed=true;evaluator.close();owner.close();lease.close();}}
+    }
+
+    /**
+     * Opt-in exactness/performance proof only: one seed, 2–3 all-observed rows, no
+     * protected events/intervals, and at most four structurally possible complete paths.
+     */
+    public ObservedSeedProof solveObservedSeedProof(SampledEmissionInput input,List<CrossSectionProfile> profiles,
+            double seedOffset,CancellationProbe cancellation,CompetitiveExecution execution,LegacyEmissionProgress progress) {
+        Objects.requireNonNull(input);Objects.requireNonNull(profiles);Objects.requireNonNull(cancellation);Objects.requireNonNull(execution);
+        if(progress==null)return observedSeedProofBody(input,profiles,seedOffset,cancellation,execution,null);
+        var query=NativeConnectorEvaluator.QueryPolicy.ZERO_GUARDED_LOCAL_V1;
+        var nativeExecution=NativeConnectorEvaluator.ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1;
+        progress.requireCompatible(input,query,nativeExecution);
+        try {
+            progress.begin(input,query,nativeExecution);progress.competitiveBegin(execution);
+            return observedSeedProofBody(input,profiles,seedOffset,cancellation,execution,progress);
+        } catch(RuntimeException failure){progress.seal(failure);throw failure;}
+    }
+    private ObservedSeedProof observedSeedProofBody(SampledEmissionInput input,List<CrossSectionProfile> profiles,
+            double seedOffset,CancellationProbe cancellation,CompetitiveExecution execution,LegacyEmissionProgress progress) {
+        input.requireOpenAndUnchanged();
+        var binding=input.legacyBinding().orElseThrow(()->new IllegalArgumentException("Original Legacy binding is required"));
+        if(binding.observations().size()<2||binding.observations().size()>3||!binding.protectedOccurrences().isEmpty()
+                ||binding.observations().stream().anyMatch(row->row.sourceClass()!=NativeConnectorEvaluator.SourceClass.OBSERVED))
+            throw new IllegalArgumentException("Observed proof slice requires 2–3 OBSERVED rows and no protected events");
+        var query=NativeConnectorEvaluator.QueryPolicy.ZERO_GUARDED_LOCAL_V1;
+        var nativeExecution=NativeConnectorEvaluator.ExecutionPolicy.STOP_ON_FINAL_MODE_FAILURE_V1;
+        var budget=input.workBudget();var lease=input.retainResultLifetime();AttemptMemoryLedger.Owner owner=null;
+        NativeConnectorEvaluator evaluator=null;
+        try {
+            owner=input.openExecutionOwner("legacy-observed-competitive-proof");
+            var domain=new LegacyEmissionDomain(binding,profiles,List.of(seedOffset),budget,owner);
+            if(progress!=null)progress.domainComplete(1);
+            long paths=domain.observedAt(0).size();
+            for(int row=1;row<domain.rowCount();row++) {
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION,1);
+                if(domain.unsupported(row))throw new IllegalArgumentException("Proof slice cannot construct carries");
+                paths=Math.multiplyExact(paths,domain.observedAt(row).size());
+            }
+            if(domain.unsupported(0)||paths*(domain.rowCount()==3?2:1)>4)
+                throw new IllegalArgumentException("Proof slice has more than four structural paths");
+            if(progress!=null){progress.seedBegin(0);progress.phase(LegacyEmissionProgress.Phase.BASE,0,-1,-1);progress.prepareMutation();}
+            var inventory=inventory(domain,budget,owner);
+            if(progress!=null)progress.inventoryComplete(inventory.evaluatorStates().size());
+            evaluator=evaluator(input,domain,inventory,query,nativeExecution,progress);
+            double pitch=input.context().nativePitchMeters().orElseThrow(()->new UnavailableException(UnavailableReason.NATIVE_PITCH));
+            if(progress!=null)progress.witnessBegin();
+            var seed=domain.seeds().get(0);
+            Node witness=null;
+            for(int row=0;row<domain.rowCount();row++) {
+                cancellation.checkpoint();input.requireOpenAndUnchanged();
+                LegacyEmissionDomain.State chosen=null;
+                for(var state:domain.observedAt(row)) {
+                    budget.charge(EmissionWorkBudget.Operation.PREPARATION,1);
+                    if(chosen==null||Math.abs(state.offsetRasterPixels()-seedOffset)<Math.abs(chosen.offsetRasterPixels()-seedOffset)
+                            ||Math.abs(state.offsetRasterPixels()-seedOffset)==Math.abs(chosen.offsetRasterPixels()-seedOffset)
+                                &&state.nativeStateId()<chosen.nativeStateId())chosen=state;
+                }
+                witness=row==0?initialProofNode(input,domain,seed,chosen,owner,budget)
+                    :advance(input,domain,inventory,witness,chosen,evaluator,owner,cancellation,0,pitch);
+                if(witness==null)break;
+            }
+            double upper=certifiedWitnessUpper(witness);
+            boolean certified=Double.isFinite(upper);
+            if(certified){pinChain(witness,budget);if(progress!=null)progress.witnessCertified(upper);}
+            else if(witness!=null){releaseUnretained(witness,budget);witness=null;}
+            Node best=solveExactObservedBase(input,domain,seed,inventory,evaluator,owner,cancellation,pitch,execution,upper);
+            if(best==null||!finiteComponents(best))throw new UnavailableException(UnavailableReason.NO_ADMITTED_PATH);
+            if(best.key.lastPositive()==null)throw new UnavailableException(UnavailableReason.NO_POSITIVE_PHYSICAL_LEG);
+            try(var selected=flatten(best,budget,owner)) {
+                verifyCosts(selected.arcs(),best,budget);
+                budget.charge(EmissionWorkBudget.Operation.ALLOCATION,6);
+                owner.reserve(Math.addExact(2048,Math.multiplyExact(1024L,domain.rowCount())));
+                var vertices=selected.points().stream().map(LegacyEmissionKernel::vertex).toList();
+                List<EmissionResult.Vertex> witnessVertices=List.of();
+                if(certified)try(var ordinary=flatten(witness,budget,owner)) {
+                    verifyCosts(ordinary.arcs(),witness,budget);
+                    witnessVertices=ordinary.points().stream().map(LegacyEmissionKernel::vertex).toList();
+                }
+                var result=new ObservedSeedProof(execution,vertices,arcResults(selected.arcs()),
+                    new EmissionResult.Costs(best.q,best.c,best.t,best.k),witnessVertices,
+                    certified?Optional.of(new EmissionResult.Costs(witness.q,witness.c,witness.t,witness.k)):Optional.empty(),evaluator,owner,lease);
+                cancellation.checkpoint();input.requireOpenAndUnchanged();
+                if(progress!=null){progress.firstStageComplete();progress.seedComplete();progress.phaseComplete();progress.seal(null);}
+                return result;
+            }
+        } catch(RuntimeException failure) {
+            if(evaluator!=null)evaluator.close();if(owner!=null)owner.close();lease.close();
+            if(failure instanceof CancellationException||failure instanceof EmissionWorkBudget.LimitExceededException
+                    ||failure instanceof AttemptMemoryLedger.ResourceLimitException||failure instanceof LegacyEmissionDomain.StateFamilyLimitException
+                    ||failure instanceof NativeConnectorEvaluator.StateFamilyLimitException)input.recordTerminalExecutionFailure(failure);
+            if(progress!=null)progress.seal(failure);throw failure;
+        }
+    }
+
+    private static boolean finiteComponents(Node node) {
+        return finiteNonnegative(node.q)&&finiteNonnegative(node.c)&&finiteNonnegative(node.t)&&finiteNonnegative(node.k)&&Double.isFinite(node.total());
+    }
+    private static double certifiedWitnessUpper(Node node) {
+        return node!=null&&node.key.lastPositive()!=null&&finiteComponents(node)?node.total():Double.POSITIVE_INFINITY;
+    }
+    private static boolean finiteNonnegative(double value){return Double.isFinite(value)&&value>=0;}
+    private static Node initialProofNode(SampledEmissionInput input,LegacyEmissionDomain domain,LegacyEmissionDomain.Seed seed,
+            LegacyEmissionDomain.State first,AttemptMemoryLedger.Owner owner,EmissionWorkBudget budget) {
+        budget.charge(EmissionWorkBudget.Operation.PAIR_INITIALIZATION,1);
+        double departure=Math.abs(first.offsetRasterPixels()-seed.offsetRasterPixels());
+        var key=new Key(first,new ScalarMemory(-1,seed.offsetRasterPixels(),0,first.offsetRasterPixels(),
+            first.offsetRasterPixels()-seed.offsetRasterPixels(),first.offsetOriginId()),null,null,new PhaseContext(0,null));
+        return allocateNode(owner,budget,null,key,List.of(new PointDraft(new EmissionMapping.ObservationVertex(0),first,
+            domain.metricPoint(first,input.context()))),List.of(),0,.16*departure,.12*departure,0,0,seed.id());
+    }
+
+    private static final class ExactLabel {
+        final Node node;final AttemptMemoryLedger.Reservation memory;ExactLabel next;
+        ExactLabel(Node node,AttemptMemoryLedger.Reservation memory,ExactLabel next){this.node=node;this.memory=memory;this.next=next;}
+    }
+    private static final class ExactFront {
+        final AttemptMemoryLedger.Reservation memory;ExactLabel first;int size;
+        ExactFront(AttemptMemoryLedger.Reservation memory){this.memory=memory;}
+    }
+
+    private Node solveExactObservedBase(SampledEmissionInput input,LegacyEmissionDomain domain,LegacyEmissionDomain.Seed seed,
+            Inventory inventory,NativeConnectorEvaluator evaluator,AttemptMemoryLedger.Owner owner,
+            CancellationProbe cancellation,double pitch,CompetitiveExecution execution,double upper) {
+        var budget=input.workBudget();var progress=evaluator.progress();int n=domain.rowCount();
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION,n+1L);
+        try(var layerMemory=owner.reserve(256L*n)) {
+            var layers=new ArrayList<Map<Key,ExactFront>>(n);
+            for(int row=0;row<n;row++)layers.add(new LinkedHashMap<>());
+            for(var first:domain.observedAt(0))insertExact(layers.get(0),initialProofNode(input,domain,seed,first,owner,budget),budget,owner,progress);
+            for(int row=0;row<n-1;row++) {
+                if(progress!=null)progress.row(row);
+                for(var front:layers.get(row).values())for(var label=front.first;label!=null;label=label.next) {
+                    Node from=label.node;
+                    budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP,1);cancellation.checkpoint();
+                    for(int toRow=row+1;toRow<n;toRow++) {
+                        budget.charge(EmissionWorkBudget.Operation.PREPARATION,1);
+                        if(toRow>row+1&&sourceSpanUpper(domain,input.context(),row,toRow)>20)break;
+                        for(var to:domain.observedAt(toRow)) {
+                            budget.charge(EmissionWorkBudget.Operation.TRANSITION,1);
+                            if(toRow>row+1&&execution==CompetitiveExecution.EXACT_CUTOFF_PROOF_V1
+                                    &&deferOptional(input,domain,from,to,pitch,upper,budget,cancellation,progress))continue;
+                            Node candidate=advance(input,domain,inventory,from,to,evaluator,owner,cancellation,0,pitch);
+                            if(candidate!=null)insertExact(layers.get(toRow),candidate,budget,owner,progress);
+                        }
+                    }
+                }
+            }
+            Node best=null;
+            for(var front:layers.get(n-1).values())for(var label=front.first;label!=null;label=label.next)
+                if(finiteComponents(label.node)&&better(label.node,best,budget,owner))best=label.node;
+            if(best!=null)pinChain(best,budget);
+            for(int row=n-1;row>=0;row--)for(var front:layers.get(row).values())for(var label=front.first;label!=null;label=label.next) {
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION,1);label.node.inLayer=false;
+            }
+            for(int row=n-1;row>=0;row--) {
+                for(var front:layers.get(row).values()) {
+                    for(var label=front.first;label!=null;) {
+                        releaseUnretained(label.node,budget);var next=label.next;label.memory.close();label=next;
+                    }
+                    front.first=null;front.memory.close();
+                }
+                layers.get(row).clear();
+            }
+            return best;
+        }
+    }
+
+    /** Native candidate C/T/K with Q lower0; no integral, Mode, threshold or admission is supplied. */
+    private static boolean deferOptional(SampledEmissionInput input,LegacyEmissionDomain domain,Node from,
+            LegacyEmissionDomain.State to,double pitch,double upper,EmissionWorkBudget budget,
+            CancellationProbe cancellation,LegacyEmissionProgress progress) {
+        input.requireOpenAndUnchanged();cancellation.checkpoint();
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION,32);
+        if(progress!=null){progress.edge(from.key.last().originalRow(),to.originalRow(),from.key.last().nativeStateId(),to.nativeStateId());
+            progress.event(LegacyEmissionProgress.Counter.COMPONENT_BOUND_PREPARATIONS);}
+        var a=from.key.last();var pa=domain.metricPoint(a,input.context());var pb=domain.metricPoint(to,input.context());
+        // No invented orientation for a zero edge: retain the full native admission path.
+        if(pa.distanceTo(pb)==0)return false;
+        double slope=(to.offsetRasterPixels()-a.offsetRasterPixels())/(to.originalRow()-a.originalRow());
+        double c=.16*Math.abs(to.offsetRasterPixels()-a.offsetRasterPixels());
+        double t=.12*Math.abs(slope-from.key.scalar().lastSlope());
+        double k=turn(from.key.lastPositive(),pa,pb,pitch);
+        double qLower=from.q+0.0,cLower=from.c+c,tLower=from.t+t,kLower=from.k+(0.0+k);
+        double lower=qLower+cLower+tLower+kLower;
+        boolean bounded=finiteNonnegative(qLower)&&finiteNonnegative(cLower)&&finiteNonnegative(tLower)&&finiteNonnegative(kLower);
+        input.requireOpenAndUnchanged();cancellation.checkpoint();
+        if(!bounded||!strictCutoff(lower,upper))return false;
+        // Admit observer bookkeeping before the last freshness check; a callback at this
+        // charge must not publish a deferral for a now-stale producer. Mutation is prepaid.
+        if(progress!=null)progress.prepareMutation();
+        cancellation.checkpoint();input.requireOpenAndUnchanged();
+        if(progress!=null)progress.mutation(LegacyEmissionProgress.Counter.STRICT_CERTIFICATE_DEFERRALS);
+        return true;
+    }
+    private static boolean strictCutoff(double lower,double upper) {
+        return finiteNonnegative(lower)&&Double.isFinite(upper)&&upper>=0&&lower>upper;
+    }
+
+    private static void insertExact(Map<Key,ExactFront> layer,Node candidate,EmissionWorkBudget budget,
+            AttemptMemoryLedger.Owner owner,LegacyEmissionProgress progress) {
+        budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP,1);
+        var front=layer.get(candidate.key);
+        if(front==null) {
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);
+            // Includes the map's retained first Key/scalar/phase/physical wrappers even if
+            // its original Node is later dominated and released.
+            var memory=owner.reserve(512);front=new ExactFront(memory);memory.adopt(front);layer.put(candidate.key,front);
+        }
+        for(var label=front.first;label!=null;label=label.next)if(dominates(label.node,candidate,budget,owner)) {
+            releaseUnretained(candidate,budget);return;
+        }
+        ExactLabel previous=null;
+        for(var label=front.first;label!=null;) {
+            var next=label.next;
+            if(dominates(candidate,label.node,budget,owner)) {
+                if(previous==null)front.first=next;else previous.next=next;
+                front.size--;label.node.inLayer=false;releaseUnretained(label.node,budget);label.memory.close();
+            } else previous=label;
+            label=next;
+        }
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);
+        var memory=owner.reserve(96);var label=new ExactLabel(candidate,memory,front.first);memory.adopt(label);
+        front.first=label;front.size++;candidate.inLayer=true;
+        if(progress!=null)progress.competitiveFront(front.size);
+    }
+    private static boolean dominates(Node left,Node right,EmissionWorkBudget budget,AttemptMemoryLedger.Owner owner) {
+        budget.charge(EmissionWorkBudget.Operation.TIE_COMPARISON,1);
+        budget.charge(EmissionWorkBudget.Operation.PREPARATION,16);
+        // Equality is the complete future Key and this front belongs to one seed/stage.
+        // In particular, equal geometry alone cannot replace cursor/receipt identity.
+        if(!left.key.equals(right.key)||left.seedId!=right.seedId||!finiteComponents(left)||!finiteComponents(right)
+                ||negativeZero(left)||negativeZero(right)||left.q>right.q||left.c>right.c||left.t>right.t||left.k>right.k)return false;
+        int consumed=Integer.compare(left.consumed,right.consumed);
+        // Strict row order and a common current row prohibit a proper-prefix lex reversal
+        // when the same suffix is appended. Component strictness alone is insufficient.
+        return consumed<0||consumed==0&&compareTie(left,right,budget,owner)<=0;
+    }
+    private static boolean negativeZero(Node node) {
+        return Double.doubleToRawLongBits(node.q)==Long.MIN_VALUE||Double.doubleToRawLongBits(node.c)==Long.MIN_VALUE
+            ||Double.doubleToRawLongBits(node.t)==Long.MIN_VALUE||Double.doubleToRawLongBits(node.k)==Long.MIN_VALUE;
+    }
     public record AnchorProposal(int originalRow, CrossSectionPeak peakOwner) {
         public AnchorProposal {
             if (originalRow < 0 || peakOwner == null) throw new IllegalArgumentException("Anchor owner is required");

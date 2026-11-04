@@ -28,7 +28,8 @@ public final class LegacyEmissionProgress implements AutoCloseable {
         DENSE_FALLBACK,CROSS_REPLACEMENT,SAMPLE_STARTED,SAMPLE_COMPLETED,SAMPLING_COMPLETED,
         EXTRACTION_STARTED,EXTRACTION_COMPLETED,MODES_RETURNED,ACCEPTED_THRESHOLDS,OPTIONAL_INTEGRAL_STARTED,OPTIONAL_INTEGRAL_COMPLETED,REPEAT_STARTED,REPEAT_COMPLETED,
         NEW_STARTED,NEW_COMPLETED,REPEAT_REGION_WORK,REPEAT_CELL_WORK,REPEAT_NODE_WORK,
-        CENSUS_INELIGIBLE,CENSUS_ELIGIBLE_WINDOWS,CENSUS_EXCLUDED_STARTED,CENSUS_EXCLUDED_COMPLETED,EXACT_ZERO_PROOFS,PREFLIGHT_RECEIPTS,INITIAL_LOCAL_NOISE_SKIPS
+        CENSUS_INELIGIBLE,CENSUS_ELIGIBLE_WINDOWS,CENSUS_EXCLUDED_STARTED,CENSUS_EXCLUDED_COMPLETED,EXACT_ZERO_PROOFS,PREFLIGHT_RECEIPTS,INITIAL_LOCAL_NOISE_SKIPS,
+        WITNESS_ATTEMPTED,WITNESS_CERTIFIED,COMPONENT_BOUND_PREPARATIONS,STRICT_CERTIFICATE_DEFERRALS
     }
     private static final Counter[] COUNTERS=Counter.values();
     private static final Phase[] PHASES=Phase.values();
@@ -69,6 +70,9 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     private static final int REQUESTED_AVAILABLE=1,USED_AVAILABLE=2,LIMIT_AVAILABLE=4,ORDINAL_AVAILABLE=8;
     private int failureFields;
     private int noiseSamples,noiseValid,noiseZeros,noiseRank;
+    private LegacyEmissionKernel.CompetitiveExecution competitiveExecution;
+    private double witnessUpper;
+    private int maxCompetitiveKeyLabels;
     private ProfileBackend backend;
     private boolean sealed,evaluationInFlight,sampleInFlight,extractionInFlight,samplingFinished;
     private boolean profileInFlight,windowInFlight;
@@ -267,6 +271,10 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     void initialLocalNoiseSkipped(int samples,int valid,int zeros,int rank) {
         pay(8);add(Counter.INITIAL_LOCAL_NOISE_SKIPS,1);noiseSamples=samples;noiseValid=valid;noiseZeros=zeros;noiseRank=rank;
     }
+    void competitiveBegin(LegacyEmissionKernel.CompetitiveExecution execution){pay(8);competitiveExecution=execution;}
+    void witnessBegin(){event(Counter.WITNESS_ATTEMPTED);}
+    void witnessCertified(double upper){pay(8);witnessUpper=upper;add(Counter.WITNESS_CERTIFIED,1);}
+    void competitiveFront(int size){pay(8);maxCompetitiveKeyLabels=Math.max(maxCompetitiveKeyLabels,size);}
 
     /** Allocation/charge-free: only already prepaid primitive storage is sealed. Original error is not replaced. */
     public void seal(RuntimeException failure) {
@@ -310,6 +318,11 @@ public final class LegacyEmissionProgress implements AutoCloseable {
         public int fromOrdinal(){return p.from;}public int toOrdinal(){return p.to;}
         public int fromNativeId(){return p.fromId;}public int toNativeId(){return p.toId;}
         public long count(Counter c){return p.counts[c.ordinal()];}
+        public boolean hasCompetitiveExecution(){return p.competitiveExecution!=null;}
+        public LegacyEmissionKernel.CompetitiveExecution competitiveExecution(){if(!hasCompetitiveExecution())throw new IllegalStateException("Competitive proof execution is unavailable");return p.competitiveExecution;}
+        public boolean hasWitnessUpper(){return count(Counter.WITNESS_CERTIFIED)>0;}
+        public double witnessUpper(){if(!hasWitnessUpper())throw new IllegalStateException("Witness upper is unavailable");return p.witnessUpper;}
+        public int maxCompetitiveKeyLabels(){competitiveExecution();return p.maxCompetitiveKeyLabels;}
         public boolean hasInitialLocalNoiseProof(){return count(Counter.INITIAL_LOCAL_NOISE_SKIPS)>0;}
         private void requireNoiseProof(){if(!hasInitialLocalNoiseProof())throw new IllegalStateException("Sampled noise proof is unavailable");}
         public int lastNoiseSampleCount(){requireNoiseProof();return p.noiseSamples;}public int lastNoiseValidCount(){requireNoiseProof();return p.noiseValid;}
