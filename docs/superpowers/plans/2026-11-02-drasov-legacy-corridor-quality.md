@@ -14,6 +14,59 @@
 
 ### Current resume card — authoritative; prior notes below are historical
 
+- Execution-environment refresh during continuation: prior agents no longer
+  exist and recent Termux tmp worktrees/reports/classes (guide2aff/d95, A12e/R1,
+  freshCI downloads) are absent. Git objects/commits and this ledger survive.
+  Do not silently count absent artifacts as fresh verified evidence. Guide
+  d95 and A12e are recoverable commits; A's last R1 had no saved commit, so its
+  lost uncommitted fixes/tests must be recreated. Earlier e4ac32M donor/helper
+  survives. Recovery workers legacy_witness_recovery and a_endpoint_r1_recovery
+  requested Sol6.1/high with no recursive delegation; use durable worktrees
+  under repository .worktrees and build/private-drasov-resume-20261105 evidence
+  to avoid repeating this loss. Standard speed; weekly/runtime attribution
+  telemetry unknown. Free storage now4.5GiB; no additional cleanup needed.
+  Primary dirty117baaf remains untouched. No cap/default/release change.
+  Recovery milestones: exactd95 source compiles in durable owned-guide tree;
+  four helper synthetic modes and inherited atomic/primary controls GREEN,
+  metadata/single-use/fences completing; no private read/run. A durableR1 fresh
+  RED reproduced actualABA/partialoverlap and finish/fail terminalheader writes;
+  twofilefix focused19tests/4suites GREEN, broad ManagedA/NativeA/executor
+  neighbors running. Incorrect bowtie positive fixture corrected/disclaimed.
+  Source/coreintegration and privatequality remain OPEN. Fresh remoteCI status
+  d19 SUCCESS rechecked; artifacts redownloaded durable ci-41940029560 and all
+  296XML/3159exec/0f/e/s plus bothGUI PASS independently parsed again.
+  Legacyhelper now independently PASS exactfingerprint4fe4e7b110f8750901580ea188368c5f68c3f9bf630ea59ee385c9435571e30d;
+  durable preparation/report/manifest/execution-review in legacy-witness.
+  Controller admitted ONE claim legacy-owned-base-witness-20261105-one with
+  rootgo ONE_LEGACY_BASE_OWNED_WITNESS_32M. Actual run consumed claim and FAILED
+  beforecapture/solver: seedCache recipe assumed256x256 but tile dimensions
+  exceed it. javaexit1/no timeout; acceptedwork1,652,736/pairs0; all24inputhashes
+  unchanged. No numerical cap/result/quality conclusion. Originalworker fixing
+  factual six-tile preparation recipe only, new fingerprint/control/review
+  required before any new controller admission; oldclaim remains consumed.
+  Not full optimization, geometry quality, or completion. Do not retry
+  this consumed fingerprint automatically; preserve actual failure/partial data.
+  A recoveredR1 frozen54bf59922fa5455162f809c8bfbc864c661296f5 from12e,
+  durable .worktrees/drasov-managed-a-r1-recovery clean. Fresh217tests/34suites
+  0failures/errors/skips; durable a-r1 logs/XML/commands/fixdiff bd643215.
+  Independent scoped review active for adjacentoverlap/terminalcensus fixes.
+  Legacy prep correction factual six512x512 PNGs, not256; headers alone read,
+  unchangedimages/caps. New recipe/fingerprint/control/review pending.
+  A recoveredR1 independent PASS54bf5992 (durable a-r1/source-review.md).
+  Integratedsource fdd851c6 in .worktrees/drasov-integrated-verification:
+  d95 +12e(8d411046)+54bf(fdd851c6), sourceunion exactreviewedblobs; onlyshared
+  file isidenticaltypedM2testrepair. Focused337tests/43suites0f/e/s GREEN.
+  Pushedonlydevbranch codex/drasov-integrated-verification; publicCI41995586137
+  running exactfdd851c6, no privateuploads or release.
+  TileR1 helper independentlyPASS9a2268be90c869201ed2d0741a314c920bd6c2958ec96fc5a679886c35f475cc;
+  controller admitted newONE legacy-owned-base-witness-20261105-shape-r1-one.
+  Actualjava0 meansreceiptexported, numericalFAIL32M: BASEseed0row129, first
+  witnessnotcompleted/Uunavailable. PREP21,354,789 (diag5563), failureactual
+  ManagedSelectionWitness.snapshot via Session.fresh/freezeFamily and current
+  ManagedOrdinaryAffinity.prepare, notwalltimeout. peak99,465,920→0; all24hashes
+  unchanged/6cache/0network. Resultaudit +bounded readonlyfreshnesscost design
+  active; no automaticprivate rerun/capraise. Realquality/consumers remainOPEN.
+
 - 2026-11-05 continuation: user explicitly requires finishing all remaining1–4
   without milestone stops. Guide2aff3119 frozen96tests/11XML GREEN, ordinary
   compiled323/4fc fences unchanged; managed_source_audit reviewing actual whole
