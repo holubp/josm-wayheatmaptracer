@@ -14,14 +14,119 @@
 
 ### Active execution card — authoritative
 
-**CURRENT NEXT ACTION (2026-11-05):** The single user-approved Astra consultation
-is complete; no cheap repair is grounded yet. Static actual-data inspection is
-ready at http://127.0.0.1:8765/ (owned exec session46305). Termux browser launch
-completed successfully; HTTP/metadata and annotation controls verified. User was
-asked to mark the intended ridge and Save local feedback. No feedback existed at
-last check. Read append-only `legacy-normal-chart-inspection/feedback/` when it
-arrives, then analyze ridge/normal intersection order using that observation.
-Do not infer a reference, repeat V1/private inference, or use more Astra.
+**Active goal:** Finish the Legacy Drasov repair without degrading other cases
+or sacrificing Legacy's fast performance. User explicitly defers filter changes
+until the marked zigzag is resolved. Prior turn updated evidence/ledger but made
+no production repair; completion remains unproven.
+
+Geometry next-step report shows a common reachable marked arc of23.2661919 native
+pixels within unchanged118–123 anchors' existing radius. Changing directions can
+therefore remove the annotation reversal in principle; a particular rule remains
+unverified. ONE public static discriminator is now assigned to existing Luna:
+immediate secant versus fixed radius3 secant, noisy Gaussian-bump source against
+straight independent ridge, and displaced genuine-turn/150degree/hairpin controls.
+No filter, image, tracker, production or private-variant execution in this batch.
+Outcome must gate the next experiment; do not tune windows against Drasov.
+
+Controller independently reproduced the public analytic RED: immediate secants
+hit y8 at x−3.5392494 then−4.3413959, and x4.3413959 then3.5392494,
+reversing order despite all hits being inside radius16. Fixed radius3 secants
+remove both reversals (maximum hit distance8.0990878). This is geometric
+evidence only; displaced genuine-turn controls, actual-image quality and runtime
+remain outstanding. No production defaults or tracker/filter code changed.
+
+Public discriminator v1 executed once: Gaussian reversal removed; displaced
+straight,90degree corner and180degree hairpin pass, hairpin extra intersections
+unchanged32→32. Overall NEGATIVE_OR_INCONCLUSIVE: exact finite150degree arc has
+29/31 hits and135degree sampled turn under BOTH policies because identical
+one-sided endpoint rays miss the displaced target's endpoints. Original report
+and JSON retained unchanged. Sol is auditing whether this fixture conflicts with
+fixed endpoint semantics and identifying the smallest honest control correction;
+do not label the whole gate passing or tune radius3. Artifact filenames:
+`public-normal-discriminator.py`, `.json`, `-report.md` in the inspection folder.
+
+### Bounded zigzag sampling experiment — execution packet
+
+Scope follows approved autonomous cheap-Legacy experiments; filter changes and
+new solvers remain excluded. V2 public control supplements (never overwrites) v1:
+boundary-compatible150degree core plus connectors has all rows ordered/reachable,
+fixed endpoint errors0, analytic150degree span and independent145degree polygon
+turn. Hairpin per-row competitors do not worsen. Controller's ONE frozen radius3
+static Drasov check reduces3 reversals to1 of0.0118003 native pixels along the
+approximate annotation. This is not image quality or practical repair evidence.
+Sol independently reviewed v2 source/oracles: PASS for scoped public geometry
+only. Circle37/37 and hairpin35/35 have one owned reachable hit each; circle
+fixed endpoints exact and hairpin competitors nonworse per row. Circle's stored
+`sourceChainage=i*5` is an angular station label, NOT factual metric arclength;
+never import it into production sampling. The original v1 negative is retained.
+Actual-image helper and named source implementation still require review.
+
+Named sampler author reports actual old-sampler behavioral RED, followed by six
+new tests GREEN. Source/test frozen for independent Sol review at SHA256
+`f8a793437f14148cb78759d85f80ed2f8202dd05d00dc3e0654d99c4128d83b0` /
+`1c01a6462a0466e23ad8d9890329cf509e0cdbcee4c6112054cd5499efd97dfe`.
+Focused neighboring suites and full project tests remain in progress; no commit,
+live adoption, actual-image result or timing qualification yet. New helper draft
+is undergoing correction before public smoke: exact shape-derived width/step,
+nonempty explicit dense boundaries, actual archive parity, public-only route and
+source fences are required. Never run the draft with hardcoded16/1 parameters.
+
+Helper is now compiled against the actual isolated target (not dirty root APIs).
+Controller corrected public source scaling/normalization before smoke, added
+atomic phase/counter core, nearest-native-pixel tracker/final support probes and
+limited production contact diagnostics. Public smoke-three through final bounded
+launcher EXITED2.735s:2samplings/2ordinarytracks/2finishes, all1410 reviewed-runtime
+inventory entries unchanged. Original expected24 input hashes are bound to the
+previous quality receipt. Runtime manifest SHA256
+`51ed77d7023b0640ba27ed5df764f7fed52c3188ff270928753b2c5c2850a180`.
+Deterministic launcher controls pass interruption, timeout, receipt-write failure
+and interruption before wait: original failure identity retained, synthetic
+child stopped/reaped, last atomic record retained, ZERO actual Java/private reads.
+Fresh private claim NOT consumed; actual Drasov comparison NOT run. Final scoped
+Sol helper re-review is in progress. Source test-only review fixes still pending
+the live full-suite completion; no production adoption or performance claim.
+
+- [ ] TDD named sampler only in existing clean isolated fast-smoother worktree
+  atdf842141. Author owns `RenderedHeatmapSampler.java` and one new test class;
+  preserve retired heuristic and ordinary Legacy/A/B defaults. Add a package-private
+  named wide-secant sampling entry feeding the existing plain sampling loop.
+  Radius3, immediate fallback in first/last3 rows, finite nonzero chord required.
+  Require explicit dense-profile protected boundary indices including0,last;
+  leave old directions when radius3 crosses any boundary. Unknown authority is
+  ineligible, never guessed from nearest dense row. No live caller yet.
+- [ ] RED must expose original geometric reversal through actual sampler normals;
+  GREEN uses the named entry. Cover straight parity, fixed boundaries, degenerate
+  chord fallback, genuine-turn controls, cancellation and unchanged ordinary path.
+  Run focused sampler suites and required project tests, retain exact evidence.
+- [ ] Independent Sol review of actual diff/tests before actual-image experiment.
+  Any private helper must sample the immutable original mosaic anew, keep anchors,
+  frame,width and count fixed, use ordinary tracker/finalization and explicitly
+  recorded numerical-only endpoint authority. Archived1D profiles cannot be reused
+  as rotated evidence. One baseline/candidate pair, no window sweep.
+- [ ] Assess marked-region reversal/final support plus other strong/sparse/turn
+  fixtures and matched whole-workflow runtime. Only a positive result authorizes
+  live Legacy-only caller integration with factual protected-occurrence mapping;
+  never apply the named helper globally or activate rejected smoother. Keep goal
+  active until actual Drasov repair, regressions and speed are proven.
+
+**CURRENT NEXT ACTION (2026-11-05):** User explicitly prioritizes the marked
+zigzag geometry repair; defer convolution/filter optimization. Both browser
+feedbacks are saved: first 14-point line is the approximate intended ridge;
+second 2-point line marks the worst location ONLY. `feedback-roles.json` binds
+these roles. Independent static intersection analysis confirms nonmonotone
+ray/ridge correspondence around rows118–123 for this annotation (not universal
+impossibility across the finite-width corridor). All26 ray labels exist; ray124
+crosses120/121 near the marker. Evidence: `legacy-normal-chart-inspection/`
+`marked-ridge-intersections.json` and `static-ridge-diagnosis.md` under
+`build/private-drasov-resume-20261105/`. Public v2 geometry discriminator and
+independent Sol oracle audit pass their scoped checks. Existing Luna author is
+verifying the named sampler TDD packet below atdf842141:37 focused tests pass,
+full Gradle test worker is live in agent session52312. Independent source review
+requires two test-only default-parity assertions after that run; production
+source is conforming and frozen. Controller must close the helper/launcher
+review and source test gap, then run ONE actual-image comparison next. No new solver, filters,
+private inference yet, or further Astra. Preserve supported
+hairpins, sharp bends, configured width, protection authority and Legacy speed.
 Ordinary Legacy remains unchanged; real Drasov repair and original A work remain
 open. The detailed entries below preserve the chronological execution evidence.
 
