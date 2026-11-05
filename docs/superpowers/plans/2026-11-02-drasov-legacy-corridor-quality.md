@@ -53,6 +53,83 @@
   final experimental value differs from the old proposal y, including retaining
   current after rejecting y; counting only motion from current would hide active
   protection. Worker to retain exact diagnostic regression for this clarification.
+- Fast-smoother code frozen419c011c12abc19c026f9ec9965feeec79d8a77f frome8d,
+  clean isolatedbranch, twofilesonly;41tests/5classes0f/e/s. Named actual bend,
+  isolated stray,150degree arc and parallel controls verified; retained-sample
+  hairpin still OPEN (existing switchback tests fallback only). Source review
+  active. Ordinary bodies unchanged. Public sampled-raster benchmark helper is
+  prepared; controller authorizes its ONE run as normal verification before code
+  review completes, not adoption/private access. No special private-run admission
+  machinery applies to public synthetic tests. Full workflow timing and private
+  Drasov quality remain OPEN, not supplied by tracker-only timing.
+- First public benchmark419c completedONE20.93s run, deterministic geometry/input
+  and source/class fences unchanged. REJECTED runtime medians:straight1.3812,
+  bend1.2849,stray1.1649,parallel1.5061; JIT/GC noise prevents exact steady-state
+  attribution, NOT PASS. No fixture geometry changed, changedUpdates0, yet688–724
+  trials/call. No adoption/private replay. Reviewer assessing ONE bounded exact
+  no-change/lazy-evidence cost revision, not thresholds/model tuning; if another
+  cost revision cannot meet the gate, abandon this heuristic implementation.
+- Source reviewbbd12b0 BLOCKED exactlyP1/P2. Fixround1/5 dispatched to original
+  author from419c: reject search-window-clipped core via conservative interior+
+  both-endchannel bracket, and correct analytic fixed[-25,25] B3/B5 convolution/
+  relative support oracle. Need intendedbehavioralRED/GREEN and affected review.
+  No performance changes in this correctness fix until reviewed bounded packet.
+- Cost follow-on independently approvedf4b4e616: after correctedEAGER R1 freeze,
+  ONE separate semantics-preserving lazy/no-op revision (not threshold/model
+  tuning). Snapshot mutable geometry/reference inputs, prove correctedEAGER/
+  LAZY exact output parity including signedzero; counters report actual work.
+  Rebenchmark once with all4originalfailed cases retained plus ONE declared
+  activeguard case. If failure or inconclusive, STOP this heuristic implementation.
+  No private replay/adoption or cap changes. Fresh public-benchmark-r1 artifacts
+  preserve prior benchmark and source evidence; ordinary default stays untouched.
+- CorrectedEAGER R1 frozena10aa25a9986f0916044b1c99d856911a6f3bd46,
+  42tests/5classes0f/e/s. P1clippingRED expected0 got10 recorded byauthor;
+  historical rawREDlog/XML notpreserved, so classify as reported observation,
+  not independently archived. CorrectedGREEN/source/class artifacts verified.
+  ScopedP1/P2source re-review PASS/aeb020f7, bothADDRESSED, no blocking newbreakage.
+- Cost TDD oracle correction: author's initial new test expected certified
+  stationary−0 to remain−0, but correctedEAGER alpha1 arithmetic yields+0.
+  That reported RED is INVALID for this cost-only task, not a new geometrybug.
+  Controller required exact eager/lazy output parity: certified case+0 retained,
+  uncertifiedfallback sign retained. Valid costRED must demonstrate wasted work
+  reduction with geometry unchanged. No silent signedzero model change permitted.
+- Lazy test adaptation: automaticapprovalreview rejected simply removing positive
+  bend/arc certificate assertions as weaker coverage. Safe replacement must retain
+  eager positive-evidence assertions plus strict eager/lazy raw-bit geometry parity,
+  AND active lazy guard support/certificate assertions. No shell bypass or dropped
+  quality gate. Inactive lazy counters may report zero only as actual skipped work.
+  Cost revision and benchmark final disposition are recorded below; no adoption.
+- Lazy costrevision frozendf842141d72244578d03b29a49cba788ab2e13fe aftera10,
+  clean two-filedelta,43tests/5classes0f/e/s. Corrected eager stationary case
+  255samplevisits/1certificate versus lazy0/0, exact output bits; active analytic
+  lazy10certificates/84trials/28changedupdates. Cost-source review active on exact
+  a10→df842 package; author stopped. Controller authorizes ONE publicR1 run with
+  unchanged4originalcases+declaredactivefifth, same rejectiongates/fresh output.
+  No private inputs/adoption; prior419negative benchmark immutable. Source/class
+  hashes and honest invalid-initial-oracle note retained in report/artifacts.
+- FINAL HEURISTIC-V1 DISPOSITION: STOP/REJECT, not adopted. Cost-source review
+  PASS1a33030f with43tests/5classes verified; current eager-cache test oracle is
+  not literal a10 binary execution (frozen arithmetic/source proof supplements
+  tests). ONE R1 publicrun23.506s/5000calls preserved all4oldcases+activefifth:
+  medianstraight1.2508 andactive1.1476 REJECT; bend1.0366,stray0.9381,parallel
+  1.0700 INCONCLUSIVE dueJIT/GC. Activecase changedUpdates1436 shows real action;
+  source/classes/inputhashes unchanged. No retry/private replay/adoption/release.
+  Ordinary Legacy remains unchanged. All V1 implementation/optimization stopped.
+- After two failed cost attempts, focused Sol/high READONLY diagnosis is allowed
+  to identify a genuinely smaller heuristic using pre-existing tracker evidence,
+  not a third V1 retry/new evidence-processing layer. Must distinguish raw forced
+  fold from smoothing darkening and identify actual cheap source seams; no new
+  implementation or larger design without that evidence. No Astra authorized.
+- Reviewed diagnosis c53784fd identifies a planning-metric defect: absolute
+  tracker median differences were +0.222336ms/+0.264084ms; noisy kernel % screens
+  do NOT establish dramatic end-to-end slowdown. Old REJECT and STOPcosttuning
+  remain unchanged. Controller wrote separate2026-11-05-legacy-quality-only-
+  diagnostic.md to permit ONE independently reviewed quality-only comparison on
+  unchangeddf842, not a timing retry/adoption/gate waiver. Protocolreview pending.
+  Read-only metadata prep confirms exact saved mosaic/frame/pixelphase and15node
+  source/fixed[0,14], Precise/simplifyOff/junctionOff; ordinary numericalOnly
+  sampler/projectCandidate +LegacyPreciseGeometry.finish exist. No pixeldecode,
+  inference/private workload yet. Original liveOSM authority remains unavailable.
 - User requires continuous completion of remaining points1–4, preserving ordinary
   Legacy speed. No new RC/default adoption or Astra authorized. Primary dirty
   `codex/v0.22.0-release`117baaf0 and private/untracked files remain untouched.
