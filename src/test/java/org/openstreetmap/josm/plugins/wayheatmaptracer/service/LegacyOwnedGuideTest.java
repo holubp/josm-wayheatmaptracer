@@ -94,6 +94,31 @@ class LegacyOwnedGuideTest {
             assertFalse(progress.view().hasNativeGuideOnlyUpper());assertEquals(0,progress.view().count(LegacyEmissionProgress.Counter.WITNESS_CERTIFIED));
         }
     }
+    @Test void positiveLengthUnitIntensityStraightRidgeRetainsItsFactualZeroUpper()throws Exception {
+        try(var f=unitIntensityStraightRidge()) {
+            LegacyEmissionKernel.GuideStageReference expected;
+            try(var comparison=new RidgeTracker().trackOwnedGuideWitnesses(f.input(),CancellationProbe.NONE,
+                    LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC,null)) {
+                expected=comparison.comparisons().stream().filter(c->c.seedId()==0&&c.ordinal()==0).findFirst().orElseThrow();
+            }
+            System.out.println("unit-zero-control guided="+expected.guided()+" steps="+expected.guidedSteps());
+            assertTrue(expected.guided().isPresent());
+            assertEquals(0.0,expected.guided().orElseThrow().total(),"This positive-length, fully supported unit ridge has a factual zero objective");
+            try(var progress=LegacyEmissionProgress.open(f.input(),LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC);
+                var result=new RidgeTracker().trackOwnedNativeGuideOnlyFirstOriginalSeed(f.input(),CancellationProbe.NONE,
+                    LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC,progress)) {
+                var diagnostic=result.nativeGuideOnly().orElseThrow();
+                assertEquals(expected.guided(),diagnostic.guidedCosts());assertEquals(expected.guidedSteps(),diagnostic.guidedSteps());
+                assertTrue(diagnostic.witnessUpper().isPresent());assertEquals(0.0,diagnostic.witnessUpper().orElseThrow());
+                assertEquals(LegacyEmissionKernel.GuideStatus.FEASIBLE,diagnostic.guidedStatus());
+                assertEquals(LegacyEmissionKernel.GuideStatus.FEASIBLE,progress.view().nativeGuideStatus());
+                assertEquals(LegacyEmissionKernel.GuideStatus.NOT_REQUESTED,progress.view().nativeGuideGreedyStatus());
+                assertFalse(progress.view().nativeGuideComparisonPerformed());
+                assertTrue(progress.view().hasNativeGuideOnlyUpper());assertEquals(0.0,progress.view().nativeGuideOnlyUpper());
+                assertEquals(1,progress.view().count(LegacyEmissionProgress.Counter.WITNESS_CERTIFIED));
+            }
+        }
+    }
     @Test void nativeGuideOnlyRejectsForeignProviderBeforeAdmission()throws Exception {
         var budget=new EmissionWorkBudget(TraceBudgets.defaults(),CancellationProbe.NONE);
         try(var a=LegacyCompetitiveProofTest.fixture(false,budget);var b=LegacyCompetitiveProofTest.fixture(false,budget);
@@ -416,6 +441,25 @@ class LegacyOwnedGuideTest {
         var locations=new ArrayList<DetachedProfileSamplingLocation>();for(int i=0;i<rows;i++)locations.add(DetachedProfileSamplingLocation.at(frame.toGeographic(new MetricPoint(24+spacing*i,64.5)),frame,transform,spacing*i));
         var source=new CorridorTraceInput(locations,1);var ledger=AttemptMemoryLedger.production();var owner=ledger.rootOwner();var budget=new EmissionWorkBudget(TraceBudgets.defaults(),CancellationProbe.NONE);
         var chainages=java.util.stream.IntStream.range(0,rows).mapToObj(i->spacing*i).toList();
+        try(var permit=OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(evidence,"guide",source,new ProfileChainage(chainages,spacing*(rows-1)),25,budget,owner)) {
+            double pitch=DetachedScalarProfileSampler.emissionSourcePitchRasterPixels(evidence,source,0,budget);
+            var retained=new RenderedHeatmapSampler().sampleDetachedRetainingL0(evidence,"guide",source.profileLocations(),25,1,pitch,budget,permit);
+            var binding=OptionalEmissionContextFactory.createLegacyBinding(permit,retained,java.util.stream.IntStream.range(0,rows).boxed().toList(),1,List.of());
+            var input=OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(permit,retained,binding);
+            return new LegacyCompetitiveProofTest.Fixture(input,binding.observations().stream().map(LegacyEmissionBinding.OriginalObservation::profile).toList(),ledger,owner);
+        }catch(RuntimeException failure){owner.close();throw failure;}
+    }
+    static LegacyCompetitiveProofTest.Fixture unitIntensityStraightRidge() {
+        int w=96,h=128;double[] scalar=new double[w*h];boolean[] valid=new boolean[scalar.length];Arrays.fill(valid,true);
+        for(int y=0;y<h;y++)for(int x=0;x<w;x++)scalar[y*w+x]=y>=71.5&&y<=73.5?1.0:0.0;
+        var frame=LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0,0),new GeographicPoint(-.01,-.01),new GeographicPoint(.01,.01));
+        var transform=RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1);
+        var field=new ScalarEvidenceField(w,h,scalar,valid,new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,"guide",EvidenceCorrelationGroup.SYNTHETIC_TRUTH,false));
+        var evidence=new EvidenceSnapshot("owned-guide-unit-straight",frame,transform,EvidenceResolution.nativeSource(1,1),MetricRegion.rectangle(0,0,w-1,h-1),MetricRegion.rectangle(-.5,-.5,w-.5,h-.5),Map.of("guide",field),"guide");
+        double spacing=8;int rows=3;
+        var locations=new ArrayList<DetachedProfileSamplingLocation>();for(int i=0;i<rows;i++)locations.add(DetachedProfileSamplingLocation.at(frame.toGeographic(new MetricPoint(24+spacing*i,64.5)),frame,transform,spacing*i));
+        var source=new CorridorTraceInput(locations,1);var ledger=AttemptMemoryLedger.production();var owner=ledger.rootOwner();var budget=new EmissionWorkBudget(TraceBudgets.defaults(),CancellationProbe.NONE);
+        var chainages=java.util.stream.IntStream.range(0,rows).mapToObj(i->i*spacing).toList();
         try(var permit=OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(evidence,"guide",source,new ProfileChainage(chainages,spacing*(rows-1)),25,budget,owner)) {
             double pitch=DetachedScalarProfileSampler.emissionSourcePitchRasterPixels(evidence,source,0,budget);
             var retained=new RenderedHeatmapSampler().sampleDetachedRetainingL0(evidence,"guide",source.profileLocations(),25,1,pitch,budget,permit);

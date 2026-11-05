@@ -93,9 +93,9 @@ public final class LegacyEmissionKernel {
                 if(guidedCosts.isPresent()) {
                     var costs=guidedCosts.orElseThrow();double upper=costs.total();
                     if(guidedStatus!=GuideStatus.FEASIBLE||!witnessUpper.isPresent()
-                            ||!Double.isFinite(upper)||upper<=0.0
+                            ||!Double.isFinite(upper)||upper<0.0
                             ||Double.doubleToRawLongBits(upper)!=Double.doubleToRawLongBits(witnessUpper.getAsDouble()))
-                        throw new IllegalArgumentException("Native guide-only upper is not a positive certified route total");
+                        throw new IllegalArgumentException("Native guide-only upper is not a finite nonnegative certified route total");
                 } else if(witnessUpper.isPresent()||guidedStatus==GuideStatus.FEASIBLE) {
                     throw new IllegalArgumentException("Unavailable native guide cannot carry an upper");
                 }
@@ -2375,8 +2375,8 @@ public final class LegacyEmissionKernel {
             GuideStatus status=replay.status();java.util.OptionalDouble upper=java.util.OptionalDouble.empty();
             if(costs.isPresent()) {
                 double total=costs.orElseThrow().total();
-                if(Double.isFinite(total)&&total>0.0)upper=java.util.OptionalDouble.of(total);
-                else {costs=Optional.empty();status=GuideStatus.NON_POSITIVE_UPPER;}
+                if(Double.isFinite(total)&&total>=0.0)upper=java.util.OptionalDouble.of(total);
+                else {costs=Optional.empty();status=GuideStatus.NO_POSITIVE_FINITE_VECTOR;}
             }
             int steps=replay.steps().size();var budget=input.workBudget();
             budget.charge(EmissionWorkBudget.Operation.PREPARATION,128L+steps);
