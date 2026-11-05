@@ -225,11 +225,20 @@ class ManagedOrdinaryAffinityTest {
                     assertEquals(2,point.probe().extraction().result().rawPeaks().size());assertEquals(2,point.probe().extraction().acceptedReceipts().size());
                     assertTrue(point.probe().extraction().result().suppressedModes().isEmpty());assertTrue(point.probe().extraction().result().baseline().censoredModes().isEmpty());
                 }
-                // Preserve the exact observed failed-ownership facts, not a weaker point alias.
-                assertTrue(bindingSummary(result.fromOwnership().orElseThrow(),f.input,owner).contains("diagnosticActualPScalar=OptionalDouble[0.25407914786017216]"));
+                // Preserve the measured physical-P fact against the raw core that owns this location.
+                var actualP=measureActualP(result.fromOwnership().orElseThrow(),f.input,owner);
+                assertTrue(actualP.scalar().isPresent(),"Actual P scalar unavailable: "+bindingSummary(result.fromOwnership().orElseThrow(),f.input,owner));
+                assertTrue(actualP.rawCoreThreshold().isPresent(),"No unique raw core owns actual P: "+bindingSummary(result.fromOwnership().orElseThrow(),f.input,owner));
+                assertTrue(actualPBelowRawCore(actualP.scalar().getAsDouble(),actualP.rawCoreThreshold().getAsDouble()),
+                    "Actual P must remain strictly below its uniquely owning raw core; actual="+actualP.scalar()+", threshold="+actualP.rawCoreThreshold()+", "+bindingSummary(result.fromOwnership().orElseThrow(),f.input,owner));
                 assertEquals(weak==.60?NativeMeasuredProfileReceipt.Availability.COMPLETE:NativeMeasuredProfileReceipt.Availability.UNAVAILABLE,result.toOwnership().orElseThrow().availability());
             }
         }});
+    }
+    @Test void actualPBelowRawCoreRequiresStrictInequality(){
+        assertTrue(actualPBelowRawCore(.25,.26));
+        assertFalse(actualPBelowRawCore(.25,.25),"Equality is not below the measured raw core");
+        assertFalse(actualPBelowRawCore(.26,.25),"A value above the measured raw core cannot satisfy the premise");
     }
     @ParameterizedTest @ValueSource(doubles={.30,.60})
     void freshActualModeCentreFinalPointsHaveOwnProofWithoutNewNativeStates(double weak)throws Exception{
@@ -582,7 +591,9 @@ class ManagedOrdinaryAffinityTest {
                     +", supports="+s.modes().stream().map(m->List.of(m.support().reason(),m.accepted().mode().coreMinimumMeters(),m.accepted().mode().coreMaximumMeters(),m.accepted().mode().localizationSigmaMeters(),m.support().minimumParameter(),m.support().maximumParameter(),m.accepted().shoulderThreshold())).toList()).toList());
         }return status;
     }
-    private String bindingSummary(ManagedOrdinaryAffinity.PointFact p,SampledEmissionInput input,AttemptMemoryLedger.Owner owner){
+    private record ActualPMeasurement(OptionalDouble scalar,OptionalDouble rawCoreThreshold) { }
+    private static boolean actualPBelowRawCore(double scalar,double threshold){return Double.isFinite(scalar)&&Double.isFinite(threshold)&&scalar<threshold;}
+    private ActualPMeasurement measureActualP(ManagedOrdinaryAffinity.PointFact p,SampledEmissionInput input,AttemptMemoryLedger.Owner owner){
         input.requireOpenAndUnchanged();input.workBudget().charge(EmissionWorkBudget.Operation.ALLOCATION,1);
         BilinearSegmentIntegral.Result actualScalar=null;
         try(var scratch=owner.reserve(4096)){
@@ -594,8 +605,18 @@ class ManagedOrdinaryAffinityTest {
                 });
             }
         }
+        double lateral=(p.actualMetric().xMeters()-p.probe().metricPosition().xMeters())*p.probe().metricNormal().xMeters()
+            +(p.actualMetric().yMeters()-p.probe().metricPosition().yMeters())*p.probe().metricNormal().yMeters();
+        var matching=p.probe().extraction().acceptedReceipts().stream()
+            .filter(m->m.rawCore().isPresent()&&lateral>=m.mode().coreMinimumMeters()&&lateral<=m.mode().coreMaximumMeters())
+            .toList();
+        OptionalDouble threshold=matching.size()==1?OptionalDouble.of(matching.get(0).rawCore().orElseThrow().threshold()):OptionalDouble.empty();
+        return new ActualPMeasurement(actualScalar==null?OptionalDouble.empty():actualScalar.minimum(),threshold);
+    }
+    private String bindingSummary(ManagedOrdinaryAffinity.PointFact p,SampledEmissionInput input,AttemptMemoryLedger.Owner owner){
+        var measurement=measureActualP(p,input,owner);
         var extraction=p.probe().extraction();
-        return "row="+p.originalRow()+","+p.availability()+"/"+p.reason()+",issuedScalar="+p.strictScalar()+",diagnosticActualPScalar="+(actualScalar==null?"UNQUERIED_AUTHORITY":actualScalar.minimum())+",bridge="+p.bridge().map(v->v.status()+"/"+v.minimum())
+        return "row="+p.originalRow()+","+p.availability()+"/"+p.reason()+",issuedScalar="+p.strictScalar()+",diagnosticActualPScalar="+measurement.scalar()+",actualPOwningRawCoreThreshold="+measurement.rawCoreThreshold()+",bridge="+p.bridge().map(v->v.status()+"/"+v.minimum())
             +",raw/accepted/suppressed/censored="+List.of(extraction.result().rawPeaks().size(),extraction.acceptedReceipts().size(),extraction.result().suppressedModes().size(),extraction.result().baseline().censoredModes().size())
             +",numericModeSets="+extraction.acceptedReceipts().stream().map(m->List.of(m.mode().coreMinimumMeters(),m.mode().coreMaximumMeters(),m.mode().distanceToCenterSet(0),m.rawCore().orElseThrow().threshold())).toList()
             +",rawCoreBrackets="+extraction.result().rawCoreReceipts().stream().map(c->List.of(sampleOffset(p,c.leftAdjacentSampleIndex()),sampleOffset(p,c.rightAdjacentSampleIndex()),c.leftAdjacentBelowCore(),c.rightAdjacentBelowCore())).toList();
