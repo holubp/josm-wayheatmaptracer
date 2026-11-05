@@ -10,9 +10,113 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-02-drasov-legacy-corridor-quality-design.md` (approved2026-11-02).
 
-## Resume checkpoint — 2026-11-04
+## Resume checkpoint — 2026-11-05
 
-### Current resume card — authoritative; prior notes below are historical
+### Active execution card — authoritative
+
+- User requires continuous completion of remaining points1–4, preserving ordinary
+  Legacy speed. No new RC/default adoption or Astra authorized. Primary dirty
+  `codex/v0.22.0-release`117baaf0 and private/untracked files remain untouched.
+- Point1 evaluator findings CLOSED. Point2 core/grouped managed implementation
+  reviewed, but practical execution/consumers incomplete. Point3 real Drasov
+  improvement OPEN. Point4 endpoint-only A source corrected/reviewed, but actual
+  quality/performance, protected-interior and consumers OPEN. Nothing here waives
+  original plan scope or permits declaring all four complete.
+- Integrated dev worktree `.worktrees/drasov-integrated-verification` now exact
+  e386a5c470a5ac6a01f738ec8f7af69325b4bf36, pushed to matching `codex/` branch.
+  It contains guide d95 ownership fix, A12e+54bf R1, and immutable proof264722eb+
+  test-only R1e386. All source batches independently accepted. Full CI42003042605
+  running at e386; latest completed CI41995586137 exactfdd851c6 PASS:
+  3250executions/310XML/3122distinct/0f/e/s, both real-JOSM GUI summaries PASS.
+  Local combined337/43 passed atfdd; immutable proof accepted89/6 composed from
+  retained five suites+final40 affinity XML. Do not call these one newer full run.
+- Ordinary Legacy old bodies/behavior unchanged; prior public kernel benchmark
+  ratios .9851/1.0013/1.0258 versus RC14 remain bounded evidence, not full workflow
+  performance qualification. New experimental code must not enter old fast paths.
+- Durable evidence is primary `build/private-drasov-resume-20261105/`; recent
+  `/tmp` loss was recovered through surviving commits, not invented evidence.
+  CI evidence, source union, A-R1, helper and host proof packets are retained.
+- Private witness experiment9a2268be used32M before first BASE seed witness
+  completed (row129, noU/geometry). Six cached tiles, zero network, all24 hashes
+  unchanged, peak99465920→0. Java0 exported failure receipts, not model success.
+  Earlier4fe4 claim failed preparation on incorrect256 tile recipe; factual512
+  correction and both consumed claims remain preserved. No automatic retries.
+- Immutable301-credit saving is implemented/reviewed but alone does NOT justify
+  another private run; old-prefix saving upper bound2.56M, completion unproved.
+- ACTIVE implementation: Sol/high `a_endpoint_r1_recovery`, durable isolated
+  `.worktrees/drasov-exact-host-admission`, basee386. New explicitly experiment-only
+  exact-host single-use validation protocol; approved proof/plan ec6298daf... and
+  accounting cert855cf46ab... plus `host-admission-proof/implementation-review.md`
+  CODE-READY PASS. JOSM19555/Java17 pinned raw-stream theorem, setup652576B→1MiB,
+  paid2344745SHA units+reads, six fact bounds and narrow seventh Binding overload.
+  Public controlled-fork RED/GREEN, source review and helper review remain BEFORE
+  any newly admitted private attempt. Portable production adoption remains OPEN.
+- Ruling: only new explicit entry may amend incidental bookkeeping callbacks;
+  each numerical boundary retains cancellation and complete post-callback live
+  checks, bounded work/memory/latency, no post-refusal query/publication. Old
+  public charge/default paths/assertions/counts stay unchanged. No live-source
+  cache, invented generation, hidden free work or raised32M/8M/256MiB/512MiB caps.
+- Reviewer `drasov_independent_audit` available; immutable worker completed. No
+  recursive delegation. Requested routes Sol6.1/high and Luna/high; actual runtime
+  attribution/weekly remainder unknown, standard speed. No pool/speed switches.
+- After feasibility: actual completed Drasov/Omice geometry+independent controls,
+  owned M/N-aware candidate adapters, Precise/Move immutable final preview and
+  assignments, post-anchor quality, exact Apply/Undo/Redo/staleness and Hybrid
+  occurrence bridge remain required. Source reference assumptions do not become
+  original OSM authority. User visual reference acceptance remains a later gate.
+- Next: finish bounded exact-host implementation → focused/public controls →
+  independent diff review → integrate/test/CI → reviewed frozen helper/newONE
+  admission if warranted. Keep this card current; details below are historical.
+
+### Historical resume cards — superseded by active execution card
+
+- Hostpacket now CODE-READY independentPASS for latest proof ec6298daf90cdba516c3e6dcbfc89971ea0f2929f7bdfff3e42a97cc5a28c333
+  andcert855cf46ab8e0d143479493722e480d2b9b75f623b427e313c1354eb626a2aeb8.
+  Explicitsetup652576B→reserve1MiB, paddingaware2344745SHAunits+reads/metadata;
+  sixvariablefactAPI/work/storage rows and seventh identity-gatedBindingfile
+  accepted. Sourceauthor dispatched IMPLEMENTATION in durable isolated
+  .worktrees/drasov-exact-host-admission frome386a5c470a5ac6a01f738ec8f7af69325b4bf36,
+  newexplicitexperiment-onlyentry, publiccontrolledforkTDD, no privateattempt.
+  Oldpublic/default paths/charge/assertions/counts unchanged; no implicit
+  fallback claimingnewpolicy, all source/cancel/failure/owner/finalpublication
+  checks retained under reviewed schedule. Evidence exact-host-admission/.
+  Currente386publicCI42003042605 running; fddfullCI41995586137 PASS3250 remains
+  lastfull result. Realgeometry/consumers/portableadoption remainOPEN.
+
+- Immutableproof source264722eb +test-onlyR1 e386a5c470a5ac6a01f738ec8f7af69325b4bf36
+  independently CLOSED PASS. Originaltest/evidenceP2 corrected, final40affinity
+  XML includesbothsnapshotstest,0f/e/s; combinedaccepted89tests/6suites from
+  fiveunchanged+final40, not claimedonefreshsixsuiterun. Durable evidence within
+  .worktrees/drasov-immutable-native-proof/build/private-drasov-resume-20261105/immutable-proof.
+  Integratedverification devbranch advancedlocally toexacte386; remote/fullCI
+  remainsfdd PASS3250. No privateattemptfrom301savingalone. Hostpacket review
+  acceptedexactrawpipeline andSHApricing, still NOTCODE-READY onlyprecisefixed
+  setupscratch+sixvariablefactcharge/copy/compare formulas pending; author
+  amendingthattableonly, no generalproofrestart. Allprivatequality/consumersOPEN.
+
+- Ruling (new explicit experiment-only protocol, not ordinary production):
+  incidental bookkeeping-callback scheduling may be amended only if each
+  numerical boundary retains cancellation and complete post-callback current
+  validation, bounded latency/memory/work, no post-refusal query/publication,
+  and every old path/assertion remains unchanged. No source/safety waiver.
+  Independent exact-host addendum conditionally accepts pinned JOSM19555 /
+  Java17 bytecode capability as a way to evaluate the numerical hypothesis
+  before portable adoption. NOT implementation/run approval: exact bootstrap/
+  module/agent fence, nonexpanding pipeline/raw-array estimate bound, same
+  post-callback captured iterator, paid setup/traversal and all freshness checks
+  must first be proved. Sol worker assembling durable host-admission-proof/
+  packet/minimal plan; no source optimization/private run yet. Portable and
+  consumer/quality gates remain OPEN. Full integrated CI PASS remains valid.
+
+- Latest integration gate: fullpublicCI41995586137 SUCCESS exactfdd851c6;
+  durable ci-41995586137 imported onlypublicevidence/GUIreceipts, noJAR.
+  Parsed310XML/3250executions/3122distinct/0failures/errors/skips and bothGUI
+  summaries PASS. This supersedes prior running status, not private quality.
+  Liveadmission design review CONDITIONAL/notimplementationready: hiddenraw
+  backlink/filtertraversal bound and protocolcallbackschedule proof unresolved.
+  Exacthost-pinned experiment-only proof being assessed; portableproduction
+  remains OPEN and no newprivateattempt admitted. Immutable301proof worker
+  active on bounded reviewed TDD task. Core points3/4 quality/consumers OPEN.
 
 - Execution-environment refresh during continuation: prior agents no longer
   exist and recent Termux tmp worktrees/reports/classes (guide2aff/d95, A12e/R1,
@@ -66,6 +170,24 @@
   ManagedOrdinaryAffinity.prepare, notwalltimeout. peak99,465,920→0; all24hashes
   unchanged/6cache/0network. Resultaudit +bounded readonlyfreshnesscost design
   active; no automaticprivate rerun/capraise. Realquality/consumers remainOPEN.
+  Result independently audited (legacy-witness/result-review.md): capnext15,
+  threeplannedseeds/zero completed, oneattempt/zero certified, no witnessCSV.
+  Native immutableproof reuse design/review durable: safe301peakcredits removed
+  permanagednativeadmission onlyif185rowcallbacks andbothlive snapshotsremain;
+  oldprefixsaving upper2,564,520 beforecertificatecost, completionunproved.
+  NO newprivateattempt onthatoptimizationalone. Luna/high requested for bounded
+  immutableproofimplementation fromfdd in durable isolatedtree with TDD.
+  Sol/high Aworker separately designs cheaper SINGLE-USE complete liveadmission
+  withactualAPI/prepaidbounds; no generationinvention/freshnesscache/capraise.
+  That strongercontract needsindependentreviewbeforecode. Continueauthorized
+  work; no broadplanrewrite/RC/default adoption. Weeklytelemetry unknown.
+  Ruling: immutablecertificate may add narrow managed-only package-owned one-time
+  binding→actualInput association beforepublication; literalinputidentity is
+  required, not waived. Prepaystorage/rejectforeignorrepeatedassociation without
+  damagingfirstinput; no publicsetter/registry/sourcecallback, oldsyntheticpaths
+  unchanged. Coverconstructorfailure ownership and foreign/repeateduse in tests;
+  independentwholecertificate-boundaryreview required. Costifwrong: bounded
+  sourcebinding rework, not adoption or weakened authority.
 
 - 2026-11-05 continuation: user explicitly requires finishing all remaining1–4
   without milestone stops. Guide2aff3119 frozen96tests/11XML GREEN, ordinary
