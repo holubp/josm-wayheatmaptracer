@@ -206,6 +206,18 @@ public final class TileHeatmapSampler {
             return legacySamplingShape(PolylineMath.length(request.originalSource()),
                     request.originalSource().size(), selectedMosaic.parameters()).profiles();
         }
+        /** The actual A spacing/count law; never the Legacy sampling shape. */
+        public int nativeAProfileCount(){
+            request.requireMatches(selectedMosaic);
+            attemptBudget.charge(EmissionWorkBudget.Operation.PREPARATION,request.originalSource().size());
+            double spacing=Math.max(4.0,selectedMosaic.parameters().sampleStepMeters());
+            return Math.max(2,(int)Math.round(PolylineMath.length(request.originalSource())/Math.max(1.0,spacing))+1);
+        }
+        public int nativeAEndpointApproachWindow(){
+            attemptBudget.charge(EmissionWorkBudget.Operation.PREPARATION,16);
+            var sampling=AlignmentService.fixedTileEffectiveSampling(selectedMosaic);
+            return Math.max(2,(int)Math.round(15.0/Math.max(0.5,sampling.decisionEffectiveStepUnits())));
+        }
         public ManagedSourceRequestReceipt originalRequest() {
             request.requireMatches(selectedMosaic);
             return request;
@@ -519,12 +531,55 @@ public final class TileHeatmapSampler {
                 mosaicProjector(mosaic, projection), cancellation);
     }
 
+    /** Exact actual producer receipt; callers cannot relabel borrowed profiles as another production. */
+    public static final class ManagedAProducerReceipt {
+        private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.OptionalEmissionContextFactory.ManagedCaptureBinding binding;
+        private final RetainedManagedScalarProfiles retained;
+        private ManagedAProducerReceipt(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.OptionalEmissionContextFactory.ManagedCaptureBinding binding,
+                RetainedManagedScalarProfiles retained){this.binding=binding;this.retained=retained;}
+        public org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.OptionalEmissionContextFactory.ManagedCaptureBinding binding(){return binding;}
+        public RetainedManagedScalarProfiles retained(){return retained;}
+    }
+
+    /** Experimental retained native multilevel float source with captured A endpoint authority. */
+    public org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput sampleManagedAProfilesForEmission(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.OptionalEmissionContextFactory.ManagedCaptureBinding binding,
+            CancellationProbe cancellation){
+        if(!binding.isManagedA())throw new IllegalArgumentException("Managed A producer requires its own permit");
+        binding.beginProduction();var budget=binding.workBudget();var parent=binding.retainedOwner();
+        AttemptMemoryLedger.Owner owner=null;
+        try{
+            var capture=binding.capture();var request=capture.originalRequest();var mosaic=capture.selectedMosaic();
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);owner=parent.child("managed-native-a-float-multilevel");capture.retainFor(owner);
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);
+            var metadata=owner.reserve(Math.addExact(8192,Math.multiplyExact(capture.nativeAProfileCount(),2048L)));
+            var parameters=resampleManagedSourceParameters(request.originalSource(),capture.nativeAProfileCount(),budget,owner);
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,Math.multiplyExact(parameters.size(),128L));
+            var dense=parameters.stream().map(PolylineMath.SourceParameter::point).toList();
+            var local=localPolyline(mosaic,dense,request.capturedProjection());
+            var anchors=ProfileSamplingAnchor.pair(dense,local,request.capturedProjection());
+            int half=Math.max(1,(int)Math.round(mosaic.parameters().halfWidthMeters()/REFERENCE_VIEW_METERS_PER_PIXEL));
+            int step=Math.max(1,(int)Math.round(mosaic.parameters().sampleStepMeters()/REFERENCE_VIEW_METERS_PER_PIXEL));
+            var produced=new RenderedHeatmapSampler().sampleManagedARetainingFloat(mosaic.image(),anchors,half,step,binding.detectorMode(),
+                REFERENCE_RASTER_SCALE,mosaic.virtualRasterScale(),IntensitySamplingMode.COLOR_MAPPING,mosaicProjector(mosaic,request.capturedProjection()),budget,owner,cancellation);
+            var ground=ManagedGroundTransform.fromPreparedCapture(capture,budget,owner);
+            var certificate=SourceParameterCertificate.fromManagedProducer(capture,parameters,dense,anchors,ground,budget,owner);
+            var view=new ManagedAFloatGridView(produced.l0(),mosaic,budget,owner);
+            var retained=new RetainedManagedScalarProfiles(mosaic,view,produced.profiles(),owner,capture,certificate,ground,parent,budget);
+            metadata.adopt(retained);
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);var proof=owner.reserve(128);
+            var receipt=new ManagedAProducerReceipt(binding,retained);proof.adopt(receipt);
+            return org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.OptionalEmissionContextFactory.fromManagedAProduction(receipt);
+        }catch(RuntimeException failure){if(owner!=null)owner.close();binding.failProduction(failure);throw failure;}
+    }
+
     /** Experimental retained scalar source for the existing managed Legacy profile path. */
     public org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput
             sampleProfilesForEmission(
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.OptionalEmissionContextFactory.ManagedCaptureBinding binding,
             CancellationProbe cancellation) {
         java.util.Objects.requireNonNull(binding, "managed source binding");
+        if(binding.isManagedA())throw new IllegalArgumentException("Legacy profile production cannot consume a managed A permit");
         binding.beginProduction();
         try {
             var retained = sampleProfilesRetainingL0(binding.capture(), binding.detectorMode(),

@@ -149,6 +149,42 @@ public final class ScalarIntensityField {
         }
         return new ScalarIntensityField(minX, minY, width, height, 1, values, valid);
     }
+    /** Same native float construction with caller-prepaid allocation and per-read/copy admission. */
+    static ScalarIntensityField fromRaster(BufferedImage raster,int minimumX,int minimumY,int maximumX,int maximumY,
+            String colorMode,IntensitySamplingMode samplingMode,Runnable checkpoint,Runnable beforeNode,
+            LongConsumer beforeCopies){
+        int minX = Math.max(0, minimumX);
+        int minY = Math.max(0, minimumY);
+        int maxX = Math.min(raster.getWidth() - 1, maximumX);
+        int maxY = Math.min(raster.getHeight() - 1, maximumY);
+        if (maxX < minX || maxY < minY) {
+            return empty();
+        }
+        int width = maxX - minX + 1;
+        int height = maxY - minY + 1;
+        float[] values = new float[width * height];
+        boolean[] valid = new boolean[values.length];
+        IntensitySamplingMode source = samplingMode == null ? IntensitySamplingMode.COLOR_MAPPING : samplingMode;
+        for (int y = 0; y < height; y++) {
+            checkpoint.run();
+            for (int x = 0; x < width; x++) {
+                beforeNode.run();
+                int argb = raster.getRGB(minX + x, minY + y);
+                int alpha = (argb >>> 24) & 0xFF;
+                int red = (argb >>> 16) & 0xFF;
+                int green = (argb >>> 8) & 0xFF;
+                int blue = argb & 0xFF;
+                double intensity = alpha == 0 ? 0.0 : source.usesColorMapping()
+                    ? RenderedHeatmapSampler.colorIntensity(red, green, blue, colorMode)
+                    : RenderedHeatmapSampler.directIntensity(red, green, blue, alpha, source);
+                int index = y * width + x;
+                values[index] = (float) intensity;
+                valid[index] = true;
+            }
+        }
+        beforeCopies.accept(Math.addExact(Math.multiplyExact(2L,values.length),Math.multiplyExact(2L,Math.multiplyExact((long)width-1,height-1))));
+        return new ScalarIntensityField(minX, minY, width, height, 1, values, valid);
+    }
 
     /** Builds a cropped L0 field from the complete managed all-color scalar aggregate. */
     static ScalarIntensityField fromAggregatedRasters(

@@ -464,6 +464,48 @@ public final class RenderedHeatmapSampler {
         return new MultiScaleProfileSet(levels, buildNanos, pyramid.estimatedBytes());
     }
 
+    record RetainedNativeMultiscale(MultiScaleProfileSet profiles,ScalarIntensityField l0,GaussianIntensityPyramid pyramid){}
+    /** Retains the existing native float producer; never substitutes strict detached profile sampling. */
+    RetainedNativeMultiscale sampleManagedARetainingFloat(BufferedImage raster,List<ProfileSamplingAnchor> anchors,
+            int halfWidthPx,int stepPx,String colorMode,double rasterScale,double coordinateScale,
+            IntensitySamplingMode intensityMode,RasterCoordinateProjector projector,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget budget,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner,
+            CancellationProbe cancellation){
+        var op=org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.PREPARATION;
+        CancellationProbe checkpoint=()->{budget.charge(op,1);return cancellation.cancelled();};
+        checkpoint.checkpoint();
+        int width=Math.max(1,(int)Math.round(halfWidthPx*rasterScale));
+        var line=anchors.stream().map(ProfileSamplingAnchor::rasterCoordinate).toList();
+        var crop=cropBounds(raster,line,width,validCoordinateScale(coordinateScale),12.0);
+        long scalarBytes=GaussianIntensityPyramid.estimatedBytesForDimensions(crop.maxX()-crop.minX()+1,crop.maxY()-crop.minY()+1,4);
+        budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.ALLOCATION,1);
+        // Includes temporary originals/constructor copies, masks, headers and all retained pyramid levels.
+        var allocation=owner.reserve(Math.addExact(8192,Math.multiplyExact(scalarBytes,4)));
+        long started=System.nanoTime();
+        var l0=ScalarIntensityField.fromRaster(raster,crop.minX(),crop.minY(),crop.maxX(),crop.maxY(),colorMode,intensityMode,
+            checkpoint::checkpoint,()->budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.NODE_READ,1),u->budget.charge(op,u));
+        var pyramid=GaussianIntensityPyramid.build(l0,4,checkpoint::checkpoint,
+            ()->budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.NODE_READ,1),
+            ()->budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.CELL_QUERY,1),u->budget.charge(op,u));
+        long elapsed=System.nanoTime()-started;var levels=new ArrayList<MultiScaleProfileSet.ScaleProfileLevel>();
+        for(var level:selectedAnalysisLevels(pyramid,1.0)){
+            checkpoint.checkpoint();
+            double physicalStep=Math.max(Math.max(1,(int)Math.round(stepPx*rasterScale)),coordinateScale*level.reduction());
+            double step=physicalStep/(level.level()==0?FINE_LOCALIZATION_PHASES:1);
+            long count=(long)Math.ceil((2.0*width+1e-9)/step)+2;
+            long slots=Math.multiplyExact(count,anchors.size());
+            budget.charge(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.Operation.ALLOCATION,1);
+            var profileMemory=owner.reserve(Math.addExact(4096,Math.multiplyExact(anchors.size(),Math.addExact(2048,Math.multiplyExact(count*count,256)))));
+            budget.charge(op,Math.multiplyExact(slots,64));
+            var profiles=sampleProfilesFromField(level,anchors,width,Math.max(1,(int)Math.round(stepPx*rasterScale)),coordinateScale,projector,null,checkpoint,null);
+            profileMemory.adopt(profiles);
+            levels.add(new MultiScaleProfileSet.ScaleProfileLevel(level.level(),level.reduction(),level.effectiveSigmaL0(),profiles));
+        }
+        var result=new RetainedNativeMultiscale(new MultiScaleProfileSet(levels,elapsed,pyramid.estimatedBytes()),l0,pyramid);
+        allocation.adopt(result);return result;
+    }
+
     /**
      * Samples a pre-admitted detached scalar field without image, map-view, or projection callbacks.
      * Search and step values are expressed in the retained output raster's pixel units.
@@ -737,10 +779,10 @@ public final class RenderedHeatmapSampler {
                 }
             }
             ProfileFilters filters = detachedEvidence == null
-                ? profileFilters(offsets, localizationPhases)
+                ? profileFilters(offsets, null, localizationPhases, cancellation)
                 : profileFilters(offsets, completeSupport, localizationPhases, cancellation);
             List<CrossSectionPeak> peaks = new ArrayList<>(detachedEvidence == null
-                ? extractBrightBands(offsets, filters)
+                ? extractBrightBands(offsets, filters, cancellation)
                 : extractBrightBands(offsets, filters, completeSupport, cancellation));
             if (detachedEvidence != null) {
                 peaks.removeIf(peak -> {

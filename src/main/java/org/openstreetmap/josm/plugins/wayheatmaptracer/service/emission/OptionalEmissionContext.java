@@ -56,9 +56,11 @@ public final class OptionalEmissionContext {
     private final Eligibility eligibility;
     private final OptionalEmissionContextFactory.ManagedCaptureBinding managedBinding;
     private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.RetainedManagedScalarProfiles managed;
+    private final ManagedAEndpointAuthority managedAEndpoints;
 
     OptionalEmissionContext(OptionalEmissionContextFactory.SourceBinding binding, RetainedScalarProfiles retained) {
         managedBinding = null;
+        managedAEndpoints=null;
         managed = null;
         nativeField = retained.levelZero();
         nativeGrid = ScalarFieldGridView.fromIntensity(nativeField);
@@ -113,7 +115,7 @@ public final class OptionalEmissionContext {
         managedBinding = binding;
         managed = retained;
         nativeField = null;
-        nativeGrid = retained.grid().view();
+        nativeGrid = retained.nativeGrid();
         producedProfiles = retained.profileSet();
         decisionRegion = null; evidenceRegion = null; rasterTransform = null;
         var ground = retained.groundTransform().orElseThrow();
@@ -144,6 +146,7 @@ public final class OptionalEmissionContext {
                     profile.normalScreen().x, profile.normalScreen().y)));
         }
         observations = List.copyOf(facts);
+        managedAEndpoints=binding.isManagedA()?new ManagedAEndpointAuthority(binding,retained,this):null;
         requireProfilesUnchanged(producedProfiles);
     }
     private static String managedGridHash(NativeScalarGridView grid, EmissionWorkBudget budget) {
@@ -238,8 +241,11 @@ public final class OptionalEmissionContext {
     public org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedGroundTransform.ContinuousMetricBounds nativeSegmentContinuousMetricBounds(
             RasterPoint from,RasterPoint to,double first,double last,EmissionWorkBudget budget) {
         if(managed==null)throw new IllegalArgumentException("No captured managed continuous inverse");
+        if(!hasManagedNativeCellPullback())throw new IllegalArgumentException("Cropped A float grid has no M1 native-cell pullback proof");
         return managed.groundTransform().orElseThrow().nativeSegmentContinuousMetricBounds(from,to,first,last,budget);
     }
+    /** M1's reviewed full-mosaic cell proof is not a cropped-float proof. Native A does not consume it. */
+    public boolean hasManagedNativeCellPullback(){return managed!=null&&!managed.isManagedA();}
     /** Factual source-pitch lookup in the source chainage measure. */
     public double nativePitchAtSourceChainage(double sourceMeters) {
         // A certified whole-domain upper bound remains valid at every source position.
@@ -360,7 +366,9 @@ public final class OptionalEmissionContext {
     public String evidenceContentHash() { return evidenceContentHash; }
     public String requestIdentity() { return requestIdentity; }
     public Optional<TraceBudgets> originalBudgets() { return originalBudgets; }
-    public String policyId() { return POLICY_ID; }
+    public String policyId() { return managedAEndpoints==null?POLICY_ID:POLICY_ID+"/"+ManagedAEndpointAuthority.POLICY_ID; }
+    public Optional<ManagedAEndpointAuthority> managedAEndpoints(){return Optional.ofNullable(managedAEndpoints);}
+    long managedAEndpointFinalPublicationWork(){return managedAEndpoints==null?0:managedAEndpoints.finalPublicationWork();}
     public Origin origin() { return origin; }
     public Eligibility eligibility() { return eligibility; }
     /** Source facts only: no work, branch, route or edit permission. */
@@ -398,5 +406,6 @@ public final class OptionalEmissionContext {
                 }
             }
         }
+        if(managedAEndpoints!=null)managedAEndpoints.requireUnchangedForFinalPublication();
     }
 }

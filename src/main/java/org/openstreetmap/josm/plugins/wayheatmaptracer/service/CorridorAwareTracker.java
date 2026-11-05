@@ -83,17 +83,54 @@ public final class CorridorAwareTracker {
         private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner;
         private final List<NativeAEmissionSolver.Result> results;
         private final List<String> trackIds;
+        private final AutoCloseable managedLease;
         private boolean closed;
         private OptionalEmissionTracking(
                 org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
                 org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner,
                 List<NativeAEmissionSolver.Result> results,List<String> trackIds) {
             this.input=input;this.owner=owner;this.results=List.copyOf(results);this.trackIds=List.copyOf(trackIds);
+            managedLease=input.managedAEndpoints().isEmpty()?null:input.retainManagedAResultLifetime();
         }
         public List<NativeAEmissionSolver.Result> results(){requireOpen();return results;}
         public List<String> trackIds(){requireOpen();return trackIds;}
         private void requireOpen(){if(closed)throw new IllegalStateException("Optional A tracking is closed");input.context();}
-        @Override public void close(){if(!closed){closed=true;for(var result:results)result.close();owner.close();}}
+        @Override public void close(){
+            if(closed)return;closed=true;
+            if(managedLease==null){for(var result:results)result.close();owner.close();return;}
+            RuntimeException primary=null;
+            for(var result:results)try{result.close();}catch(RuntimeException failure){if(primary==null)primary=failure;else if(primary!=failure)primary.addSuppressed(failure);}
+            try{owner.close();}catch(RuntimeException failure){if(primary==null)primary=failure;else if(primary!=failure)primary.addSuppressed(failure);}
+            try{managedLease.close();}catch(Exception failure){var runtime=failure instanceof RuntimeException r?r:new IllegalStateException(failure);
+                if(primary==null)primary=runtime;else if(primary!=runtime)primary.addSuppressed(runtime);}
+            if(primary!=null)throw primary;
+        }
+    }
+
+    /** Explicit captured ENDPOINT_ONLY managed producer; no caller-built endpoint constraints. */
+    public OptionalEmissionTracking trackManagedAEndpointEmission(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution){
+        var authority=input.managedAEndpoints().orElseThrow(()->new IllegalArgumentException("Captured managed A producer is required"));
+        return trackOptionalEmissionBound(input,null,authority.junctions(),List.of(),GeometryCleanupConfig.disabled(),query,execution,
+            NativeAEmissionSolver.ExecutionChoice.UNCHANGED_V1);
+    }
+    /** All existing A choices remain explicit; scalar choices retain their separately owned census. */
+    public OptionalEmissionTracking trackManagedAEndpointEmission(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.QueryPolicy query,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution,
+            NativeAEmissionSolver.ExecutionChoice choice,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAExecutionCensus census){
+        var authority=input.managedAEndpoints().orElseThrow(()->new IllegalArgumentException("Captured managed A producer is required"));
+        java.util.Objects.requireNonNull(choice);
+        if(choice==NativeAEmissionSolver.ExecutionChoice.POSITIVE_ARC_SCALAR_PREFIX_DOMINANCE_V1)
+            return trackOptionalEmissionWithPrefixDominance(input,null,authority.junctions(),List.of(),GeometryCleanupConfig.disabled(),query,execution,census);
+        if(choice==NativeAEmissionSolver.ExecutionChoice.POSITIVE_ARC_SCALAR_REFINEMENT_V1)
+            return trackOptionalEmissionWithScalarRefinement(input,null,authority.junctions(),List.of(),GeometryCleanupConfig.disabled(),query,execution,census);
+        if(census!=null)throw new IllegalArgumentException("Scalar census requires its explicit scalar execution choice");
+        return trackOptionalEmissionBound(input,null,authority.junctions(),List.of(),GeometryCleanupConfig.disabled(),query,execution,choice);
     }
 
     /** Runs the original extraction/association/grouping and explicit native optional-emission kernel. */
@@ -157,17 +194,23 @@ public final class CorridorAwareTracker {
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeConnectorEvaluator.ExecutionPolicy execution,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAExecutionCensus census) {
         java.util.Objects.requireNonNull(census,"native A census");census.requireCanBegin(input);
+        boolean managed=input.managedAEndpoints().isPresent();
         OptionalEmissionTracking result=null;
         try {
             census.begin(input);
             census.boundary(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAExecutionCensus.Phase.PREPROCESSING,-1,-1,-1,-1);
             result=trackOptionalEmissionBound(input,binding,junctions,barriers,cleanup,query,execution,
                 NativeAEmissionSolver.ExecutionChoice.POSITIVE_ARC_SCALAR_PREFIX_DOMINANCE_V1,census);
-            if(binding==null)input.requireRetainedSourceUnchanged();else binding.requireCurrentForFinalPublication(input);
+            if(input.managedAEndpoints().isPresent()){
+                try(var publication=input.prepareManagedAFinalPublication(result.owner,256L+64L*result.results.size(),4096L+256L*result.results.size())){
+                    publication.validate();
+                }
+            }else if(binding==null)input.requireRetainedSourceUnchanged();else binding.requireCurrentForFinalPublication(input);
+            if(managed)census.requireManagedPublicationAuthority(input);
             census.finish();return result;
         }catch(RuntimeException failure){
             input.recordTerminalExecutionFailure(failure);
-            if(result!=null)result.close();
+            if(managed)closeManagedFailure(result,failure);else if(result!=null)result.close();
             census.fail(failure);throw failure;
         }
     }
@@ -198,13 +241,20 @@ public final class CorridorAwareTracker {
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAExecutionCensus census) {
         java.util.Objects.requireNonNull(census,"native A census");
         census.requireCanBegin(input);
+        boolean managed=input.managedAEndpoints().isPresent();
+        OptionalEmissionTracking candidate=null;
         try {
             census.begin(input);
             census.boundary(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAExecutionCensus.Phase.PREPROCESSING,-1,-1,-1,-1);
             var result=trackOptionalEmissionBound(input,binding,junctions,barriers,cleanup,query,execution,
                 NativeAEmissionSolver.ExecutionChoice.POSITIVE_ARC_SCALAR_REFINEMENT_V1,census);
+            candidate=result;
+            if(managed)census.requireManagedPublicationAuthority(input);
             census.finish();return result;
-        }catch(RuntimeException failure){census.fail(failure);throw failure;}
+        }catch(RuntimeException failure){
+            if(managed)closeManagedFailure(candidate,failure);
+            census.fail(failure);throw failure;
+        }
     }
     private OptionalEmissionTracking trackOptionalEmissionBound(
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput input,
@@ -217,6 +267,11 @@ public final class CorridorAwareTracker {
             NativeAEmissionSolver.ExecutionChoice choice,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.NativeAExecutionCensus census) {
         if(binding==null)input.requireOpenAndUnchanged();else binding.requireCurrent(input);
+        var managedAuthority=input.managedAEndpoints().orElse(null);
+        if(managedAuthority!=null){
+            if(binding!=null)throw new IllegalArgumentException("Managed A cannot use a synthetic original alias");
+            managedAuthority.requireInvocation(junctions,barriers);
+        }
         if(binding!=null&&!barriers.isEmpty())throw new IllegalArgumentException("Original A protected capture alias is unavailable");
         if(!cleanup.isDisabled())throw new IllegalArgumentException("Optional A cleanup adapter is unavailable");
         var budget=input.workBudget();
@@ -251,13 +306,34 @@ public final class CorridorAwareTracker {
                         query,execution,cleanup,nativeSource,binding,choice,census));
                 ids.add(track.id());
             }
+            if(managedAuthority!=null){
+                OptionalEmissionTracking candidate=null;
+                try{
+                    for(var result:results)result.validateManagedFinalShape();
+                    try(var publication=input.prepareManagedAFinalPublication(owner,256L+64L*results.size(),4096L+256L*results.size())){
+                        candidate=new OptionalEmissionTracking(input,owner,results,ids);
+                        publication.validate();
+                    }
+                    return candidate;
+                }catch(RuntimeException failure){
+                    if(candidate!=null)try{candidate.close();}catch(RuntimeException closing){if(closing!=failure)failure.addSuppressed(closing);}
+                    throw failure;
+                }
+            }
             return new OptionalEmissionTracking(input,owner,results,ids);
         }catch(RuntimeException failure) {
             if(failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget.LimitExceededException
                     ||failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.ResourceLimitException
                     ||failure instanceof java.util.concurrent.CancellationException)input.recordTerminalExecutionFailure(failure);
+            if(managedAuthority!=null){
+                if(results!=null)for(var result:results)closeManagedFailure(result,failure);
+                closeManagedFailure(owner,failure);throw failure;
+            }
             if(results!=null)for(var result:results)result.close();owner.close();throw failure;
         }
+    }
+    private static void closeManagedFailure(AutoCloseable value,RuntimeException primary){
+        if(value!=null)try{value.close();}catch(Exception failure){if(failure!=primary)primary.addSuppressed(failure);}
     }
     private final CorridorExtractor extractor = new CorridorExtractor();
     private final CorridorTracker tracker = new CorridorTracker();

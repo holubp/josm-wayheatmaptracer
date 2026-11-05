@@ -1103,3 +1103,33 @@ This explicit experiment adds no states, thresholds, optimizer or acquisition
 authority. The exact below-core native .30/.60 cases remain UNKNOWN, and global
 future Mode-family evidence remains unavailable. Local synthetic correctness
 does not qualify private Drasov geometry, default adoption or Apply/release.
+## Managed A endpoint-only experimental producer
+
+`bindManagedACapture` and `sampleManagedAProfilesForEmission` retain the native
+multiscale float producer once. `trackManagedAEndpointEmission` is an explicit
+consumer for captured fixed endpoints and the existing A execution choices.
+It is not used by the default tracker. Tagged/shared protected interiors remain
+unsupported; safe-interval staging is a separate gate.
+
+`MANAGED_A_ENDPOINT_ONLY_PHYSICAL_V1/FLOAT_L0_Q_V1` distinguishes native raster
+state P, exact captured metric E, and physical evidence raster R(E). Native
+profiles, states, normalization and C/T inputs retain their original arithmetic.
+Physical Q, K, direction and zero-edge keys consistently consume E/R(E), which
+can intentionally change the winner. Q widens the retained float nodes to
+double and requires complete acquired cells; native nearest-edge fallback is
+not complete Q support. A correspondence enclosure does not establish point
+equality or core membership. Fixed GAP endpoints cannot manufacture a core.
+
+The source owns the endpoint descriptors and the native inventory binds them
+only to issued native zero states. Source, selection, all retained levels and
+endpoint identity are checked after prepaid copies and callbacks. Managed
+results retain charged source payload until close, while closing the input
+immediately revokes borrowed numerical/token access. Revoked census owners
+receive no final status mutation.
+
+The cropped float view advertises no continuous native-cell pullback capability;
+M1 affinity entry refuses that prerequisite. This component does not establish
+general managed affinity or whole future-domain support. Synthetic three-row
+functional/oracle checks are distinct from practical performance: the preserved
+ten-row prototype reached the unchanged work cap. Real protected selections,
+safe islands, practical-way performance and private geometry remain open.

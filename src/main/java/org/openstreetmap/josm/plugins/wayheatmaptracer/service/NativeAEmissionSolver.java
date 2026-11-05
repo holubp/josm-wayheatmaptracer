@@ -56,10 +56,13 @@ public final class NativeAEmissionSolver {
         private final int nativeRow;
         private final RasterPoint position;
         private final List<NativeCoreOwner> cores;
+        private final ManagedAEndpointAuthority.Endpoint physicalEndpoint;
         private NativeEndpointOwner(RowState state,RenderedHeatmapSampler.CrossSectionProfile profile,
-                RenderedHeatmapSampler.CrossSectionProfile measurementProfile,int nativeRow,RasterPoint position,List<NativeCoreOwner> cores) {
+                RenderedHeatmapSampler.CrossSectionProfile measurementProfile,int nativeRow,RasterPoint position,List<NativeCoreOwner> cores,
+                ManagedAEndpointAuthority.Endpoint physicalEndpoint) {
             this.state=state;this.profile=profile;this.measurementProfile=measurementProfile;this.nativeRow=nativeRow;
             this.position=position;this.cores=cores;
+            this.physicalEndpoint=physicalEndpoint;
         }
         public RasterPoint actualRasterPosition(){return position;}
         public List<NativeCoreOwner> directCores(){return cores;}
@@ -74,12 +77,27 @@ public final class NativeAEmissionSolver {
         private final Map<RowState,NativeEndpointOwner> owners=new IdentityHashMap<>();
         private boolean sealed;
         private NativeEndpointInventory(Engine issuer){this.issuer=issuer;}
-        private void issue(RowState state,int nativeRow,RasterPoint point,List<NativeCoreOwner> cores) {
+        private NativeEndpointOwner issue(RowState state,int nativeRow,RasterPoint point,List<NativeCoreOwner> cores) {
             if(sealed)throw new IllegalStateException("Native A owner inventory is sealed");
             issuer.reserve(256);issuer.work(1);
-            if(owners.put(state,new NativeEndpointOwner(state,issuer.profiles.get(nativeRow).source(),
-                    issuer.input.profiles().levelZeroProfiles().get(state.row()),nativeRow,point,cores))!=null)
+            var physical=issuer.managedEndpoints==null?null:issuer.managedEndpoints.at(nativeRow);
+            if(physical!=null)physical.requireNativeZero(issuer.profiles.get(nativeRow).source(),point,state.offsetRasterPixels(),
+                issuer.domain.rows().get(nativeRow).endpointConstraint());
+            var issued=new NativeEndpointOwner(state,issuer.profiles.get(nativeRow).source(),
+                    issuer.input.profiles().levelZeroProfiles().get(state.row()),nativeRow,point,cores,physical);
+            if(owners.put(state,issued)!=null)
                 throw new IllegalStateException("Native A state owner was duplicated");
+            return issued;
+        }
+        public boolean hasManagedPhysicalEndpoints(){return issuer.managedEndpoints!=null;}
+        public boolean hasCapturedEndpoint(RowState state){var owner=ownerFor(state);return owner!=null&&owner.physicalEndpoint!=null;}
+        public RasterPoint physicalRasterFor(RowState state){
+            var owner=ownerFor(state);if(owner==null)throw new IllegalArgumentException("Foreign native A physical endpoint");
+            return owner.physicalEndpoint==null?owner.position:owner.physicalEndpoint.evidenceRaster();
+        }
+        public MetricPoint physicalMetricFor(RowState state){
+            var owner=ownerFor(state);if(owner==null)throw new IllegalArgumentException("Foreign native A physical endpoint");
+            return owner.physicalEndpoint==null?issuer.input.context().metricAt(owner.position):owner.physicalEndpoint.exactMetric();
         }
         public boolean belongsTo(SampledEmissionInput input) {
             return sealed&&!issuer.closed&&!issuer.owner.isClosed()&&issuer.input==input
@@ -91,6 +109,7 @@ public final class NativeAEmissionSolver {
             if(owner==null||owner.state!=state||owner.profile!=issuer.profiles.get(owner.nativeRow).source()
                     ||owner.measurementProfile!=issuer.input.profiles().levelZeroProfiles().get(state.row())
                     ||issuer.retainedRow(owner.nativeRow)!=state.row())return null;
+            if(owner.physicalEndpoint!=(issuer.managedEndpoints==null?null:issuer.managedEndpoints.at(owner.nativeRow)))return null;
             return owner;
         }
         public void requireSourceUnchanged() {
@@ -154,7 +173,7 @@ public final class NativeAEmissionSolver {
                 VertexFact v=engine.vertices.get(at.key.cursorId());
                 vertices.add(v.id);occurrences.add(new EmittedOccurrence(v.id,v.row,
                     v.endpoint instanceof RowState row?row.nativeStateId():-1,
-                    v.endpoint instanceof Barrier event?event.occurrenceId():"",v.raster,v.metric,v.offset));
+                    v.endpoint instanceof Barrier event?event.occurrenceId():engine.managedEndpointId(v),v.raster,v.metric,v.offset));
                 if(at.arc!=null) {
                     arcs.add(at.arc.id());var a=at.admission;
                     selected.add(new SelectedCost(at.arc.id(),at.arc.sourceSpanMeters(),at.arc.optional(),
@@ -176,6 +195,41 @@ public final class NativeAEmissionSolver {
         public List<Integer> arcIds(){requireOpen();return arcIds;}
         public List<Integer> consumedRows(){requireOpen();return consumedRows;}
         public List<EmittedOccurrence> emitted(){requireOpen();return emitted;}
+        /** Actual fixed geographic coordinates for a later preview; never inverse-project E to reconstruct these. */
+        public List<ManagedAEndpointAuthority.Endpoint> managedFixedEndpoints(){
+            requireOpen();return engine.managedEndpoints==null?List.of():engine.managedEndpoints.endpoints();
+        }
+        void validateManagedFinalShape(){
+            if(engine.managedEndpoints==null)return;
+            requireOpen();engine.work(Math.addExact(64L,Math.multiplyExact((long)emitted.size(),emitted.size())));
+            engine.reserve(1024L+64L*emitted.size());
+            if(emitted.isEmpty())return; // Unreachable hypothesis remains an explicit empty native result.
+            var ends=engine.managedEndpoints.endpoints();
+            for(int side=0;side<2;side++){
+                var fact=ends.get(side);var value=emitted.get(side==0?0:emitted.size()-1);
+                if(value.row()!=fact.row()||value.offsetPx()==null||Double.doubleToRawLongBits(value.offsetPx())!=0L
+                        ||!value.metric().equals(fact.exactMetric())||!value.raster().equals(fact.nativeRaster())
+                        ||!value.occurrenceId().equals(fact.occurrenceId()))
+                    throw new InvalidCertificateException("Managed A final fixed endpoint is inconsistent");
+                var vertex=engine.vertices.get(value.vertexId());
+                if(!(vertex.endpoint instanceof RowState state)||engine.endpointOwners.ownerFor(state)==null
+                        ||!engine.endpointOwners.hasCapturedEndpoint(state))throw new InvalidCertificateException("Managed A final endpoint has no actual native owner");
+            }
+            var geometry=new ArrayList<MetricPoint>();
+            for(var value:emitted)if(geometry.isEmpty()||!geometry.get(geometry.size()-1).equals(value.metric()))geometry.add(value.metric());
+            if(geometry.size()<2)throw new InvalidCertificateException("Managed A final physical shape is degenerate");
+            for(int i=1;i<geometry.size();i++)for(int j=i+2;j<geometry.size();j++){
+                var a=geometry.get(i-1);var b=geometry.get(i);var c=geometry.get(j-1);var d=geometry.get(j);
+                if(java.awt.geom.Line2D.linesIntersect(a.xMeters(),a.yMeters(),b.xMeters(),b.yMeters(),c.xMeters(),c.yMeters(),d.xMeters(),d.yMeters()))
+                    throw new InvalidCertificateException("Managed A final physical shape has a crossing or contact");
+            }
+            for(int i=1;i<emitted.size();i++){
+                var a=engine.vertices.get(emitted.get(i-1).vertexId());var b=engine.vertices.get(emitted.get(i).vertexId());
+                if(!engine.input.context().routeSegmentAuthorized(a.measurementRaster,b.measurementRaster,engine.budget,engine.owner)
+                        ||!engine.input.context().evidenceSegmentAuthorized(a.measurementRaster,b.measurementRaster,engine.budget,engine.owner))
+                    throw new InvalidCertificateException("Managed A final physical evidence segment is unsupported");
+            }
+        }
         public List<SelectedCost> costs(){requireOpen();return costs;}
         public List<NativeStateInventory> nativeStates(){requireOpen();return nativeStates;}
         public List<Arc> potentialInventory(){requireOpen();return engine.graph.arcs();}
@@ -268,6 +322,16 @@ public final class NativeAEmissionSolver {
                     ||Double.doubleToLongBits(closure.cost())!=Double.doubleToLongBits(best==null?Double.POSITIVE_INFINITY:best.cost)))
                 throw new InvalidCertificateException("Native canonical DP disagrees with closure");
             if(census!=null)census.boundary(NativeAExecutionCensus.Phase.RESULT,-1,-1,-1,-1);
+            if(engine.managedEndpoints!=null){
+                var result=new Result(engine,best,closure);
+                try{
+                    result.validateManagedFinalShape();
+                    try(var publication=input.prepareManagedAFinalPublication(engine.owner,256L+64L*result.emitted.size(),4096L+128L*result.emitted.size())){
+                        publication.validate();
+                    }
+                    return result;
+                }catch(RuntimeException failure){try{result.close();}catch(RuntimeException closing){if(closing!=failure)failure.addSuppressed(closing);}throw failure;}
+            }
             if(choice==ExecutionChoice.POSITIVE_ARC_SCALAR_PREFIX_DOMINANCE_V1) {
                 var result=new Result(engine,best,closure);
                 try {
@@ -278,7 +342,9 @@ public final class NativeAEmissionSolver {
             return new Result(engine,best,closure);
         } catch(RuntimeException failure){
             if(census!=null)input.recordTerminalExecutionFailure(failure);else recordTerminal(input,failure);
-            if(engine!=null)engine.close();else if(admittedOwner!=null)admittedOwner.close();if(census!=null)census.fail(failure);throw failure;
+            if(engine!=null&&engine.managedEndpoints!=null){try{engine.close();}catch(RuntimeException closing){if(closing!=failure)failure.addSuppressed(closing);}}
+            else if(engine!=null)engine.close();else if(admittedOwner!=null)admittedOwner.close();
+            if(census!=null)census.fail(failure);throw failure;
         }
     }
 
@@ -317,6 +383,7 @@ public final class NativeAEmissionSolver {
         final EmissionWorkBudget budget;
         final AttemptMemoryLedger.Owner owner;
         final NativeAEmissionBinding binding;
+        final ManagedAEndpointAuthority managedEndpoints;
         final ExecutionChoice choice;
         final RefusalMemo refusalMemo;
         final NativeAExecutionCensus census;
@@ -335,6 +402,7 @@ public final class NativeAEmissionSolver {
         final int[] arcStarts;
         final NativeEndpointInventory endpointOwners;
         NativeConnectorEvaluator evaluator;
+        AutoCloseable managedLease;
         boolean closed;
 
         Engine(CorridorCenterlineOptimizer optimizer,SampledEmissionInput input,CorridorTrack track,
@@ -361,8 +429,14 @@ public final class NativeAEmissionSolver {
                 CorridorAwareTracker.NativeOwnerSource nativeSource,NativeAEmissionBinding binding,ExecutionChoice choice,NativeAExecutionCensus census) {
             this.input=Objects.requireNonNull(input);budget=input.workBudget();
             this.census=census;
+            managedEndpoints=input.managedAEndpoints().orElse(null);
             owner=admittedOwner;this.binding=binding;this.choice=Objects.requireNonNull(choice,"A execution choice");
             try {
+                if(managedEndpoints!=null){
+                    if(binding!=null)throw new IllegalArgumentException("Managed A cannot use a synthetic original-L0 alias");
+                    managedEndpoints.requireInvocation(junctions,barriers);
+                    managedLease=input.retainManagedAResultLifetime();
+                }
                 reserve(128L+profiles.size()*16L);this.profiles=List.copyOf(profiles);
                 if(!cleanup.isDisabled())throw new IllegalArgumentException("Native A optional cleanup is ineligible");
                 if(binding!=null&&!barriers.isEmpty())throw new IllegalArgumentException("Original A protected capture alias is unavailable");
@@ -467,9 +541,11 @@ public final class NativeAEmissionSolver {
                         reserve(512);work(1);
                         var endpoint=new RowState(retainedRow(row.rowIndex()),state.stateId(),state.offsetPx(),sourceClass,null);
                         states.add(endpoint);RasterPoint point=point(row.rowIndex(),state.offsetPx());
-                        endpointOwners.issue(endpoint,row.rowIndex(),measurement(point),cores);
+                        var nativeOwner=endpointOwners.issue(endpoint,row.rowIndex(),measurement(point),cores);
+                        var physical=nativeOwner.physicalEndpoint;
                         vertices.add(new VertexFact(vertices.size(),row.rowIndex(),group,
-                            sourceChainage(row.rowIndex()),endpoint,point,measurement(point),metric(point),state.offsetPx()));
+                            sourceChainage(row.rowIndex()),endpoint,point,physical==null?measurement(point):physical.evidenceRaster(),
+                            physical==null?metric(point):physical.exactMetric(),state.offsetPx()));
                     }
                     group++;
                     while(barrierCursor<barriers.size()&&barriers.get(barrierCursor).leftRow()==row.rowIndex()) {
@@ -539,6 +615,10 @@ public final class NativeAEmissionSolver {
         double sourceSpanUpper(int from,int to){return input.context().sourceSpanUpperMeters(retainedRow(from),retainedRow(to));}
         RasterPoint measurement(RasterPoint p){return binding==null?p:binding.toMeasurement(p);}
         MetricPoint metric(RasterPoint p){return input.context().metricAt(measurement(p));}
+        String managedEndpointId(VertexFact v){
+            if(managedEndpoints==null)return "";var endpoint=managedEndpoints.at(v.row);
+            return endpoint==null?"":endpoint.occurrenceId();
+        }
         @Override public BilinearSegmentIntegral.ReadOnlyScalarGrid nativeGrid(){return input.context().nativeGrid();}
         @Override public void requireDominanceSourceUnchanged(){requireOpen();endpointOwners.requireSourceUnchanged();}
         @Override public NativeScalarPreparation prepareScalar(CanonicalKey key,Arc arc) {
@@ -785,7 +865,11 @@ public final class NativeAEmissionSolver {
             for(Label at=label;at!=null;at=at.parent){pair(EmissionWorkBudget.Operation.BACKPOINTER_VISIT);ids.add(at.key.cursorId());}
             Collections.reverse(ids);return ids;
         }
-        @Override public void close(){if(!closed){closed=true;if(evaluator!=null)evaluator.close();owner.close();}}
+        @Override public void close(){if(!closed){closed=true;
+            if(managedEndpoints==null){if(evaluator!=null)evaluator.close();owner.close();return;}
+            try{if(evaluator!=null)evaluator.close();}finally{try{owner.close();}finally{
+                if(managedLease!=null)try{managedLease.close();}catch(RuntimeException e){throw e;}catch(Exception e){throw new IllegalStateException(e);}
+            }}}}
     }
     private static void recordTerminal(SampledEmissionInput input,RuntimeException failure) {
         if(failure instanceof EmissionWorkBudget.LimitExceededException

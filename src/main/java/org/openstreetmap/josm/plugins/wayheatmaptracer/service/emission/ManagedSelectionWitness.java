@@ -475,6 +475,18 @@ public final class ManagedSelectionWitness implements AutoCloseable {
             LatLon coordinate, EastNorth projectedSource, Map<String, String> tags,
             boolean explicitlyFixed, boolean protectedOccurrence) { }
     public List<FrozenOccurrence> frozenSelectedFacts() { requireLive(); return frozenSelectedFacts; }
+    /** Native junction flag from existing captured Way facts, distinct from endpoint/tag protection. */
+    public boolean capturedSharedWayAtOrdinal(int selectedOrdinal){
+        requireLive();
+        if(selectedOrdinal<0||selectedOrdinal>=frozenSelectedFacts.size())throw new IllegalArgumentException("Captured selected ordinal is outside its source");
+        Node node=frozenSelectedFacts.get(selectedOrdinal).identity();int ways=0;
+        for(var way:frozen.incidentWays().values()){
+            attemptBudget.charge(EmissionWorkBudget.Operation.PREPARATION,1L+way.nodes().size());
+            boolean found=false;for(Node candidate:way.nodes())if(candidate==node){found=true;break;}
+            if(found&&++ways>1)return true;
+        }
+        return false;
+    }
     public long selectedWayUniqueId() {
         requireLive();
         return frozen.incidentWays().get(selection.way()).uniqueId();

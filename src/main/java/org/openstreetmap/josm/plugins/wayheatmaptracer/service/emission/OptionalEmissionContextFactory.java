@@ -32,6 +32,8 @@ public final class OptionalEmissionContextFactory {
         private final AttemptMemoryLedger.Owner owner;
         private final AttemptMemoryLedger.Reservation metadata;
         private final org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode alignmentMode;
+        private final boolean managedA;
+        private org.openstreetmap.josm.plugins.wayheatmaptracer.service.RetainedManagedScalarProfiles producedA;
         private boolean producing, published;
         private RuntimeException terminalFailure;
 
@@ -39,16 +41,25 @@ public final class OptionalEmissionContextFactory {
                 org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler.PreparedManagedCapture capture,
                 java.util.function.Supplier<org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig> currentSettings,
                 EmissionWorkBudget budget, AttemptMemoryLedger.Owner owner,
-                AttemptMemoryLedger.Reservation metadata) {
+                AttemptMemoryLedger.Reservation metadata,boolean managedA) {
             this.capture = capture; this.currentSettings = currentSettings;
             this.budget = budget; this.owner = owner; this.metadata = metadata;
             this.alignmentMode = currentSettings.get().alignmentMode();
+            this.managedA=managedA;
         }
+        public boolean isManagedA(){return managedA;}
         public org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler.PreparedManagedCapture capture() { return capture; }
         public String detectorMode() { return capture.originalRequest().selectedColor(); }
         public EmissionWorkBudget workBudget() { return budget; }
         public AttemptMemoryLedger.Owner retainedOwner() { return owner; }
         public synchronized void beginProduction() {
+            if(managedA){
+                // A failed unpublished entry owns its permit cleanup; a consumed permit cannot revoke a result.
+                if(terminalFailure!=null)throw terminalFailure;
+                if(producing||published)throw new IllegalStateException("Managed source permit is single use");
+                try{requireCurrent();producing=true;return;}
+                catch(RuntimeException failure){failProduction(failure);throw failure;}
+            }
             requireCurrent();
             if (producing || published) throw new IllegalStateException("Managed source permit is single use");
             producing = true;
@@ -59,7 +70,7 @@ public final class OptionalEmissionContextFactory {
             try {
             var settings = currentSettings.get();
             capture.requireSourceCurrent(settings, budget);
-            if (settings.trackerMode() != org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.LEGACY_V02
+            if (settings.trackerMode() != (managedA?org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.CORRIDOR_AWARE:org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.LEGACY_V02)
                     || settings.alignmentMode() != alignmentMode || settings.adjustJunctionNodes()) {
                 throw new IllegalStateException("Managed captured alignment permissions changed");
             }
@@ -94,7 +105,7 @@ public final class OptionalEmissionContextFactory {
                 // no caller callback occurs after this complete final scan.
                 var settings=currentSettings.get();
                 selection.validate(settings);
-                if(settings.trackerMode()!=org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.LEGACY_V02
+                if(settings.trackerMode()!=(managedA?org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.CORRIDOR_AWARE:org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.LEGACY_V02)
                         ||settings.alignmentMode()!=alignmentMode||settings.adjustJunctionNodes())throw new IllegalStateException("Managed captured alignment permissions changed");
                 if(org.openstreetmap.josm.gui.MainApplication.getLayerManager().getEditDataSet()!=capture.selectionWitness().orElseThrow().dataSet())
                     throw new IllegalStateException("Managed selected dataset is not the active edit layer");
@@ -114,6 +125,19 @@ public final class OptionalEmissionContextFactory {
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler.PreparedManagedCapture capture,
             java.util.function.Supplier<org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig> currentSettings,
             EmissionWorkBudget budget, AttemptMemoryLedger.Owner parent) {
+        return bindManagedCapture(capture,currentSettings,budget,parent,false);
+    }
+    /** Explicit native multilevel A permit; normal captured fixed endpoints only. */
+    public static ManagedCaptureBinding bindManagedACapture(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler.PreparedManagedCapture capture,
+            java.util.function.Supplier<org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig> currentSettings,
+            EmissionWorkBudget budget,AttemptMemoryLedger.Owner parent){
+        return bindManagedCapture(capture,currentSettings,budget,parent,true);
+    }
+    private static ManagedCaptureBinding bindManagedCapture(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler.PreparedManagedCapture capture,
+            java.util.function.Supplier<org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig> currentSettings,
+            EmissionWorkBudget budget,AttemptMemoryLedger.Owner parent,boolean managedA){
         java.util.Objects.requireNonNull(capture, "prepared capture");
         java.util.Objects.requireNonNull(currentSettings, "current managed settings");
         java.util.Objects.requireNonNull(budget, "shared budget");
@@ -121,19 +145,29 @@ public final class OptionalEmissionContextFactory {
         budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
         var settings = currentSettings.get();
         if (settings == null || settings.trackerMode()
-                != org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.LEGACY_V02
+                != (managedA?org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.CORRIDOR_AWARE:org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.LEGACY_V02)
                 || settings.intensitySamplingMode()
                     != org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode.COLOR_MAPPING
                 || settings.adjustJunctionNodes() || capture.selectionWitness().isEmpty()) {
-            throw new IllegalArgumentException("Managed emission requires native Legacy source and fixed selected occurrences");
+            throw new IllegalArgumentException(managedA?"Managed A emission requires native color-mapped source and captured fixed endpoints":"Managed emission requires native Legacy source and fixed selected occurrences");
+        }
+        if(managedA){
+            var facts=capture.selectionWitness().orElseThrow().frozenSelectedFacts();
+            if(facts.size()<2||!facts.get(0).explicitlyFixed()||!facts.get(facts.size()-1).explicitlyFixed())
+                throw new IllegalArgumentException("Managed A requires captured fixed endpoints");
+            for(int i=1;i+1<facts.size();i++){
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION,1);
+                if(facts.get(i).protectedOccurrence()||facts.get(i).explicitlyFixed())
+                    throw new IllegalArgumentException("Managed A protected interiors require a separate safe-interval adapter");
+            }
         }
         budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
         var owner = parent.child("managed-emission-input");
         try {
             var reservation = owner.reserve(Math.addExact(16384L, Math.addExact(Math.multiplyExact(
                     (long) capture.originalRequest().originalSource().size(), 2048L),
-                    Math.multiplyExact((long) capture.originalProfileCount(), 1024L))));
-            var binding = new ManagedCaptureBinding(capture, currentSettings, budget, owner, reservation);
+                    Math.multiplyExact((long) (managedA?capture.nativeAProfileCount():capture.originalProfileCount()), 1024L))));
+            var binding = new ManagedCaptureBinding(capture, currentSettings, budget, owner, reservation,managedA);
             binding.requireCurrent();
             return binding;
         } catch (RuntimeException failure) {
@@ -145,12 +179,27 @@ public final class OptionalEmissionContextFactory {
     }
 
     /** Publishes only profiles produced on this opaque actual-source permit. */
+    public static SampledEmissionInput fromManagedAProduction(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler.ManagedAProducerReceipt receipt){
+        java.util.Objects.requireNonNull(receipt,"actual A producer receipt");var binding=receipt.binding();
+        synchronized(binding){
+            binding.requireCurrent();
+            if(!binding.managedA||!binding.producing||binding.published||binding.producedA!=null)
+                throw new IllegalArgumentException("Managed A producer receipt is foreign or consumed");
+            binding.producedA=receipt.retained();
+            return fromManagedCapture(binding,receipt.retained());
+        }
+    }
+
+    /** Publishes only profiles produced on this opaque actual-source permit. */
     public static SampledEmissionInput fromManagedCapture(ManagedCaptureBinding binding,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.RetainedManagedScalarProfiles retained) {
         java.util.Objects.requireNonNull(binding, "managed binding");
         synchronized (binding) {
             binding.requireCurrent();
             if (!binding.producing || binding.published || retained == null
+                    ||retained.isManagedA()!=binding.managedA
+                    ||binding.managedA&&binding.producedA!=retained
                     || retained.sourceCapture().orElse(null) != binding.capture
                     || !retained.boundTo(binding.owner, binding.budget)
                     || retained.sourceParameters().isEmpty() || retained.groundTransform().isEmpty()) {
@@ -165,10 +214,14 @@ public final class OptionalEmissionContextFactory {
                 throw new IllegalArgumentException("Managed production requires every acquired usable tile receipt");
             }
             var context = new OptionalEmissionContext(binding, retained);
-            var legacy = LegacyEmissionBinding.fromManagedCapture(binding, retained, context);
+            var legacy = binding.managedA?null:LegacyEmissionBinding.fromManagedCapture(binding, retained, context);
             var result = new SampledEmissionInput(retained.profileSet(), context, binding.budget,
-                    binding.owner, Optional.of(legacy));
+                    binding.owner, Optional.ofNullable(legacy));
+            if(binding.managedA)context.managedAEndpoints().orElseThrow().attachInput(result);
             binding.metadata.adopt(context);
+            if(binding.managedA)try(var publication=result.prepareManagedAFinalPublication(binding.owner,256,4096)){
+                publication.validate();
+            }
             binding.published = true;
             binding.producing = false;
             return result;

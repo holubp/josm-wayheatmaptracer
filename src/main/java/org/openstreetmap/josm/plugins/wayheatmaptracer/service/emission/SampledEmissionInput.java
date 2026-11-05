@@ -37,6 +37,12 @@ public final class SampledEmissionInput implements AutoCloseable {
     public EmissionWorkBudget workBudget() { requireOpen(); return workBudget; }
     /** Original Legacy row ownership, absent for ordinary optional-emission inputs. */
     public Optional<LegacyEmissionBinding> legacyBinding() { requireOpen(); return legacyBinding; }
+    public Optional<ManagedAEndpointAuthority> managedAEndpoints(){requireOpen();return context.managedAEndpoints();}
+    /** Managed-A only: existing prepaid source ticket, after the actual outer result copies. */
+    public FinalPublication prepareManagedAFinalPublication(AttemptMemoryLedger.Owner owner,long copyWork,long copyBytes){
+        if(managedAEndpoints().isEmpty())throw new IllegalArgumentException("Captured managed A input is required");
+        return prepareManagedFinalPublication(owner,copyWork,copyBytes);
+    }
     private synchronized void requireOpen() {
         if (logicallyClosed || retainedOwner.isClosed())
             throw new IllegalStateException("Retained emission input is closed");
@@ -64,18 +70,19 @@ public final class SampledEmissionInput implements AutoCloseable {
         requireOpen();if(terminalExecutionFailure!=null)throw terminalExecutionFailure;
         workBudget.charge(EmissionWorkBudget.Operation.PREPARATION,32L+legacyBinding.map(value->value.observations().size()).orElse(0));
         workBudget.charge(EmissionWorkBudget.Operation.PREPARATION,Math.addExact(copyWork,
-            Math.addExact(Math.multiplyExact(8L*context.observations().size(),profiles.levels().size()),legacyBinding.map(LegacyEmissionBinding::finalPublicationWork).orElse(0L))));
+            Math.addExact(Math.multiplyExact(8L*context.observations().size(),profiles.levels().size()),
+                Math.addExact(legacyBinding.map(LegacyEmissionBinding::finalPublicationWork).orElse(0L),context.managedAEndpointFinalPublicationWork()))));
         workBudget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);
         var scratch=owner.child("managed-final-publication");
         try{scratch.reserve(copyBytes);return new FinalPublication(scratch,context.prepareFinalPublication(scratch));}
         catch(RuntimeException failure){scratch.close();if(ExperimentalMeasuredModeInventory.terminal(failure))recordTerminalExecutionFailure(failure);throw failure;}
     }
-    final class FinalPublication implements AutoCloseable{
+    public final class FinalPublication implements AutoCloseable{
         private final AttemptMemoryLedger.Owner scratch;
         private final OptionalEmissionContextFactory.ManagedCaptureBinding.FinalPublicationCheck source;
         private boolean used;
         private FinalPublication(AttemptMemoryLedger.Owner scratch,OptionalEmissionContextFactory.ManagedCaptureBinding.FinalPublicationCheck source){this.scratch=scratch;this.source=source;}
-        void validate(){
+        public void validate(){
             if(used||scratch.isClosed())throw new IllegalStateException("Managed final publication is closed or consumed");used=true;
             requireOpen();if(terminalExecutionFailure!=null)throw terminalExecutionFailure;
             workBudget.requireActiveForFinalPublication();
@@ -119,6 +126,17 @@ public final class SampledEmissionInput implements AutoCloseable {
         requireOpen();
         liveResults++;
         return new ResultLease(this);
+    }
+    /** Managed A is still a borrowed API; this lease retains charged payload until result closure. */
+    public synchronized AutoCloseable retainManagedAResultLifetime(){
+        if(managedAEndpoints().isEmpty())throw new IllegalArgumentException("Managed A lifetime requires its captured input");
+        workBudget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);var owner=retainedOwner.child("managed-a-result-lifetime");
+        try{
+            var memory=owner.reserve(128);var lease=retainResultLifetime();
+            AutoCloseable result=new AutoCloseable(){boolean closed;
+                public void close(){if(closed)return;closed=true;try{owner.close();}finally{lease.close();}}
+            };memory.adopt(result);return result;
+        }catch(RuntimeException failure){owner.close();throw failure;}
     }
 
     static final class ResultLease implements AutoCloseable {

@@ -7,6 +7,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 public final class RetainedManagedScalarProfiles implements AutoCloseable {
     private final TileHeatmapSampler.TileMosaic sourceMosaic;
     private final ManagedScalarGrid grid;
+    private final NativeScalarGridView scalarView;
+    private final boolean managedA;
     private final MultiScaleProfileSet profileSet;
     private final AttemptMemoryLedger.Owner owner;
     private final TileHeatmapSampler.PreparedManagedCapture sourceCapture;
@@ -30,12 +32,22 @@ public final class RetainedManagedScalarProfiles implements AutoCloseable {
         this.groundTransform = groundTransform;
         this.producerParent = producerParent;
         this.budget = budget;
+        scalarView=grid.view();managedA=false;
+    }
+    RetainedManagedScalarProfiles(TileHeatmapSampler.TileMosaic sourceMosaic,NativeScalarGridView view,
+            MultiScaleProfileSet profiles,AttemptMemoryLedger.Owner owner,TileHeatmapSampler.PreparedManagedCapture capture,
+            SourceParameterCertificate parameters,ManagedGroundTransform ground,AttemptMemoryLedger.Owner parent,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget budget){
+        this.sourceMosaic=sourceMosaic;grid=null;scalarView=view;managedA=true;profileSet=profiles;this.owner=owner;
+        sourceCapture=capture;sourceParameters=parameters;groundTransform=ground;producerParent=parent;this.budget=budget;
     }
     private void requireOpen() {
         if (owner.isClosed()) throw new IllegalStateException("Retained managed profiles are closed");
     }
     public TileHeatmapSampler.TileMosaic sourceMosaic() { requireOpen(); return sourceMosaic; }
-    public ManagedScalarGrid grid() { requireOpen(); return grid; }
+    public ManagedScalarGrid grid() { requireOpen();if(grid==null)throw new IllegalStateException("Managed A retains its native float field"); return grid; }
+    public NativeScalarGridView nativeGrid(){requireOpen();return scalarView;}
+    public boolean isManagedA(){requireOpen();return managedA;}
     public MultiScaleProfileSet profileSet() { requireOpen(); return profileSet; }
     public List<RenderedHeatmapSampler.CrossSectionProfile> profiles() {
         return profileSet().levelZeroProfiles();
