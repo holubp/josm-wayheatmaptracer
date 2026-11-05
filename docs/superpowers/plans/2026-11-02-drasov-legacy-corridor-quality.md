@@ -14,12 +14,46 @@
 
 ### Current resume card — authoritative; prior notes below are historical
 
+- 2026-11-05 continuation: user explicitly requires finishing all remaining1–4
+  without milestone stops. Guide2aff3119 frozen96tests/11XML GREEN, ordinary
+  compiled323/4fc fences unchanged; managed_source_audit reviewing actual whole
+  delta. Endpoint-A12e96faf frozen512tests/39suites GREEN; kernel_memory_audit
+  reviewing full25-file delta. Both are implementations awaiting independent
+  acceptance, not real-quality completion. kernel_memory_closure preparing only
+  a frozen BASE witness-only32M private helper; execution awaits source/helper
+  review. FullCI41940029560 exactd19faedb now SUCCESS, public-validation and both
+  PROBABILISTIC/LEGACY_THEN_B GUI jobs SUCCESS. Imported public artifacts only:
+  3159executions/296XML/3044distinct/0failures/errors/skips; public summary PASS,
+  bothGUI summaries PASS (ordinaryAction, geometryOracle, cancellation/no-late-
+  preview, dataset/Undo unchanged and silentSettingsSave all true). NoJAR/private
+  upload. Evidence /tmp/drasov-ci-41940029560. Guide review preliminary lifetime
+  blocker: caller provider closure after finish may invalidate retained result
+  payload. A review preliminary adjacent-overlap hole in final-shape gate.
+  Consolidated reports pending; helper paused with no private reads/run/claim.
+  Reviews now consolidated: guide oneP1 lifetime transfer, R1 originalworker
+  in isolated /tmp/josm-drasov-legacy-owned-guide-r1 from2aff; A twofindings
+  adjacent overlap and late terminal-census mutation, R1 originalworker.
+  Reports /tmp/drasov-legacy-owned-guide-source-review.md and
+  /tmp/drasov-managed-a-endpoint-source-review.md. No unreviewed adoption.
+  Read-only consumer map /tmp/drasov-quality-consumer-next-dependencies.md:
+  ordinary AlignmentService/Hybrid still use oldtrack APIs; after viability,
+  owned M/N-aware candidate adaptation, Precise/Move finalpreview/assignment,
+  post-anchor quality, exactApply/Undo and Hybrid occurrence bridge remain.
+  This is binding remaining scope, not an optional follow-up or completion.
+  Guide fix round1/5 implemented d95f42b6 (isolatedR1 tree, base2aff): explicit
+  prepaid lease transfer, four real lifetime RED then109covering tests GREEN,
+  old ordinary bytecode fences PASS. Scoped independent re-review CLOSED PASS
+  d95f42b6; oneP1 addressed, no new blocker. Helper preparation resumed against
+  this exact source/classes; private execution still awaits helper review.
+  Reuse existing ledger/reviews; no new RC/default adoption. Real Drasov visual,
+  consumer/Apply, protected-interior A and practical performance gates remain.
+
 - User: finish remaining points1–4, preserve fast ordinary Legacy, clean obsolete
   temporaries; continue autonomously. No RC/default adoption or Astra authorized.
-  Primary dirty117baaf0 untouched. Controller docs branch last79786aa2 plus this
+  Primary dirty117baaf0 untouched. Controller docs branch lastfbf8b1a9 plus this
   ledger; three original untracked handoff/plan files preserved.
 - Point1 original evaluator findings CLOSED. Point2 full grouped kernel/forwarder
-  CLOSED d00, but actual geometry and managed composition remain. Point3 real
+  and managed composition CLOSED4fc; guide/actual geometry/consumers remain. Point3 real
   Drasov improvement OPEN. Point4 A synthetic R4 certified; managed A producer/
   consumers OPEN. Consumer/Apply/private visual gates remain; no completion claim.
 - Highest full publicCI b27310b0/run41912441658 PASS:3060executions/287XML,
@@ -29,11 +63,37 @@
   other65compiledbodies unchanged,136/20tests GREEN. RC14 publicJAR af0fe6f4
   frozen. First minimal benchmark ratios1.47/.86/1.12 were unstable; second
   protocol2f64 ONE INCONCLUSIVE320warmcalls/no measured pairs, fullbits equal.
-  NO local retry/no runtime PASS. a_native_integration implementing PUBLIC-ONLY
-  optional existingBuild CI benchmark, source-only descendant323, exactproduction
+  NO local retry/no runtime PASS. PUBLIC-ONLY existingBuild benchmark CLOSED
+  independentPASS350a1434 afteratomicexportP2;83original/41affected controls,
+  unchangedJava/protocol/fixtures reused. Pushedcodex/ordinary-legacy-public-benchmark;
+  rootONE manual run41931505171 (workflow_dispatch/head350) SUCCESS. Duplicate
+  push-run41931491674 cancellationrequested; never count it asPASS. Fullvalidation
+  andGUI run onmanualhead, then optionalbenchmark. Source-only descendant323, exactproduction
   blobguard/pinnedRC14,3literalpublicfixtures, fixed100x32warm/16x64pairs,
-  eight-minute bound, readiness/INCONCLUSIVE/no retry. Independent review before
-  root push/ONE dispatch. No accepted slowdown tolerance; no private parser/data.
+  eight-minute bound, readiness/INCONCLUSIVE/no retry. No accepted slowdown
+  tolerance; no private parser/data/upload orRC. Reports ordinary-legacy-public-ci-*.
+  Actual benchmarkCOMPLETE25344calls/6144measured, all6readiness/fullbits/fences
+  pass; pairedmedians corrected/RC14 .9850912922/1.001275117/1.025785343.
+  Publickernel no-large-slowdown evidence, NOTacquisition/export/Apply/fullworkflow
+  gate. Outputaudit managed_context_closure CLOSED PASS: all696samples/710lines,
+  digests/readiness/stats/fences independentlyrecomputed, review9bda9501
+  ordinary-legacy-public-ci-result-review.md. FullCI3070/288XML,
+  2960distinct0f/e/s andbothGUI PASS; drasov-ci-41931505171-report.md.
+  Integratedcomposition4fc pushed; fullCI41934421000 FAILEDjava-build:3158/296XML,
+  3043distinct/2fail/0error/0skip, GUI skipped. Both parameterizedM2tests fail
+  exactdiagnosticscalarstring atline229; priorsemanticownershipassertions pass,
+  actualstringnotlogged soportability is hypothesisnotprovedcause. Isolated
+  test-onlyrepair ci_scalar_portability (requestedLuna/medium) preservesproduction
+  rules/strictactualPrawcore andexistingassertions; independentreview+newCIrequired.
+  Repaird19faedb onefile25+/4- CLOSED SolPASS: typedauthorizedactualPscalar,
+  uniqueassociatednumericcore threshold/strictfinitebelow, equality/above negatives,
+  alloldsemanticassertions retained.37/37 GREEN. Report/review
+  drasov-scalar-portability-{report,review}.md. DetachedlocalHEAD pushed via
+  explicitd19:refs/heads/codex/drasov-scalar-portability (initialHEAD refguess
+  failedwithoutremotechange); fullCI41940029560 INPROGRESS exactd19.
+  Report drasov-ci-41934421000-report.md, evidence retained. Watchsessions
+  52584/1175 bothcompleted, new419400watch active (see toolsession/log), logs ordinary-legacy-ci-41931505171-watch.log
+  anddrasov-ci-41934421000-watch.log; poll existing, never redispatch.
 - M2 actual managed local classifier1802ac1e CLOSED independent PASS after2P1s:
   tri-state uniqueness + prepaid complete callback-free publication ticket.
   Final85/7 GREEN, covering133/12 reused. Native .30/.60 below-core UNKNOWN;
@@ -42,41 +102,86 @@
   M3/J.30259409391738523/y64error.002923m,95.58Mwork/180241744Bpeak→0;
   output auditPASS. Synthetic originalR4 ONLY. Old32MFAIL and interrupted128M
   UNVERIFIED retained. Managed-A next producer dependency map saved, no code yet.
+  Managed-A producer contract42462fe6 (915words) reviewed90da6d7b:
+  nativefloatmultiscale/FLOAT_L0_Q/ownership sound, PRACTICAL correctionrequired.
+  Ruling: endpoint-only capturedauthority must befirst usefulslice, since ordinary
+  selections fix endpoints; do not implement unusableunprotected-onlyslice and
+  callTask4complete. Actualsampler endpoint roundoff +F metric versus captured
+  exactMetric/aliasenclosure isnot equalityproof. affinity_contract_probe owns
+  R1 designamendment binding bothmetricusers/legs/Q/emission/finalgeometry,
+  preserving native rows/state/C/T/K or specifying narrowreviewedcorrection;
+  no arbitraryepsilon/fakebefore-row0barrier. Offgridinterior protection remains
+  explicitunsupported/safeintervalfuture; null-bindingA outerfinalticketrequired.
+  R1contract293bfa5d1072words/b48e4e90diff independentlyPASS4ad6ed4d642words.
+  affinity_contract_probe implementing NEW4fc
+  endpoint-only A slice: Pnative/Eexact/R(E)evidence roles, freshactualphysical
+  core/support, no GAPmode invention, physicalQ/K/zero/cache/winner corrections
+  explicitversioned; nativeproducer/state oracle separatefromphysicaloracle.
+  No completeTask4 claim. Useabsolute worktreepaths; root verified original4fc
+  unchanged afternativeworktree-createfail/fallback (117baaf wascwd ambiguity).
 - Legacy e4ac ONE grouped-q0-d00-32m-001: numericalFAIL31,999,843,next258,
   BASEseed0row12, noM/winner; U1056.4837149472492,188bounds/0deferrals,
   67eval13admit54reject,production20,582,036/tax11,417,807,peak54508560→0.
   Output auditPASS; matched63 production+4.28%. No cap retry/adoption.
-- Approved next discriminator: exactQcap=span/pitch groupedLcap; only count
-  scalar-useful candidates, NEVER dropcandidate. Census a8ff4301 source math/
-  default parity closed but2 boundary findings OPEN (later-row mutation and tax
-  writes to revokedobserver). R1 assigned kernel_memory_closure in NEWtree from
-  88cdc below, reuse CLOSEDM2 ticket and exact observer authority, no duplicated
-  handwritten validator. No helper/private run until scopedsourcePASS.
+- Static bound now independentlyPASS: drasov-legacy-q0-static-prefix-bound{,-review}.md.
+  Frozenrow0..29 envelopes/actualseed+carry rules giveD<352,V<=1124;
+  C<237/T<355/Q<310/K<151 and conservativegroupedLcap<1054<U1056.4837 for
+  ALLearlyprefixfrom<=12/to<=29. Numericzero transitions update slope but included;
+  protectedzero adds no extra numeric update. Scope onlythisU/BASEprefix, notlater
+  rows/stages/newguide. SKIP newCensus32M/helper andone-edgeScalaradapter for this
+  obstruction. Reviewed identity-preserving existingnativeordinary-guide contract
+  is ready: fullyowned/current-admission replayed U,
+  no fabricatedpeak/carry/state, no ordinaryfastpath hooks/extra source sampling.
+- Diagnostic-only census a8ff4301 had2 boundary findings (later-row mutation and
+  revokedobserver tax). CensusR1 afb0d8ac from88cdc,117/10 GREEN, fixededbcda9c
+  independentlyPASS, reusing CLOSEDM2 ticket/exact observer authority;
+  review drasov-legacy-ceiling-census-source-review.md. Staticproof retiresprivate screen; keep/source
+  closure is independent from any experimental adoption.
 - Composition contract c7f9f546 independentlyPASS. affinity_contract_probe owns
   josm-drasov-managed-grouped-composition: base323 +M2imports9fbd42a8/d8c4f287
   +census4aeec970 +4-line nocharge inventorywrapper88cdc5f13895b8e763493f7dd86e18259d172409.
-  Seven guardfiles EXACT1802; compileJavaPASS. Future composition uncommitted,
-  tests starting; broad/freeze held for correctedcensus. ExplicitGroupExecution+
+  Seven guardfiles EXACT1802; compileJavaPASS. ExplicitGroupExecution+
   composedidentity, sameadmissionwitness/Q0U, allstages/edges/rawretention,
   outercopyprep→finalticket→chargefreecompatible/SUCCESSseal; revokeduntouched.
+  COMPOSITION NOW FROZEN4fc79c87: correctedcensus importedcfc4c074 treeEXACTafb;
+  behavior-onlycfc..4fc9files565+/18-, whole323..4fc28files3139+/42-.
+  Report drasov-managed-grouped-composition-implementation-report.md921e2ea6,
+  packet drasov-managed-grouped-evidence/frozen-4fc79c87/821c7e6d checksumlist.
+  519distinct/47suites verified by combined518PASS+layoutNPE then13/2affected
+  GREEN; test-onlynullarrayguard retainedbound, no prodchanges aftercombined.
+  Whole83939ae3/behavior9195e681/source28/class1977 manifests saved.
+  managed_source_audit finalsource review CLOSED PASS; report
+  drasov-managed-grouped-composition-source-review.md. No private run/adoption.
 - 88cdc prerequisite independently conditionalPASS exactunion/manualKernelmerge:
- 20changedpaths/834unaffected blobs,7guardfiles EXACT1802, Ridge EXACT323,
+  20changedpaths/834unaffected blobs,7guardfiles EXACT1802, Ridge EXACT323,
   inventorywrapperpure null delegation. Report drasov-managed-grouped-prerequisite-integration-review.md;
-  compileJava/compileTestJava verified only; runtime compatibility pending.
-  kernel_memory_audit
-  owns censusR1 scopedreview next. managed_source_audit closedM2 andcompositiondesign.
+  Compile-only original scope; latercomposition tests supplement it.
+  kernel_memory_audit closedcensusR1; managed_source_audit closedM2/designs and
+  reviewscomposition. managed_context_closure closedpublicCIsource/exportR1.
   No new children/delegation recursion. Requested Sol6.1/high; telemetry unknown.
 - Storage cleanup journals drasov-temporary-cleanup-20261104{,-pass2,-pass3}.json:
   only generatedJavadoc/HTML/compiler/projectGradlecaches removed under sharedflock;
   source/classes/resources/JAR/XML/logs/privateinputs/proofs/helpers preserved.
   512MiB execution admission/256MiBbuild safety unchanged; caches can regrow.
   AllGradle offline/JDK17/max-workers1/sharedflock. No globaldependencies deleted.
-- Next: closeCensusR1+prereqmerge review; adapt ONEdiscriminator32M helper only
-  after sourcePASS; finish/review fullmanaged composition and actual geometry;
-  publicCI runtime benchmark; managedA producer; consumer/Apply/integration/private
-  quality/fullreview gates. Update this card at coherent milestones. Do not
+- Next: composition4fc fullCI result; kernel_memory_closure implementing ownedguide
+  in NEW4fc-based tree under reviewedcontract, no ordinaryfastpath changes.
+  Guide draft compiledfence GREEN: all66existingRidge methods/20lambdagroups
+  vs323, all70/23 vs4fc andState fields/descriptors/methods unchanged. Analytic
+  feasibleU improvement/R4equality/managedoracle/source-revocation checks green;
+  final K-worse fixture/neighbor matrix pending, no sourcefreeze/review/private
+  run yet. Portabilityd19 importedbf939a96. No numericalpracticality claim.
+  Source/test/review thenONEwitness-only32Mscreen; actualgeometry;
+  managedA producer; consumer/Apply/integration/privatequality/fullreview gates.
+  Update this card at coherent milestones. Do not
   rerun consumed claims, edit frozen trees/classes, or equate source/tests with
   real geometry/runtime acceptance. Exact commands/reports remain below/tmp.
+  StaticproofPASS meansNOcensusscreen. Active guide contract
+  drasov-legacy-owned-ordinary-guide-design{,-review}.md (772/644words).
+  Preserveordinaryfastbytecode, actualpeakidentity/typedcarry/forcedtargets,
+  sameadmission/grouped replay, WHOLEminfeasiblevector vsoldgreedy/equaltieold,
+  guidecosts/prepay/owners/terminalfailure; witness-onlyBASEperseed32M screen
+  before anyfulloptionalretry. No newsource sampler/A/B/primaryoptimizer.
 
 ### Prior execution notes — historical; current card above takes precedence
 
