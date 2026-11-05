@@ -54,27 +54,71 @@ public final class LegacyEmissionKernel {
     private record GroupedFacts(GroupedExecution execution,List<GroupedStageReference> stages,AttemptMemoryLedger.Owner owner,GuideContext guide) {
         private GroupedFacts(GroupedExecution execution,List<GroupedStageReference> stages,AttemptMemoryLedger.Owner owner){this(execution,stages,owner,null);}
     }
-    public enum GuideScope { FULL_GROUPED, BASE_WITNESS_ONLY }
-    public enum GuideStatus { FEASIBLE, ADMISSION_REFUSED, NO_POSITIVE_FINITE_VECTOR, NO_OWNED_ANCHOR, OWNERSHIP_UNAVAILABLE }
+    public enum GuideScope { FULL_GROUPED, BASE_WITNESS_ONLY, BASE_NATIVE_GUIDE_ONLY }
+    public enum GuideStatus { FEASIBLE, ADMISSION_REFUSED, NO_POSITIVE_FINITE_VECTOR, NO_OWNED_ANCHOR,
+        OWNERSHIP_UNAVAILABLE, NOT_REQUESTED, NO_ORIGINAL_SEED, NON_POSITIVE_UPPER }
     public enum GuideChoice { GREEDY, GUIDED, NONE }
     public record GuideOwnedStep(int originalRow,RidgeTracker.GuideKind kind,int nativeStateId) { }
     public record GuideStageReference(int seedId,int ordinal,Optional<EmissionResult.Costs> greedy,GuideStatus greedyStatus,
             Optional<EmissionResult.Costs> guided,GuideStatus guidedStatus,GuideChoice choice,
             List<GuideOwnedStep> greedySteps,List<GuideOwnedStep> guidedSteps,boolean hasProposalScore,double proposalScore) { }
     private record GuideReplay(Optional<EmissionResult.Costs> costs,GuideStatus status,List<GuideOwnedStep> steps) { }
+    public enum NativeGuideCoverage { FIRST_ORIGINAL_SEED_ONLY, NO_ORIGINAL_SEEDS }
+    public record NativeGuideSeedIdentity(int id,long offsetRawBits) {
+        public NativeGuideSeedIdentity {
+            if (id < 0 || !Double.isFinite(Double.longBitsToDouble(offsetRawBits)))
+                throw new IllegalArgumentException("Native guide seed identity is invalid");
+        }
+        public double offsetRasterPixels() { return Double.longBitsToDouble(offsetRawBits); }
+    }
+    /** One actual native-guided BASE route; greedy comparison and all other seeds are explicitly absent. */
+    public record NativeGuideOnlyDiagnostic(int originalSeedCount,Optional<NativeGuideSeedIdentity> requestedSeed,
+            NativeGuideCoverage coverage,GuideStatus greedyStatus,boolean comparisonPerformed,
+            GuideStatus guidedStatus,Optional<EmissionResult.Costs> guidedCosts,List<GuideOwnedStep> guidedSteps,
+            java.util.OptionalDouble witnessUpper) {
+        public NativeGuideOnlyDiagnostic {
+            Objects.requireNonNull(requestedSeed);Objects.requireNonNull(coverage);Objects.requireNonNull(greedyStatus);
+            Objects.requireNonNull(guidedStatus);Objects.requireNonNull(guidedCosts);Objects.requireNonNull(guidedSteps);
+            Objects.requireNonNull(witnessUpper);guidedSteps=List.copyOf(guidedSteps);
+            if(originalSeedCount<0||greedyStatus!=GuideStatus.NOT_REQUESTED||comparisonPerformed)
+                throw new IllegalArgumentException("Native guide-only comparison status is invalid");
+            if(originalSeedCount==0) {
+                if(requestedSeed.isPresent()||coverage!=NativeGuideCoverage.NO_ORIGINAL_SEEDS
+                        ||guidedStatus!=GuideStatus.NO_ORIGINAL_SEED||guidedCosts.isPresent()||witnessUpper.isPresent()||!guidedSteps.isEmpty())
+                    throw new IllegalArgumentException("Empty native seed coverage is inconsistent");
+            } else {
+                var seed=requestedSeed.orElseThrow();
+                if(seed.id()!=0||coverage!=NativeGuideCoverage.FIRST_ORIGINAL_SEED_ONLY)
+                    throw new IllegalArgumentException("Native guide-only must retain the first original seed");
+                if(guidedCosts.isPresent()) {
+                    var costs=guidedCosts.orElseThrow();double upper=costs.total();
+                    if(guidedStatus!=GuideStatus.FEASIBLE||!witnessUpper.isPresent()
+                            ||!Double.isFinite(upper)||upper<=0.0
+                            ||Double.doubleToRawLongBits(upper)!=Double.doubleToRawLongBits(witnessUpper.getAsDouble()))
+                        throw new IllegalArgumentException("Native guide-only upper is not a positive certified route total");
+                } else if(witnessUpper.isPresent()||guidedStatus==GuideStatus.FEASIBLE) {
+                    throw new IllegalArgumentException("Unavailable native guide cannot carry an upper");
+                }
+            }
+        }
+    }
     /** New-route sidecar; witness-only never exposes an optimizer winner, intervals or smoothed geometry. */
     public static final class OwnedGuideResult implements AutoCloseable {
         private final GuideScope scope;private final GroupedResult grouped;private final List<GuideStageReference> comparisons;
+        private final NativeGuideOnlyDiagnostic nativeGuideOnly;
         private final RidgeTracker.OwnedGuideLease guideLifetime;private final AttemptMemoryLedger.Owner owner;
         private final SampledEmissionInput.ResultLease lease;private final EmissionWorkBudget.Snapshot work;private final long peak;private final String modelIdentity;
         private boolean closed;
-        private OwnedGuideResult(GuideScope scope,GroupedResult grouped,List<GuideStageReference> comparisons,RidgeTracker.OwnedGuideLease guideLifetime,
+        private OwnedGuideResult(GuideScope scope,GroupedResult grouped,List<GuideStageReference> comparisons,
+                NativeGuideOnlyDiagnostic nativeGuideOnly,RidgeTracker.OwnedGuideLease guideLifetime,
                 AttemptMemoryLedger.Owner owner,SampledEmissionInput.ResultLease lease,EmissionWorkBudget.Snapshot work,String modelIdentity) {
-            this.scope=scope;this.grouped=grouped;this.comparisons=List.copyOf(comparisons);this.guideLifetime=guideLifetime;this.owner=owner;this.lease=lease;this.work=work;peak=owner.peakBytes();this.modelIdentity=modelIdentity;
+            this.scope=scope;this.grouped=grouped;this.comparisons=List.copyOf(comparisons);this.nativeGuideOnly=nativeGuideOnly;
+            this.guideLifetime=guideLifetime;this.owner=owner;this.lease=lease;this.work=work;peak=owner.peakBytes();this.modelIdentity=modelIdentity;
         }
         private void live(){if(closed||owner.isClosed()||guideLifetime.isClosed())throw new IllegalStateException("Owned guide result is closed");}
         public GuideScope scope(){live();return scope;}public Optional<GroupedResult> grouped(){live();return Optional.ofNullable(grouped);}
         public List<GuideStageReference> comparisons(){live();return comparisons;}public EmissionWorkBudget.Snapshot work(){live();return work;}
+        public Optional<NativeGuideOnlyDiagnostic> nativeGuideOnly(){live();return Optional.ofNullable(nativeGuideOnly);}
         public long peakRetainedBytes(){live();return peak;}public String modelIdentity(){live();return modelIdentity;}
         @Override public void close(){if(!closed){closed=true;try{if(grouped!=null)grouped.close();}finally{try{guideLifetime.close();}finally{try{owner.close();}finally{if(lease!=null)lease.close();}}}}}
     }
@@ -2191,6 +2235,14 @@ public final class LegacyEmissionKernel {
             CancellationProbe cancellation,NativeConnectorEvaluator.QueryPolicy query,NativeConnectorEvaluator.ExecutionPolicy execution,LegacyEmissionProgress progress) {
         return ownedGuideExecution(input,provider,cancellation,query,execution,progress,GuideScope.BASE_WITNESS_ONLY,null);
     }
+    /** Diagnostic only: replay the unchanged native proposal for original seed zero without greedy comparison. */
+    public OwnedGuideResult evaluateFirstOriginalOwnedNativeGuide(SampledEmissionInput input,
+            RidgeTracker.OwnedOrdinaryGuide provider,CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy query,NativeConnectorEvaluator.ExecutionPolicy execution,
+            LegacyEmissionProgress progress) {
+        return ownedGuideExecution(input,provider,cancellation,query,execution,progress,
+            GuideScope.BASE_NATIVE_GUIDE_ONLY,null);
+    }
     public OwnedGuideResult solveOwnedGuideManagedGrouped(SampledEmissionInput input,RidgeTracker.OwnedOrdinaryGuide provider,Smoother smoother,
             CancellationProbe cancellation,NativeConnectorEvaluator.QueryPolicy query,NativeConnectorEvaluator.ExecutionPolicy execution,LegacyEmissionProgress progress) {
         return ownedGuideExecution(input,provider,cancellation,query,execution,progress,GuideScope.FULL_GROUPED,Objects.requireNonNull(smoother));
@@ -2203,9 +2255,11 @@ public final class LegacyEmissionKernel {
             throw new IllegalArgumentException("Early execution requires local query policy");
         if(progress!=null)progress.requireCompatible(input,query,execution);
         AttemptMemoryLedger.Owner owner=null;SampledEmissionInput.ResultLease lease=null;RidgeTracker.OwnedGuideLease guideLifetime=null;EmissionResult emission=null;GroupedResult grouped=null;OwnedGuideResult result=null;
+        NativeGuideOnlyDiagnostic nativeGuideOnly=null;
         try {
             if(progress!=null){progress.begin(input,query,execution);progress.groupedBegin(GroupedExecution.EXACT_Q0_OWNED_NATIVE_GUIDE_V1);}
-            lease=scope==GuideScope.BASE_WITNESS_ONLY?input.retainResultLifetime():null;
+            if(progress!=null&&scope==GuideScope.BASE_NATIVE_GUIDE_ONLY)progress.nativeGuideOnlyScope(scope);
+            lease=scope!=GuideScope.FULL_GROUPED?input.retainResultLifetime():null;
             owner=input.openExecutionOwner("owned-ordinary-guide-result");var budget=input.workBudget();
             budget.charge(EmissionWorkBudget.Operation.ALLOCATION,8);owner.reserve(2048);
             var facts=new GroupedFacts(GroupedExecution.EXACT_Q0_OWNED_NATIVE_GUIDE_V1,new ArrayList<>(),owner,new GuideContext(provider,new ArrayList<>()));
@@ -2216,33 +2270,56 @@ public final class LegacyEmissionKernel {
                 try(var work=owner.child("base-witness-only-domain")) {
                     var binding=input.legacyBinding().orElseThrow();var domain=new LegacyEmissionDomain(binding,provider.profiles(),provider.seeds(),budget,work);
                     try(var classifier=new ManagedOrdinaryAffinity(input,domain)) {
-                        if(progress!=null)progress.domainComplete(domain.seeds().size());
-                        for(var seed:domain.seeds()) {
-                            if(progress!=null){progress.seedBegin(seed.id());progress.phase(LegacyEmissionProgress.Phase.BASE,0,-1,-1);}
+                        if(scope==GuideScope.BASE_NATIVE_GUIDE_ONLY) {
+                            var seed=domain.seeds().get(0);
+                            if(progress!=null){progress.nativeGuideOnlyRequest(domain.seeds().size(),seed);progress.domainComplete(1);
+                                progress.seedBegin(seed.id());progress.phase(LegacyEmissionProgress.Phase.BASE,0,-1,-1);}
                             budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);
-                            try(var seedOwner=work.child("base-witness-only-seed")) {
+                            try(var seedOwner=work.child("base-native-guide-only-seed")) {
                                 var inventory=inventory(domain,budget,seedOwner,null,classifier);
                                 long entries=domain.rowCount()+(long)binding.protectedOccurrences().size();
                                 budget.charge(EmissionWorkBudget.Operation.PREPARATION,128+16*entries);budget.charge(EmissionWorkBudget.Operation.ALLOCATION,32+8*entries);seedOwner.reserve(4096+256*entries);
                                 try(var evaluator=evaluator(input,domain,inventory,query,execution,progress)) {
-                                    ownedWitness(input,domain,seed,null,null,0,inventory,evaluator,seedOwner,cancellation,input.context().nativePitchMeters().orElseThrow(),facts);
+                                    nativeGuideOnly=ownedNativeGuideWitness(input,domain,seed,inventory,evaluator,seedOwner,
+                                        cancellation,input.context().nativePitchMeters().orElseThrow(),facts);
                                 }
                             }
                             if(progress!=null){progress.seedComplete();progress.phaseComplete();}
+                        } else {
+                            if(progress!=null)progress.domainComplete(domain.seeds().size());
+                            for(var seed:domain.seeds()) {
+                                if(progress!=null){progress.seedBegin(seed.id());progress.phase(LegacyEmissionProgress.Phase.BASE,0,-1,-1);}
+                                budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);
+                                try(var seedOwner=work.child("base-witness-only-seed")) {
+                                    var inventory=inventory(domain,budget,seedOwner,null,classifier);
+                                    long entries=domain.rowCount()+(long)binding.protectedOccurrences().size();
+                                    budget.charge(EmissionWorkBudget.Operation.PREPARATION,128+16*entries);budget.charge(EmissionWorkBudget.Operation.ALLOCATION,32+8*entries);seedOwner.reserve(4096+256*entries);
+                                    try(var evaluator=evaluator(input,domain,inventory,query,execution,progress)) {
+                                        ownedWitness(input,domain,seed,null,null,0,inventory,evaluator,seedOwner,cancellation,input.context().nativePitchMeters().orElseThrow(),facts);
+                                    }
+                                }
+                                if(progress!=null){progress.seedComplete();progress.phaseComplete();}
+                            }
                         }
                     }
                 }
             }
             int n=facts.guide().comparisons().size();budget.charge(EmissionWorkBudget.Operation.PREPARATION,256L+32L*n);
-            budget.charge(EmissionWorkBudget.Operation.ALLOCATION,12L+n);owner.reserve(4096L+512L*n);
+            long diagnosticSteps=nativeGuideOnly==null?0:nativeGuideOnly.guidedSteps().size();
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION,12L+n+(nativeGuideOnly==null?0:16+diagnosticSteps));
+            owner.reserve(4096L+512L*n+(nativeGuideOnly==null?0:1024L+32L*diagnosticSteps));
             String identity="LEGACY_OWNED_ORDINARY_GUIDE_V1/guide="+RidgeTracker.OwnedOrdinaryGuide.POLICY_ID+"/scope="+scope+"/grouped="+facts.execution()+"/query="+query+"/execution="+execution+"/managed="+ManagedOrdinaryAffinity.POLICY_ID;
+            if(nativeGuideOnly!=null)identity+="/coverage="+nativeGuideOnly.coverage()+"/seed="+nativeGuideOnly.requestedSeed().orElseThrow().id();
             guideLifetime=provider.transferToResult(input);
             cancellation.checkpoint();input.requireOpenAndUnchanged();
+            if(progress!=null&&nativeGuideOnly!=null)progress.prepareNativeGuideOnly(nativeGuideOnly);
             try(var publication=input.prepareManagedFinalPublication(owner,256L+32L*n,4096L+256L*n)) {
                 publication.validate();if(progress!=null)progress.requireCompatible(input,query,execution);
                 if(emission!=null)grouped=new GroupedResult(facts.execution(),emission,facts.stages(),owner,budget.snapshot());
-                result=new OwnedGuideResult(scope,grouped,facts.guide().comparisons(),guideLifetime,owner,lease,budget.snapshot(),identity);
+                result=new OwnedGuideResult(scope,grouped,facts.guide().comparisons(),nativeGuideOnly,
+                    guideLifetime,owner,lease,budget.snapshot(),identity);
             }
+            if(progress!=null&&nativeGuideOnly!=null)progress.publishNativeGuideOnly(nativeGuideOnly);
             if(progress!=null){progress.requireCompatible(input,query,execution);progress.seal(null);}
             return result;
         } catch(RuntimeException failure) {
@@ -2282,6 +2359,42 @@ public final class LegacyEmissionKernel {
             return selected;
         } finally {if(trace!=null)trace.close();}
     }
+
+    private NativeGuideOnlyDiagnostic ownedNativeGuideWitness(SampledEmissionInput input,LegacyEmissionDomain domain,
+            LegacyEmissionDomain.Seed seed,Inventory inventory,NativeConnectorEvaluator evaluator,
+            AttemptMemoryLedger.Owner owner,CancellationProbe cancellation,double pitch,GroupedFacts facts) {
+        var provider=facts.guide().provider();provider.requireInput(input);
+        input.workBudget().charge(EmissionWorkBudget.Operation.ALLOCATION,4);facts.owner().reserve(256);
+        RidgeTracker.GuideTrace trace=null;RuntimeException primary=null;
+        try {
+            trace=provider.base(input,seed.id(),seed.offsetRasterPixels());
+            trace.requireProvider(provider,input);
+            GuideReplay replay=replayOwnedOrdinary(input,domain,seed,null,null,0,inventory,evaluator,
+                owner,cancellation,pitch,trace,facts.owner());
+            Optional<EmissionResult.Costs> costs=replay.costs();
+            GuideStatus status=replay.status();java.util.OptionalDouble upper=java.util.OptionalDouble.empty();
+            if(costs.isPresent()) {
+                double total=costs.orElseThrow().total();
+                if(Double.isFinite(total)&&total>0.0)upper=java.util.OptionalDouble.of(total);
+                else {costs=Optional.empty();status=GuideStatus.NON_POSITIVE_UPPER;}
+            }
+            int steps=replay.steps().size();var budget=input.workBudget();
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,128L+steps);
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION,16L+steps);
+            facts.owner().reserve(1024L+32L*steps);
+            var diagnostic=new NativeGuideOnlyDiagnostic(domain.seeds().size(),
+                Optional.of(new NativeGuideSeedIdentity(seed.id(),Double.doubleToRawLongBits(seed.offsetRasterPixels()))),
+                NativeGuideCoverage.FIRST_ORIGINAL_SEED_ONLY,GuideStatus.NOT_REQUESTED,false,status,costs,
+                replay.steps(),upper);
+            try(var publication=input.prepareManagedFinalPublication(facts.owner(),128,1024)) {
+                publication.validate();
+                if(evaluator.progress()!=null)evaluator.progress().requireOwnedGuideAuthority(input);
+            }
+            return diagnostic;
+        } catch(RuntimeException failure){primary=failure;throw failure;}
+        finally {if(trace!=null)try{trace.close();}catch(RuntimeException cleanup){if(primary!=null&&cleanup!=primary)primary.addSuppressed(cleanup);else if(primary==null)throw cleanup;}}
+    }
+
     private GuideReplay replayOwnedOrdinary(SampledEmissionInput input,LegacyEmissionDomain domain,LegacyEmissionDomain.Seed seed,Node prefix,
             LegacyEmissionDomain.State right,int stage,Inventory inventory,NativeConnectorEvaluator evaluator,AttemptMemoryLedger.Owner owner,
             CancellationProbe cancellation,double pitch,RidgeTracker.GuideTrace trace,AttemptMemoryLedger.Owner factsOwner) {

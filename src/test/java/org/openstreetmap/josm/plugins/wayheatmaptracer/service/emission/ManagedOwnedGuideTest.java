@@ -16,6 +16,55 @@ class ManagedOwnedGuideTest {
     static final NativeConnectorEvaluator.QueryPolicy QUERY=NativeConnectorEvaluator.QueryPolicy.DENSE_EIGHTH_NATIVE_V1;
     static final NativeConnectorEvaluator.ExecutionPolicy EXEC=NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1;
 
+    @Test void actualManagedNativeGuideOnlyPublishesExactFirstSeedPhysicalRoute()throws Exception {
+        var fixture=new ManagedOrdinaryAffinityTest();fixture.cache=cache;
+        fixture.managed(new ManagedOrdinaryAffinityTest.Spec(.60,true,false,false,CancellationProbe.NONE,12,true),f->{
+            long baseline=f.ledger().currentBytes();int originalCount;double originalOffset;
+            try(var provider=new RidgeTracker().prepareOwnedOrdinaryGuide(f.input(),CancellationProbe.NONE)) {
+                originalCount=provider.seeds().size();originalOffset=provider.seeds().get(0);
+            }
+            LegacyEmissionKernel.GuideStageReference expected;
+            try(var comparison=new RidgeTracker().trackOwnedGuideWitnesses(f.input(),CancellationProbe.NONE,QUERY,EXEC,null)) {
+                expected=comparison.comparisons().stream().filter(stage->stage.seedId()==0&&stage.ordinal()==0).findFirst().orElseThrow();
+            }
+            assertTrue(expected.guided().isPresent(),"The selected actual managed first-seed guide is feasible in this control");
+            try(var progress=LegacyEmissionProgress.open(f.input(),QUERY,EXEC);
+                var actual=new RidgeTracker().trackOwnedNativeGuideOnlyFirstOriginalSeed(f.input(),CancellationProbe.NONE,QUERY,EXEC,progress)) {
+                var diagnostic=actual.nativeGuideOnly().orElseThrow();
+                assertEquals(LegacyEmissionKernel.GuideScope.BASE_NATIVE_GUIDE_ONLY,actual.scope());
+                assertTrue(actual.grouped().isEmpty());assertTrue(actual.comparisons().isEmpty());
+                assertEquals(originalCount,diagnostic.originalSeedCount());assertEquals(0,diagnostic.requestedSeed().orElseThrow().id());
+                assertEquals(Double.doubleToRawLongBits(originalOffset),diagnostic.requestedSeed().orElseThrow().offsetRawBits());
+                assertEquals(expected.guided(),diagnostic.guidedCosts());assertEquals(expected.guidedSteps(),diagnostic.guidedSteps());
+                assertEquals(expected.guided().orElseThrow().total(),diagnostic.witnessUpper().orElseThrow());
+                assertTrue(diagnostic.witnessUpper().orElseThrow()>0);
+                assertEquals(0,progress.view().nativeGuideRequestedSeedId());assertFalse(progress.view().nativeGuideComparisonPerformed());
+                assertEquals(actual.work(),f.input().workBudget().snapshot());
+            }
+            assertEquals(baseline,f.ledger().currentBytes());
+        });
+    }
+
+    @Test void actualManagedNativeGuideOnlySourceMutationRefusesBeforePublication()throws Exception {
+        var fixture=new ManagedOrdinaryAffinityTest();fixture.cache=cache;
+        fixture.managed(new ManagedOrdinaryAffinityTest.Spec(.60,true,false,false,CancellationProbe.NONE,12,true),f->{
+            var fired=new java.util.concurrent.atomic.AtomicBoolean();
+            try(var progress=LegacyEmissionProgress.open(f.input(),QUERY,EXEC)) {
+                long baseline=f.ledger().currentBytes();
+                f.settingsHook().set(()->{
+                    if(!fired.get()&&onStack("ownedNativeGuideWitness")&&finalTicket()) {
+                        fired.set(true);var normal=f.input().legacyBinding().orElseThrow().observations().get(0).profile().normalScreen();
+                        normal.x=Math.nextUp(normal.x);
+                    }
+                });
+                assertThrows(IllegalStateException.class,()->new RidgeTracker().trackOwnedNativeGuideOnlyFirstOriginalSeed(f.input(),CancellationProbe.NONE,QUERY,EXEC,progress));
+                assertTrue(fired.get());assertEquals(baseline,f.ledger().currentBytes());
+                assertEquals(0,progress.view().count(LegacyEmissionProgress.Counter.WITNESS_CERTIFIED));
+                assertFalse(progress.view().hasNativeGuideOnlyUpper());assertFalse(progress.view().hasNativeGuideOnlyResult());
+            }
+        });
+    }
+
     @ParameterizedTest @ValueSource(booleans={false,true})
     void actualManagedGuideMatchesIndependentFullGraphIncludingUnknownNativeOrigins(boolean joined)throws Exception {
         var fixture=new ManagedOrdinaryAffinityTest();fixture.cache=cache;

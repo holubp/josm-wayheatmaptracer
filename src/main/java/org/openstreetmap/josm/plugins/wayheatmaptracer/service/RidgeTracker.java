@@ -1170,6 +1170,12 @@ public final class RidgeTracker {
             NativeConnectorEvaluator.QueryPolicy query,NativeConnectorEvaluator.ExecutionPolicy execution,LegacyEmissionProgress progress) {
         return ownedGuideEntry(input,cancellation,query,execution,progress,false);
     }
+    /** Diagnostic only: replay the prepared native proposal for original seed zero, without greedy or optimization. */
+    public LegacyEmissionKernel.OwnedGuideResult trackOwnedNativeGuideOnlyFirstOriginalSeed(SampledEmissionInput input,
+            CancellationProbe cancellation,NativeConnectorEvaluator.QueryPolicy query,
+            NativeConnectorEvaluator.ExecutionPolicy execution,LegacyEmissionProgress progress) {
+        return ownedGuideEntry(input,cancellation,query,execution,progress,false,true);
+    }
     /** Explicit managed/full-grouped guide policy. Ordinary entry points never route here. */
     public LegacyEmissionKernel.OwnedGuideResult trackOwnedGuideEmission(SampledEmissionInput input,CancellationProbe cancellation,
             NativeConnectorEvaluator.QueryPolicy query,NativeConnectorEvaluator.ExecutionPolicy execution,LegacyEmissionProgress progress) {
@@ -1177,6 +1183,11 @@ public final class RidgeTracker {
     }
     private LegacyEmissionKernel.OwnedGuideResult ownedGuideEntry(SampledEmissionInput input,CancellationProbe cancellation,
             NativeConnectorEvaluator.QueryPolicy query,NativeConnectorEvaluator.ExecutionPolicy execution,LegacyEmissionProgress progress,boolean full) {
+        return ownedGuideEntry(input,cancellation,query,execution,progress,full,false);
+    }
+    private LegacyEmissionKernel.OwnedGuideResult ownedGuideEntry(SampledEmissionInput input,CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy query,NativeConnectorEvaluator.ExecutionPolicy execution,
+            LegacyEmissionProgress progress,boolean full,boolean nativeGuideOnly) {
         if(progress!=null)progress.requireCompatible(input,query,execution);OwnedOrdinaryGuide provider;
         try {
             java.util.Objects.requireNonNull(query);java.util.Objects.requireNonNull(execution);
@@ -1189,7 +1200,8 @@ public final class RidgeTracker {
         }
         try {
             var kernel=new LegacyEmissionKernel();
-            return full?kernel.solveOwnedGuideManagedGrouped(input,provider,(profiles,offsets,intensities)->
+            return nativeGuideOnly?kernel.evaluateFirstOriginalOwnedNativeGuide(input,provider,cancellation,query,execution,progress)
+                :full?kernel.solveOwnedGuideManagedGrouped(input,provider,(profiles,offsets,intensities)->
                 smoothOffsets(profiles,offsets,intensities,provider.normalization(),cancellation,input.workBudget()),cancellation,query,execution,progress)
                 :kernel.evaluateOwnedOrdinaryWitnesses(input,provider,cancellation,query,execution,progress);
         } catch(RuntimeException failure){provider.close();throw failure;}

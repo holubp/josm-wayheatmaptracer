@@ -92,6 +92,12 @@ public final class LegacyEmissionProgress implements AutoCloseable {
     private boolean inventoryAvailable;
     private boolean firstStageComplete;
     private boolean localActive,identitySet,eligible,repeated;
+    private LegacyEmissionKernel.GuideScope guideScope;
+    private int nativeGuideOriginalSeedCount=-1,nativeGuideSeedId=-1;
+    private long nativeGuideSeedOffsetBits;
+    private LegacyEmissionKernel.GuideStatus nativeGuideStatus;
+    private boolean nativeGuideComplete,nativeGuideUpperAvailable;
+    private double nativeGuideUpper;
 
     private LegacyEmissionProgress(SampledEmissionInput input,EmissionWorkBudget budget,AttemptMemoryLedger.Owner owner,QueryPolicy query,ExecutionPolicy execution,long attemptOrdinal) {
         this.boundInput=input;this.budget=budget;this.owner=owner;this.query=query;this.execution=execution;this.attemptOrdinal=attemptOrdinal;
@@ -296,6 +302,36 @@ public final class LegacyEmissionProgress implements AutoCloseable {
             groupedExecution=execution;ceiling=new long[CEILING_STAGE_WORDS+CEILING_TOTAL_WORDS];
         }
     }
+    void nativeGuideOnlyScope(LegacyEmissionKernel.GuideScope scope){
+        if(scope!=LegacyEmissionKernel.GuideScope.BASE_NATIVE_GUIDE_ONLY)throw new IllegalArgumentException("Native guide-only scope is required");
+        pay(8);guideScope=scope;
+    }
+    void nativeGuideOnlyRequest(int originalSeedCount,LegacyEmissionDomain.Seed seed){
+        Objects.requireNonNull(seed);pay(16);
+        if(guideScope!=LegacyEmissionKernel.GuideScope.BASE_NATIVE_GUIDE_ONLY||originalSeedCount<1||seed.id()!=0)
+            throw new IllegalArgumentException("Native guide-only must request original seed zero");
+        nativeGuideOriginalSeedCount=originalSeedCount;nativeGuideSeedId=seed.id();
+        nativeGuideSeedOffsetBits=Double.doubleToRawLongBits(seed.offsetRasterPixels());
+    }
+    void prepareNativeGuideOnly(LegacyEmissionKernel.NativeGuideOnlyDiagnostic diagnostic){
+        requireNativeGuideRequest(diagnostic);pay(16);
+    }
+    void publishNativeGuideOnly(LegacyEmissionKernel.NativeGuideOnlyDiagnostic diagnostic){
+        requireNativeGuideRequest(diagnostic);
+        nativeGuideStatus=diagnostic.guidedStatus();nativeGuideUpperAvailable=diagnostic.witnessUpper().isPresent();
+        if(nativeGuideUpperAvailable){nativeGuideUpper=diagnostic.witnessUpper().getAsDouble();witnessUpper=nativeGuideUpper;
+            currentWitnessAvailable=true;add(Counter.WITNESS_CERTIFIED,1);}
+        nativeGuideComplete=true;
+    }
+    private void requireNativeGuideRequest(LegacyEmissionKernel.NativeGuideOnlyDiagnostic diagnostic){
+        if(diagnostic==null||guideScope!=LegacyEmissionKernel.GuideScope.BASE_NATIVE_GUIDE_ONLY
+                ||nativeGuideOriginalSeedCount!=diagnostic.originalSeedCount()
+                ||diagnostic.requestedSeed().isEmpty()||diagnostic.requestedSeed().orElseThrow().id()!=nativeGuideSeedId
+                ||diagnostic.requestedSeed().orElseThrow().offsetRawBits()!=nativeGuideSeedOffsetBits
+                ||diagnostic.coverage()!=LegacyEmissionKernel.NativeGuideCoverage.FIRST_ORIGINAL_SEED_ONLY
+                ||diagnostic.greedyStatus()!=LegacyEmissionKernel.GuideStatus.NOT_REQUESTED||diagnostic.comparisonPerformed())
+            throw new IllegalArgumentException("Native guide-only progress identity differs");
+    }
     boolean ceilingEnabled(){return ceiling!=null;}
     /** Actual already-stored absolute witness, with all observation work prepaid before publication. */
     void ceilingWitness(SampledEmissionInput input,java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.model.EmissionResult.Costs> costs) {
@@ -423,6 +459,19 @@ public final class LegacyEmissionProgress implements AutoCloseable {
         public long attemptOrdinal(){return p.attemptOrdinal;}
         public int seed(){return p.seed;}public int row(){return p.row;}public int stage(){return p.stage;}
         public int seedsPlanned(){return p.seedCountPlanned;}
+        public boolean hasGuideScope(){return p.guideScope!=null;}
+        public LegacyEmissionKernel.GuideScope guideScope(){if(!hasGuideScope())throw new IllegalStateException("Guide diagnostic scope is unavailable");return p.guideScope;}
+        public boolean hasNativeGuideOnlyRequest(){return p.nativeGuideOriginalSeedCount>=0;}
+        public int nativeGuideOriginalSeedCount(){if(!hasNativeGuideOnlyRequest())throw new IllegalStateException("Native guide seed census is unavailable");return p.nativeGuideOriginalSeedCount;}
+        public int nativeGuideRequestedSeedId(){if(!hasNativeGuideOnlyRequest())throw new IllegalStateException("Native guide seed identity is unavailable");return p.nativeGuideSeedId;}
+        public long nativeGuideRequestedSeedOffsetRawBits(){if(!hasNativeGuideOnlyRequest())throw new IllegalStateException("Native guide seed identity is unavailable");return p.nativeGuideSeedOffsetBits;}
+        public int nativeGuideSeedsNotRequested(){if(!hasNativeGuideOnlyRequest())throw new IllegalStateException("Native guide seed coverage is unavailable");return p.nativeGuideOriginalSeedCount-1;}
+        public LegacyEmissionKernel.GuideStatus nativeGuideGreedyStatus(){if(!hasNativeGuideOnlyRequest())throw new IllegalStateException("Native guide comparison status is unavailable");return LegacyEmissionKernel.GuideStatus.NOT_REQUESTED;}
+        public boolean nativeGuideComparisonPerformed(){if(!hasGuideScope()||p.guideScope!=LegacyEmissionKernel.GuideScope.BASE_NATIVE_GUIDE_ONLY)throw new IllegalStateException("Native guide comparison status is unavailable");return false;}
+        public boolean hasNativeGuideOnlyResult(){return p.nativeGuideComplete;}
+        public LegacyEmissionKernel.GuideStatus nativeGuideStatus(){if(!hasNativeGuideOnlyResult())throw new IllegalStateException("Native guide result is unavailable");return p.nativeGuideStatus;}
+        public boolean hasNativeGuideOnlyUpper(){return hasNativeGuideOnlyResult()&&p.nativeGuideUpperAvailable;}
+        public double nativeGuideOnlyUpper(){if(!hasNativeGuideOnlyUpper())throw new IllegalStateException("Native guide upper is unavailable");return p.nativeGuideUpper;}
         /** Selected first-stage path was flattened and verified; this never publishes a candidate. */
         public boolean firstStageCompleted(){return p.firstStageComplete;}
         public int intervalLeft(){return p.left;}public int intervalRight(){return p.right;}

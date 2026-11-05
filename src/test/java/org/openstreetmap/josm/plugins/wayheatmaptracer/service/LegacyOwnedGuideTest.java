@@ -20,6 +20,132 @@ class LegacyOwnedGuideTest {
         assertDoesNotThrow(()->RidgeTracker.class.getMethod("trackOwnedGuideWitnesses",SampledEmissionInput.class,CancellationProbe.class,
             NativeConnectorEvaluator.QueryPolicy.class,NativeConnectorEvaluator.ExecutionPolicy.class,LegacyEmissionProgress.class));
     }
+    @Test void nativeGuideOnlyHasANamedFirstOriginalSeedEntry() {
+        assertDoesNotThrow(()->RidgeTracker.class.getMethod("trackOwnedNativeGuideOnlyFirstOriginalSeed",SampledEmissionInput.class,
+            CancellationProbe.class,NativeConnectorEvaluator.QueryPolicy.class,NativeConnectorEvaluator.ExecutionPolicy.class,
+            LegacyEmissionProgress.class));
+    }
+    @Test void nativeGuideOnlyMatchesComparisonGuideForFirstOriginalSeedWithBothGreedyRelations()throws Exception {
+        boolean sawMatching=false,sawDiffering=false;
+        for(var control:List.of(new NativeGuideControl(false,.95),new NativeGuideControl(true,.45)))
+        try(var f=analytic(.55,control.zigzag(),control.strongAmplitude())) {
+            long baseline=f.ledger().currentBytes();
+            int originalSeedCount;
+            double firstSeed;
+            try(var prepared=new RidgeTracker().prepareOwnedOrdinaryGuide(f.input(),CancellationProbe.NONE)) {
+                originalSeedCount=prepared.seeds().size();firstSeed=prepared.seeds().get(0);
+            }
+            LegacyEmissionKernel.GuideStageReference expected;
+            try(var comparison=new RidgeTracker().trackOwnedGuideWitnesses(f.input(),CancellationProbe.NONE,
+                    LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC,null)) {
+                expected=comparison.comparisons().stream().filter(c->c.seedId()==0&&c.ordinal()==0).findFirst().orElseThrow();
+            }
+            sawMatching|=expected.greedy().equals(expected.guided());
+            sawDiffering|=!expected.greedy().equals(expected.guided());
+            try(var progress=LegacyEmissionProgress.open(f.input(),LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC)) {
+                try(var result=new RidgeTracker().trackOwnedNativeGuideOnlyFirstOriginalSeed(f.input(),CancellationProbe.NONE,
+                        LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC,progress)) {
+                    assertEquals(LegacyEmissionKernel.GuideScope.BASE_NATIVE_GUIDE_ONLY,result.scope());
+                    assertTrue(result.grouped().isEmpty());assertTrue(result.comparisons().isEmpty(),"No greedy comparison records are produced");
+                    assertTrue(result.modelIdentity().contains("scope=BASE_NATIVE_GUIDE_ONLY"));
+                    var diagnostic=result.nativeGuideOnly().orElseThrow();
+                    assertEquals(originalSeedCount,diagnostic.originalSeedCount());
+                    assertEquals(LegacyEmissionKernel.NativeGuideCoverage.FIRST_ORIGINAL_SEED_ONLY,diagnostic.coverage());
+                    assertEquals(LegacyEmissionKernel.GuideStatus.NOT_REQUESTED,diagnostic.greedyStatus());
+                    assertFalse(diagnostic.comparisonPerformed());
+                    assertEquals(expected.guided(),diagnostic.guidedCosts());
+                    assertEquals(expected.guidedSteps(),diagnostic.guidedSteps());
+                    assertEquals(LegacyEmissionKernel.GuideStatus.FEASIBLE,diagnostic.guidedStatus());
+                    var requested=diagnostic.requestedSeed().orElseThrow();
+                    assertEquals(0,requested.id());assertEquals(Double.doubleToRawLongBits(firstSeed),requested.offsetRawBits());
+                    assertEquals(expected.guided().orElseThrow().total(),diagnostic.witnessUpper().orElseThrow());
+                    var view=progress.view();
+                    assertEquals(LegacyEmissionKernel.GuideScope.BASE_NATIVE_GUIDE_ONLY,view.guideScope());
+                    assertEquals(originalSeedCount,view.nativeGuideOriginalSeedCount());
+                    assertEquals(0,view.nativeGuideRequestedSeedId());
+                    assertEquals(Double.doubleToRawLongBits(firstSeed),view.nativeGuideRequestedSeedOffsetRawBits());
+                    assertEquals(originalSeedCount-1,view.nativeGuideSeedsNotRequested());
+                    assertEquals(LegacyEmissionKernel.GuideStatus.NOT_REQUESTED,view.nativeGuideGreedyStatus());
+                    assertFalse(view.nativeGuideComparisonPerformed());
+                    assertTrue(view.hasNativeGuideOnlyUpper());
+                    assertEquals(expected.guided().orElseThrow().total(),view.nativeGuideOnlyUpper());
+                    assertEquals(1,view.seedsPlanned());
+                    assertEquals(1,view.count(LegacyEmissionProgress.Counter.SEEDS_COMPLETED));
+                }
+            }
+            assertEquals(baseline,f.ledger().currentBytes(),"Guide-only result, progress, and providers release all child ownership");
+        }
+        assertTrue(sawMatching,"The controls must include a first seed whose greedy and native vectors match");
+        assertTrue(sawDiffering,"The controls must include a first seed whose greedy and native vectors differ");
+    }
+    private record NativeGuideControl(boolean zigzag,double strongAmplitude) {}
+    @Test void nativeGuideOnlyUnavailableVectorHasNoUpperAndNoGreedyFallback() {
+        try(var f=LegacyCompetitiveZeroDirectionTest.fixture(true);
+            var progress=LegacyEmissionProgress.open(f.input(),LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC);
+            var result=new RidgeTracker().trackOwnedNativeGuideOnlyFirstOriginalSeed(f.input(),CancellationProbe.NONE,
+                LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC,progress)) {
+            assertEquals(LegacyEmissionKernel.GuideScope.BASE_NATIVE_GUIDE_ONLY,result.scope());
+            assertTrue(result.grouped().isEmpty());assertTrue(result.comparisons().isEmpty());
+            var diagnostic=result.nativeGuideOnly().orElseThrow();
+            assertEquals(LegacyEmissionKernel.GuideStatus.NO_POSITIVE_FINITE_VECTOR,diagnostic.guidedStatus());
+            assertTrue(diagnostic.guidedCosts().isEmpty());assertTrue(diagnostic.witnessUpper().isEmpty());
+            assertEquals(LegacyEmissionKernel.GuideStatus.NOT_REQUESTED,diagnostic.greedyStatus());assertFalse(diagnostic.comparisonPerformed());
+            assertEquals(diagnostic.guidedStatus(),progress.view().nativeGuideStatus());
+            assertFalse(progress.view().hasNativeGuideOnlyUpper());assertEquals(0,progress.view().count(LegacyEmissionProgress.Counter.WITNESS_CERTIFIED));
+        }
+    }
+    @Test void nativeGuideOnlyRejectsForeignProviderBeforeAdmission()throws Exception {
+        var budget=new EmissionWorkBudget(TraceBudgets.defaults(),CancellationProbe.NONE);
+        try(var a=LegacyCompetitiveProofTest.fixture(false,budget);var b=LegacyCompetitiveProofTest.fixture(false,budget);
+            var provider=new RidgeTracker().prepareOwnedOrdinaryGuide(a.input(),CancellationProbe.NONE)) {
+            var workA=a.input().workBudget().snapshot();var workB=b.input().workBudget().snapshot();
+            long bytesA=a.ledger().currentBytes(),bytesB=b.ledger().currentBytes();
+            assertThrows(IllegalArgumentException.class,()->new LegacyEmissionKernel().evaluateFirstOriginalOwnedNativeGuide(
+                b.input(),provider,CancellationProbe.NONE,LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC,null));
+            assertEquals(workA,a.input().workBudget().snapshot());assertEquals(workB,b.input().workBudget().snapshot());
+            assertEquals(bytesA,a.ledger().currentBytes());assertEquals(bytesB,b.ledger().currentBytes());
+            a.input().requireOpenAndUnchanged();b.input().requireOpenAndUnchanged();
+        }
+    }
+    @Test void nativeGuideOnlyResultOwnsProviderPayloadUntilItsClose()throws Exception {
+        try(var f=LegacyCompetitiveProofTest.fixture(false,new EmissionWorkBudget(TraceBudgets.defaults(),CancellationProbe.NONE))) {
+            long baseline=f.ledger().currentBytes();var provider=new RidgeTracker().prepareOwnedOrdinaryGuide(f.input(),CancellationProbe.NONE);
+            var result=new LegacyEmissionKernel().evaluateFirstOriginalOwnedNativeGuide(f.input(),provider,CancellationProbe.NONE,
+                LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC,null);
+            long retained=f.ledger().currentBytes();assertTrue(retained>baseline);
+            provider.close();provider.close();assertEquals(retained,f.ledger().currentBytes());
+            assertTrue(result.nativeGuideOnly().isPresent());assertEquals(LegacyEmissionKernel.GuideScope.BASE_NATIVE_GUIDE_ONLY,result.scope());
+            result.close();result.close();assertEquals(baseline,f.ledger().currentBytes());
+            assertThrows(IllegalStateException.class,result::nativeGuideOnly);
+        }
+    }
+    @Test void nativeGuideOnlyCancellationPreservesPrimaryFailureAndReleasesAllChildOwnership()throws Exception {
+        var armed=new java.util.concurrent.atomic.AtomicBoolean();var fired=new java.util.concurrent.atomic.AtomicBoolean();
+        var primary=new java.util.concurrent.CancellationException("synthetic first native-guide replay cancellation");
+        CancellationProbe callback=()->{if(armed.get()&&!fired.get()&&onStack("replayOwnedOrdinary")){fired.set(true);throw primary;}return false;};
+        var budget=new EmissionWorkBudget(TraceBudgets.defaults(),callback);
+        try(var f=LegacyCompetitiveProofTest.fixture(false,budget);var progress=LegacyEmissionProgress.open(f.input(),LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC)) {
+            long baseline=f.ledger().currentBytes();armed.set(true);
+            assertSame(primary,assertThrows(RuntimeException.class,()->new RidgeTracker().trackOwnedNativeGuideOnlyFirstOriginalSeed(
+                f.input(),CancellationProbe.NONE,LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC,progress)));
+            assertTrue(fired.get());assertSame(primary,assertThrows(RuntimeException.class,f.input()::requireOpenAndUnchanged));
+            assertEquals(baseline,f.ledger().currentBytes());assertEquals(LegacyEmissionProgress.Termination.CANCELLED,progress.view().termination());
+            assertFalse(progress.view().hasNativeGuideOnlyResult());assertEquals(0,progress.view().count(LegacyEmissionProgress.Counter.WITNESS_CERTIFIED));
+        }
+    }
+    @Test void nativeGuideOnlySourceMutationCannotPublishAnUpper()throws Exception {
+        var normal=new java.util.concurrent.atomic.AtomicReference<java.awt.geom.Point2D.Double>();var fired=new java.util.concurrent.atomic.AtomicBoolean();
+        CancellationProbe callback=()->{if(normal.get()!=null&&!fired.get()&&onStack("replayOwnedOrdinary")){fired.set(true);normal.get().x=Math.nextUp(normal.get().x);}return false;};
+        var budget=new EmissionWorkBudget(TraceBudgets.defaults(),callback);
+        try(var f=LegacyCompetitiveProofTest.fixture(false,budget);var progress=LegacyEmissionProgress.open(f.input(),LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC)) {
+            normal.set(f.profiles().get(0).normalScreen());long baseline=f.ledger().currentBytes();
+            assertThrows(IllegalStateException.class,()->new RidgeTracker().trackOwnedNativeGuideOnlyFirstOriginalSeed(
+                f.input(),CancellationProbe.NONE,LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC,progress));
+            assertTrue(fired.get());assertEquals(baseline,f.ledger().currentBytes());
+            assertEquals(0,progress.view().count(LegacyEmissionProgress.Counter.WITNESS_CERTIFIED));
+            assertFalse(progress.view().hasNativeGuideOnlyUpper());assertFalse(progress.view().hasNativeGuideOnlyResult());
+        }
+    }
     @Test void baseSiblingMatchesNativeScoreOffsetsIntensitiesAndRetainsExactOwners()throws Exception {
         try(var f=LegacyCompetitiveProofTest.fixture(false,new EmissionWorkBudget(TraceBudgets.defaults(),CancellationProbe.NONE));
             var provider=new RidgeTracker().prepareOwnedOrdinaryGuide(f.input(),CancellationProbe.NONE)) {
@@ -271,11 +397,14 @@ class LegacyOwnedGuideTest {
         }
     }
     static LegacyCompetitiveProofTest.Fixture analytic(double weak,boolean zigzag) {
+        return analytic(weak,zigzag,.95);
+    }
+    static LegacyCompetitiveProofTest.Fixture analytic(double weak,boolean zigzag,double strongAmplitude) {
         int w=96,h=128;double[] scalar=new double[w*h];boolean[] valid=new boolean[scalar.length];Arrays.fill(valid,true);
         for(int y=0;y<h;y++)for(int x=0;x<w;x++) {
             double center=zigzag?6+Math.max(0,1-Math.abs((x-32)/8.0)):6;
             double distance=Math.min(Math.abs(x-24),Math.min(Math.abs(x-32),Math.abs(x-40)));
-            double amplitude=zigzag?.95*StrictMath.exp(-.5*Math.pow(distance/.5,2)):.95;
+            double amplitude=zigzag?strongAmplitude*StrictMath.exp(-.5*Math.pow(distance/.5,2)):strongAmplitude;
             scalar[y*w+x]=Math.max(weak*StrictMath.exp(-.5*Math.pow((y-64.5)/.8,2)),amplitude*StrictMath.exp(-.5*Math.pow((y-64.5-center)/.8,2)));
         }
         var frame=LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0,0),new GeographicPoint(-.01,-.01),new GeographicPoint(.01,.01));
