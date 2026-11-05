@@ -21,10 +21,41 @@ historical replay policy; then complete public/real-fixture regressions, matched
 speed measurement and final independent review. Filter changes remain deferred.
 Read `zigzag-live-integration-packet.md` under the inspection evidence directory
 (SHA2569d44a7151c9db2797a01498af5792c28b95ec697eb70db486bee5ea44a29565c).
-Named core author is committing ONLY sampler+7-test class after38 focused
-Gradle tests PASS. Cherry-pick ONLY that commit onto controller branch623ca3e5;
-do not import retired smoother commits. Use a separate clean implementation
-worktree for live integration so controller ledger remains independently owned.
+Named core22bbe4f3 (38focusedPASS) was cherry-picked as884211a8 onto controller;
+retired smoother commits were NOT imported. Live integration now runs in two
+isolated worktrees: L1 Luna owns standalone Legacy callers/Tile/Rendered/shared
+policy in `/data/data/com.termux/files/usr/tmp/josm-legacy-secants-live`
+(`codex/drasov-legacy-secants-live`); L2 Sol owns frozen Hybrid source/runner/
+codec/receipt/replay in `.worktrees/drasov-integrated-verification`
+(`codex/drasov-legacy-secants-hybrid`, reused clean; old branch preserved).
+L1 shared API79ca1a26: enum `LegacyProfileNormalPolicy`, strict ids and immutable
+`LegacyProfileNormalFences.Plan(eligible,reason,profileBoundaries)`;6testsPASS,
+behavioral empty-fence stub RED retained. L1 Tile/Rendered API43c3ed3b: explicit
+policy+original-fixed-index overloads for native/aggregate,17targetedtestsPASS,
+old signatures remain immediate. L2 cherry-picked shared API as1a164754 and is
+integrating43c3 after current RED run; no shared source writers. Source-backed
+integration packet is approved under standing autonomous goal execution.
+
+L2 global fallback ruling: LIVE unprovable plan resolves to effective IMMEDIATE
+before freezing and retains bounded reason/original fixed-index authority.
+Replay of an explicitly protected payload with invalid/mismatched authority
+rejects; it never silently changes recorded policy. Per-row endpoint/protected/
+degenerate-chord fallback is intrinsic to protected3. VERSION1 immediate empty
+defaults remain byte-identical; VERSION2 carries explicit policy/fallback facts.
+Receipt producer must derive effective policy from frozen source; minimal
+Format15ProductionBundleFactory call site is in L2 ownership. Pure A/B untouched.
+
+Predeclared speed screen (before matched measurements): actual production Legacy
+discovery on public frozen visible/managed captures, starting before policy/fence
+preparation and ending after final previews. Acquisition/rendering/export are
+excluded and must be stated. Warm12 then20 alternating old/new pairs per scene,
+3fresh JVM forks, same JDK/caches/detectors/source and no B inference. Include
+straight, displaced/noisy-frame bend, strong hairpin and parallel strands, with
+geometry/support/fixed-point/call-count assertions. Report absolute ms AND ratios.
+Median overhead above max(5ms,10% baseline), or p95 above max(10ms,20% baseline),
+in >=2of3 forks for any scene blocks adoption. A noisy isolated fork is
+inconclusive, never silently passed. Include source-count fence planning and
+native decoder/geometry work; no percentage-only microbenchmark verdict.
 
 Actual `legacy-wide-secant/private-pair-one` process EXITED2.746852s under512MiB/
 120s guard, original24 input hashes and all1410 runtime fences unchanged. Ordinary
