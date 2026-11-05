@@ -14,6 +14,43 @@
 
 ### Active execution card — authoritative
 
+**CURRENT NEXT ACTION — 2026-11-06:** The ONE actual Drasov image pair is
+POSITIVE for the marked fold. Integrate only the reviewed sampling-direction
+core into genuine Legacy callers, including its Hybrid stage with truthful
+historical replay policy; then complete public/real-fixture regressions, matched
+speed measurement and final independent review. Filter changes remain deferred.
+Read `zigzag-live-integration-packet.md` under the inspection evidence directory
+(SHA2569d44a7151c9db2797a01498af5792c28b95ec697eb70db486bee5ea44a29565c).
+Named core author is committing ONLY sampler+7-test class after38 focused
+Gradle tests PASS. Cherry-pick ONLY that commit onto controller branch623ca3e5;
+do not import retired smoother commits. Use a separate clean implementation
+worktree for live integration so controller ledger remains independently owned.
+
+Actual `legacy-wide-secant/private-pair-one` process EXITED2.746852s under512MiB/
+120s guard, original24 input hashes and all1410 runtime fences unchanged. Ordinary
+185profiles/301peaks archive parity passes;1native candidate each,2samplings/
+2ordinary tracker calls/2identical finishes. Stored final worst turns fall from
+164.3896/154.5890degrees to maximum42.5368degrees; marked118–123 nearest-reference
+progress is now increasing. Final sampled zero-intensity probes13→10, mean
+0.2570974→0.2573290; both self-contact reports empty and fixed endpoints exact.
+These are sampled/qualitative numerical observations, NOT continuous image
+support or live Apply authority. No performance acceptance from ordered one-pair
+timings. `final-preview-comparison-v2.png` uses actual stored FINAL geometry;
+v1figure had un-clipped overlay spill and is preserved as superseded.
+
+Source reviewer closed the two test gaps against an independently compiled exact
+7-test copy (7PASS/0skip,1.839s), then author applied the same patch and38 focused
+Gradle tests pass. First unqualified whole-project run was deliberately stopped
+by controller when live integration superseded its snapshot: exit130, process
+reaped, Gradle lock released. It had4 missing-private-archive failures before
+stop; do NOT label it passing or treat those as proven new code regressions.
+All3 original private archives exist at repository root. Final public CI uses
+existing public validation profile; local private gates use RC profile with
+absolute fixtureRegressionArchive/heatmapFixtureArchive/sparseCorridorDebugArchive
+properties for `wayheatmaptracer-testing.zip`, `extracted-tiles.zip`, and
+`last-slide-debug-1785794101840.zip`. No fixture uploads or new search required.
+Whole-project/fixture/speed/adoption gates remain required, not waived.
+
 **Active goal:** Finish the Legacy Drasov repair without degrading other cases
 or sacrificing Legacy's fast performance. User explicitly defers filter changes
 until the marked zigzag is resolved. Prior turn updated evidence/ledger but made
@@ -109,7 +146,7 @@ the live full-suite completion; no production adoption or performance claim.
   never apply the named helper globally or activate rejected smoother. Keep goal
   active until actual Drasov repair, regressions and speed are proven.
 
-**CURRENT NEXT ACTION (2026-11-05):** User explicitly prioritizes the marked
+**Prior 2026-11-05 checkpoint (superseded next actions):** User explicitly prioritizes the marked
 zigzag geometry repair; defer convolution/filter optimization. Both browser
 feedbacks are saved: first 14-point line is the approximate intended ridge;
 second 2-point line marks the worst location ONLY. `feedback-roles.json` binds
@@ -122,9 +159,14 @@ crosses120/121 near the marker. Evidence: `legacy-normal-chart-inspection/`
 independent Sol oracle audit pass their scoped checks. Existing Luna author is
 verifying the named sampler TDD packet below atdf842141:37 focused tests pass,
 full Gradle test worker is live in agent session52312. Independent source review
-requires two test-only default-parity assertions after that run; production
-source is conforming and frozen. Controller must close the helper/launcher
-review and source test gap, then run ONE actual-image comparison next. No new solver, filters,
+requires two test-only default-parity assertions; production source is conforming
+and frozen. To avoid blocking the hypothesis on the slow existing Hybrid full
+run, author will compile/run the exact updated test copy in a separate artifact
+class directory/JVM against the same frozen main bytecode now. Apply that same
+patch to the worktree only after its live Gradle run ends. Whole-project evidence
+remains required for completion, not for this numerical observation. Helper/
+launcher final review PASS; controller must close the test gap/re-review, then
+admit ONE actual-image comparison. No new solver, filters,
 private inference yet, or further Astra. Preserve supported
 hairpins, sharp bends, configured width, protection authority and Legacy speed.
 Ordinary Legacy remains unchanged; real Drasov repair and original A work remain
