@@ -34,12 +34,19 @@ authorize adoption, or reopen cost tuning.
 - Freeze helper, source/classes/dependencies, exact command, capture inventory,
   parameters and fresh output directory. Verify input/code hashes before/after.
   Preserve prior scripts, outputs and rejected timing results.
+- A controller-created admission record may bind the exact frozen manifest hash,
+  independent review hash and literal ONE-go token instead of duplicating them
+  as CLI flags. The launcher must validate that record before claiming or reading
+  private inputs; an exclusive fresh claim prevents repetition.
 - One process samples the saved mosaic once through the ordinary sampler, then
   invokes ordinary and named tracking once each on identical immutable profiles.
   Require the existing 185-profile/301-peak archive-field parity and retain the
   actual raw/B3/B5 samples, chainage and validity. No warm-up or benchmark loops.
-- Reconstruct both final previews through the same existing numerical path at
-  recorded settings. If only tracker geometry is available, report that limit;
+- Reconstruct every returned native candidate through the same existing numerical
+  path at recorded settings: at most three per route, six finalizations total,
+  with actual counts and candidate identities recorded. There are still only
+  two tracker calls. This avoids selecting a favorable candidate after seeing
+  quality. If only tracker geometry is available, report that limit;
   do not label it a final preview or infer an authorized edit plan.
 - Report raw/anchored/tracker/final geometry distinctly, profile124's scalar
   support before/after smoothing, fixed-coordinate equality, whole-path image

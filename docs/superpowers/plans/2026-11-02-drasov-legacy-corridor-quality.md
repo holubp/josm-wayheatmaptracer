@@ -130,6 +130,35 @@
   source/fixed[0,14], Precise/simplifyOff/junctionOff; ordinary numericalOnly
   sampler/projectCandidate +LegacyPreciseGeometry.finish exist. No pixeldecode,
   inference/private workload yet. Original liveOSM authority remains unavailable.
+- Quality-only protocolreview389cd74f PASSforpreparation. Minimalhelper compiled,
+  synthetic smoke/gate/CLI checks passed, frozenmanifest4e2ebdcb; no privateclaim
+  or decode. Helperreviewcd3b368d BLOCKED only2failurepaths: primary-safe atomic
+  CORE-beforebulk export and guaranteed bounded JVMgroup kill on timeout.
+  Fixround1/5 dispatched, no source/frame/math redesign. Controllerclarifications
+  now explicit in protocol: all nativecandidates≤3/route,≤6finalizations actualIDs;
+  strictcontroller-created manifest/review/ONEgo admission record accepted instead
+  of newCLI flags. Raw/anchoredcurrenttrace remains unavailable without extraDP.
+  No private execution until scopedfixreviewPASS/refreeze/newcontrollerONEgo.
+- QualityhelperR1 finalPASS aedc9786 bindsmanifest1f861dc1. Controller wrote the
+  reviewed strict admission record and ran EXACTONE --execute-one; claim consumed.
+  Execution3.66s/exit0/reaped, source fenceunchanged and all24before/after hashes
+  match. Sample1/ordinary1/named1/finish2;185profiles/301peaks, archiveDelta0.
+  Independentresultreview483a609c: evidencePASS, practical target repairNEGATIVE.
+  Onlytrackerrow/finalvertex36 differs; target119–126 androw124exactlyunchanged.
+  Bothcomplete sampled intensity sequences unchanged (921tracker/920final probes,
+  13zeroeach). Native B3max atrow126=.23009318017281663<.25 rigorously excludes
+  the five-row certificate for124; this is ONE exclusion, not sole causality or
+  permission to lower a private threshold. V1familyretired; no tuning/adoption.
+- CURRENT permission boundary: user approval requested asynchronously for ONE
+  focused Astra ANALYSIS-ONLY consultation on genuinely cheap correction. Sol/high
+  recommends that bounded escalation after no grounded third heuristic emerged.
+  No Astra used/spawned. Await explicit answer before any Astra work; no further
+  private variants, timing retries or implementation authorized by the diagnostic.
+  Concrete consultbrief is legacy-fast-smoother/focused-design-brief.md (HELD).
+- Current points1–4: evaluator/measurement fixes verified; slow new-Legacy solver
+  mechanism suspended by user (not a delivered repair); usable realDrasov Legacy
+  fix OPEN; CorridorA original remaining scope still PARTIAL, preserved. Ordinary
+  Legacy/default unchanged. No newRC/JAR/release or complete-goal claim.
 - User requires continuous completion of remaining points1–4, preserving ordinary
   Legacy speed. No new RC/default adoption or Astra authorized. Primary dirty
   `codex/v0.22.0-release`117baaf0 and private/untracked files remain untouched.
