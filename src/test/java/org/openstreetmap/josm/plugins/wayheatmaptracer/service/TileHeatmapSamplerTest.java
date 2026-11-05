@@ -94,6 +94,76 @@ class TileHeatmapSamplerTest {
     }
 
     @Test
+    void explicitProtectedPolicyChangesNativeAndAggregateFirstSamplingOnly() {
+        int zoom = 15;
+        double originX = 2_000.0 * TileHeatmapSampler.TILE_SIZE;
+        double worldY = latitudeToWorldPixelY(49.44, zoom);
+        double originY = Math.floor((worldY - 200.0) / TileHeatmapSampler.TILE_SIZE)
+            * TileHeatmapSampler.TILE_SIZE;
+        TileHeatmapSampler.SamplingParameters parameters = new TileHeatmapSampler.SamplingParameters(
+            zoom, 49.44, TileHeatmapSampler.metersPerPixel(zoom, 49.44, TileHeatmapSampler.TILE_SIZE),
+            28.0, 6.0, 56, 12);
+        BufferedImage blank = new BufferedImage(TileHeatmapSampler.TILE_SIZE, TileHeatmapSampler.TILE_SIZE,
+            BufferedImage.TYPE_INT_ARGB);
+        TileHeatmapSampler.TileMosaic hot = new TileHeatmapSampler.TileMosaic(
+            "hot", zoom, originX, originY, blank, List.of(), Map.of(), parameters, false, 1.0);
+        List<EastNorth> source = List.of(
+            worldPixelToEastNorth(originX + 100.5, originY + 200.5, zoom),
+            worldPixelToEastNorth(originX + 120.5, originY + 200.5, zoom),
+            worldPixelToEastNorth(originX + 120.5, originY + 220.5, zoom));
+        TileHeatmapSampler sampler = new TileHeatmapSampler();
+        ManagedHeatmapConfig config = config(InferenceMode.RAW_HIGH_RESOLUTION, zoom, 13);
+
+        var immediate = sampler.sampleProfiles(hot, source, "hot", config);
+        var explicitImmediate = sampler.sampleProfiles(hot, source, "hot", config,
+            LegacyProfileNormalPolicy.IMMEDIATE_V1, List.of(0, 1, 2));
+        var unfencedSecants = sampler.sampleProfiles(hot, source, "hot", config,
+            LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 2));
+        var protectedProfiles = sampler.sampleProfiles(hot, source, "hot", config,
+            LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 1, 2));
+
+        assertTrue(immediate.size() >= 9);
+        assertEquals(immediate.size(), explicitImmediate.size());
+        assertEquals(immediate.size(), unfencedSecants.size());
+        assertEquals(immediate.size(), protectedProfiles.size());
+        for (int i = 0; i < immediate.size(); i++) {
+            assertEquals(immediate.get(i).anchorScreen().x, protectedProfiles.get(i).anchorScreen().x, 0.0);
+            assertEquals(immediate.get(i).anchorScreen().y, protectedProfiles.get(i).anchorScreen().y, 0.0);
+            assertEquals(Double.doubleToRawLongBits(immediate.get(i).normalScreen().x),
+                Double.doubleToRawLongBits(explicitImmediate.get(i).normalScreen().x));
+            assertEquals(Double.doubleToRawLongBits(immediate.get(i).normalScreen().y),
+                Double.doubleToRawLongBits(explicitImmediate.get(i).normalScreen().y));
+        }
+        int fencedCornerRow = immediate.size() / 2;
+        int crossingSecantRow = fencedCornerRow - 2;
+        assertFalse(sameNormal(unfencedSecants.get(crossingSecantRow), protectedProfiles.get(crossingSecantRow)),
+            "the radius-three chord must be fenced by the off-grid original corner");
+
+        Map<String, TileHeatmapSampler.TileMosaic> allColors = new java.util.LinkedHashMap<>();
+        for (String color : List.of("hot", "blue", "bluered", "purple", "gray")) {
+            allColors.put(color + "@" + zoom, new TileHeatmapSampler.TileMosaic(
+                color, zoom, originX, originY, blank, List.of(), Map.of(), parameters, false, 1.0));
+        }
+        TileHeatmapSampler.TileMosaicSet mosaics = new TileHeatmapSampler.TileMosaicSet(
+            InferenceMode.STABLE_FIXED_SCALE, zoom, 13, zoom, 13, TileHeatmapSampler.TILE_SIZE,
+            allColors, parameters, parameters);
+        var aggregateImmediate = sampler.sampleAggregatedProfiles(mosaics, zoom, source);
+        var aggregateUnfenced = sampler.sampleAggregatedProfiles(mosaics, zoom, source,
+            LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 2));
+        var aggregateProtected = sampler.sampleAggregatedProfiles(mosaics, zoom, source,
+            LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 1, 2));
+        assertEquals(aggregateImmediate.size(), aggregateProtected.size());
+        assertFalse(sameNormal(aggregateUnfenced.get(crossingSecantRow), aggregateProtected.get(crossingSecantRow)),
+            "aggregate first-sampling policy must use the same original-occurrence fence");
+    }
+
+    private static boolean sameNormal(RenderedHeatmapSampler.CrossSectionProfile a,
+            RenderedHeatmapSampler.CrossSectionProfile b) {
+        return Double.doubleToRawLongBits(a.normalScreen().x) == Double.doubleToRawLongBits(b.normalScreen().x)
+            && Double.doubleToRawLongBits(a.normalScreen().y) == Double.doubleToRawLongBits(b.normalScreen().y);
+    }
+
+    @Test
     void stableFixedScaleDoesNotDilateDefaultZ15InferenceRaster() {
         assertEquals(0, TileHeatmapSampler.stableInferenceDilationRadius(15));
         assertEquals(1, TileHeatmapSampler.stableInferenceDilationRadius(14));

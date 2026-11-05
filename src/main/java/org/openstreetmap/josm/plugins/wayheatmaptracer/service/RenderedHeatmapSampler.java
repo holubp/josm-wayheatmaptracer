@@ -904,6 +904,40 @@ public final class RenderedHeatmapSampler {
         RasterCoordinateProjector projectedCoordinateProjector,
         CancellationProbe cancellation
     ) {
+        return sampleProfilesOnAggregatedAnchorsInternal(rastersByColor, anchors, halfWidthPx, stepPx,
+            rasterScale, sourceCoordinateScale, projectedCoordinateProjector, cancellation, null);
+    }
+
+    /** Samples aggregate Legacy profiles using bounded radius-three secants and explicit profile fences. */
+    List<CrossSectionProfile> sampleProfilesOnAggregatedAnchorsWithWideSecants(
+        java.util.Map<String, BufferedImage> rastersByColor,
+        List<ProfileSamplingAnchor> anchors,
+        int halfWidthPx,
+        int stepPx,
+        double rasterScale,
+        double sourceCoordinateScale,
+        RasterCoordinateProjector projectedCoordinateProjector,
+        CancellationProbe cancellation,
+        Set<Integer> protectedProfileBoundaries
+    ) {
+        Objects.requireNonNull(anchors, "anchors");
+        Objects.requireNonNull(cancellation, "cancellation");
+        Set<Integer> boundaries = snapshotProtectedProfileBoundaries(protectedProfileBoundaries, anchors.size());
+        return sampleProfilesOnAggregatedAnchorsInternal(rastersByColor, anchors, halfWidthPx, stepPx,
+            rasterScale, sourceCoordinateScale, projectedCoordinateProjector, cancellation, boundaries);
+    }
+
+    private List<CrossSectionProfile> sampleProfilesOnAggregatedAnchorsInternal(
+        java.util.Map<String, BufferedImage> rastersByColor,
+        List<ProfileSamplingAnchor> anchors,
+        int halfWidthPx,
+        int stepPx,
+        double rasterScale,
+        double sourceCoordinateScale,
+        RasterCoordinateProjector projectedCoordinateProjector,
+        CancellationProbe cancellation,
+        Set<Integer> wideSecantBoundaries
+    ) {
         if (anchors.size() < 2 || rastersByColor.isEmpty()) {
             return Collections.emptyList();
         }
@@ -916,8 +950,23 @@ public final class RenderedHeatmapSampler {
             cancellation.checkpoint();
             ProfileSamplingAnchor samplingAnchor = anchors.get(i);
             Point2D.Double current = samplingAnchor.rasterCoordinate();
-            Point2D.Double prevScreen = anchors.get(Math.max(0, i - 1)).rasterCoordinate();
-            Point2D.Double nextScreen = anchors.get(Math.min(anchors.size() - 1, i + 1)).rasterCoordinate();
+            int previousIndex = Math.max(0, i - 1);
+            int nextIndex = Math.min(anchors.size() - 1, i + 1);
+            if (wideSecantBoundaries != null && i >= 3 && i + 3 < anchors.size()
+                    && !hasInteriorProfileBoundary(i - 3, i + 3, wideSecantBoundaries)) {
+                Point2D.Double wideStart = anchors.get(i - 3).rasterCoordinate();
+                Point2D.Double wideEnd = anchors.get(i + 3).rasterCoordinate();
+                double wideX = wideEnd.x - wideStart.x;
+                double wideY = wideEnd.y - wideStart.y;
+                double wideLength = Math.hypot(wideX, wideY);
+                if (Double.isFinite(wideX) && Double.isFinite(wideY)
+                        && Double.isFinite(wideLength) && wideLength > 0.0) {
+                    previousIndex = i - 3;
+                    nextIndex = i + 3;
+                }
+            }
+            Point2D.Double prevScreen = anchors.get(previousIndex).rasterCoordinate();
+            Point2D.Double nextScreen = anchors.get(nextIndex).rasterCoordinate();
             Point2D.Double tangent = PolylineMath.normalize(nextScreen.x - prevScreen.x, nextScreen.y - prevScreen.y);
             Point2D.Double normal = new Point2D.Double(-tangent.y, tangent.x);
 
