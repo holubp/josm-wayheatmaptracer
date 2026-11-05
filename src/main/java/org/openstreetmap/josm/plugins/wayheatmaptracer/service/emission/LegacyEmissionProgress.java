@@ -382,6 +382,9 @@ public final class LegacyEmissionProgress implements AutoCloseable {
         if(ceiling[total]<Long.MAX_VALUE)ceiling[total]++;else ceilingOverflow=true;
     }
     void witnessCertified(double upper){pay(8);witnessUpper=upper;currentWitnessAvailable=true;add(Counter.WITNESS_CERTIFIED,1);}
+    void prepareOwnedGuideWitness(){ceilingCharge(Operation.PREPARATION,8);}
+    void requireOwnedGuideAuthority(SampledEmissionInput input){requireCompatible(input,query,execution);}
+    void publishOwnedGuideWitness(double upper){witnessUpper=upper;currentWitnessAvailable=true;add(Counter.WITNESS_CERTIFIED,1);}
     void competitiveFront(int size){pay(8);maxCompetitiveKeyLabels=Math.max(maxCompetitiveKeyLabels,size);}
 
     /** Allocation/charge-free: only already prepaid primitive storage is sealed. Original error is not replaced. */

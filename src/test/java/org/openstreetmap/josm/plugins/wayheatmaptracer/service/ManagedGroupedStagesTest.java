@@ -30,6 +30,12 @@ class ManagedGroupedStagesTest {
     @ParameterizedTest @EnumSource(LegacyEmissionKernel.GroupedExecution.class)
     void everyOwnedSeedIntervalAndStitchMatchesFullPrefixOracle(LegacyEmissionKernel.GroupedExecution execution)throws Exception{
         try(var f=LegacyGroupedAllStageTest.stageFixture(new EmissionWorkBudget(TraceBudgets.defaults(),CancellationProbe.NONE))){
+            if(execution==LegacyEmissionKernel.GroupedExecution.EXACT_Q0_OWNED_NATIVE_GUIDE_V1){
+                var before=f.input().workBudget().snapshot();
+                assertThrows(IllegalArgumentException.class,()->new LegacyEmissionKernel().solveManagedGroupedChartAffinity(f.input(),f.profiles(),List.of(0.0),List.of(),(p,o,s)->o,CancellationProbe.NONE,
+                    LegacyCompetitiveProofTest.QUERY,LegacyCompetitiveProofTest.EXEC,execution,null));
+                assertEquals(before,f.input().workBudget().snapshot());return;
+            }
             var seeds=List.of(0.0,.25);var anchors=new ArrayList<LegacyEmissionKernel.AnchorProposal>();
             for(int row:List.of(0,2,4,6))anchors.add(new LegacyEmissionKernel.AnchorProposal(row,f.profiles().get(row).peaks().get(0)));
             var expected=LegacyGroupedExhaustiveOracle.enumerate(f,seeds,anchors);

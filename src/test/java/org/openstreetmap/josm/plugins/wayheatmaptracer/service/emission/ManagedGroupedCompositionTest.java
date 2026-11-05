@@ -149,6 +149,7 @@ class ManagedGroupedCompositionTest {
     void realOppositeNativeIntervalTargetInvalidatesTheActualOrdinaryWitness(LegacyEmissionKernel.GroupedExecution execution)throws Exception{
         var fixture=new ManagedOrdinaryAffinityTest();fixture.cache=cache;
         fixture.managed(new ManagedOrdinaryAffinityTest.Spec(.60,true,false,false,CancellationProbe.NONE,12,false),f->{
+            if(execution==LegacyEmissionKernel.GroupedExecution.EXACT_Q0_OWNED_NATIVE_GUIDE_V1){assertMissingGuide(f.input());return;}
             var profiles=f.input().profiles().levelZeroProfiles();double seedOffset=profiles.get(0).peaks().stream().mapToDouble(p->p.offsetPx()).min().orElseThrow();
             try(var owner=f.input().openExecutionOwner("direct-owned-interval-witness");var progress=LegacyEmissionProgress.open(f.input(),QUERY,EXEC)){
                 var budget=f.input().workBudget();var domain=new LegacyEmissionDomain(f.input().legacyBinding().orElseThrow(),profiles,List.of(seedOffset),budget,owner);
@@ -195,6 +196,7 @@ class ManagedGroupedCompositionTest {
     void actualManagedGraphMatchesIndependentQualifiedImageOracle(LegacyEmissionKernel.GroupedExecution execution)throws Exception{
         var fixture=new ManagedOrdinaryAffinityTest();fixture.cache=cache;
         fixture.managed(new ManagedOrdinaryAffinityTest.Spec(.60,true,false,false,CancellationProbe.NONE,12,false),f->{
+            if(execution==LegacyEmissionKernel.GroupedExecution.EXACT_Q0_OWNED_NATIVE_GUIDE_V1){assertMissingGuide(f.input());return;}
             var profiles=f.input().profiles().levelZeroProfiles();assertEquals(2,profiles.get(0).peaks().size());
             // Native peak intensity alone does not rank grouped cost with fixed approach geometry.
             // Reverse the genuine seed order to exercise replacement of the first enumerated seed.
@@ -264,6 +266,7 @@ class ManagedGroupedCompositionTest {
         fixture.managed(new ManagedOrdinaryAffinityTest.Spec(.60,true,false,false,CancellationProbe.NONE,12,true),f->{
             var profiles=f.input().profiles().levelZeroProfiles();var seeds=profiles.get(0).peaks().stream().map(p->p.offsetPx()).toList();
             for(var execution:LegacyEmissionKernel.GroupedExecution.values()){
+                if(execution==LegacyEmissionKernel.GroupedExecution.EXACT_Q0_OWNED_NATIVE_GUIDE_V1){assertMissingGuide(f.input());continue;}
                 try(var progress=LegacyEmissionProgress.open(f.input(),QUERY,EXEC);
                     var result=solve(f.input(),profiles,seeds,List.of(),(p,o,s)->o,CancellationProbe.NONE,execution,progress)){
                     assertEquals(execution,result.execution());assertEquals(execution,progress.view().groupedExecution());
@@ -287,5 +290,13 @@ class ManagedGroupedCompositionTest {
             return (LegacyEmissionKernel.GroupedResult)method.invoke(new LegacyEmissionKernel(),input,profiles,seeds,anchors,smoother,cancellation,QUERY,EXEC,execution,progress);
         }catch(NoSuchMethodException missing){throw new AssertionError("Reviewed managed-grouped entry is missing",missing);}
         catch(InvocationTargetException wrapped){if(wrapped.getCause() instanceof RuntimeException failure)throw failure;throw wrapped;}
+    }
+    static void assertMissingGuide(SampledEmissionInput input)throws Exception{
+        try(var p=LegacyEmissionProgress.open(input,QUERY,EXEC)){
+            var before=input.workBudget().snapshot();var fields=observerFields(p);
+            var profiles=input.legacyBinding().orElseThrow().observations().stream().map(LegacyEmissionBinding.OriginalObservation::profile).toList();
+            assertThrows(IllegalArgumentException.class,()->solve(input,profiles,List.of(0.0),List.of(),(a,b,c)->b,CancellationProbe.NONE,LegacyEmissionKernel.GroupedExecution.EXACT_Q0_OWNED_NATIVE_GUIDE_V1,p));
+            assertEquals(before,input.workBudget().snapshot());assertEquals(fields,observerFields(p));
+        }
     }
 }

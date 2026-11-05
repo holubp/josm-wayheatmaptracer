@@ -991,4 +991,196 @@ public final class RidgeTracker {
 
     private record IntervalPath(double scoreBonus, List<Double> offsets, List<Double> intensities) {
     }
+
+    /** Proposal instructions carry producer identity; unsupported rows never invent observed owners. */
+    public enum GuideKind { OBSERVED, CARRY_PREVIOUS, INTERVAL_TARGET }
+    public record GuideStep(int originalRow,GuideKind kind,RenderedHeatmapSampler.CrossSectionPeak peak) {
+        public GuideStep {
+            if(originalRow<0||kind==null||(kind==GuideKind.OBSERVED)!=(peak!=null))throw new IllegalArgumentException("Incomplete guide instruction");
+        }
+    }
+    public static final class GuideAnchor {
+        private final Anchor nativeAnchor;
+        private GuideAnchor(Anchor anchor){nativeAnchor=anchor;}
+        public int row(){return nativeAnchor.index();}
+        public RenderedHeatmapSampler.CrossSectionPeak peak(){return nativeAnchor.peak();}
+        public double quality(){return nativeAnchor.quality();}
+    }
+    /** Owned native proposal only; score/offset histories confer no admission or cost authority. */
+    public static final class GuideTrace implements AutoCloseable {
+        private final OwnedOrdinaryGuide provider;private final AttemptMemoryLedger.Owner owner;
+        private final List<GuideStep> steps;private final List<Double> offsets,intensities;private final double score;
+        private GuideTrace(OwnedOrdinaryGuide provider,AttemptMemoryLedger.Owner owner,GuideLabel label) {
+            this.provider=provider;this.owner=owner;steps=List.copyOf(label.steps());
+            offsets=List.copyOf(label.state().offsets());intensities=List.copyOf(label.state().intensities());score=label.state().score();
+        }
+        private void live(){if(owner.isClosed())throw new IllegalStateException("Guide trace is closed");}
+        public List<GuideStep> steps(){live();return steps;}public List<Double> offsets(){live();return offsets;}
+        public List<Double> intensities(){live();return intensities;}public double score(){live();return score;}
+        public void requireProvider(OwnedOrdinaryGuide expected,SampledEmissionInput input){live();expected.requireInput(input);if(provider!=expected)throw new IllegalArgumentException("Foreign guide trace");}
+        @Override public void close(){owner.close();}
+    }
+    private record GuideLabel(State state,List<GuideStep> steps,AttemptMemoryLedger.Owner owner) { }
+
+    /** Privately issued prepared source/anchor identities; no external offset-to-owner adapter exists. */
+    public final class OwnedOrdinaryGuide implements AutoCloseable {
+        public static final String POLICY_ID="NATIVE_RIDGE_ORDINARY_GUIDE_V1";
+        private final SampledEmissionInput input;private final AttemptMemoryLedger.Owner owner;
+        private final List<RenderedHeatmapSampler.CrossSectionProfile> profiles;private final List<Double> seeds;
+        private final List<GuideAnchor> anchors;private final List<LegacyEmissionKernel.AnchorProposal> proposals;
+        private final double normalization,edge;private final CancellationProbe cancellation;
+        private boolean finished;
+        private OwnedOrdinaryGuide(SampledEmissionInput input,AttemptMemoryLedger.Owner owner,
+                List<RenderedHeatmapSampler.CrossSectionProfile> profiles,List<Double> seeds,List<Anchor> anchors,
+                double normalization,double edge,CancellationProbe cancellation) {
+            this.input=input;this.owner=owner;this.profiles=List.copyOf(profiles);this.seeds=List.copyOf(seeds);
+            var issued=new ArrayList<GuideAnchor>();var requests=new ArrayList<LegacyEmissionKernel.AnchorProposal>();
+            for(var a:anchors){issued.add(new GuideAnchor(a));requests.add(new LegacyEmissionKernel.AnchorProposal(a.index(),a.peak()));}
+            this.anchors=List.copyOf(issued);proposals=List.copyOf(requests);this.normalization=normalization;this.edge=edge;this.cancellation=cancellation;
+        }
+        public void requireInput(SampledEmissionInput expected){if(expected!=input||owner.isClosed()||finished)throw new IllegalArgumentException("Guide source/lifetime differs");}
+        public void finish(SampledEmissionInput expected){requireInput(expected);finished=true;}
+        public List<RenderedHeatmapSampler.CrossSectionProfile> profiles(){requireInput(input);return profiles;}
+        public List<Double> seeds(){requireInput(input);return seeds;}
+        public List<LegacyEmissionKernel.AnchorProposal> proposals(){requireInput(input);return proposals;}
+        public List<GuideAnchor> anchors(){requireInput(input);return anchors;}
+        public double normalization(){requireInput(input);return normalization;}
+        public java.util.Optional<GuideAnchor> anchor(int row,RenderedHeatmapSampler.CrossSectionPeak peak) {
+            requireInput(input);var budget=input.workBudget();budget.charge(EmissionWorkBudget.Operation.PREPARATION,anchors.size()+1L);
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION,2);owner.reserve(128);
+            GuideAnchor found=null;for(var a:anchors)if(a.row()==row&&a.peak()==peak){if(found!=null)return java.util.Optional.empty();found=a;}
+            return java.util.Optional.ofNullable(found);
+        }
+        public GuideTrace base(SampledEmissionInput expected,int seedId,double seed) {
+            requireInput(expected);if(seedId<0||seedId>=seeds.size()||Double.doubleToRawLongBits(seed)!=Double.doubleToRawLongBits(seeds.get(seedId)))throw new IllegalArgumentException("Foreign guide seed");
+            return propose(seed,null,null);
+        }
+        public GuideTrace interval(SampledEmissionInput expected,GuideAnchor left,GuideAnchor right) {
+            requireInput(expected);var budget=input.workBudget();budget.charge(EmissionWorkBudget.Operation.PREPARATION,2L*anchors.size()+1);
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION,1);owner.reserve(64);
+            boolean l=false,r=false;for(var a:anchors){l|=a==left;r|=a==right;}
+            if(!l||!r||right.row()<left.row())throw new IllegalArgumentException("Foreign guide anchors");
+            return propose(0,left,right);
+        }
+        private GuideTrace propose(double seed,GuideAnchor left,GuideAnchor right) {
+            var budget=input.workBudget();input.requireOpenAndUnchanged();cancellation.checkpoint();
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,64);budget.charge(EmissionWorkBudget.Operation.ALLOCATION,16);
+            try(var scratch=owner.child("native-guide-dp")) {
+                scratch.reserve(2048);
+                var layer=scratch.child("guide-initial");
+                State initial=left==null?new State(seed,0,0,List.of(),List.of()):new State(left.nativeAnchor.offsetPx(),0,left==right?0:left.quality(),List.of(left.nativeAnchor.offsetPx()),List.of(left.nativeAnchor.intensity()));
+                List<GuideStep> first=left==null?List.of():List.of(new GuideStep(left.row(),GuideKind.OBSERVED,left.peak()));
+                List<GuideLabel> states=List.of(new GuideLabel(initial,first,layer));
+                int start=left==null?0:left.row()+1,end=right==null?profiles.size()-1:right.row();
+                for(int row=start;row<=end;row++) {
+                    input.requireOpenAndUnchanged();cancellation.checkpoint();var profile=profiles.get(row);
+                    budget.charge(EmissionWorkBudget.Operation.PREPARATION,64L+8L*profile.peaks().size());
+                    budget.charge(EmissionWorkBudget.Operation.ALLOCATION,32L+profile.peaks().size());
+                    var nextLayer=scratch.child("guide-row");nextLayer.reserve(1024L+64L*profile.peaks().size());
+                    var next=new ArrayList<GuideLabel>();boolean unsupported=isUnsupportedProfile(profile);
+                    if(left==null&&unsupported) {
+                        for(var previous:states)next.add(guideAppend(previous,null,null,Double.NaN,0,row,GuideKind.CARRY_PREVIOUS,nextLayer,budget));
+                    } else {
+                        int span=left==null?0:right.row()-left.row();double target=left==null?Double.NaN:left.nativeAnchor.offsetPx()+(right.nativeAnchor.offsetPx()-left.nativeAnchor.offsetPx())*((double)(row-left.row())/span);
+                        boolean endpoint=right!=null&&row==right.row();
+                        var peaks=endpoint?List.of(right.peak()):left==null?profile.peaks():intervalPeaks(profile,target);
+                        for(var peak:peaks) {
+                            GuideLabel best=null;
+                            for(var previous:states) {
+                                var candidate=guideAppend(previous,peak,profile,target,span,row,unsupported&&!endpoint?GuideKind.INTERVAL_TARGET:GuideKind.OBSERVED,nextLayer,budget);
+                                if(best==null||candidate.state().score()>best.state().score()){if(best!=null)best.owner().close();best=candidate;}
+                                else candidate.owner().close();
+                            }
+                            next.add(best);
+                        }
+                    }
+                    layer.close();layer=nextLayer;states=next;
+                }
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION,64L+16L*states.size());budget.charge(EmissionWorkBudget.Operation.ALLOCATION,8);scratch.reserve(1024);
+                var best=states.stream().max(Comparator.comparingDouble((GuideLabel a)->a.state().score())).orElseThrow();
+                int n=best.steps().size();budget.charge(EmissionWorkBudget.Operation.BACKPOINTER_VISIT,n);
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION,128L+32L*n);budget.charge(EmissionWorkBudget.Operation.ALLOCATION,8L+3L*n);
+                var retained=owner.child("native-guide-trace");
+                try {retained.reserve(2048L+256L*n);input.requireOpenAndUnchanged();cancellation.checkpoint();return new GuideTrace(this,retained,best);}
+                catch(RuntimeException failure){retained.close();throw failure;}
+            }
+        }
+        private GuideLabel guideAppend(GuideLabel previous,RenderedHeatmapSampler.CrossSectionPeak peak,
+                RenderedHeatmapSampler.CrossSectionProfile profile,double target,int span,int row,GuideKind kind,
+                AttemptMemoryLedger.Owner layer,EmissionWorkBudget budget) {
+            int n=previous.steps().size()+1,p=profile==null?0:profile.peaks().size();
+            budget.charge(EmissionWorkBudget.Operation.PAIR_LOOKUP,1);budget.charge(EmissionWorkBudget.Operation.PREPARATION,128L+8L*n+8L*p);
+            budget.charge(EmissionWorkBudget.Operation.ALLOCATION,64);var scope=layer.child("guide-predecessor");
+            try {
+                scope.reserve(1024L+128L*n);
+                if(kind==GuideKind.CARRY_PREVIOUS)peak=new RenderedHeatmapSampler.CrossSectionPeak(previous.state().offset(),0);
+                State state=kind==GuideKind.CARRY_PREVIOUS?append(previous.state(),peak):append(previous.state(),peak,profile,target,
+                    Double.isFinite(target)?intervalTargetWeight(span,peak,profile,normalization):0,normalization,edge);
+                var steps=new ArrayList<>(previous.steps());steps.add(new GuideStep(row,kind,kind==GuideKind.OBSERVED?peak:null));
+                return new GuideLabel(state,steps,scope);
+            }catch(RuntimeException failure){scope.close();throw failure;}
+        }
+        @Override public void close(){owner.close();}
+    }
+
+    /** Additive prepared-source entry. Every native helper scan/copy is prepaid on this new path only. */
+    public OwnedOrdinaryGuide prepareOwnedOrdinaryGuide(SampledEmissionInput input,CancellationProbe cancellation) {
+        java.util.Objects.requireNonNull(input);java.util.Objects.requireNonNull(cancellation);AttemptMemoryLedger.Owner owner=null;
+        try {
+            input.requireOpenAndUnchanged();var binding=input.legacyBinding().orElseThrow();var budget=input.workBudget();
+            owner=input.openExecutionOwner("owned-native-guide-preparation");long count=0,samples=0,max=0,work=256;
+            for(int row=0;row<binding.observations().size();row++) {
+                budget.charge(EmissionWorkBudget.Operation.PREPARATION,16);var profile=binding.observations().get(row).profile();long p=profile.peaks().size();
+                count=Math.addExact(count,p);samples=Math.addExact(samples,profile.intensitySamples().size());max=Math.max(max,p);long nearby=0;
+                for(int i=Math.max(0,row-2);i<=Math.min(binding.observations().size()-1,row+2);i++){budget.charge(EmissionWorkBudget.Operation.PREPARATION,8);nearby=Math.addExact(nearby,binding.observations().get(i).profile().peaks().size());}
+                work=Math.addExact(work,Math.multiplyExact(32,Math.multiplyExact(Math.multiplyExact(p+1,p+1),nearby+p+1)));
+            }
+            long seedBound=Math.min(count,Math.multiplyExact(12,max));work=Math.addExact(work,Math.multiplyExact(16,Math.multiplyExact(seedBound,seedBound)));
+            long rows=binding.observations().size();
+            long allocations=Math.addExact(128,Math.multiplyExact(64,Math.addExact(count,rows)));
+            long bytes=Math.addExact(4096,Math.addExact(Math.multiplyExact(1024,rows),Math.addExact(Math.multiplyExact(512,count),Math.addExact(Math.multiplyExact(32,samples),Math.multiplyExact(256,seedBound)))));
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION,work);budget.charge(EmissionWorkBudget.Operation.ALLOCATION,allocations);
+            owner.reserve(bytes);
+            var original=binding.observations().stream().map(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.LegacyEmissionBinding.OriginalObservation::profile).toList();
+            var suppressed=suppressLongitudinalNoise(cancellableProfiles(original,cancellation));var seeds=collectSeedOffsets(suppressed);
+            double normalization=binding.trackerNormalizationRasterPx(),edge=profileEdgeLimit(suppressed);var anchors=reliableAnchors(suppressed,normalization,edge);
+            input.requireOpenAndUnchanged();cancellation.checkpoint();return new OwnedOrdinaryGuide(input,owner,suppressed,seeds,anchors,normalization,edge,cancellation);
+        } catch(ArithmeticException overflow) {
+            if(owner!=null)owner.close();
+            try{input.workBudget().charge(EmissionWorkBudget.Operation.PREPARATION,Long.MAX_VALUE);}
+            catch(RuntimeException refusal){input.recordTerminalExecutionFailure(refusal);throw refusal;}throw overflow;
+        } catch(RuntimeException failure) {
+            if(owner!=null)owner.close();if(failure instanceof CancellationException||failure instanceof EmissionWorkBudget.LimitExceededException||failure instanceof AttemptMemoryLedger.ResourceLimitException)input.recordTerminalExecutionFailure(failure);throw failure;
+        }
+    }
+
+    /** Explicit BASE-only feasibility comparison. No primary optimizer, interval or smoother is invoked. */
+    public LegacyEmissionKernel.OwnedGuideResult trackOwnedGuideWitnesses(SampledEmissionInput input,CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy query,NativeConnectorEvaluator.ExecutionPolicy execution,LegacyEmissionProgress progress) {
+        return ownedGuideEntry(input,cancellation,query,execution,progress,false);
+    }
+    /** Explicit managed/full-grouped guide policy. Ordinary entry points never route here. */
+    public LegacyEmissionKernel.OwnedGuideResult trackOwnedGuideEmission(SampledEmissionInput input,CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy query,NativeConnectorEvaluator.ExecutionPolicy execution,LegacyEmissionProgress progress) {
+        return ownedGuideEntry(input,cancellation,query,execution,progress,true);
+    }
+    private LegacyEmissionKernel.OwnedGuideResult ownedGuideEntry(SampledEmissionInput input,CancellationProbe cancellation,
+            NativeConnectorEvaluator.QueryPolicy query,NativeConnectorEvaluator.ExecutionPolicy execution,LegacyEmissionProgress progress,boolean full) {
+        if(progress!=null)progress.requireCompatible(input,query,execution);OwnedOrdinaryGuide provider;
+        try {
+            java.util.Objects.requireNonNull(query);java.util.Objects.requireNonNull(execution);
+            if(execution!=NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1&&query!=NativeConnectorEvaluator.QueryPolicy.ZERO_GUARDED_LOCAL_V1)
+                throw new IllegalArgumentException("Early execution requires local query policy");
+            provider=prepareOwnedOrdinaryGuide(input,cancellation);
+        } catch(RuntimeException failure) {
+            if(progress!=null){try{progress.requireCompatible(input,query,execution);}catch(RuntimeException revoked){throw failure;}
+                try{progress.seal(failure);}catch(RuntimeException cleanup){if(cleanup!=failure)failure.addSuppressed(cleanup);}}throw failure;
+        }
+        try {
+            var kernel=new LegacyEmissionKernel();
+            return full?kernel.solveOwnedGuideManagedGrouped(input,provider,(profiles,offsets,intensities)->
+                smoothOffsets(profiles,offsets,intensities,provider.normalization(),cancellation,input.workBudget()),cancellation,query,execution,progress)
+                :kernel.evaluateOwnedOrdinaryWitnesses(input,provider,cancellation,query,execution,progress);
+        } catch(RuntimeException failure){provider.close();throw failure;}
+    }
 }
