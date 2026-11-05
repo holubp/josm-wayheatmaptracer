@@ -14,6 +14,45 @@
 
 ### Active execution card — authoritative
 
+- USER REDIRECTION2026-11-05 supersedes the experimental-solver continuation
+  below for Legacy: ordinary Legacy must not become dramatically slower.
+  Focus cheap heuristics within the existing fast tracker, not a new expensive
+  solver. Suspend new grouped/native solver development, private solver attempts
+  and consumer-detachment integration; preserve all committed/dirty work and
+  evidence. No production adoption, deletion or rollback implied. Existing A
+  work remains partial; a new shared consumer project is not the shortest Legacy
+  repair. First reconcile prior failed heuristics and propose source-backed cheap
+  alternatives, preserving supported bends/strong traces and measured runtime.
+  Prior broad autonomous approval remains subject to this new constraint.
+- Consumer writer stopped safely atd1ba in drasov-consumer-detachment:2modified
+  producerfiles/3untracked snapshot-adapter-testfiles preserved, no commit. Intended
+  absent-API RED recorded; GREEN attempt interrupted before a result, NOT passing.
+  Durable consumer-detachment/report.md and five-file checkpoint manifest865d810a
+  preserve unfinished work. Do not integrate or classify it as completed.
+- Final native-guide128 result audit: U1056.4837149472492 is bit-identical to
+  earlier witness (409081ef52f89c16), so it gives NO stronger pruning bound.
+  Narrow first-seed feasibility PASS, stronger-U hypothesis NEGATIVE. This is
+  additional evidence against extending that route as a practical Legacy fix.
+- Fast-heuristic options reviewed independently78ba77b0: select ONE named
+  existing-smoother coherence/backoff experiment (Option2), not new spur/chord
+  evidence infrastructure. Existing interpolation helper sorts/copies percall;
+  the experiment must use once-validated ordered samples and bounded direct
+  brackets, fixed window/backoff and no pertrial allocation. Current ordinary
+  default remains unchanged pending supported-bend/isolated-stray discrimination,
+  strong/sparse/switchback/parallel/protection regressions and matched tracker+
+  whole-workflow runtime. This addresses darkening only; raw fold remains open.
+  Exact compact packet2026-11-05-legacy-fast-smoother-experiment.md SHA0222c8fa
+  independently reviewed1f21c138 PASS after3clarifications (fixround1/5,3addressed,
+  0open). Luna worker owns `.worktrees/drasov-legacy-fast-smoother` frome8d69ba2,
+  only RidgeTracker+oneexperimenttest. Named experiment only; no ordinary default
+  change, newsolver import, private replay/benchmark or adoption at this stage.
+- Fast-smoother initial public behavioral RED→GREEN reported on nine-row analytic
+  selected straight ridge: old update darkens, named experiment retains support.
+  Remaining preservation/invalid/ambiguity/parity suites still running; no private
+  quality or performance verdict. Ruling: changedUpdates counts decisions whose
+  final experimental value differs from the old proposal y, including retaining
+  current after rejecting y; counting only motion from current would hide active
+  protection. Worker to retain exact diagnostic regression for this clarification.
 - User requires continuous completion of remaining points1–4, preserving ordinary
   Legacy speed. No new RC/default adoption or Astra authorized. Primary dirty
   `codex/v0.22.0-release`117baaf0 and private/untracked files remain untouched.
@@ -23,13 +62,19 @@
   quality/performance, protected-interior and consumers OPEN. Nothing here waives
   original plan scope or permits declaring all four complete.
 - Integrated dev worktree `.worktrees/drasov-integrated-verification` now exact
-  e386a5c470a5ac6a01f738ec8f7af69325b4bf36, pushed to matching `codex/` branch.
+  d1ba6e5d11f4f00c2bcd212d1c23c28438cccab8, pushed to matching `codex/` branch.
   It contains guide d95 ownership fix, A12e+54bf R1, and immutable proof264722eb+
   test-only R1e386. All source batches independently accepted. Full CI42003042605
-  running at e386; latest completed CI41995586137 exactfdd851c6 PASS:
-  3250executions/310XML/3122distinct/0f/e/s, both real-JOSM GUI summaries PASS.
+  now PASS at e386:3253executions/310XML/3125distinct/0f/e/s, both real-JOSM GUI
+  summaries PASS. Public artifacts imported durable ci-42003042605, noJAR.
+  Prior CI41995586137 exactfdd851c6 PASS3250 remains earlier evidence.
   Local combined337/43 passed atfdd; immutable proof accepted89/6 composed from
   retained five suites+final40 affinity XML. Do not call these one newer full run.
+  Added reviewedguide-only164+zeroR1664d14b2 (73/5GREEN), plus19line developer
+  contractdoc atd1ba. FullCI42030731061 PASS at exactd1ba:3263executions,
+  310XML/3135distinct/0failures/errors/skips; both real-JOSM GUI summaries PASS.
+  Five public evidence artifacts retained in durable ci-42030731061; noJAR/release. Helper
+  remains pinned exactSOURCE664d14b2 classes, not docdescendant/code rebuild.
 - Ordinary Legacy old bodies/behavior unchanged; prior public kernel benchmark
   ratios .9851/1.0013/1.0258 versus RC14 remain bounded evidence, not full workflow
   performance qualification. New experimental code must not enter old fast paths.
@@ -43,14 +88,36 @@
   correction and both consumed claims remain preserved. No automatic retries.
 - Immutable301-credit saving is implemented/reviewed but alone does NOT justify
   another private run; old-prefix saving upper bound2.56M, completion unproved.
-- ACTIVE implementation: Sol/high `a_endpoint_r1_recovery`, durable isolated
+- Native-guide-only claim009a/legacy-native-guide-only-first-original-20261105-one
+  also numerically FAILED32M at first original BASEseed0 row147→148, inside
+  actual profile convolution. No completed witness/U/route; other two original
+  seeds NOT_REQUESTED. Java0 means sealed failure export succeeded. All24 input
+  hashes unchanged, six cached tiles/zero network, peak106294136B→0, total5.612s.
+  Independent result audit PASS for evidence only; numerical result remainsFAIL.
+  Ruling: the binding affinity amendment retains128M/8M/256MiB ceilings and
+  stricter caller limits;32M was a named stricter screen. ONE separate same-guide
+  diagnostic at the existing128M default is eligible under standing experiment
+  authority, not an increase of the production hard ceiling. New design/helper
+  review, fresh fingerprint/claim/controller admission remain required. The A-only
+  historical128M ruling is precedent, not blanket permission. No automatic retry.
+  Read-only source assessment of immutable measurement reuse and consumer gaps
+  proceeds separately. Neither hypothesis is an implemented or accepted repair.
+- CLOSED host experiment: Sol/high `a_endpoint_r1_recovery`, durable isolated
   `.worktrees/drasov-exact-host-admission`, basee386. New explicitly experiment-only
   exact-host single-use validation protocol; approved proof/plan ec6298daf... and
   accounting cert855cf46ab... plus `host-admission-proof/implementation-review.md`
   CODE-READY PASS. JOSM19555/Java17 pinned raw-stream theorem, setup652576B→1MiB,
   paid2344745SHA units+reads, six fact bounds and narrow seventh Binding overload.
+  Conservative code now frozen01c6861ec7e89e6f01352bf2635117b0b3cae190,
+  107affected +separate source/tile neighbors PASS. Independent full core audit
+  active onthatcommit (notmutabletree). Author applying only reviewed record-unit
+  normalization +public2/15-node measurements before final neighbor/freeze;
+  pre-normalization source/receipts preserved. No new private admission.
   Public controlled-fork RED/GREEN, source review and helper review remain BEFORE
   any newly admitted private attempt. Portable production adoption remains OPEN.
+  LATEST: hostR1 now4f304d1308f13bc0f8b6d97ce7c05d7d47137427,152tests/11suites
+  GREEN and scopedindependentreview PASS/all4ADDRESSED. Correctness experiment
+  CLOSED; measuredworkunfavorable, isolated/unadopted, NO hostprivate retry.
 - Ruling: only new explicit entry may amend incidental bookkeeping callbacks;
   each numerical boundary retains cancellation and complete post-callback live
   checks, bounded work/memory/latency, no post-refusal query/publication. Old
@@ -64,9 +131,141 @@
   assignments, post-anchor quality, exact Apply/Undo/Redo/staleness and Hybrid
   occurrence bridge remain required. Source reference assumptions do not become
   original OSM authority. User visual reference acceptance remains a later gate.
-- Next: finish bounded exact-host implementation → focused/public controls →
-  independent diff review → integrate/test/CI → reviewed frozen helper/newONE
-  admission if warranted. Keep this card current; details below are historical.
+- Next: independently close the native-guide-only32M result evidence; distinguish
+  its screening cap from the existing128M production hard ceiling before any
+  separately reviewed follow-on diagnostic. Source-code measurement-reuse and
+  consumer-gap assessments proceed without private reruns. Host R1 is CLOSED
+  and unfavorable, so no host adoption/private retry. Actual geometry, protected
+  interiors and consumer requirements remain open. Below is historical detail.
+- Consumer Slice1 packet1d25bb82 and independent design reviewa3c73a97 PASS:
+  issuer-gated paid immutable N/M/arc detachment, current-source authority and
+  logical-close revocation before any candidate/UI adoption. Sol worker owns
+  isolated `.worktrees/drasov-consumer-detachment` fromd1ba; real public producer
+  TDD includes foreign/forgery/stale/cap/ownership failure paths. This advances
+  required consumer integration without claiming practical Drasov geometry.
+- ONE default128M native-guide diagnostic execution independently admitted via
+  f7682d31 helperreview/fingerprintcf31640a, fresh consumedclaim
+  legacy-native-guide-only-first-original-default128m-one. Actual first seed
+  FEASIBLE, certified costs Q229.03865719413182/C365.89975270770043/
+  T427.41865184043155/K34.12665320498529;35,418,004totalwork/1058pairs,
+  peak119436200B→0, entry4183ms/total5069ms. All24 hashes unchanged, zero network.
+  This is witness feasibility only: no full grouped winner/M/quality/Apply proof.
+  Result/pruning-value audit active; compare U against earlier1056.4837149472492
+  before admitting any full solve. No automatic further private run.
+- Measurement-reuse source assessment found one existing session plus exact-key
+  caches; no cross-session duplication demonstrated in the failed guide run.
+  Ruling: do not implement an unproven cache optimization. Preserve source checks.
+
+Parallel bounded route: native-guide-only diagnostic design39eda4cc independently
+CODE-READY (359wordreview). Luna/high immutable_native_proof implementing in
+`.worktrees/drasov-native-guide-only` fromstablee386, NOhostdependency/privateinput.
+BASEfirstoriginalseed only, greedyNOT_REQUESTED, distinctscope/coverage, actual
+KernelreplayQCTKU/ownedlease/sourcechecks unchanged. Fullmin/defaults unchanged.
+This can test the prepared native route that greedy-first32M never reached;
+no success/geometry/feasibility promised. Code→review→helper→newONEadmission
+gates remain, no automatic private retry.
+LATEST code frozen164ccfa82c163d91a616d8d26a09d7d3851c6e31 (5files366+/14-),
+clean frome386;72tests/5suites0f/e/s. Independentactualdiff/evidenceaudit active.
+Helperworker authorized javac/publiccontrols againstfrozenclasses concurrently,
+noGradle/sourcebuild; SOURCE_ACCEPTANCE_PENDING gates stillhardblockprivate
+input/claims/run/finalacceptedfingerprint. Ifcodefixclasseschange, updateonly
+invalidatedhelpercontrols/hashbeforefreeze. No privateguide-onlyrun yet.
+LATEST sourcezeroR1664d14b2 independentlyPASS,73tests/5suites0f/e/s: actual
+positive-length3OBSERVEDcost0 retainedU0/progress+certificate; no-positiveleg
+stillabsent. Helperactualentry5controls+512recipe+5Pythongates+IOzero GREEN
+against664; sourceacceptancePASS relayed forfinalfingerprint/packet/command
+freeze. IndependentHELPERreview then separateONEcontrolleradmission still
+required; no privateinput/claim/attempt yet.
+LATEST helper independentlyPASS fingerprint009a1bfe1d18ed53b07f7e3095417187192d6593231c43851614e76232376d5b,
+1416hashes exact; rootcontroller admitted ONE claim
+legacy-native-guide-only-first-original-20261105-one/rootgo
+ONE_LEGACY_NATIVE_GUIDE_ONLY_FIRST_ORIGINAL_32M. Exactrecordedcommand launched;
+receipt exported: numerical32M refusal atrow147, noU/geometry; see activecard.
+No greedy comparison/allseed/primarysolve/geometryclaim.
+Preserveconsumedclaim, no automaticretry orreinterpretationofoldcappedattempts.
+FixednewAPI `RidgeTracker.trackOwnedNativeGuideOnlyFirstOriginalSeed` and
+`Kernel.evaluateFirstOriginalOwnedNativeGuide`; nativeGuideOnly Optional sidecar
+hasexactoriginal/requestedseed rawbits, FIRST_ORIGINAL_SEED_ONLY, greedy
+NOT_REQUESTED, comparison=false, guidedQCTK/steps/realU. Luna focusedtests active.
+Sol legacy_witness_recovery preparing DRAFTonly helper in native-guide-only-helper/
+usingcorrected512oldlauncher; no privateinput/build/fingerprint/claim/run before
+codefreeze+review. This overlaps artifact prep, not private execution/adoption.
+Luna publiccontrols now establish first-original-seed guidedcost/steps/U exact
+parity witholdcomparison's guidedcomponent onbothmatching(.95amplitude) and
+genuinelydiffering(.45) syntheticrasterpaths, unchangedproducerseedorder.
+DifferingQCTK greedy≈(11.013186,.64,.774624,.017689), guided≈(8.761317,.64,.96,0).
+Thosearetestfixturefacts, NOTprivateimprovement/tunedproductionparameters.
+Fullfocused/regressionfreeze/review stillpending. Drafthelperuncompiled/blocked.
+
+Ownership clarification for new host guard: its paid index may retain exact
+witness/request/frame identity once and replace only the immutable lifetime
+proof that otherwise traverses historical co-owner lists. Every other request
+match, selection/parameter/source fact stays checked. Require exact issued
+retention lease, original-owner-close/live-retained-owner control, foreign/closed
+index refusal and zero final owner; independent source review must verify it.
+No old/general owner-list behavior changes are authorized.
+
+Normalized host405dd313f8e38803bee09b333f10f72f29c4a612 frozen146tests/11suites
+0f/e/s; independent accounting delta PASS, overall source BLOCKED on4findings:
+budget/input monitor inversion, coordinator close/epoch race, projection class
+identity, same-owner foreign-witness index retarget. Originalauthor doing R1
+onlythose+same-lock callback variant; realREDs established, no privateadmission.
+Hostpublicworkremainsworse despite normalization; no performanceclaim/adoption.
+
+Independent alternate bounded diagnostic design/review active: explicit BASE
+native-guide-only FIRST original seed, oldlivee386guard, greedyNOT_REQUESTED,
+actualproductionreplay/caps/lease preserved, no primarywinner or changeddefault
+fullmin(greedy,guide) contract. Existing32Mrun never tested nativeguide because
+greedy consumed budget first. Design39eda4cc... durable; NO implementation/run
+before review. It tests an untested original proposal, not a new numericalmodel.
+
+Latest host implementation acceptance milestone (not frozen/reviewed):4JUnit
+tests GREEN,21 owned-fork cases plus provider/loader/home negative forks and
+hash short/truncated/growing/zero-progress/IO-redaction/owner-revocation controls.
+Hidden-growth actual+4608 raw credits,16 mutable/cancel/closure/lock-write cases
+refused with no NODE_READ, original failure identities/zeroowner preserved.
+Baseline tiny-fixture active admission635credits, NOT a private feasibility
+forecast. Public185row/301peak old/new+setup composition and affected neighbors
+running before freeze. Snapshot carries additive actual validation-policy
+identity; old/default value retained. No new private attempt admitted.
+Additional RED within approved fence: replaced fake provider named SUN was
+accepted after warmup. Use-time bootstrap provider/service/delegate verification
+being fixed; name or earlier warmup alone is insufficient. Preserve typed safe
+refusal and original failure/zeroowner. Pure public verifier control, no forged
+capability or private query. Same implementation worker/branch, no new scope.
+Public185/301 composition actual: olde386 admission404/new3564; setup2352018,
+activation2355582; oldquery20475/new39435;2336 scalarreads andfullquery/mode
+outputs bit-identical, totalpublicattempt4684930. Unfavorable newaccounting:
+NO privateattempt/feasibilityclaim. Author finishing actual nested-source-only
+mixed-callback-path RED viahost-only dispatch/nonblockingactive ticket, then
+necessaryneighbors/freeze. Two fork-launcher apiguardian compile-only classpath
+failures were fixture errors (105/107 otherneighbors passed), not model RED.
+Independent bounded work-unit-normalization review active: compare old1logical
+profile-record iteration versus new8fixed-check credits, allvariableloops paid;
+no pricechange/capraise without reviewedoperation definition/newpolicyidentity.
+Normalization review now frozen/accepted narrow correction: new explicit
+EXACT_HOST_RECORD_ADMISSION_V1 may charge1PROFILE_RECORD_CHECK per actual fixed
+profile iteration (all≤128straightline checks/≤2fixedtemps), matchinge386 loop
+granularity. Only8→1profileterms; predicted3564→974 forL1N185, NOT404. Keepall
+raw64+r/string/member/SHA/setup/index charges andscratch, oldentries/finaltickets
+unchanged. Author authorized to preservepre-normalizationpatch/receipts then
+apply/test onlythatcorrection; newexportedpolicy required. Also compare onepublic
+15collinear-way-node/185profile/301peak case with2fixedends (originaldefault2node
+fixtureunchanged), old/new within samecase; no privatecoordinates or forecasts.
+Actualresults+fullcodeindependentaudit still precede any privateadmission.
+
+Private reference picker ready in durable `reference-picker/index.html`,21exact
+candidateIDs/six existing raw overlays, finalpreviews unavailable. No automatic
+selection, local JSON feedback only. Async exactgood-blue-ID question pending;
+continue independent implementation, do not infer acceptedreference.
+
+Implementation milestone: supported controlled-fork activation/setup/policy
+receipts, cachedidentity, hidden/deleted refs and coordinate/tag/referrer/normal/
+projection refusal controls passed before coordinator-close RED. Ruling: add
+read-only `TileFetchCoordinator.isClosed()` (eighth narrow source file), consumed
+only by new host-specific source check; old generation/epoch methods/default
+bodies unchanged. Needed because close leaves generation/epoch equal. Preserve
+RED and close/cachehit/sticky failure/zeroowner controls; no coordinator rewrite.
 
 ### Historical resume cards — superseded by active execution card
 
