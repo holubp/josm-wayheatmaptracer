@@ -56,7 +56,39 @@ public final class LegacyManagedProfileSampler {
             TileHeatmapSampler.SamplingParameters validationParameters,
             List<ProjectedPoint> sourcePolyline, String projectionCode, String selectedPalette,
             List<String> detectors, IntensitySamplingMode intensityMode,
-            double trackerNormalizationRasterPx) {
+            double trackerNormalizationRasterPx, LegacyProfileNormalPolicy normalPolicy,
+            List<Integer> fixedSourceIndices, String normalPolicyFallbackReason) {
+        public Input(InferenceMode inferenceMode, int requestedInferenceZoom, int requestedValidationZoom,
+                int inferenceZoom, int validationZoom, int tileSize, Map<String, Mosaic> mosaics,
+                TileHeatmapSampler.SamplingParameters inferenceParameters,
+                TileHeatmapSampler.SamplingParameters validationParameters, List<ProjectedPoint> sourcePolyline,
+                String projectionCode, String selectedPalette, List<String> detectors,
+                IntensitySamplingMode intensityMode, double trackerNormalizationRasterPx) {
+            this(inferenceMode, requestedInferenceZoom, requestedValidationZoom, inferenceZoom, validationZoom,
+                    tileSize, mosaics, inferenceParameters, validationParameters, sourcePolyline, projectionCode,
+                    selectedPalette, detectors, intensityMode, trackerNormalizationRasterPx,
+                    LegacyProfileNormalPolicy.IMMEDIATE_V1, List.of(), "");
+        }
+
+        /** Resolves actual live normal eligibility before frozen capture. */
+        public Input withNormalPolicy(LegacyProfileNormalPolicy policy, List<Integer> fixed) {
+            Objects.requireNonNull(policy, "normalPolicy");
+            fixed = LegacyVisibleProfileSampler.validateNormalPolicy(policy, fixed, "", sourcePolyline.size());
+            if (policy == LegacyProfileNormalPolicy.IMMEDIATE_V1 && normalPolicy == policy && normalPolicyFallbackReason.isEmpty()) return this;
+            if (policy == LegacyProfileNormalPolicy.IMMEDIATE_V1) return new Input(inferenceMode, requestedInferenceZoom,
+                    requestedValidationZoom, inferenceZoom, validationZoom, tileSize, mosaics, inferenceParameters,
+                    validationParameters, sourcePolyline, projectionCode, selectedPalette, detectors, intensityMode,
+                    trackerNormalizationRasterPx);
+            var source = eastNorth(sourcePolyline);
+            var plan = LegacyProfileNormalFences.plan(source, source.size(), fixed);
+            if (plan.eligible()) plan = LegacyProfileNormalFences.plan(source, samplingShape(this).profiles(), fixed);
+            return new Input(inferenceMode, requestedInferenceZoom, requestedValidationZoom, inferenceZoom,
+                    validationZoom, tileSize, mosaics, inferenceParameters, validationParameters, sourcePolyline,
+                    projectionCode, selectedPalette, detectors, intensityMode, trackerNormalizationRasterPx,
+                    plan.eligible() ? policy : LegacyProfileNormalPolicy.IMMEDIATE_V1,
+                    fixed, plan.eligible() ? "" : plan.reason());
+        }
+
         public Input {
             Objects.requireNonNull(inferenceMode, "inferenceMode");
             Objects.requireNonNull(inferenceParameters, "inferenceParameters");
@@ -82,10 +114,19 @@ public final class LegacyManagedProfileSampler {
                 }
             });
             mosaics = Collections.unmodifiableMap(copiedMosaics);
+            fixedSourceIndices = LegacyVisibleProfileSampler.validateNormalPolicy(normalPolicy, fixedSourceIndices,
+                    normalPolicyFallbackReason, sourcePolyline.size());
             sourcePolyline = List.copyOf(sourcePolyline);
             detectors = List.copyOf(detectors);
             if (sourcePolyline.stream().anyMatch(Objects::isNull)) {
                 throw new IllegalArgumentException("Frozen source geometry is incomplete");
+            }
+            if (normalPolicy == LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1 || !normalPolicyFallbackReason.isEmpty()) {
+                var plan = LegacyProfileNormalFences.plan(eastNorth(sourcePolyline), sourcePolyline.size(), fixedSourceIndices);
+                if (normalPolicy == LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1 ? !plan.eligible()
+                        : plan.eligible() || !normalPolicyFallbackReason.equals(plan.reason())) {
+                    throw new IllegalArgumentException("Invalid protected Legacy normal authority or fallback");
+                }
             }
             var detectorIds = new HashSet<String>();
             for (String detector : detectors) {
@@ -184,13 +225,13 @@ public final class LegacyManagedProfileSampler {
                     throw new IllegalArgumentException("All-color aggregation requires native color mapping");
                 }
                 var profiles = tileSampler.sampleAggregatedProfiles(prepared, input.inferenceZoom(), source,
-                        projection, cancellation);
+                        projection, cancellation, input.normalPolicy(), input.fixedSourceIndices());
                 results.add(new DetectorProfiles(detector,
                         aggregateReferenceKey(input), profiles));
             } else {
                 String referenceKey = input.selectedPalette() + "@" + input.inferenceZoom();
                 var profiles = tileSampler.sampleProfiles(prepared.require(input.selectedPalette()), source,
-                        detector, input.intensityMode(), projection, cancellation);
+                        detector, input.intensityMode(), projection, cancellation, input.normalPolicy(), input.fixedSourceIndices());
                 results.add(new DetectorProfiles(detector, referenceKey, profiles));
             }
         }

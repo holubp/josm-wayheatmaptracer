@@ -39,13 +39,34 @@ public final class LegacyVisibleProfileSampler {
 
     /** Fully frozen visible source input; contains no live JOSM primitives or viewport objects. */
     public record Input(LiveBPreviewService.VisibleRaster raster, List<Anchor> anchors,
-            List<String> detectors, Options options) {
+            List<String> detectors, Options options, LegacyProfileNormalPolicy normalPolicy,
+            List<Integer> fixedSourceIndices, String normalPolicyFallbackReason) {
+        public Input(LiveBPreviewService.VisibleRaster raster, List<Anchor> anchors,
+                List<String> detectors, Options options) {
+            this(raster, anchors, detectors, options, LegacyProfileNormalPolicy.IMMEDIATE_V1, List.of(), "");
+        }
+
+        /** Resolves live eligibility before freezing; malformed explicit replay claims never use this path. */
+        public Input withNormalPolicy(LegacyProfileNormalPolicy policy, List<Integer> fixed) {
+            Objects.requireNonNull(policy, "normalPolicy");
+            fixed = validateNormalPolicy(policy, fixed, "", anchors.size());
+            if (policy == LegacyProfileNormalPolicy.IMMEDIATE_V1) {
+                return normalPolicy == policy && normalPolicyFallbackReason.isEmpty() ? this
+                        : new Input(raster, anchors, detectors, options);
+            }
+            var source = anchors.stream().map(a -> new EastNorth(a.source().east(), a.source().north())).toList();
+            var plan = LegacyProfileNormalFences.plan(source, anchors.size(), fixed);
+            return new Input(raster, anchors, detectors, options,
+                        plan.eligible() ? policy : LegacyProfileNormalPolicy.IMMEDIATE_V1,
+                        fixed, plan.eligible() ? "" : plan.reason());
+        }
         public Input {
             Objects.requireNonNull(raster, "raster");
             Objects.requireNonNull(options, "options");
             if (anchors == null || anchors.size() < 2 || detectors == null || detectors.isEmpty()) {
                 throw new IllegalArgumentException("Legacy visible capture needs anchors and detectors");
             }
+            fixedSourceIndices = validateNormalPolicy(normalPolicy, fixedSourceIndices, normalPolicyFallbackReason, anchors.size());
             anchors = List.copyOf(anchors);
             detectors = List.copyOf(detectors);
             var seen = new HashSet<String>();
@@ -57,6 +78,14 @@ public final class LegacyVisibleProfileSampler {
                 }
                 previousChainage = anchor.cumulativeGroundDistanceMeters();
                 requireProjectedAssociation(raster, anchor);
+            }
+            if (normalPolicy == LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1 || !normalPolicyFallbackReason.isEmpty()) {
+                var plan = LegacyProfileNormalFences.plan(anchors.stream().map(a -> new EastNorth(
+                        a.source().east(), a.source().north())).toList(), anchors.size(), fixedSourceIndices);
+                if (normalPolicy == LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1 ? !plan.eligible()
+                        : plan.eligible() || !normalPolicyFallbackReason.equals(plan.reason())) {
+                    throw new IllegalArgumentException("Invalid protected Legacy normal authority or fallback");
+                }
             }
             for (String detector : detectors) {
                 if (detector == null || detector.isBlank() || !seen.add(detector)) {
@@ -91,10 +120,15 @@ public final class LegacyVisibleProfileSampler {
         var projector = projector(input.raster());
         for (String detector : input.detectors()) {
             cancellation.checkpoint();
-            var profiles = sampler.sampleProfilesOnAnchors(raster, anchors,
+            var profiles = input.normalPolicy() == LegacyProfileNormalPolicy.IMMEDIATE_V1
+                    ? sampler.sampleProfilesOnAnchors(raster, anchors,
                     input.options().halfWidthPx(), input.options().stepPx(), detector,
                     RenderedHeatmapSampler.RASTER_SCALE, 1.0, input.options().intensityMode(),
-                    projector, cancellation);
+                    projector, cancellation)
+                    : sampler.sampleProfilesOnAnchorsWithWideSecants(raster, anchors,
+                        input.options().halfWidthPx(), input.options().stepPx(), detector,
+                        RenderedHeatmapSampler.RASTER_SCALE, 1.0, input.options().intensityMode(),
+                        projector, cancellation, java.util.Set.copyOf(input.fixedSourceIndices()));
             result.add(new DetectorProfiles(detector, profiles));
         }
         return List.copyOf(result);
@@ -116,6 +150,31 @@ public final class LegacyVisibleProfileSampler {
                             - point.y() / RenderedHeatmapSampler.RASTER_SCALE
                                     * raster.projectionUnitsPerViewPixel());
         }).toList();
+    }
+
+    static List<Integer> validateNormalPolicy(LegacyProfileNormalPolicy policy, List<Integer> fixed,
+            String fallbackReason, int sourceCount) {
+        Objects.requireNonNull(policy, "normalPolicy");
+        if (fallbackReason == null || !fallbackReason.matches("[a-z0-9-]{0,96}")) {
+            throw new IllegalArgumentException("Invalid Legacy normal fallback reason");
+        }
+        fixed = List.copyOf(fixed);
+        if (policy == LegacyProfileNormalPolicy.IMMEDIATE_V1 && fallbackReason.isEmpty()) {
+            if (!fixed.isEmpty()) throw new IllegalArgumentException("Default immediate normals cannot claim protected authority");
+        } else {
+            if (policy == LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1 && !fallbackReason.isEmpty()
+                    || fixed.size() < 2 || fixed.get(0) != 0 || fixed.get(fixed.size() - 1) != sourceCount - 1) {
+                throw new IllegalArgumentException("Protected Legacy normals need complete boundary authority");
+            }
+            int previous = -1;
+            for (int index : fixed) {
+                if (index <= previous || index >= sourceCount) {
+                    throw new IllegalArgumentException("Legacy normal boundaries must be ordered unique source indices");
+                }
+                previous = index;
+            }
+        }
+        return fixed;
     }
 
     private static RenderedHeatmapSampler.RasterCoordinateProjector projector(

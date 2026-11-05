@@ -1639,16 +1639,37 @@ public final class LiveBPreviewService {
         org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted<LegacyBProductionRunner.Discovery> discovered;
         var runner = new LegacyBProductionRunner();
         if (captured.raster() != null) {
-            visible = LegacyBSourceCapture.visible(legacy.sampling(), captured.raster(),
-                    geometry.originalProjected(), detector);
+            cancellation.checkpoint();
+            visible = LegacyBSourceCapture.visible(legacy.sampling(), captured.raster(), geometry.originalProjected(), detector);
+            long normalBytes = Math.addExact(LegacyBProductionRunner.normalPolicyWorkingBytes(geometry.originalProjected().size()),
+                    Math.multiplyExact(128L, visible.detectors().size()));
+            try (var normalScratch = owner.reserve(normalBytes)) {
+                visible = visible.withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1,
+                        LegacyBProductionRunner.samplingFixedIndices(input, cancellation));
+            }
+            cancellation.checkpoint();
+            PluginLog.verbose("Hybrid Legacy sampling normals: policy=%s fallback=%s boundaries=%d.",
+                    visible.normalPolicy().id(), visible.normalPolicyFallbackReason().isEmpty() ? "none"
+                        : visible.normalPolicyFallbackReason(), visible.fixedSourceIndices().size());
             discovered = runner.discoverVisible(input, visible, cancellation, owner, deadline);
         } else {
             if (captured.sourceRasters() == null) {
                 throw new IllegalArgumentException("Sequential Hybrid requires its acquired managed source rasters");
             }
+            cancellation.checkpoint();
             managed = managedCapture != null ? managedCapture.input(detector)
                     : LegacyBSourceCapture.managed(legacy.sampling(), captured.sourceRasters(),
                         geometry.originalProjected(), captured.projectionCode(), detector);
+            long normalBytes = Math.addExact(LegacyBProductionRunner.normalPolicyWorkingBytes(geometry.originalProjected().size()),
+                    Math.multiplyExact(128L, Math.addExact((long) managed.mosaics().size(), managed.detectors().size())));
+            try (var normalScratch = owner.reserve(normalBytes)) {
+                managed = managed.withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1,
+                        LegacyBProductionRunner.samplingFixedIndices(input, cancellation));
+            }
+            cancellation.checkpoint();
+            PluginLog.verbose("Hybrid Legacy sampling normals: policy=%s fallback=%s boundaries=%d.",
+                    managed.normalPolicy().id(), managed.normalPolicyFallbackReason().isEmpty() ? "none"
+                        : managed.normalPolicyFallbackReason(), managed.fixedSourceIndices().size());
             discovered = runner.discoverManaged(input, managed, cancellation, owner, deadline);
         }
         return new LegacyBDiscoveredChoice(evidence,options,input,visible,managed,discovered,ModernDiagnosticCounters.snapshot());
@@ -2149,7 +2170,8 @@ public final class LiveBPreviewService {
             case DIRECTIONAL_IMAGE -> "directional-image-v1/"
                     + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernNumericalPolicy.SHARED_COST;
             case LEGACY_V02 -> "legacy-v02";
-            case LEGACY_THEN_B -> "legacy-then-b-v1/" + parameterIdentity(TrackerMode.PROBABILISTIC);
+            case LEGACY_THEN_B -> "legacy-then-b-v2/" + LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1.id()
+                    + "/" + parameterIdentity(TrackerMode.PROBABILISTIC);
         };
     }
 

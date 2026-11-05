@@ -161,12 +161,16 @@ public final class LegacyBProductionRunner {
                 || !source.raster().sourceIdentity().equals(input.evidence().sourceIdentity())) {
             throw new IllegalArgumentException("Frozen visible sampler does not own the captured original source");
         }
+        requireNormalAuthority(input, source.normalPolicy(), source.fixedSourceIndices(),
+                source.normalPolicyFallbackReason(), cancellation, owner);
         var sampler = new LegacyVisibleProfileSampler();
         long pixels = Math.multiplyExact((long) source.raster().width(), source.raster().height());
         long samples = 4L * source.options().halfWidthPx() * 6 / source.options().stepPx() + 4;
         return discover(input, source.detectors().get(0), source.options().trackerNormalizationRasterPx(),
                 () -> sampler.sample(source, deadline.probe(cancellation)).get(0).profiles(),
-                points -> sampler.project(source, points), nativeWorkingBytes(pixels, source.anchors().size(), samples),
+                points -> sampler.project(source, points), Math.addExact(nativeWorkingBytes(pixels, source.anchors().size(), samples),
+                        explicitNormalPolicy(source.normalPolicy(), source.normalPolicyFallbackReason())
+                            ? normalPolicyWorkingBytes(input.originalProjected().size()) : 0),
                 cancellation, owner, deadline);
     }
 
@@ -189,6 +193,8 @@ public final class LegacyBProductionRunner {
         if (!source.sourcePolyline().equals(input.originalProjected()) || !source.projectionCode().equals(input.projectionCode())) {
             throw new IllegalArgumentException("Frozen managed sampler does not own the captured original source");
         }
+        requireNormalAuthority(input, source.normalPolicy(), source.fixedSourceIndices(),
+                source.normalPolicyFallbackReason(), cancellation, owner);
         var sampler = new LegacyManagedProfileSampler();
         long pixels = 0;
         for (var mosaic : source.mosaics().values()) pixels = Math.addExact(pixels,
@@ -197,7 +203,9 @@ public final class LegacyBProductionRunner {
         return discover(input, source.detectors().get(0), source.trackerNormalizationRasterPx(),
                 () -> sampler.sample(source, deadline.probe(cancellation)).get(0).profiles(),
                 points -> sampler.project(source, source.detectors().get(0), points),
-                nativeWorkingBytes(pixels, shape.profiles(), shape.samplesPerProfile()), cancellation, owner, deadline);
+                Math.addExact(nativeWorkingBytes(pixels, shape.profiles(), shape.samplesPerProfile()),
+                        explicitNormalPolicy(source.normalPolicy(), source.normalPolicyFallbackReason())
+                            ? normalPolicyWorkingBytes(input.originalProjected().size()) : 0), cancellation, owner, deadline);
     }
 
     private Accounted<Discovery> discover(Input input, String detector, double normalization,
@@ -606,6 +614,47 @@ public final class LegacyBProductionRunner {
         }
         points.addAll(finished.points().subList(cursor, finished.points().size()));
         return List.copyOf(points);
+    }
+
+    /** Conservative scratch for original-coordinate copies, two live fence plans and boxed index storage. */
+    public static long normalPolicyWorkingBytes(int sourceOccurrences) {
+        if (sourceOccurrences < 2) throw new IllegalArgumentException("Original normal-policy source is incomplete");
+        return Math.addExact(2048L, Math.multiplyExact(512L, sourceOccurrences));
+    }
+
+    /** Original occurrence boundaries only; dense eligibility fences never become node authority. */
+    public static List<Integer> samplingFixedIndices(Input input, CancellationProbe cancellation) {
+        Objects.requireNonNull(input); Objects.requireNonNull(cancellation);
+        var result = new ArrayList<Integer>();
+        int rangeIndex = 0;
+        for (int local = 0; local < input.occurrences().size(); local++) {
+            cancellation.checkpoint();
+            int absolute = input.request().selectedRange().firstIndex() + local;
+            while (rangeIndex < input.frozenRanges().size()
+                    && input.frozenRanges().get(rangeIndex).lastIndex() < absolute) rangeIndex++;
+            boolean frozen = rangeIndex < input.frozenRanges().size()
+                    && input.frozenRanges().get(rangeIndex).firstIndex() <= absolute;
+            var fact = input.occurrences().get(local);
+            if (local == 0 || local == input.occurrences().size() - 1 || fact.fixed() || fact.topologyAnchor() || frozen) {
+                result.add(local);
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private static boolean explicitNormalPolicy(LegacyProfileNormalPolicy policy, String fallback) {
+        return policy != LegacyProfileNormalPolicy.IMMEDIATE_V1 || !fallback.isEmpty();
+    }
+
+    private static void requireNormalAuthority(Input input, LegacyProfileNormalPolicy policy,
+            List<Integer> fixed, String fallback, CancellationProbe cancellation, AttemptMemoryLedger.Owner owner) {
+        if (!explicitNormalPolicy(policy, fallback)) return; // Exact historical empty-authority contract.
+        cancellation.checkpoint();
+        try (var scratch = owner.reserve(normalPolicyWorkingBytes(input.originalProjected().size()))) {
+            if (!fixed.equals(samplingFixedIndices(input, cancellation))) {
+                throw new IllegalArgumentException("Frozen normal boundaries differ from original occurrence authority");
+            }
+        }
     }
 
     private static List<Occurrence> effectiveOccurrences(Input input) {

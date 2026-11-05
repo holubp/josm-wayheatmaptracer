@@ -63,6 +63,18 @@ final class Format15NumericalPolicyReceipt {
         return Format15Artifact.text(ARTIFACT, json);
     }
 
+    /** Binds Hybrid's effective source policy while retaining the byte-exact historical receipt. */
+    static Format15Artifact withLegacySourcePolicy(Format15Artifact receipt, TrackerMode engine,
+            FrozenLegacyBInput source) {
+        if (engine != TrackerMode.LEGACY_THEN_B || source == null || !source.hasExplicitNormalPolicy()) return receipt;
+        String json = new String(receipt.bytes(), StandardCharsets.UTF_8);
+        String old = "\"inferencePolicy\":\"" + inferencePolicy(engine) + "\"";
+        String actual = "\"inferencePolicy\":\"legacy-then-b-v2/" + source.normalPolicy().id() + "/"
+                + inferencePolicy(TrackerMode.PROBABILISTIC) + "\"";
+        if (!json.contains(old)) throw new IllegalArgumentException("Legacy numerical policy is unbound");
+        return Format15Artifact.text(ARTIFACT, json.replace(old, actual));
+    }
+
     static TrackerMode validate(Format15Archive archive, FrozenReplayInput input, String verifiedInputHash) {
         Format15Artifact artifact = archive.artifact(ARTIFACT)
             .orElseThrow(() -> new ReplayMismatchException("numerical-policy-unattested"));
@@ -94,11 +106,12 @@ final class Format15NumericalPolicyReceipt {
             if (computed > input.request().budgets().maximumTransitions()) {
                 throw new IllegalArgumentException("execution-work-budget");
             }
-            Map<String, Object> expected = Format15ArchiveReader.parseObject(
-                (scored ? current(archive.sourceIdentityHash(), verifiedInputHash, input.request().parameterHash(),
+            Format15Artifact expectedReceipt = scored ? current(archive.sourceIdentityHash(), verifiedInputHash, input.request().parameterHash(),
                     input.request().engine(), engine, receipts)
                     : current(archive.sourceIdentityHash(), verifiedInputHash, input.request().parameterHash(),
-                    input.request().engine(), engine)).bytes(), ARTIFACT);
+                    input.request().engine(), engine);
+            Map<String, Object> expected = Format15ArchiveReader.parseObject(
+                    withLegacySourcePolicy(expectedReceipt, engine, input.legacyB()).bytes(), ARTIFACT);
             if (!declared.equals(expected)) throw new IllegalArgumentException("binding");
             var scalar = ScalarReplayExpectation.read(archive);
             var geometry = FinalReplayExpectation.read(archive);

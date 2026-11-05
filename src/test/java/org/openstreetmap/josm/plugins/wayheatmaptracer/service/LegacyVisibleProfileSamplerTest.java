@@ -101,6 +101,46 @@ class LegacyVisibleProfileSamplerTest {
         assertEquals(2, checks.get());
     }
 
+    @Test void explicitProtectedPolicyChangesOnlyEligibleNormalsAndRetainsOriginalFence() {
+        var old = fixture();
+        var anchors = new ArrayList<LegacyVisibleProfileSampler.Anchor>();
+        for (int i = 0; i < 9; i++) {
+            anchors.add(anchor(16 + 18 * i, 48 + 30 * Math.exp(-Math.pow(i - 4, 2) / 2.0), i));
+        }
+        var immediate = new LegacyVisibleProfileSampler.Input(old.raster(), anchors, List.of("hot"), old.options());
+        var protectedInput = immediate.withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 8));
+        var fenced = immediate.withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 4, 8));
+        var sampler = new LegacyVisibleProfileSampler();
+        var ordinary = sampler.sample(immediate, CancellationProbe.NONE).get(0).profiles();
+        var wide = sampler.sample(protectedInput, CancellationProbe.NONE).get(0).profiles();
+        var guarded = sampler.sample(fenced, CancellationProbe.NONE).get(0).profiles();
+        assertEquals(LegacyProfileNormalPolicy.IMMEDIATE_V1, immediate.normalPolicy());
+        assertTrue(immediate.fixedSourceIndices().isEmpty());
+        assertNotEquals(ordinary.get(3).normalScreen().x, wide.get(3).normalScreen().x);
+        assertEquals(ordinary.get(3), guarded.get(3), "The fixed original occurrence must fence the wider chord");
+        assertEquals(immediate.anchors(), protectedInput.anchors());
+        assertEquals(ordinary.size(), wide.size());
+        assertEquals(ordinary.get(0), wide.get(0));
+        var calls = new AtomicInteger();
+        assertThrows(CancellationException.class, () -> sampler.sample(protectedInput, () -> calls.incrementAndGet() > 1));
+        assertEquals(2, calls.get());
+    }
+
+    @Test void liveDegeneratePlanFallsBackBeforeFreezeButExplicitProtectedClaimIsRejected() {
+        var old = fixture();
+        var point = old.anchors().get(0);
+        var flat = new LegacyVisibleProfileSampler.Input(old.raster(), List.of(point, point), List.of("hot"), old.options());
+        var resolved = flat.withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 1));
+        assertEquals(LegacyProfileNormalPolicy.IMMEDIATE_V1, resolved.normalPolicy());
+        assertEquals("degenerate-geometry", resolved.normalPolicyFallbackReason());
+        assertEquals(List.of(0, 1), resolved.fixedSourceIndices());
+        assertEquals(new LegacyVisibleProfileSampler().sample(flat, CancellationProbe.NONE),
+                new LegacyVisibleProfileSampler().sample(resolved, CancellationProbe.NONE));
+        assertThrows(IllegalArgumentException.class, () -> new LegacyVisibleProfileSampler.Input(
+                old.raster(), flat.anchors(), flat.detectors(), flat.options(),
+                LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 1), ""));
+    }
+
     private static LegacyVisibleProfileSampler.Input fixture() {
         int width = 192, height = 96;
         int[] pixels = new int[width * height];

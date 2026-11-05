@@ -30,6 +30,55 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.Le
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry.ProjectedPoint;
 
 class LegacyManagedProfileSamplerTest {
+    @Test void liveNormalResolutionHandlesGeometryFallbackBeforeNativeShapeAndKeepsImmediateMultiDetectorInput() {
+        var fixture = fixture(List.of("hot", "blue"));
+        var extreme = LegacyManagedProfileSampler.freeze(fixture.set(),
+                List.of(new ProjectedPoint(-1e308, 0), new ProjectedPoint(1e308, 0)), "EPSG:3857", "hot",
+                List.of("hot"), IntensitySamplingMode.COLOR_MAPPING, 1.75);
+        var resolved = extreme.withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 1));
+        assertEquals(LegacyProfileNormalPolicy.IMMEDIATE_V1, resolved.normalPolicy());
+        assertEquals("non-finite-geometry", resolved.normalPolicyFallbackReason());
+        assertEquals(List.of(0, 1), resolved.fixedSourceIndices());
+        var decoded = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.LegacySourceCodec.decodeManaged(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.LegacySourceCodec.encode(resolved));
+        assertEquals(resolved.normalPolicy(), decoded.normalPolicy());
+        assertEquals(resolved.normalPolicyFallbackReason(), decoded.normalPolicyFallbackReason());
+        assertEquals(resolved.fixedSourceIndices(), decoded.fixedSourceIndices());
+        var original = LegacyManagedProfileSampler.freeze(fixture.set(), fixture.source(), "EPSG:3857", "hot",
+                List.of("hot", "blue"), IntensitySamplingMode.COLOR_MAPPING, 1.75);
+        assertEquals(original, original.withNormalPolicy(LegacyProfileNormalPolicy.IMMEDIATE_V1, List.of()));
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"hot", "all-colors-combined"})
+    void explicitProtectedPolicyReachesActualManagedAndAggregateSampler(String detector) {
+        var fixture = fixture(COLORS);
+        var mosaic = fixture.set().require("hot");
+        var source = new java.util.ArrayList<EastNorth>();
+        for (int i = 0; i < 9; i++) source.add(worldPoint(fixture.projection(),
+                mosaic.originWorldPxX() + 100.5 + i * 10,
+                mosaic.originWorldPxY() + 256.5 + 8 * Math.exp(-Math.pow(i - 4, 2) / 2.0)));
+        var projected = source.stream().map(p -> new ProjectedPoint(p.east(), p.north())).toList();
+        var original = LegacyManagedProfileSampler.freeze(fixture.set(), projected, "EPSG:3857", "hot",
+                List.of(detector), IntensitySamplingMode.COLOR_MAPPING, 1.75);
+        var explicit = original.withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 4, 8));
+        var sampler = TileHeatmapSampler.numericalOnly();
+        var expected = detector.equals("all-colors-combined")
+                ? sampler.sampleAggregatedProfiles(fixture.set(), ZOOM, source, fixture.projection(), CancellationProbe.NONE,
+                    LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 4, 8))
+                : sampler.sampleProfiles(mosaic, source, detector, IntensitySamplingMode.COLOR_MAPPING,
+                    fixture.projection(), CancellationProbe.NONE, LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 4, 8));
+        var actual = new LegacyManagedProfileSampler().sample(explicit, CancellationProbe.NONE).get(0).profiles();
+        assertEquals(expected.size(), actual.size());
+        for (int i = 0; i < actual.size(); i++) assertEquals(expected.get(i).normalScreen(), actual.get(i).normalScreen(), "profile" + i);
+        assertEquals(expected, actual);
+        var ordinary = new LegacyManagedProfileSampler().sample(original, CancellationProbe.NONE).get(0).profiles();
+        assertTrue(java.util.stream.IntStream.range(0, actual.size()).anyMatch(i ->
+                Double.doubleToRawLongBits(actual.get(i).normalScreen().x)
+                    != Double.doubleToRawLongBits(ordinary.get(i).normalScreen().x)), "The oracle must exercise changed normals");
+        assertEquals(original.sourcePolyline(), explicit.sourcePolyline());
+        assertEquals(ordinary.size(), actual.size());
+    }
+
     @ParameterizedTest @ValueSource(strings = {"hot", "all-colors-combined"})
     void admissionUsesFactualReferenceMosaicEvenWhenSummaryParametersDiffer(String detector) {
         var fixture = fixture(COLORS);

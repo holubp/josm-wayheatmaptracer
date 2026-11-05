@@ -105,6 +105,78 @@ class LegacySourceCodecTest {
                 new java.util.ArrayList<>(managedInput().mosaics().keySet()));
     }
 
+    @Test void protectedNormalPolicyRoundTripsBothSourceKindsWithoutChangingHistoricalBytes() throws Exception {
+        byte[] visibleV1 = LegacySourceCodec.encode(visibleInput());
+        byte[] managedV1 = LegacySourceCodec.encode(managedInput());
+        assertEquals(1, ByteBuffer.wrap(visibleV1).getInt(4));
+        assertEquals(1, ByteBuffer.wrap(managedV1).getInt(4));
+        assertArrayEquals(visibleV1, LegacySourceCodec.encode(LegacySourceCodec.decodeVisible(visibleV1)));
+        assertArrayEquals(managedV1, LegacySourceCodec.encode(LegacySourceCodec.decodeManaged(managedV1)));
+        byte[] visibleV2 = protectedSource(visibleV1, "legacy-protected-secant3-v1", List.of(0, 1));
+        byte[] managedV2 = protectedSource(managedV1, "legacy-protected-secant3-v1", List.of(0, 1));
+        assertArrayEquals(visibleV2, LegacySourceCodec.encode(LegacySourceCodec.decodeVisible(visibleV2)));
+        assertArrayEquals(managedV2, LegacySourceCodec.encode(LegacySourceCodec.decodeManaged(managedV2)));
+    }
+
+    @Test void protectedNormalPolicyRejectsUnknownMissingDuplicatedAndWrongKindMetadata() throws Exception {
+        byte[] original = LegacySourceCodec.encode(visibleInput());
+        for (byte[] invalid : List.of(
+                protectedSource(original, "unknown-policy", List.of(0, 1)),
+                protectedSource(original, "legacy-protected-secant3-v1", List.of(0)),
+                protectedSource(original, "legacy-protected-secant3-v1", List.of(0, 0, 1)),
+                protectedSource(original, "legacy-protected-secant3-v1", List.of(0, 2)))) {
+            assertThrows(IllegalArgumentException.class, () -> LegacySourceCodec.decodeVisible(invalid));
+        }
+        byte[] valid = protectedSource(original, "legacy-protected-secant3-v1", List.of(0, 1));
+        assertThrows(IllegalArgumentException.class, () -> LegacySourceCodec.decodeManaged(valid));
+        assertThrows(IllegalArgumentException.class,
+                () -> LegacySourceCodec.decodeVisible(java.util.Arrays.copyOf(valid, valid.length - 1)));
+    }
+
+    @Test void explicitPolicyScratchIsReservedBeforeUntrustedPolicyTextIsMaterialized() throws Exception {
+        byte[] original = LegacySourceCodec.encode(visibleInput());
+        byte[] malformed = java.util.Arrays.copyOf(original, original.length + 4);
+        ByteBuffer.wrap(malformed).putInt(4, 2).putInt(original.length, Integer.MAX_VALUE);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var limit = new IllegalArgumentException("synthetic-policy-scratch-limit");
+        var failure = assertThrows(IllegalArgumentException.class, () -> LegacySourceCodec.decodeVisible(malformed, bytes -> {
+            if (calls.incrementAndGet() == 2) throw limit;
+        }));
+        assertSame(limit, failure, "New policy parsing must reserve scratch before even its text allocation");
+        assertEquals(2, calls.get());
+    }
+
+    @Test void explicitImmediateFallbackRoundTripsItsActualReasonAndOriginalAuthority() {
+        var old = visibleInput();
+        var point = old.anchors().get(0);
+        var fallback = new LegacyVisibleProfileSampler.Input(old.raster(), List.of(point, point), old.detectors(), old.options())
+                .withNormalPolicy(org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1,
+                    List.of(0, 1));
+        byte[] encoded = LegacySourceCodec.encode(fallback);
+        assertEquals(2, ByteBuffer.wrap(encoded).getInt(4));
+        var decoded = LegacySourceCodec.decodeVisible(encoded);
+        assertEquals(fallback.normalPolicy(), decoded.normalPolicy());
+        assertEquals("degenerate-geometry", decoded.normalPolicyFallbackReason());
+        assertEquals(List.of(0, 1), decoded.fixedSourceIndices());
+        assertArrayEquals(encoded, LegacySourceCodec.encode(decoded));
+    }
+
+    private static byte[] protectedSource(byte[] original, String policy, List<Integer> fixed) throws Exception {
+        var bytes = new java.io.ByteArrayOutputStream();
+        byte[] header = original.clone();
+        ByteBuffer.wrap(header).putInt(4, 2);
+        bytes.write(header);
+        try (var out = new java.io.DataOutputStream(bytes)) {
+            byte[] text = policy.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            out.writeInt(text.length);
+            out.write(text);
+            out.writeInt(fixed.size());
+            for (int index : fixed) out.writeInt(index);
+            out.writeBoolean(false);
+        }
+        return bytes.toByteArray();
+    }
+
     private static LegacyVisibleProfileSampler.Input visibleInput() {
         int[] pixels = {0x00123456, 0xFF112233, 0x8000FF00, 0x00000001,
                 0xFFFFFFFF, 0xFF000000, 0x7FABCDEF, 0xFF010203,

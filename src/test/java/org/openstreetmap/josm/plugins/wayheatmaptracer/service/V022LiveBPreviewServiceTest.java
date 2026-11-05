@@ -1056,6 +1056,38 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
+    void actualLiveHybridFreezesEffectiveProtectedNormalPolicyWithoutChangingSource() throws Exception {
+        Fixture full = fiveNodeFixture();
+        var selected = full.selection().segmentNodes().subList(1, 4);
+        var fixture = new Fixture(full.dataSet(), new SelectionContext(full.selection().way(), 1, 3,
+                selected, Set.copyOf(selected)));
+        var service = new LiveBPreviewService();
+        var config = config(TrackerMode.LEGACY_THEN_B);
+        var captured = new LiveBPreviewService.Captured[1];
+        var invocation = new LiveBPreviewService.LegacyBInvocation[1];
+        SwingUtilities.invokeAndWait(() -> {
+            captured[0] = service.capture(fixture.dataSet(), fixture.selection(), raster(), config);
+            invocation[0] = LiveBPreviewService.LegacyBInvocation.capture(fixture.selection(), config);
+        });
+        var original = fixture.selection().segmentNodes().stream().map(Node::getCoor).toList();
+        var computed = service.compute(captured[0], CancellationProbe.NONE, invocation[0]);
+        assertNotNull(computed.legacyB());
+        var source = computed.legacyB().visibleSource();
+        assertNotNull(source);
+        assertEquals(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, source.normalPolicy());
+        assertEquals(1, computed.legacyB().input().request().selectedRange().firstIndex());
+        assertEquals(List.of(0, 1, 2), source.fixedSourceIndices(),
+                "Frozen source indices must stay relative to the actual nonzero selection");
+        var decoded = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.LegacySourceCodec.decodeVisible(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.LegacySourceCodec.encode(source));
+        assertEquals(source.normalPolicy(), decoded.normalPolicy());
+        assertEquals(source.fixedSourceIndices(), decoded.fixedSourceIndices());
+        assertEquals("", source.normalPolicyFallbackReason());
+        assertEquals(original, fixture.selection().segmentNodes().stream().map(Node::getCoor).toList());
+        SwingUtilities.invokeAndWait(() -> service.requireCurrent(fixture.dataSet(), captured[0]));
+    }
+
+    @Test
     void liveParameterIdentitySeparatesDirectBFromSequentialHybridAndRefusesHistoricalHybrid() throws Exception {
         String direct = LiveBPreviewService.parameterIdentity(TrackerMode.PROBABILISTIC);
         String hybrid = LiveBPreviewService.parameterIdentity(TrackerMode.LEGACY_THEN_B);
@@ -1072,7 +1104,7 @@ class V022LiveBPreviewServiceTest {
 
         assertTrue(direct.contains(EvidenceModelParameters.reliabilityPolicyVersion()));
         assertTrue(direct.contains("DIRECT_LONGITUDINAL_V2"));
-        assertTrue(hybrid.contains("legacy-then-b-v1/"));
+        assertTrue(hybrid.contains("legacy-then-b-v2/legacy-protected-secant3-v1/"));
         assertNotEquals(direct, hybrid);
         assertNotEquals(captured[0].parameterHash(), captured[1].parameterHash());
     }

@@ -233,6 +233,7 @@ public final class Format15ProductionBundleFactory {
                         }
                         return run.workAccounting();
                     }).toList());
+        receipt = Format15NumericalPolicyReceipt.withLegacySourcePolicy(receipt, computedEngine, input.legacyB());
         artifacts.put(Format15NumericalPolicyReceipt.ARTIFACT, receipt);
         return new Format15Bundle(bundle.buildIdentity(), bundle.sourceIdentityHash(), bundle.parameterHash(), artifacts);
     }

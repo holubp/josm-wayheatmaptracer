@@ -10,6 +10,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyManagedProfileSampler;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyProfileNormalPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyVisibleProfileSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBProductionRunner;
@@ -86,6 +87,19 @@ public final class FrozenLegacyBInput {
     /** Adds allocation metadata without decoding, cloning or fabricating another source raster. */
     public FrozenLegacyBInput withParentPolicy(ParentPolicy policy) { return new FrozenLegacyBInput(this,policy); }
     public Optional<ParentPolicy> parentPolicy() { return parentPolicy; }
+
+    /** Effective sampler policy from the actual frozen source, never inferred from requested engine. */
+    public LegacyProfileNormalPolicy normalPolicy() {
+        return visibleSource != null ? visibleSource.normalPolicy() : managedSource.normalPolicy();
+    }
+
+    public String normalPolicyFallbackReason() {
+        return visibleSource != null ? visibleSource.normalPolicyFallbackReason() : managedSource.normalPolicyFallbackReason();
+    }
+
+    public boolean hasExplicitNormalPolicy() {
+        return normalPolicy() != LegacyProfileNormalPolicy.IMMEDIATE_V1 || !normalPolicyFallbackReason().isEmpty();
+    }
 
     public static FrozenLegacyBInput visible(LegacyVisibleProfileSampler.Input source, List<Occurrence> occurrences,
             List<OccurrenceRange> frozen, boolean simplify, double tolerance) {

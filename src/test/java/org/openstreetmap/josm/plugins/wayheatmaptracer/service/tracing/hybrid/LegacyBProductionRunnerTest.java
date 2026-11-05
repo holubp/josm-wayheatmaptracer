@@ -22,6 +22,36 @@ class LegacyBProductionRunnerTest {
     static Fixture coincidentProtectedFixture() {
         return fixture(false,false,Double.POSITIVE_INFINITY,true,10,true);
     }
+    @Test void protectedBoundaryCancellationAfterScratchReservationReleasesTheActualOwner() {
+        var fixture = fixture(false, false);
+        var source = fixture.visible().withNormalPolicy(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1,
+                LegacyBProductionRunner.samplingFixedIndices(fixture.input(), CancellationProbe.NONE));
+        var checks = new java.util.concurrent.atomic.AtomicInteger();
+        var ledger = AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            assertThrows(java.util.concurrent.CancellationException.class, () -> new LegacyBProductionRunner().discoverVisible(
+                    fixture.input(), source, () -> checks.incrementAndGet() >= 3, owner, LegacyBPipeline.Deadline.production()));
+            assertTrue(ledger.peakBytes() > 0, "Cancellation must happen after actual scratch admission");
+            assertEquals(0, ledger.currentBytes());
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
+    @Test void protectedSourcePolicyCannotOmitActualFixedOccurrenceAndFailureReleasesOwner() {
+        var fixture = fixture(true, true);
+        var wrong = fixture.visible().withNormalPolicy(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1,
+                List.of(0, fixture.input().originalProjected().size() - 1));
+        var ledger = AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            assertThrows(IllegalArgumentException.class, () -> new LegacyBProductionRunner().discoverVisible(
+                    fixture.input(), wrong, CancellationProbe.NONE, owner, LegacyBPipeline.Deadline.production()));
+            assertEquals(0, ledger.currentBytes());
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
     @Test void newlyCollapsedOriginalIntervalCannotBeRestoredAsAnInheritedZeroConnector() {
         var input = fixture(false,false).input(); var source = input.originalProjected();
         var points = new ArrayList<>(List.of(source.get(0),source.get(2)));

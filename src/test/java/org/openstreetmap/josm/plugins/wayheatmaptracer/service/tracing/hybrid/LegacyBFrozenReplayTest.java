@@ -15,6 +15,59 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewServi
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 
 class LegacyBFrozenReplayTest {
+    @Test void protectedFrozenSourceHasDistinctReceiptWhileHistoricalImmediateReceiptStaysExact(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
+        var fixture = LegacyBProductionRunnerTest.fixture(false, false);
+        var old = fixture.input();
+        var r = old.request();
+        var request = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest(r.selectedWayKey(),
+                r.selectedRange(), r.engine(), r.geometryMode(), r.permissions(), r.budgets(),
+                r.evidenceSnapshotId(), r.evidenceContentHash(), r.networkSnapshotId(), r.networkContentHash(),
+                r.settingsHash(), "1".repeat(64), r.samplerId(), r.configuredSampleStepMeters(), r.profileChainage(),
+                r.evidenceResolution(), r.corridorInput(), r.disconnectionSource());
+        var input = new LegacyBProductionRunner.Input(request, old.network(), old.evidence(), old.fieldName(),
+                old.originalProjected(), old.originalMetric(), old.projectionCode(), old.occurrences(),
+                old.frozenRanges(), old.simplify(), old.projectedTolerance());
+        var options = new ModernTracePipeline.Options(input.fieldName(), GeometryCleanupConfig.disabled(), "selected-visible", 0);
+        var protectedSource = fixture.visible().withNormalPolicy(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1,
+                List.of(0, input.originalProjected().size() - 1));
+        var immediate = new FrozenReplayInput(input.request(), input.evidence(), input.network(), options, 4,
+                FrozenLegacyBInput.visible(fixture.visible(), input.occurrences(), input.frozenRanges(), false, 0));
+        var protectedInput = new FrozenReplayInput(input.request(), input.evidence(), input.network(), options, 4,
+                FrozenLegacyBInput.visible(protectedSource, input.occurrences(), input.frozenRanges(), false, 0));
+        assertNotEquals(immediate.canonicalHash(), protectedInput.canonicalHash());
+        String historical = new String(Format15ProductionBundleFactory.withCurrentNumericalPolicy(
+                Format15ProductionBundleFactory.create("test", immediate), immediate, TrackerMode.LEGACY_THEN_B)
+                .artifact("numerical-policy.json").bytes(), java.nio.charset.StandardCharsets.UTF_8);
+        String current = new String(Format15ProductionBundleFactory.withCurrentNumericalPolicy(
+                Format15ProductionBundleFactory.create("test", protectedInput), protectedInput, TrackerMode.LEGACY_THEN_B)
+                .artifact("numerical-policy.json").bytes(), java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(historical.contains("legacy-then-b-v1/"));
+        assertFalse(historical.contains("legacy-protected-secant3-v1"));
+        assertTrue(current.contains("legacy-then-b-v2/legacy-protected-secant3-v1/"));
+        var declared = Format15ProductionBundleFactory.withCurrentNumericalPolicy(
+                Format15ProductionBundleFactory.create("test", protectedInput), protectedInput, TrackerMode.LEGACY_THEN_B);
+        var artifacts = new java.util.LinkedHashMap<>(declared.artifacts());
+        artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json",
+                current.replace("legacy-protected-secant3-v1", "legacy-immediate-v1")));
+        var mismatched = new Format15Bundle(declared.buildIdentity(), declared.sourceIdentityHash(),
+                declared.parameterHash(), artifacts);
+        var path = directory.resolve("mismatched-policy.zip");
+        Format15BundleWriter.write(mismatched, path);
+        var archive = Format15ArchiveReader.read(path);
+        var failure = assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replay(archive,
+                ReplayLevel.FINAL_GEOMETRY, protectedInput.canonicalHash(), protectedInput.request().parameterHash()));
+        assertEquals("numerical-policy-invalid", failure.getMessage());
+        var decoded = FrozenReplayCodec.decode(FrozenReplayCodec.encode(protectedInput));
+        assertEquals(protectedSource.normalPolicy(), decoded.legacyB().visibleSource().normalPolicy());
+        assertEquals(protectedSource.fixedSourceIndices(), decoded.legacyB().visibleSource().fixedSourceIndices());
+        var first = Format15ReplayRunner.replay(protectedInput, ReplayLevel.FINAL_GEOMETRY, TrackerMode.LEGACY_THEN_B);
+        var replay = Format15ReplayRunner.replay(decoded, ReplayLevel.FINAL_GEOMETRY, TrackerMode.LEGACY_THEN_B);
+        assertEquals(first.inference().evaluatedTransitions(), replay.inference().evaluatedTransitions());
+        assertEquals(first.routes(), replay.routes());
+    }
+
     @Test void coincidentProtectedOccurrencesReplayExactRefinedGeometryAndActualWork() {
         var fixture = LegacyBProductionRunnerTest.coincidentProtectedFixture();
         var input = fixture.input();

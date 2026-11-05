@@ -22,6 +22,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyManagedProfileSampler;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyProfileNormalPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyVisibleProfileSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
@@ -48,7 +49,7 @@ public final class LegacySourceCodec {
         try {
             BoundedOutput bytes = new BoundedOutput();
             try (DataOutputStream out = new DataOutputStream(bytes)) {
-                header(out, VISIBLE);
+                header(out, VISIBLE, input.normalPolicy(), input.normalPolicyFallbackReason());
                 LiveBPreviewService.VisibleRaster raster = input.raster();
                 pixelsBound(raster.width(), raster.height(), 1);
                 out.writeInt(raster.width());
@@ -77,6 +78,7 @@ public final class LegacySourceCodec {
                 out.writeInt(input.options().stepPx());
                 out.writeDouble(input.options().trackerNormalizationRasterPx());
                 enumName(out, input.options().intensityMode());
+                normalPolicy(out, input.normalPolicy(), input.fixedSourceIndices(), input.normalPolicyFallbackReason());
             }
             return bytes.toByteArray();
         } catch (IOException failure) {
@@ -121,12 +123,14 @@ public final class LegacySourceCodec {
             int step = in.readInt();
             double normalization = positive(in.readDouble());
             IntensitySamplingMode intensity = enumValue(in, IntensitySamplingMode.class);
+            var normal = normalPolicy(in, bytes, anchorCount, reserve);
             requireEnd(in);
             var raster = new LiveBPreviewService.VisibleRaster(width, height, argb,
                     minEast, minNorth, maxEast, maxNorth, projectionUnits, groundMeters,
                     nativePitch, sourceIdentity, projectionCode);
             return new LegacyVisibleProfileSampler.Input(raster, anchors, detectors,
-                    new LegacyVisibleProfileSampler.Options(halfWidth, step, normalization, intensity));
+                    new LegacyVisibleProfileSampler.Options(halfWidth, step, normalization, intensity),
+                    normal.policy(), normal.fixed(), normal.fallback());
         } catch (IOException | RuntimeException failure) {
             if (failure instanceof IllegalArgumentException argument) throw argument;
             throw malformed("Malformed frozen Legacy visible source", failure);
@@ -139,7 +143,7 @@ public final class LegacySourceCodec {
         try {
             BoundedOutput bytes = new BoundedOutput();
             try (DataOutputStream out = new DataOutputStream(bytes)) {
-                header(out, MANAGED);
+                header(out, MANAGED, input.normalPolicy(), input.normalPolicyFallbackReason());
                 enumName(out, input.inferenceMode());
                 out.writeInt(input.requestedInferenceZoom());
                 out.writeInt(input.requestedValidationZoom());
@@ -177,6 +181,7 @@ public final class LegacySourceCodec {
                 strings(out, input.detectors(), MAX_DETECTORS, true);
                 enumName(out, input.intensityMode());
                 out.writeDouble(input.trackerNormalizationRasterPx());
+                normalPolicy(out, input.normalPolicy(), input.fixedSourceIndices(), input.normalPolicyFallbackReason());
             }
             return bytes.toByteArray();
         } catch (IOException failure) {
@@ -237,10 +242,12 @@ public final class LegacySourceCodec {
             List<String> detectors = strings(in, MAX_DETECTORS, true);
             IntensitySamplingMode intensity = enumValue(in, IntensitySamplingMode.class);
             double normalization = positive(in.readDouble());
+            var normal = normalPolicy(in, bytes, sourceCount, reserve);
             requireEnd(in);
             return new LegacyManagedProfileSampler.Input(mode, requestedInference, requestedValidation,
                     inferenceZoom, validationZoom, tileSize, mosaics, inference, validation, source,
-                    projectionCode, selectedPalette, detectors, intensity, normalization);
+                    projectionCode, selectedPalette, detectors, intensity, normalization,
+                    normal.policy(), normal.fixed(), normal.fallback());
         } catch (IOException | RuntimeException failure) {
             if (failure instanceof IllegalArgumentException argument) throw argument;
             throw malformed("Malformed frozen Legacy managed source", failure);
@@ -252,16 +259,48 @@ public final class LegacySourceCodec {
             throw malformed("Frozen Legacy source bytes are outside Format-15 limits");
         }
         var in = new DataInputStream(new ByteArrayInputStream(bytes));
-        if (in.readInt() != MAGIC || in.readInt() != VERSION || in.readInt() != type) {
+        int magic = in.readInt();
+        int version = in.readInt();
+        if (magic != MAGIC || version != VERSION && version != 2 || in.readInt() != type) {
             throw malformed("Unsupported frozen Legacy source codec header");
         }
         return in;
     }
 
-    private static void header(DataOutputStream out, int type) throws IOException {
+    private static void header(DataOutputStream out, int type, LegacyProfileNormalPolicy policy, String fallback) throws IOException {
         out.writeInt(MAGIC);
-        out.writeInt(VERSION);
+        out.writeInt(policy == LegacyProfileNormalPolicy.IMMEDIATE_V1 && fallback.isEmpty() ? VERSION : 2);
         out.writeInt(type);
+    }
+
+    private record NormalPolicy(LegacyProfileNormalPolicy policy, List<Integer> fixed, String fallback) { }
+
+    private static void normalPolicy(DataOutputStream out, LegacyProfileNormalPolicy policy,
+            List<Integer> fixed, String fallback) throws IOException {
+        if (policy == LegacyProfileNormalPolicy.IMMEDIATE_V1 && fallback.isEmpty()) return;
+        safeString(out, policy.id());
+        count(out, fixed.size(), MAX_ANCHORS);
+        for (int index : fixed) out.writeInt(index);
+        out.writeBoolean(!fallback.isEmpty());
+        if (!fallback.isEmpty()) safeString(out, fallback);
+    }
+
+    private static NormalPolicy normalPolicy(DataInputStream in, byte[] bytes, int sourceCount,
+            java.util.function.LongConsumer reserve) throws IOException {
+        if (ByteBuffer.wrap(bytes).getInt(4) == VERSION) {
+            return new NormalPolicy(LegacyProfileNormalPolicy.IMMEDIATE_V1, List.of(), "");
+        }
+        reserve.accept(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid
+                .LegacyBProductionRunner.normalPolicyWorkingBytes(sourceCount));
+        var policy = LegacyProfileNormalPolicy.fromId(safeString(in, 96));
+        int size = count(in, Math.min(sourceCount, MAX_ANCHORS));
+        var fixed = new ArrayList<Integer>(size);
+        for (int i = 0; i < size; i++) fixed.add(in.readInt());
+        String fallback = in.readBoolean() ? safeString(in, 96) : "";
+        if (policy == LegacyProfileNormalPolicy.IMMEDIATE_V1 && fallback.isEmpty()) {
+            throw malformed("Noncanonical explicit immediate normal policy");
+        }
+        return new NormalPolicy(policy, fixed, fallback);
     }
 
     private static void samplingParameters(DataOutputStream out,
@@ -406,8 +445,12 @@ public final class LegacySourceCodec {
     }
 
     private static String safeString(DataInputStream in) throws IOException {
+        return safeString(in, MAX_TEXT_BYTES);
+    }
+
+    private static String safeString(DataInputStream in, int maximumBytes) throws IOException {
         int length = in.readInt();
-        if (length <= 0 || length > MAX_TEXT_BYTES) throw malformed("Frozen Legacy text length is invalid");
+        if (length <= 0 || length > maximumBytes) throw malformed("Frozen Legacy text length is invalid");
         byte[] bytes = new byte[length];
         in.readFully(bytes);
         try {
