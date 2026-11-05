@@ -14,6 +14,17 @@
 
 ### Active execution card — authoritative
 
+**CURRENT NEXT ACTION (2026-11-05):** The single user-approved Astra consultation
+is complete; no cheap repair is grounded yet. Static actual-data inspection is
+ready at http://127.0.0.1:8765/ (owned exec session46305). Termux browser launch
+completed successfully; HTTP/metadata and annotation controls verified. User was
+asked to mark the intended ridge and Save local feedback. No feedback existed at
+last check. Read append-only `legacy-normal-chart-inspection/feedback/` when it
+arrives, then analyze ridge/normal intersection order using that observation.
+Do not infer a reference, repeat V1/private inference, or use more Astra.
+Ordinary Legacy remains unchanged; real Drasov repair and original A work remain
+open. The detailed entries below preserve the chronological execution evidence.
+
 - USER REDIRECTION2026-11-05 supersedes the experimental-solver continuation
   below for Legacy: ordinary Legacy must not become dramatically slower.
   Focus cheap heuristics within the existing fast tracker, not a new expensive
@@ -149,12 +160,34 @@
   13zeroeach). Native B3max atrow126=.23009318017281663<.25 rigorously excludes
   the five-row certificate for124; this is ONE exclusion, not sole causality or
   permission to lower a private threshold. V1familyretired; no tuning/adoption.
-- CURRENT permission boundary: user approval requested asynchronously for ONE
-  focused Astra ANALYSIS-ONLY consultation on genuinely cheap correction. Sol/high
-  recommends that bounded escalation after no grounded third heuristic emerged.
-  No Astra used/spawned. Await explicit answer before any Astra work; no further
-  private variants, timing retries or implementation authorized by the diagnostic.
-  Concrete consultbrief is legacy-fast-smoother/focused-design-brief.md (HELD).
+- User explicitly approved ONE focused Astra ANALYSIS-ONLY consultation ("Yes",
+  2026-11-05). Requested route gpt-6-astra/medium, agentastra_fast_legacy_consult;
+  actual runtime/weekly telemetry unavailable. Only report writing is authorized
+  for that consultation: no source edits, private variants, timing retries,
+  decoding, new solver or delegation. Brief focused-design-brief.md is approved;
+  output astra-focused-design-review.md completed (683words). Recommendation:
+  no grounded cheap repair yet; first inspect one static local image overlay to
+  determine intended ridge order against normal rows119–126. Do not infer global
+  Drasov impossibility from public folded-chart fixture or tune intensity floors.
+  Agent's Git ownership check failed; controller independently verified clean
+  df842 before consultation, with no source writer active. No Astra follow-up
+  authorized; all implementation/adoption constraints and negatives unchanged.
+- Standing original data-analysis authority permits ONE static inspection artifact
+  from existing saved imagery/CSVs, not another sampling/tracker/model variant.
+  Luna worker drasov_reference_picker creates legacy-normal-chart-inspection/
+  with unchanged image, source anchors/normals/extracted peaks/current tracker
+  overlays and local feedback. No intended ridge is fabricated. Raster coordinates
+  divide by exact24.001238633946606 scale; no extra0.5 phase adjustment. No new
+  acquisition/production code/Gradle/private inference. Parent will inspect and
+  request user ridge annotation only if genuinely ambiguous.
+- Static artifact completed and independently checked: exact scale comes from
+  tile-manifest (diagnostics rounds it); chosen-offset→ordinary positions and
+  ordinary/named difference are0nativepixels over110–135. FullsourcePNG remains
+  unchanged/RGBA; sameROI source-only and layered views supplied, no inferredridge.
+  Browser labels/strokes corrected for native-unit magnification. Loopback server
+  accepts bounded append-only feedback (default unresolved), no fabricated data.
+  Server GETmetadata matcheslocal file; TermuxopenURLexit0. Artifacts live in
+  primarybuild/private-drasov-resume-20261105/legacy-normal-chart-inspection/.
 - Current points1–4: evaluator/measurement fixes verified; slow new-Legacy solver
   mechanism suspended by user (not a delivered repair); usable realDrasov Legacy
   fix OPEN; CorridorA original remaining scope still PARTIAL, preserved. Ordinary
