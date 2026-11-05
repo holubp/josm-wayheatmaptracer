@@ -121,18 +121,28 @@ class TileHeatmapSamplerTest {
             LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 2));
         var protectedProfiles = sampler.sampleProfiles(hot, source, "hot", config,
             LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 1, 2));
+        var invalidAuthorityFallback = sampler.sampleProfiles(hot, source, "hot", config,
+            LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(1, 2));
 
         assertTrue(immediate.size() >= 9);
         assertEquals(immediate.size(), explicitImmediate.size());
+        assertEquals(immediate.size(), invalidAuthorityFallback.size());
         assertEquals(immediate.size(), unfencedSecants.size());
         assertEquals(immediate.size(), protectedProfiles.size());
         for (int i = 0; i < immediate.size(); i++) {
             assertEquals(immediate.get(i).anchorScreen().x, protectedProfiles.get(i).anchorScreen().x, 0.0);
             assertEquals(immediate.get(i).anchorScreen().y, protectedProfiles.get(i).anchorScreen().y, 0.0);
+            assertEquals(immediate.get(i).intensitySamples().size(), protectedProfiles.get(i).intensitySamples().size(),
+                "normal policy must not change lateral width or step count");
+            assertEquals(immediate.get(i).anchorWithinRaster(), protectedProfiles.get(i).anchorWithinRaster());
             assertEquals(Double.doubleToRawLongBits(immediate.get(i).normalScreen().x),
                 Double.doubleToRawLongBits(explicitImmediate.get(i).normalScreen().x));
             assertEquals(Double.doubleToRawLongBits(immediate.get(i).normalScreen().y),
                 Double.doubleToRawLongBits(explicitImmediate.get(i).normalScreen().y));
+            assertEquals(Double.doubleToRawLongBits(immediate.get(i).normalScreen().x),
+                Double.doubleToRawLongBits(invalidAuthorityFallback.get(i).normalScreen().x));
+            assertEquals(Double.doubleToRawLongBits(immediate.get(i).normalScreen().y),
+                Double.doubleToRawLongBits(invalidAuthorityFallback.get(i).normalScreen().y));
         }
         int fencedCornerRow = immediate.size() / 2;
         int crossingSecantRow = fencedCornerRow - 2;

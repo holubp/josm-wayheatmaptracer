@@ -9,6 +9,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalDouble;
 import java.util.Set;
+import java.awt.BasicStroke;
+import java.awt.Color;
+import java.awt.Graphics2D;
+import java.awt.geom.Path2D;
+import java.awt.geom.Point2D;
+import java.awt.image.BufferedImage;
 import org.openstreetmap.josm.data.osm.DataSet;
 
 import org.openstreetmap.josm.data.coor.EastNorth;
@@ -54,6 +60,81 @@ class AlignmentServiceTest {
 
         assertTrue(AlignmentService.isSketchLikeSelection(sketch));
         assertEquals(AlignmentMode.MOVE_EXISTING_NODES, AlignmentService.effectiveAlignmentMode(sketch, config));
+    }
+
+    @Test
+    void standaloneLegacyVisibleRouteUsesOriginalOccurrenceFencesOnIrregularRasterCurve() {
+        List<Point2D.Double> path = List.of(
+            new Point2D.Double(18, 100), new Point2D.Double(22, 100),
+            new Point2D.Double(27, 100), new Point2D.Double(33, 100),
+            new Point2D.Double(39, 100), new Point2D.Double(45, 100),
+            new Point2D.Double(51, 100), new Point2D.Double(57, 101),
+            new Point2D.Double(62, 105), new Point2D.Double(65, 111),
+            new Point2D.Double(66, 118), new Point2D.Double(65, 125),
+            new Point2D.Double(62, 131), new Point2D.Double(57, 135),
+            new Point2D.Double(51, 136), new Point2D.Double(45, 136),
+            new Point2D.Double(39, 136));
+        List<EastNorth> source = path.stream().map(point -> new EastNorth(point.x, point.y)).toList();
+        List<Point2D.Double> rasterAnchors = path.stream()
+            .map(point -> new Point2D.Double(point.x * 6.0, point.y * 6.0)).toList();
+        List<ProfileSamplingAnchor> anchors = ProfileSamplingAnchor.pair(source, rasterAnchors);
+        BufferedImage raster = new BufferedImage(500, 900, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D graphics = raster.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.setStroke(new BasicStroke(24.0f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            Path2D.Double ridge = new Path2D.Double();
+            ridge.moveTo(rasterAnchors.get(0).x, rasterAnchors.get(0).y);
+            for (int i = 1; i < rasterAnchors.size(); i++) {
+                ridge.lineTo(rasterAnchors.get(i).x, rasterAnchors.get(i).y);
+            }
+            graphics.draw(ridge);
+        } finally {
+            graphics.dispose();
+        }
+        List<Node> nodes = source.stream()
+            .map(point -> new Node(ProjectionRegistry.getProjection().eastNorth2latlon(point))).toList();
+        Way way = new Way();
+        way.setNodes(nodes);
+        SelectionContext selection = new SelectionContext(way, 0, nodes.size() - 1, nodes,
+            Set.of(nodes.get(0), nodes.get(4), nodes.get(12), nodes.get(nodes.size() - 1)));
+        ManagedHeatmapConfig config = config(AlignmentMode.MOVE_EXISTING_NODES);
+        AlignmentService service = new AlignmentService();
+
+        List<RenderedHeatmapSampler.CrossSectionProfile> immediate = new RenderedHeatmapSampler()
+            .sampleProfilesOnAnchors(raster, anchors, 8, 1, "hot", RenderedHeatmapSampler.RASTER_SCALE,
+                1.0, IntensitySamplingMode.COLOR_MAPPING, null);
+        List<RenderedHeatmapSampler.CrossSectionProfile> protectedProfiles = service.sampleVisiblePlainProfiles(
+            raster, anchors, 8, 1, "hot", IntensitySamplingMode.COLOR_MAPPING, null, selection, config);
+        List<RenderedHeatmapSampler.CrossSectionProfile> corridorProfiles = service.sampleVisiblePlainProfiles(
+            raster, anchors, 8, 1, "hot", IntensitySamplingMode.COLOR_MAPPING, null, selection, corridorConfig());
+        List<CenterlineCandidate> tracked = new RidgeTracker().track(protectedProfiles);
+
+        assertEquals(path.size(), protectedProfiles.size());
+        assertTrue(tracked.size() > 0, "the actual painted corridor must produce Legacy geometry");
+        assertEquals(path.size(), tracked.get(0).screenPoints().size());
+        assertEquals(path.size(), corridorProfiles.size());
+        for (int i = 0; i < immediate.size(); i++) {
+            assertEquals(Double.doubleToRawLongBits(immediate.get(i).normalScreen().x),
+                Double.doubleToRawLongBits(corridorProfiles.get(i).normalScreen().x));
+            assertEquals(Double.doubleToRawLongBits(immediate.get(i).normalScreen().y),
+                Double.doubleToRawLongBits(corridorProfiles.get(i).normalScreen().y));
+        }
+        assertFalse(sameNormal(immediate.get(9), protectedProfiles.get(9)),
+            "the named Legacy route must use the wider first-sampling tangent near the supported hairpin");
+        for (int fixedIndex : List.of(0, 4, 12, path.size() - 1)) {
+            assertEquals(source.get(fixedIndex),
+                ((ProfileSamplingAnchor) protectedProfiles.get(fixedIndex).samplingAnchor()).sourceMapCoordinate(),
+                "the original fixed occurrence remains the profile position");
+            assertEquals(rasterAnchors.get(fixedIndex).x, protectedProfiles.get(fixedIndex).anchorScreen().x, 0.0);
+            assertEquals(rasterAnchors.get(fixedIndex).y, protectedProfiles.get(fixedIndex).anchorScreen().y, 0.0);
+        }
+    }
+
+    private static boolean sameNormal(RenderedHeatmapSampler.CrossSectionProfile a,
+            RenderedHeatmapSampler.CrossSectionProfile b) {
+        return Double.doubleToRawLongBits(a.normalScreen().x) == Double.doubleToRawLongBits(b.normalScreen().x)
+            && Double.doubleToRawLongBits(a.normalScreen().y) == Double.doubleToRawLongBits(b.normalScreen().y);
     }
 
     @Test

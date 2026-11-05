@@ -46,6 +46,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NodeMove;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PreviewNodeAssignmentPlanner;
 
@@ -681,10 +682,9 @@ public final class AlignmentService {
                 : null;
             List<RenderedHeatmapSampler.CrossSectionProfile> profiles = multiScale
                 ? profileSet.levelZeroProfiles()
-                : sampler.sampleProfilesOnAnchors(raster, samplingAnchors,
-                    effectiveSampling.effectiveHalfWidthPx(), effectiveSampling.effectiveStepPx(), colorMode,
-                    RenderedHeatmapSampler.RASTER_SCALE, 1.0, intensitySource,
-                    renderedCaptureProjector(capture));
+                : sampleVisiblePlainProfiles(raster, samplingAnchors, effectiveSampling.effectiveHalfWidthPx(),
+                    effectiveSampling.effectiveStepPx(), colorMode,
+                    intensitySource, renderedCaptureProjector(capture), selection, config);
             long samplingNanos = System.nanoTime() - samplingStart;
             if (modeIndex == 0) {
                 totalProfiles = profiles.size();
@@ -744,6 +744,31 @@ public final class AlignmentService {
             outsideRasterProfiles, totalProfiles, profileSpacing);
     }
 
+    List<RenderedHeatmapSampler.CrossSectionProfile> sampleVisiblePlainProfiles(
+        BufferedImage raster,
+        List<ProfileSamplingAnchor> samplingAnchors,
+        int halfWidthPx,
+        int stepPx,
+        String colorMode,
+        IntensitySamplingMode intensitySource,
+        RenderedHeatmapSampler.RasterCoordinateProjector projectedCoordinateProjector,
+        SelectionContext selection,
+        ManagedHeatmapConfig config
+    ) {
+        if (config.trackerMode() != TrackerMode.LEGACY_V02) {
+            return sampler.sampleProfilesOnAnchors(raster, samplingAnchors,
+                halfWidthPx, stepPx, colorMode,
+                RenderedHeatmapSampler.RASTER_SCALE, 1.0, intensitySource, projectedCoordinateProjector);
+        }
+        List<Integer> fixedIndices = fixedIndices(selection);
+        PluginLog.verbose("Legacy profile normal policy=%s for visible original-occurrence anchors (%d fences).",
+            LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1.id(), fixedIndices.size());
+        return sampler.sampleProfilesOnAnchorsWithWideSecants(raster, samplingAnchors,
+            halfWidthPx, stepPx, colorMode,
+            RenderedHeatmapSampler.RASTER_SCALE, 1.0, intensitySource, projectedCoordinateProjector,
+            CancellationProbe.NONE, Set.copyOf(fixedIndices));
+    }
+
     private DetectionResult detectTileCandidates(
         TileHeatmapSampler.TileMosaicSet mosaics,
         TileHeatmapSampler.TileMosaic mosaic,
@@ -788,7 +813,10 @@ public final class AlignmentService {
                 : null;
             List<RenderedHeatmapSampler.CrossSectionProfile> profiles = multiScale
                 ? profileSet.levelZeroProfiles()
-                : tileSampler.sampleAggregatedProfiles(mosaics, mosaic.zoom(), sourcePolyline);
+                : config.trackerMode() == TrackerMode.LEGACY_V02
+                    ? tileSampler.sampleAggregatedProfiles(mosaics, mosaic.zoom(), sourcePolyline,
+                        LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, fixedIndices(selection))
+                    : tileSampler.sampleAggregatedProfiles(mosaics, mosaic.zoom(), sourcePolyline);
             long samplingNanos = System.nanoTime() - samplingStart;
             totalProfiles = profiles.size();
             outsideRasterProfiles = (int) profiles.stream().filter(profile -> !profile.anchorWithinRaster()).count();
@@ -841,7 +869,10 @@ public final class AlignmentService {
                 : null;
             List<RenderedHeatmapSampler.CrossSectionProfile> profiles = multiScale
                 ? profileSet.levelZeroProfiles()
-                : tileSampler.sampleProfiles(mosaic, sourcePolyline, colorMode, config);
+                : config.trackerMode() == TrackerMode.LEGACY_V02
+                    ? tileSampler.sampleProfiles(mosaic, sourcePolyline, colorMode, config,
+                        LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, fixedIndices(selection))
+                    : tileSampler.sampleProfiles(mosaic, sourcePolyline, colorMode, config);
             long samplingNanos = System.nanoTime() - samplingStart;
             if (modeIndex == 0) {
                 totalProfiles = profiles.size();

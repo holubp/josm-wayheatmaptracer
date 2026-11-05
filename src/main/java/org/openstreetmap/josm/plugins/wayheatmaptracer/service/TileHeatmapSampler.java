@@ -386,7 +386,7 @@ public final class TileHeatmapSampler {
         List<Integer> fixedOriginalIndices
     ) {
         RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
-        if (normalPolicy == LegacyProfileNormalPolicy.IMMEDIATE_V1) {
+        if (normalPolicy != LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1) {
             return sampler.sampleProfilesOnAnchors(raster, anchors, halfWidthPx, stepPx, detectorMode,
                 rasterScale, sourceCoordinateScale, intensityMode, projector, cancellation);
         }
@@ -397,6 +397,8 @@ public final class TileHeatmapSampler {
             return sampler.sampleProfilesOnAnchors(raster, anchors, halfWidthPx, stepPx, detectorMode,
                 rasterScale, sourceCoordinateScale, intensityMode, projector, cancellation);
         }
+        PluginLog.verbose("Legacy profile normal policy=%s with %d mapped profile fences.",
+            LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1.id(), plan.profileBoundaries().size());
         return sampler.sampleProfilesOnAnchorsWithWideSecants(raster, anchors, halfWidthPx, stepPx, detectorMode,
             rasterScale, sourceCoordinateScale, intensityMode, projector, cancellation, plan.profileBoundaries());
     }
@@ -415,7 +417,7 @@ public final class TileHeatmapSampler {
         List<Integer> fixedOriginalIndices
     ) {
         RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
-        if (normalPolicy == LegacyProfileNormalPolicy.IMMEDIATE_V1) {
+        if (normalPolicy != LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1) {
             return sampler.sampleProfilesOnAggregatedAnchors(rastersByColor, anchors, halfWidthPx, stepPx,
                 rasterScale, sourceCoordinateScale, projector, cancellation);
         }
@@ -426,6 +428,8 @@ public final class TileHeatmapSampler {
             return sampler.sampleProfilesOnAggregatedAnchors(rastersByColor, anchors, halfWidthPx, stepPx,
                 rasterScale, sourceCoordinateScale, projector, cancellation);
         }
+        PluginLog.verbose("Legacy aggregate normal policy=%s with %d mapped profile fences.",
+            LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1.id(), plan.profileBoundaries().size());
         return sampler.sampleProfilesOnAggregatedAnchorsWithWideSecants(rastersByColor, anchors, halfWidthPx,
             stepPx, rasterScale, sourceCoordinateScale, projector, cancellation, plan.profileBoundaries());
     }
