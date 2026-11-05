@@ -5,9 +5,11 @@ import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.gui.MapView;
@@ -243,6 +245,64 @@ public final class RenderedHeatmapSampler {
         RasterCoordinateProjector projectedCoordinateProjector,
         CancellationProbe cancellation
     ) {
+        return sampleProfilesOnAnchorsInternal(raster, anchors, halfWidthPx, stepPx, colorMode, rasterScale,
+            sourceCoordinateScale, intensitySamplingMode, projectedCoordinateProjector, cancellation, null);
+    }
+
+    /**
+     * Samples plain L0 profiles with a fixed radius-three anchor secant where explicit dense-profile interval
+     * authority permits it. The immutable boundary snapshot is used only for this synchronous call. Missing or
+     * malformed authority is rejected before raster sampling; existing sampler entry points keep immediate
+     * neighbour normals and no original OSM occurrence authority is inferred here.
+     *
+     * @param raster source raster
+     * @param anchors aligned profile sampling anchors
+     * @param halfWidthPx configured search half-width
+     * @param stepPx configured lateral step
+     * @param colorMode palette mapping
+     * @param rasterScale raster oversampling scale
+     * @param sourceCoordinateScale raster pixels per source-image pixel
+     * @param intensitySamplingMode scalar intensity source
+     * @param projectedCoordinateProjector slide-time raster-to-projected-coordinate mapping, or {@code null}
+     * @param cancellation cancellation probe
+     * @param protectedProfileBoundaries dense-profile interval fence indices, including {@code 0} and the last
+     *        anchor index; wider secants do not cross an interior fence
+     * @return sampled cross-section profiles
+     * @throws IllegalArgumentException if the boundary set is absent, malformed, or omits either endpoint
+     */
+    List<CrossSectionProfile> sampleProfilesOnAnchorsWithWideSecants(
+        BufferedImage raster,
+        List<ProfileSamplingAnchor> anchors,
+        int halfWidthPx,
+        int stepPx,
+        String colorMode,
+        double rasterScale,
+        double sourceCoordinateScale,
+        IntensitySamplingMode intensitySamplingMode,
+        RasterCoordinateProjector projectedCoordinateProjector,
+        CancellationProbe cancellation,
+        Set<Integer> protectedProfileBoundaries
+    ) {
+        Objects.requireNonNull(anchors, "anchors");
+        Objects.requireNonNull(cancellation, "cancellation");
+        Set<Integer> boundaries = snapshotProtectedProfileBoundaries(protectedProfileBoundaries, anchors.size());
+        return sampleProfilesOnAnchorsInternal(raster, anchors, halfWidthPx, stepPx, colorMode, rasterScale,
+            sourceCoordinateScale, intensitySamplingMode, projectedCoordinateProjector, cancellation, boundaries);
+    }
+
+    private List<CrossSectionProfile> sampleProfilesOnAnchorsInternal(
+        BufferedImage raster,
+        List<ProfileSamplingAnchor> anchors,
+        int halfWidthPx,
+        int stepPx,
+        String colorMode,
+        double rasterScale,
+        double sourceCoordinateScale,
+        IntensitySamplingMode intensitySamplingMode,
+        RasterCoordinateProjector projectedCoordinateProjector,
+        CancellationProbe cancellation,
+        Set<Integer> wideSecantBoundaries
+    ) {
         if (anchors.size() < 2) {
             return Collections.emptyList();
         }
@@ -255,8 +315,23 @@ public final class RenderedHeatmapSampler {
             cancellation.checkpoint();
             ProfileSamplingAnchor samplingAnchor = anchors.get(i);
             Point2D.Double current = samplingAnchor.rasterCoordinate();
-            Point2D.Double prevScreen = anchors.get(Math.max(0, i - 1)).rasterCoordinate();
-            Point2D.Double nextScreen = anchors.get(Math.min(anchors.size() - 1, i + 1)).rasterCoordinate();
+            int previousIndex = Math.max(0, i - 1);
+            int nextIndex = Math.min(anchors.size() - 1, i + 1);
+            if (wideSecantBoundaries != null && i >= 3 && i + 3 < anchors.size()
+                    && !hasInteriorProfileBoundary(i - 3, i + 3, wideSecantBoundaries)) {
+                Point2D.Double wideStart = anchors.get(i - 3).rasterCoordinate();
+                Point2D.Double wideEnd = anchors.get(i + 3).rasterCoordinate();
+                double wideX = wideEnd.x - wideStart.x;
+                double wideY = wideEnd.y - wideStart.y;
+                double wideLength = Math.hypot(wideX, wideY);
+                if (Double.isFinite(wideX) && Double.isFinite(wideY)
+                        && Double.isFinite(wideLength) && wideLength > 0.0) {
+                    previousIndex = i - 3;
+                    nextIndex = i + 3;
+                }
+            }
+            Point2D.Double prevScreen = anchors.get(previousIndex).rasterCoordinate();
+            Point2D.Double nextScreen = anchors.get(nextIndex).rasterCoordinate();
             Point2D.Double tangent = PolylineMath.normalize(nextScreen.x - prevScreen.x, nextScreen.y - prevScreen.y);
             Point2D.Double normal = new Point2D.Double(-tangent.y, tangent.x);
             Point2D.Double baseScreen = current;
@@ -298,6 +373,34 @@ public final class RenderedHeatmapSampler {
             }
         }
         return profiles;
+    }
+
+    private static Set<Integer> snapshotProtectedProfileBoundaries(Set<Integer> supplied, int profileCount) {
+        if (supplied == null || profileCount < 2) {
+            throw new IllegalArgumentException("Explicit profile boundary authority is required for wide secants");
+        }
+        Set<Integer> snapshot = new HashSet<>();
+        for (Object value : (Set<?>) supplied) {
+            if (!(value instanceof Integer)) {
+                throw new IllegalArgumentException("Profile boundaries must be integer indices");
+            }
+            int boundary = (Integer) value;
+            if (boundary < 0 || boundary >= profileCount) {
+                throw new IllegalArgumentException("Profile boundary index is outside the dense profile set");
+            }
+            snapshot.add(boundary);
+        }
+        if (!snapshot.contains(0) || !snapshot.contains(profileCount - 1)) {
+            throw new IllegalArgumentException("Profile boundary authority must include both endpoint indices");
+        }
+        return Set.copyOf(snapshot);
+    }
+
+    private static boolean hasInteriorProfileBoundary(int first, int last, Set<Integer> boundaries) {
+        for (int boundary = first + 1; boundary < last; boundary++) {
+            if (boundaries.contains(boundary)) return true;
+        }
+        return false;
     }
 
     /**
