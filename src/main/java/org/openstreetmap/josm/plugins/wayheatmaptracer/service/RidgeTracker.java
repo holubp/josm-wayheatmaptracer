@@ -1020,6 +1020,13 @@ public final class RidgeTracker {
         public void requireProvider(OwnedOrdinaryGuide expected,SampledEmissionInput input){live();expected.requireInput(input);if(provider!=expected)throw new IllegalArgumentException("Foreign guide trace");}
         @Override public void close(){owner.close();}
     }
+    /** Sole prepared-payload lifetime after handoff; the old facade cannot revoke this lease. */
+    public static final class OwnedGuideLease implements AutoCloseable {
+        private final OwnedOrdinaryGuide provider;
+        private OwnedGuideLease(OwnedOrdinaryGuide provider){this.provider=provider;}
+        public boolean isClosed(){return provider.owner.isClosed();}
+        @Override public void close(){provider.owner.close();}
+    }
     private record GuideLabel(State state,List<GuideStep> steps,AttemptMemoryLedger.Owner owner) { }
 
     /** Privately issued prepared source/anchor identities; no external offset-to-owner adapter exists. */
@@ -1038,8 +1045,11 @@ public final class RidgeTracker {
             for(var a:anchors){issued.add(new GuideAnchor(a));requests.add(new LegacyEmissionKernel.AnchorProposal(a.index(),a.peak()));}
             this.anchors=List.copyOf(issued);proposals=List.copyOf(requests);this.normalization=normalization;this.edge=edge;this.cancellation=cancellation;
         }
-        public void requireInput(SampledEmissionInput expected){if(expected!=input||owner.isClosed()||finished)throw new IllegalArgumentException("Guide source/lifetime differs");}
-        public void finish(SampledEmissionInput expected){requireInput(expected);finished=true;}
+        public synchronized void requireInput(SampledEmissionInput expected){if(expected!=input||owner.isClosed()||finished)throw new IllegalArgumentException("Guide source/lifetime differs");}
+        /** One lease slot was prepaid at preparation; this atomic handoff has no charge or callback. */
+        public synchronized OwnedGuideLease transferToResult(SampledEmissionInput expected){
+            requireInput(expected);var lease=new OwnedGuideLease(this);finished=true;return lease;
+        }
         public List<RenderedHeatmapSampler.CrossSectionProfile> profiles(){requireInput(input);return profiles;}
         public List<Double> seeds(){requireInput(input);return seeds;}
         public List<LegacyEmissionKernel.AnchorProposal> proposals(){requireInput(input);return proposals;}
@@ -1120,7 +1130,7 @@ public final class RidgeTracker {
                 return new GuideLabel(state,steps,scope);
             }catch(RuntimeException failure){scope.close();throw failure;}
         }
-        @Override public void close(){owner.close();}
+        @Override public synchronized void close(){if(!finished)owner.close();}
     }
 
     /** Additive prepared-source entry. Every native helper scan/copy is prepaid on this new path only. */
@@ -1137,8 +1147,9 @@ public final class RidgeTracker {
             }
             long seedBound=Math.min(count,Math.multiplyExact(12,max));work=Math.addExact(work,Math.multiplyExact(16,Math.multiplyExact(seedBound,seedBound)));
             long rows=binding.observations().size();
-            long allocations=Math.addExact(128,Math.multiplyExact(64,Math.addExact(count,rows)));
-            long bytes=Math.addExact(4096,Math.addExact(Math.multiplyExact(1024,rows),Math.addExact(Math.multiplyExact(512,count),Math.addExact(Math.multiplyExact(32,samples),Math.multiplyExact(256,seedBound)))));
+            // The additional fixed allocation/64 bytes pre-admit the single eventual ownership lease.
+            long allocations=Math.addExact(129,Math.multiplyExact(64,Math.addExact(count,rows)));
+            long bytes=Math.addExact(4160,Math.addExact(Math.multiplyExact(1024,rows),Math.addExact(Math.multiplyExact(512,count),Math.addExact(Math.multiplyExact(32,samples),Math.multiplyExact(256,seedBound)))));
             budget.charge(EmissionWorkBudget.Operation.PREPARATION,work);budget.charge(EmissionWorkBudget.Operation.ALLOCATION,allocations);
             owner.reserve(bytes);
             var original=binding.observations().stream().map(org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.LegacyEmissionBinding.OriginalObservation::profile).toList();

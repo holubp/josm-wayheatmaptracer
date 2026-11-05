@@ -65,18 +65,18 @@ public final class LegacyEmissionKernel {
     /** New-route sidecar; witness-only never exposes an optimizer winner, intervals or smoothed geometry. */
     public static final class OwnedGuideResult implements AutoCloseable {
         private final GuideScope scope;private final GroupedResult grouped;private final List<GuideStageReference> comparisons;
-        private final RidgeTracker.OwnedOrdinaryGuide provider;private final AttemptMemoryLedger.Owner owner;
+        private final RidgeTracker.OwnedGuideLease guideLifetime;private final AttemptMemoryLedger.Owner owner;
         private final SampledEmissionInput.ResultLease lease;private final EmissionWorkBudget.Snapshot work;private final long peak;private final String modelIdentity;
         private boolean closed;
-        private OwnedGuideResult(GuideScope scope,GroupedResult grouped,List<GuideStageReference> comparisons,RidgeTracker.OwnedOrdinaryGuide provider,
+        private OwnedGuideResult(GuideScope scope,GroupedResult grouped,List<GuideStageReference> comparisons,RidgeTracker.OwnedGuideLease guideLifetime,
                 AttemptMemoryLedger.Owner owner,SampledEmissionInput.ResultLease lease,EmissionWorkBudget.Snapshot work,String modelIdentity) {
-            this.scope=scope;this.grouped=grouped;this.comparisons=List.copyOf(comparisons);this.provider=provider;this.owner=owner;this.lease=lease;this.work=work;peak=owner.peakBytes();this.modelIdentity=modelIdentity;
+            this.scope=scope;this.grouped=grouped;this.comparisons=List.copyOf(comparisons);this.guideLifetime=guideLifetime;this.owner=owner;this.lease=lease;this.work=work;peak=owner.peakBytes();this.modelIdentity=modelIdentity;
         }
-        private void live(){if(closed||owner.isClosed())throw new IllegalStateException("Owned guide result is closed");}
+        private void live(){if(closed||owner.isClosed()||guideLifetime.isClosed())throw new IllegalStateException("Owned guide result is closed");}
         public GuideScope scope(){live();return scope;}public Optional<GroupedResult> grouped(){live();return Optional.ofNullable(grouped);}
         public List<GuideStageReference> comparisons(){live();return comparisons;}public EmissionWorkBudget.Snapshot work(){live();return work;}
         public long peakRetainedBytes(){live();return peak;}public String modelIdentity(){live();return modelIdentity;}
-        @Override public void close(){if(!closed){closed=true;try{if(grouped!=null)grouped.close();}finally{try{provider.close();}finally{try{owner.close();}finally{if(lease!=null)lease.close();}}}}}
+        @Override public void close(){if(!closed){closed=true;try{if(grouped!=null)grouped.close();}finally{try{guideLifetime.close();}finally{try{owner.close();}finally{if(lease!=null)lease.close();}}}}}
     }
 
     /** An owned proof-stage path, explicitly not a multi-stage/smoothed emission result. */
@@ -2202,7 +2202,7 @@ public final class LegacyEmissionKernel {
         if(execution!=NativeConnectorEvaluator.ExecutionPolicy.EAGER_ALL_PROBES_V1&&query!=NativeConnectorEvaluator.QueryPolicy.ZERO_GUARDED_LOCAL_V1)
             throw new IllegalArgumentException("Early execution requires local query policy");
         if(progress!=null)progress.requireCompatible(input,query,execution);
-        AttemptMemoryLedger.Owner owner=null;SampledEmissionInput.ResultLease lease=null;EmissionResult emission=null;GroupedResult grouped=null;OwnedGuideResult result=null;
+        AttemptMemoryLedger.Owner owner=null;SampledEmissionInput.ResultLease lease=null;RidgeTracker.OwnedGuideLease guideLifetime=null;EmissionResult emission=null;GroupedResult grouped=null;OwnedGuideResult result=null;
         try {
             if(progress!=null){progress.begin(input,query,execution);progress.groupedBegin(GroupedExecution.EXACT_Q0_OWNED_NATIVE_GUIDE_V1);}
             lease=scope==GuideScope.BASE_WITNESS_ONLY?input.retainResultLifetime():null;
@@ -2236,17 +2236,17 @@ public final class LegacyEmissionKernel {
             int n=facts.guide().comparisons().size();budget.charge(EmissionWorkBudget.Operation.PREPARATION,256L+32L*n);
             budget.charge(EmissionWorkBudget.Operation.ALLOCATION,12L+n);owner.reserve(4096L+512L*n);
             String identity="LEGACY_OWNED_ORDINARY_GUIDE_V1/guide="+RidgeTracker.OwnedOrdinaryGuide.POLICY_ID+"/scope="+scope+"/grouped="+facts.execution()+"/query="+query+"/execution="+execution+"/managed="+ManagedOrdinaryAffinity.POLICY_ID;
-            provider.finish(input);
+            guideLifetime=provider.transferToResult(input);
             cancellation.checkpoint();input.requireOpenAndUnchanged();
             try(var publication=input.prepareManagedFinalPublication(owner,256L+32L*n,4096L+256L*n)) {
                 publication.validate();if(progress!=null)progress.requireCompatible(input,query,execution);
                 if(emission!=null)grouped=new GroupedResult(facts.execution(),emission,facts.stages(),owner,budget.snapshot());
-                result=new OwnedGuideResult(scope,grouped,facts.guide().comparisons(),provider,owner,lease,budget.snapshot(),identity);
+                result=new OwnedGuideResult(scope,grouped,facts.guide().comparisons(),guideLifetime,owner,lease,budget.snapshot(),identity);
             }
             if(progress!=null){progress.requireCompatible(input,query,execution);progress.seal(null);}
             return result;
         } catch(RuntimeException failure) {
-            if(result!=null)closeAfterFailure(result,failure);else {closeAfterFailure(grouped==null?emission:grouped,failure);closeAfterFailure(owner,failure);closeAfterFailure(lease,failure);closeAfterFailure(provider,failure);}
+            if(result!=null)closeAfterFailure(result,failure);else {closeAfterFailure(grouped==null?emission:grouped,failure);closeAfterFailure(owner,failure);closeAfterFailure(guideLifetime==null?provider:guideLifetime,failure);closeAfterFailure(lease,failure);}
             if(ExperimentalMeasuredModeInventory.terminal(failure))input.recordTerminalExecutionFailure(failure);
             if(progress!=null){boolean live=false;try{progress.requireCompatible(input,query,execution);live=true;}catch(RuntimeException revoked){}
                 if(live)try{progress.seal(failure);}catch(RuntimeException cleanup){if(cleanup!=failure)failure.addSuppressed(cleanup);}}
