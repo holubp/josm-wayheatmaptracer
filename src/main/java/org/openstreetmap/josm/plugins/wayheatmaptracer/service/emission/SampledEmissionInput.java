@@ -31,6 +31,7 @@ public final class SampledEmissionInput implements AutoCloseable {
         this.workBudget = workBudget;
         this.retainedOwner = retainedOwner;
         this.legacyBinding = java.util.Objects.requireNonNull(legacyBinding, "legacyBinding");
+        this.legacyBinding.ifPresent(binding -> binding.attachManagedInput(this));
     }
     public MultiScaleProfileSet profiles() { requireOpen(); return profiles; }
     public OptionalEmissionContext context() { requireOpen(); return context; }
@@ -62,8 +63,9 @@ public final class SampledEmissionInput implements AutoCloseable {
     }
     /** Required at each numerical entry, using the same admitted attempt budget. */
     public void requireOpenAndUnchanged() {
+        legacyBinding.ifPresent(binding -> binding.requireInputIdentity(this));
         requireRetainedSourceUnchanged();
-        legacyBinding.ifPresent(binding -> binding.requireNativeProfilesUnchanged(workBudget));
+        legacyBinding.ifPresent(binding -> binding.requireNativeProfilesUnchanged(workBudget, this));
     }
     /** Package-owned single-use ticket; no caller-supplied source facts or budget bypass. */
     FinalPublication prepareManagedFinalPublication(AttemptMemoryLedger.Owner owner,long copyWork,long copyBytes){

@@ -93,6 +93,7 @@ public final class LegacyEmissionBinding {
     private final OptionalEmissionContextFactory.SourceBinding sourcePermit;
     private final MultiScaleProfileSet producedProfiles;
     private final OptionalEmissionContext.Origin origin;
+    private final OptionalEmissionContext managedContext;
     private final java.util.Optional<ProductionAttestation> productionAttestation;
     /** No production producer/selection attestation is available through this structural factory. */
     private final boolean productionEligible;
@@ -100,6 +101,7 @@ public final class LegacyEmissionBinding {
     private final DeclaredSyntheticRasterReceipt syntheticRasterReceipt;
     private final OptionalEmissionContextFactory.ManagedCaptureBinding managedPermit;
     private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.SourceParameterCertificate managedSourceParameters;
+    private SampledEmissionInput managedInput;
 
     LegacyEmissionBinding(
         OptionalEmissionContextFactory.SourceBinding sourcePermit,
@@ -138,6 +140,7 @@ public final class LegacyEmissionBinding {
         this.sourceChainageOriginMeters = sourcePermit.chainage().sourceOriginGroundMeters();
         this.sourcePermit = sourcePermit;
         this.managedPermit = null;
+        this.managedContext = null;
         this.managedSourceParameters = null;
         this.producedProfiles = producedProfiles;
         this.origin = sourcePermit.origin();
@@ -157,6 +160,7 @@ public final class LegacyEmissionBinding {
             OptionalEmissionContext context, AttemptMemoryLedger.Reservation metadata) {
         sourcePermit = null;
         managedPermit = permit;
+        managedContext = context;
         managedSourceParameters = retained.sourceParameters().orElseThrow();
         producedProfiles = retained.profileSet();
         origin = OptionalEmissionContext.Origin.MANAGED_CAPTURE;
@@ -198,7 +202,8 @@ public final class LegacyEmissionBinding {
         productionEligible = true;
         validateRowSequence();
         validateProtectedOccurrences();
-        nativeProfileSnapshots = observations.stream().map(NativeProfileSnapshot::capture).toList();
+        nativeProfileSnapshots = observations.stream()
+            .map(observation -> NativeProfileSnapshot.capture(observation, true)).toList();
         context.requireProfilesUnchanged(producedProfiles);
     }
 
@@ -212,6 +217,7 @@ public final class LegacyEmissionBinding {
             permit.workBudget().charge(EmissionWorkBudget.Operation.PREPARATION, 1);
             peaks = Math.addExact(peaks, profile.peaks().size());
         }
+        // The existing per-row metadata reservation also owns the native immutable-list certificate fields.
         var reservation = permit.retainedOwner().reserve(Math.addExact(8192L,
             Math.addExact(Math.multiplyExact((long) retained.profiles().size(), 1024L),
                 Math.multiplyExact(peaks, 96L))));
@@ -228,13 +234,27 @@ public final class LegacyEmissionBinding {
         CrossSectionProfile profile,
         org.openstreetmap.josm.plugins.wayheatmaptracer.service.ProfileSamplingLocation anchor,
         double anchorX, double anchorY, double normalX, double normalY, double chainage,
-        List<CrossSectionPeak> peaks
+        List<CrossSectionPeak> peaks,
+        List<CrossSectionPeak> immutablePeakList,
+        List<RenderedHeatmapSampler.IntensitySample> immutableIntensitySamples,
+        boolean anchorWithinRaster,
+        SourceClass immutableSourceClass,
+        boolean immutableCertificate
     ) {
         private static NativeProfileSnapshot capture(OriginalObservation observation) {
+            return capture(observation, false);
+        }
+
+        private static NativeProfileSnapshot capture(OriginalObservation observation, boolean managed) {
             CrossSectionProfile profile = observation.profile();
+            boolean certified = managed && profile == observation.measurementProfile()
+                && profile.samplingAnchor().getClass()
+                    == org.openstreetmap.josm.plugins.wayheatmaptracer.service.ProfileSamplingAnchor.class;
             return new NativeProfileSnapshot(profile, profile.samplingAnchor(), profile.anchorScreen().x,
                 profile.anchorScreen().y, profile.normalScreen().x, profile.normalScreen().y,
-                profile.cumulativeGroundDistanceMeters(), List.copyOf(profile.peaks()));
+                profile.cumulativeGroundDistanceMeters(), List.copyOf(profile.peaks()),
+                certified ? profile.peaks() : null, certified ? profile.intensitySamples() : null,
+                profile.anchorWithinRaster(), certified ? observation.sourceClass() : null, certified);
         }
 
         private boolean unchanged(OriginalObservation observation) {
@@ -244,8 +264,14 @@ public final class LegacyEmissionBinding {
                     || Double.doubleToLongBits(profile.normalScreen().x) != Double.doubleToLongBits(normalX)
                     || Double.doubleToLongBits(profile.normalScreen().y) != Double.doubleToLongBits(normalY)
                     || Double.doubleToLongBits(profile.cumulativeGroundDistanceMeters())
-                        != Double.doubleToLongBits(chainage)
-                    || profile.peaks().size() != peaks.size()) return false;
+                        != Double.doubleToLongBits(chainage)) return false;
+            if (immutableCertificate) {
+                return profile.peaks() == immutablePeakList
+                    && profile.intensitySamples() == immutableIntensitySamples
+                    && profile.anchorWithinRaster() == anchorWithinRaster
+                    && observation.sourceClass() == immutableSourceClass;
+            }
+            if (profile.peaks().size() != peaks.size()) return false;
             for (int index = 0; index < peaks.size(); index++) {
                 if (profile.peaks().get(index) != peaks.get(index)) return false;
             }
@@ -361,15 +387,45 @@ public final class LegacyEmissionBinding {
     }
 
     void requireNativeProfilesUnchanged(EmissionWorkBudget budget) {
+        requireNativeProfilesUnchanged(budget, null, false);
+    }
+
+    void requireNativeProfilesUnchanged(EmissionWorkBudget budget, SampledEmissionInput caller) {
+        requireNativeProfilesUnchanged(budget, caller, true);
+    }
+
+    private void requireNativeProfilesUnchanged(EmissionWorkBudget budget, SampledEmissionInput caller,
+            boolean allowManagedCertificate) {
+        if (allowManagedCertificate) requireInputIdentity(caller);
         if (managedPermit != null) managedPermit.requireCurrent();
         if (syntheticRasterReceipt == null && managedPermit == null) return;
         for (int index = 0; index < observations.size(); index++) {
+            NativeProfileSnapshot snapshot = nativeProfileSnapshots.get(index);
+            boolean useCertificate = allowManagedCertificate && snapshot.immutableCertificate();
             budget.charge(EmissionWorkBudget.Operation.PREPARATION,
-                1L + nativeProfileSnapshots.get(index).peaks().size());
-            if (!nativeProfileSnapshots.get(index).unchanged(observations.get(index))) {
+                useCertificate ? 1 : 1L + snapshot.peaks().size());
+            if (!snapshot.unchanged(observations.get(index))) {
                 throw new IllegalStateException("Original Legacy profile changed after binding publication");
             }
-            validateSourceClass(observations.get(index));
+            if (!useCertificate) validateSourceClass(observations.get(index));
+        }
+    }
+
+    synchronized void attachManagedInput(SampledEmissionInput input) {
+        if (managedPermit == null) return;
+        Objects.requireNonNull(input, "input");
+        if (managedInput != null) throw new IllegalStateException("Managed Legacy binding is already attached to an input");
+        if (input.profiles() != producedProfiles || input.context() != managedContext
+                || input.workBudget() != managedPermit.workBudget()
+                || input.legacyBinding().orElse(null) != this) {
+            throw new IllegalArgumentException("Managed Legacy binding cannot attach to a foreign input");
+        }
+        managedInput = input;
+    }
+
+    void requireInputIdentity(SampledEmissionInput input) {
+        if (managedPermit != null && (input == null || managedInput != input)) {
+            throw new IllegalStateException("Managed Legacy binding belongs to a different retained input");
         }
     }
     long finalPublicationWork(){

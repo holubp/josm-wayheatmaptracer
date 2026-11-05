@@ -531,6 +531,59 @@ class ManagedOrdinaryAffinityTest {
             }
         }});
     }
+    @Test void managedNativeBindingCannotBeReusedByASecondInputInstance()throws Exception{
+        managed(.60,true,f->{
+            var binding=f.input.legacyBinding().orElseThrow();
+            assertThrows(IllegalStateException.class,()->new SampledEmissionInput(f.input.profiles(),
+                f.input.context(),f.input.workBudget(),f.retainedOwner,Optional.of(binding)),
+                "A managed native certificate belongs to the input instance that received the binding");
+            assertDoesNotThrow(f.input::requireOpenAndUnchanged,
+                "Rejecting a foreign input must leave the original association usable");
+        });
+    }
+    @Test void managedNativeImmutableProofKeepsRowChargesAndRemovesOnlyPeakVisitCredits()throws Exception{
+        var callbackCount=new java.util.concurrent.atomic.AtomicInteger();
+        CancellationProbe callback=()->{callbackCount.incrementAndGet();return false;};
+        managed(new Spec(.60,true,false,false,callback,368,false,Defect.PEAK_COUNTS_301),f->{
+            var binding=f.input.legacyBinding().orElseThrow();
+            int rows=binding.observations().size();
+            long peakVisits=binding.observations().stream().mapToLong(row->row.profile().peaks().size()).sum();
+            assertEquals(185,rows,"Synthetic counter fixture must exercise 185 native rows");
+            assertEquals(301,peakVisits,"Synthetic counter fixture must exercise exactly 301 native peak visits");
+            var managedPermitField=OptionalEmissionContext.class.getDeclaredField("managedBinding");
+            managedPermitField.setAccessible(true);
+            var managedPermit=(OptionalEmissionContextFactory.ManagedCaptureBinding)managedPermitField.get(f.input.context());
+            long before=f.input.workBudget().operationUnits(EmissionWorkBudget.Operation.PREPARATION);
+            int callbacksBefore=callbackCount.get();
+            managedPermit.requireCurrent();
+            long permitCost=f.input.workBudget().operationUnits(EmissionWorkBudget.Operation.PREPARATION)-before;
+            int permitCallbacks=callbackCount.get()-callbacksBefore;
+            before=f.input.workBudget().operationUnits(EmissionWorkBudget.Operation.PREPARATION);
+            callbacksBefore=callbackCount.get();
+            binding.requireNativeProfilesUnchanged(f.input.workBudget(),f.input);
+            long bindingCost=f.input.workBudget().operationUnits(EmissionWorkBudget.Operation.PREPARATION)-before;
+            int bindingCallbacks=callbackCount.get()-callbacksBefore;
+            assertEquals(permitCost+rows,bindingCost,
+                "The live permit scan and every row charge remain; only the proven immutable peak visits are removed");
+            assertEquals(permitCallbacks+rows,bindingCallbacks,
+                "Every row retains its own cancellation callback after the full live permit scan");
+        });
+    }
+    @Test void managedNativeFreshnessStillRunsBothLiveSelectionSnapshots() throws Exception {
+        var snapshots=new java.util.concurrent.atomic.AtomicInteger();
+        CancellationProbe callback=()->{
+            if(Arrays.stream(Thread.currentThread().getStackTrace()).anyMatch(frame->
+                    frame.getClassName().equals(ManagedSelectionWitness.class.getName())
+                        &&frame.getMethodName().equals("snapshot")))snapshots.incrementAndGet();
+            return false;
+        };
+        managed(new Spec(.60,true,false,false,callback),f->{
+            int before=snapshots.get();
+            f.input.requireOpenAndUnchanged();
+            assertEquals(2,snapshots.get()-before,
+                "Context and native binding retain independent live managed-source snapshots per admission");
+        });
+    }
     @Test void rotatedActualManagedNativePortsProveDarkCrossingAndActualSameChain() throws Exception {
         managed(.60,true,f->{
             try(var owner=f.input.openExecutionOwner("managed-affinity-test-domain")){
@@ -623,7 +676,7 @@ class ManagedOrdinaryAffinityTest {
     }
     private OptionalDouble sampleOffset(ManagedOrdinaryAffinity.PointFact p,int i){return i<0||i>=p.probe().samples().size()?OptionalDouble.empty():OptionalDouble.of(p.probe().samples().get(i).offsetMeters());}
     record Fixture(SampledEmissionInput input,AttemptMemoryLedger ledger,Way source,java.util.concurrent.atomic.AtomicReference<ManagedHeatmapConfig> settings,java.util.concurrent.atomic.AtomicReference<Runnable> settingsHook,AttemptMemoryLedger.Owner retainedOwner){}
-    enum Defect { NONE, JOIN, WIDE, CURVE, SPARSE_STATIONS, SOURCE_TURN }
+    enum Defect { NONE, JOIN, WIDE, CURVE, SPARSE_STATIONS, SOURCE_TURN, PEAK_COUNTS_301 }
     record Spec(double weak,boolean rotated,boolean swapped,boolean broadOutside,CancellationProbe cancelled,double halfLength,boolean joinedEnds,Defect defect){
         Spec(double weak,boolean rotated,boolean swapped,boolean broadOutside,CancellationProbe cancelled){this(weak,rotated,swapped,broadOutside,cancelled,60,false,Defect.NONE);}
         Spec(double weak,boolean rotated,boolean swapped,boolean broadOutside,CancellationProbe cancelled,double halfLength,boolean joinedEnds){this(weak,rotated,swapped,broadOutside,cancelled,halfLength,joinedEnds,Defect.NONE);}
@@ -667,6 +720,7 @@ class ManagedOrdinaryAffinityTest {
                 double transverse=xx*Math.sin(angle)+yy*Math.cos(angle);
                 double along=xx*Math.cos(angle)-yy*Math.sin(angle);
                 double first=spec.swapped&&along>0?spec.weak:.90,second=spec.swapped&&along>0?.90:spec.weak;
+                if(spec.defect==Defect.PEAK_COUNTS_301&&along<-.25*nativeExtent)second=0;
                 double band=spec.defect==Defect.WIDE?12:spec.joinedEnds?4*Math.max(0,Math.min(1,(nativeExtent-Math.abs(along))/(nativeExtent*.5))):4;
                 double centerline=spec.defect==Defect.CURVE?1.5*Math.sin(along*.4):0;
                 double bandSigma=spec.defect==Defect.WIDE?4:.70;
