@@ -218,6 +218,14 @@ public final class NativeAEmissionSolver {
             var geometry=new ArrayList<MetricPoint>();
             for(var value:emitted)if(geometry.isEmpty()||!geometry.get(geometry.size()-1).equals(value.metric()))geometry.add(value.metric());
             if(geometry.size()<2)throw new InvalidCertificateException("Managed A final physical shape is degenerate");
+            for(int i=1;i+1<geometry.size();i++){
+                var a=geometry.get(i-1);var b=geometry.get(i);var c=geometry.get(i+1);
+                double ux=b.xMeters()-a.xMeters(),uy=b.yMeters()-a.yMeters();
+                double vx=c.xMeters()-b.xMeters(),vy=c.yMeters()-b.yMeters();
+                // Adjacent edges may share their vertex, but may not retrace positive length.
+                if(ux*vy-uy*vx==0.0&&ux*vx+uy*vy<0.0)
+                    throw new InvalidCertificateException("Managed A final physical shape has an adjacent overlap");
+            }
             for(int i=1;i<geometry.size();i++)for(int j=i+2;j<geometry.size();j++){
                 var a=geometry.get(i-1);var b=geometry.get(i);var c=geometry.get(j-1);var d=geometry.get(j);
                 if(java.awt.geom.Line2D.linesIntersect(a.xMeters(),a.yMeters(),b.xMeters(),b.yMeters(),c.xMeters(),c.yMeters(),d.xMeters(),d.yMeters()))

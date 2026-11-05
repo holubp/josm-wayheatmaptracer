@@ -69,7 +69,7 @@ public final class NativeAExecutionCensus implements AutoCloseable {
         this.queue=queue;this.reached=reached;hasIncumbent=incumbent;this.upper=upper;this.lower=lower;
     }
     void trackFrontier(java.util.Collection<?> queue,java.util.Collection<?> reached){guardManaged();liveQueue=queue;liveReached=reached;}
-    void closeFrontier(){if(managed&&(closed||owner.isClosed()))return;refresh();liveQueue=null;liveReached=null;}
+    void closeFrontier(){if(managed&&!managedLive())return;refresh();liveQueue=null;liveReached=null;}
     void pendingLower(double lower){guardManaged();this.lower=lower;}
     public void refinement(){guardManaged();refinements++;}
     public void reinserted(){guardManaged();reinsertions++;}
@@ -95,8 +95,10 @@ public final class NativeAExecutionCensus implements AutoCloseable {
     public void inactivePendingFiltered(){guardManaged();inactivePendingFiltered++;}
     public void activePrefixes(int count){guardManaged();maxActivePrefixes=Math.max(maxActivePrefixes,count);}
     public void prefixDominanceApplied(){guardManaged();prefixDominanceApplied=true;}
-    public void finish(){guardManaged();finished=true;input=null;closeFrontier();}
-    public void fail(RuntimeException failure){if(managed&&!managedLive())return;if(this.failure==null)this.failure=failure;finished=true;input=null;closeFrontier();}
+    // The owning terminal transition snapshots while live; later executor/lease cleanup cannot refresh it.
+    public void finish(){guardManaged();if(managed)closeFrontier();finished=true;input=null;if(!managed)closeFrontier();}
+    public void fail(RuntimeException failure){if(managed&&!managedLive())return;if(this.failure==null)this.failure=failure;
+        if(managed)closeFrontier();finished=true;input=null;if(!managed)closeFrontier();}
     private void refresh(){work=budget.workUsed();pairs=budget.pairVisits();peak=owner.peakBytes();current=owner.currentBytes();
         if(liveQueue!=null)queue=liveQueue.size();if(liveReached!=null)reached=liveReached.size();}
     public Phase phase(){return phase;}
@@ -137,5 +139,6 @@ public final class NativeAExecutionCensus implements AutoCloseable {
     public long currentBytes(){return owner.currentBytes();}
     public boolean finished(){return finished;}
     public RuntimeException failure(){return failure;}
-    @Override public void close(){if(managed){if(closed)return;refresh();liveQueue=null;liveReached=null;}input=null;if(!closed){closed=true;owner.close();}refresh();}
+    @Override public void close(){if(managed){if(closed)return;if(!finished)refresh();liveQueue=null;liveReached=null;}
+        input=null;if(!closed){closed=true;owner.close();}if(!managed||!finished)refresh();}
 }

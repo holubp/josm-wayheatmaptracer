@@ -1530,3 +1530,57 @@ Sole source writer `/root/query_policy`, new worktree
 `codex/drasov-local-final-failure`, BASE7374eb2; it owns local Gradle. Old compiled
 zero-local worktree remains immutable baseline. Luna evidence worker prepares only
 external runner execution selection; no graph until tests/independent review.
+
+## 2026-11-05 managed endpoint-only A R1 recovery
+
+Restored the retained managed-A source at `12e96faf6a21b39d437025fe7bfacca6649d98ba`
+in durable worktree `.worktrees/drasov-managed-a-r1-recovery`, branch
+`codex/drasov-a-r1-recovery`. This packet addresses only the two confirmed R1
+findings; earlier vanished-worktree test reports are historical, not current
+verification. No ordinary engine/default, numerical policy, private replay,
+adoption, UI or release change is authorized by this packet.
+
+- P1: `Result.validateManagedFinalShape()` skipped adjacent segments. A real
+  managed capture with distinct endpoint nodes at the same exact physical
+  coordinate published an A-B-A backtrack. The bounded correction rejects
+  adjacent collinear edges with a negative direction dot product, while retaining
+  the existing nonadjacent contact and physical evidence checks. It uses emitted
+  physical metric coordinates, not a reconstructed endpoint raster projection.
+- P2: `closeFrontier()` refreshed managed census fields after terminal callbacks
+  in `CompetitiveAdmissionExecutor.snapshotResult()`. Owning `finish()`/`fail()`
+  now snapshot while live, before sealing; executor cleanup and lease release
+  preserve the sealed header. The first failure remains sticky. Unmanaged census
+  ordering and ordinary synthetic/default execution retain their old branch.
+
+Fresh TDD evidence under `build/private-drasov-resume-20261105/a-r1/`:
+
+- `red.log`/`red.xml`: three tests, three intended behavioral failures. The real
+  A-B-A capture published without refusal. Both snapshot finish/fail cases changed
+  frozen work from 269195 to 269326 and pair visits from 294 to 397 during cleanup.
+- `red-expanded.log`/`red-expanded.xml`: seven tests; four intended failures
+  including partial adjacent A-B-C overlap. One additional positive-control
+  failure was a test-fixture error: its purported switchback was a bow tie.
+  Corrected the fixture to a simple nonoverlapping U; that error is not defect RED.
+- `green-focused.log`/`focused-xml/`: 19 tests in four suites, zero failures,
+  errors or skips. Includes seven R1 cases plus existing managed endpoint
+  publication, degeneracy and execution tests.
+- `green-neighbors-final.log`/`neighbors-final-xml/`: 217 tests in 34 suites,
+  zero failures, errors or skips; includes all managed-A/native-A and competitive
+  executor controls. A preceding run passed 215/217: two added assertions
+  incorrectly expected owner-local zero from the shared attempt-wide memory
+  getter while capture/input remained open. Corrected that test-only assumption;
+  frozen terminal work/pair checks already passed, and fixture teardown still
+  requires whole-attempt zero.
+
+Every run uses Java17 and the shared
+`/data/data/com.termux/files/usr/tmp/josm-drasov-gradle.lock`:
+`JAVA_HOME=/data/data/com.termux/files/usr/lib/jvm/java-17-openjdk flock /data/data/com.termux/files/usr/tmp/josm-drasov-gradle.lock sh ./gradlew test --offline --no-daemon --max-workers=1 --console=plain`.
+RED selectors: `--tests '*ManagedAR1RegressionTest'`. Focused GREEN adds
+`--tests '*ManagedAEndpointPublicationTest' --tests '*ManagedAEndpointDegeneracyTest' --tests '*ManagedAEndpointExecutionTest'`.
+Final neighbor selectors:
+`--tests '*ManagedA*' --tests '*NativeA*' --tests '*CompetitiveAdmissionExecutorTest'`.
+
+Affected-neighbor verification and `git diff --check` pass. The scoped source,
+tests and documentation are ready for the controller's independent completion
+review. This R1 packet is not evidence of private geometry quality,
+whole-project/integration/CI completion or release qualification.
