@@ -1133,3 +1133,22 @@ general managed affinity or whole future-domain support. Synthetic three-row
 functional/oracle checks are distinct from practical performance: the preserved
 ten-row prototype reached the unchanged work cap. Real protected selections,
 safe islands, practical-way performance and private geometry remain open.
+
+## First-original-seed native-guide diagnostic
+
+`RidgeTracker.trackOwnedNativeGuideOnlyFirstOriginalSeed` and
+`LegacyEmissionKernel.evaluateFirstOriginalOwnedNativeGuide` evaluate the
+existing native proposal for the first original BASE seed through the current
+owned admission and physical objective. The result's `nativeGuideOnly()` data
+records the original seed count, requested seed ID and raw offset bits,
+`FIRST_ORIGINAL_SEED_ONLY` coverage, guided costs and step IDs. Greedy is
+`NOT_REQUESTED`, and `comparisonPerformed` is false. Other original seeds remain
+unrequested; the result contains no primary optimization winner.
+
+A complete admitted route with a positive physical leg can supply finite,
+nonnegative U, including a factual U=0. Read the optional bound's presence to
+distinguish that zero from unavailable evidence. Native proposal scores are
+separate from Q/C/T/K costs. Source freshness, lease transfer, work/memory limits
+and failure propagation still apply. The existing full greedy/native comparison
+and ordinary tracker entry points retain their behavior. This diagnostic needs
+separate private validation before any claim about practical geometry or Apply.
