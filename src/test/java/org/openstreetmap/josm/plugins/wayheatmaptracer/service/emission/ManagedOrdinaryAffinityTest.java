@@ -571,15 +571,24 @@ class ManagedOrdinaryAffinityTest {
     }
     @Test void managedNativeFreshnessStillRunsBothLiveSelectionSnapshots() throws Exception {
         var snapshots=new java.util.concurrent.atomic.AtomicInteger();
+        var insideSnapshot=new java.util.concurrent.atomic.AtomicBoolean();
+        var armed=new java.util.concurrent.atomic.AtomicBoolean();
         CancellationProbe callback=()->{
-            if(Arrays.stream(Thread.currentThread().getStackTrace()).anyMatch(frame->
+            if(!armed.get())return false;
+            boolean inSnapshot=Arrays.stream(Thread.currentThread().getStackTrace()).anyMatch(frame->
                     frame.getClassName().equals(ManagedSelectionWitness.class.getName())
-                        &&frame.getMethodName().equals("snapshot")))snapshots.incrementAndGet();
+                        &&frame.getMethodName().equals("snapshot"));
+            if(inSnapshot){
+                if(!insideSnapshot.getAndSet(true))snapshots.incrementAndGet();
+            }else{
+                insideSnapshot.set(false);
+            }
             return false;
         };
         managed(new Spec(.60,true,false,false,callback),f->{
             int before=snapshots.get();
-            f.input.requireOpenAndUnchanged();
+            armed.set(true);
+            try{f.input.requireOpenAndUnchanged();}finally{armed.set(false);}
             assertEquals(2,snapshots.get()-before,
                 "Context and native binding retain independent live managed-source snapshots per admission");
         });
