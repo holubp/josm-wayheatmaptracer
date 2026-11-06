@@ -150,20 +150,9 @@ class LegacyResolvedSupportTest {
     }
 
     @Test void v4ReusedAnchorsPreserveThreeSeedAnchoredPathResults() throws Exception {
-        var profiles=new ArrayList<RenderedHeatmapSampler.CrossSectionProfile>();
-        for(int i=0;i<9;i++) {
-            profiles.add(LegacyTrackerPolicyTest.profile(i,List.of(
-                    LegacyTrackerPolicyTest.peak(-48,24,.25),
-                    LegacyTrackerPolicyTest.peak(0,24,.70),
-                    LegacyTrackerPolicyTest.peak(48,24,.24)),48));
-        }
+        var retained=threeSeedRetainedProfiles();
         var tracker=new RidgeTracker();
         var context=LegacyTrackerPolicyTest.context(V4,6,24);
-        var suppressMethod=RidgeTracker.class.getDeclaredMethod("suppressLongitudinalNoise",List.class,context.getClass(),
-                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.class);
-        suppressMethod.setAccessible(true);
-        @SuppressWarnings("unchecked") var retained=(List<RenderedHeatmapSampler.CrossSectionProfile>)suppressMethod.invoke(
-                tracker,profiles,context,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE);
         var seedsMethod=RidgeTracker.class.getDeclaredMethod("collectSeedOffsets",List.class);seedsMethod.setAccessible(true);
         @SuppressWarnings("unchecked") var seeds=(List<Double>)seedsMethod.invoke(tracker,retained);
         assertEquals(3,seeds.size(),"The control exercises three distinct Legacy seeds");
@@ -188,6 +177,47 @@ class LegacyResolvedSupportTest {
         }
     }
 
+    @Test void v4AnchorConstructionPropagatesTheExactCancellationMarker() throws Exception {
+        var retained=threeSeedRetainedProfiles();
+        var tracker=new RidgeTracker();
+        var context=LegacyTrackerPolicyTest.context(V4,6,24);
+        var edgeMethod=RidgeTracker.class.getDeclaredMethod("profileEdgeLimit",List.class);edgeMethod.setAccessible(true);
+        double edge=(double)edgeMethod.invoke(tracker,retained);
+        var method=RidgeTracker.class.getDeclaredMethod("reliableAnchorsWithReusedSupport",List.class,double.class,double.class,context.getClass());
+        method.setAccessible(true);
+        var marker=new java.util.concurrent.CancellationException("v4-anchor-build-marker");
+        var wrapped=cancellableProfileView(retained,marker);
+        var failure=assertThrows(java.lang.reflect.InvocationTargetException.class,
+                ()->method.invoke(tracker,wrapped,6.0,edge,context));
+        assertSame(marker,failure.getCause());
+    }
+
+    @Test void v4LaterSeedAnchoredSolvePropagatesTheExactCancellationMarkerWithCachedAnchors() throws Exception {
+        var retained=threeSeedRetainedProfiles();
+        var tracker=new RidgeTracker();
+        var context=LegacyTrackerPolicyTest.context(V4,6,24);
+        var seedsMethod=RidgeTracker.class.getDeclaredMethod("collectSeedOffsets",List.class);seedsMethod.setAccessible(true);
+        @SuppressWarnings("unchecked") var seeds=(List<Double>)seedsMethod.invoke(tracker,retained);
+        assertEquals(3,seeds.size());
+        var edgeMethod=RidgeTracker.class.getDeclaredMethod("profileEdgeLimit",List.class);edgeMethod.setAccessible(true);
+        double edge=(double)edgeMethod.invoke(tracker,retained);
+        var anchorsMethod=RidgeTracker.class.getDeclaredMethod("reliableAnchorsWithReusedSupport",List.class,double.class,double.class,context.getClass());
+        anchorsMethod.setAccessible(true);
+        @SuppressWarnings("unchecked") var cachedAnchors=(List<Object>)anchorsMethod.invoke(tracker,retained,6.0,edge,context);
+        assertTrue(cachedAnchors.size()>=2);
+        var baseMethod=RidgeTracker.class.getDeclaredMethod("bestPathForSeed",List.class,double.class,double.class,context.getClass());
+        baseMethod.setAccessible(true);
+        Object laterSeedState=baseMethod.invoke(tracker,retained,seeds.get(1),6.0,context);
+        var solveMethod=RidgeTracker.class.getDeclaredMethod("anchoredPathWithAnchors",List.class,
+                Class.forName(RidgeTracker.class.getName()+"$State"),double.class,double.class,context.getClass(),List.class);
+        solveMethod.setAccessible(true);
+        var marker=new java.util.concurrent.CancellationException("v4-reused-anchor-solve-marker");
+        var wrapped=cancellableProfileView(retained,marker);
+        var failure=assertThrows(java.lang.reflect.InvocationTargetException.class,
+                ()->solveMethod.invoke(tracker,wrapped,laterSeedState,6.0,edge,context,cachedAnchors));
+        assertSame(marker,failure.getCause());
+    }
+
     private static RenderedHeatmapSampler.CrossSectionProfile capProfile(int index,
             List<RenderedHeatmapSampler.CrossSectionPeak> peaks,
             List<RenderedHeatmapSampler.IntensitySample> samples) {
@@ -201,6 +231,33 @@ class LegacyResolvedSupportTest {
         var result=new ArrayList<RenderedHeatmapSampler.CrossSectionProfile>();
         for(int i=0;i<9;i++)result.add(LegacyTrackerPolicyTest.profile(i,peaks,48));
         return result;
+    }
+
+    private static List<RenderedHeatmapSampler.CrossSectionProfile> threeSeedRetainedProfiles() throws Exception {
+        var profiles=new ArrayList<RenderedHeatmapSampler.CrossSectionProfile>();
+        for(int i=0;i<9;i++) profiles.add(LegacyTrackerPolicyTest.profile(i,List.of(
+                LegacyTrackerPolicyTest.peak(-48,24,.25),
+                LegacyTrackerPolicyTest.peak(0,24,.70),
+                LegacyTrackerPolicyTest.peak(48,24,.24)),48));
+        var context=LegacyTrackerPolicyTest.context(V4,6,24);
+        var method=RidgeTracker.class.getDeclaredMethod("suppressLongitudinalNoise",List.class,context.getClass(),
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.class);
+        method.setAccessible(true);
+        @SuppressWarnings("unchecked") var result=(List<RenderedHeatmapSampler.CrossSectionProfile>)method.invoke(
+                new RidgeTracker(),profiles,context,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE);
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<RenderedHeatmapSampler.CrossSectionProfile> cancellableProfileView(
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+            java.util.concurrent.CancellationException marker) throws Exception {
+        var method=RidgeTracker.class.getDeclaredMethod("cancellableProfiles",List.class,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.class);
+        method.setAccessible(true);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe probe=()->{throw marker;};
+        return (List<RenderedHeatmapSampler.CrossSectionProfile>)method.invoke(null,profiles,probe);
     }
 
     private static List<RenderedHeatmapSampler.CrossSectionProfile> countReads(
