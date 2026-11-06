@@ -1,0 +1,84 @@
+name: Legacy performance diagnostics (not qualification)
+
+on:
+  push:
+    branches: ["codex/legacy-perf-diagnostics-v4"]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic-cohort:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        comparison: [normal, tracker]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify production code is unchanged
+        run: |
+          git fetch --no-tags --depth=1 origin 71d1228b809e80d75eea69d7222dc0f39e3ac8c1
+          git diff --exit-code 71d1228b809e80d75eea69d7222dc0f39e3ac8c1 HEAD -- src/main/java
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install diagnostic protocol test dependencies
+        run: python3 -m pip install "pytest==9.1.1" "PyYAML==6.0.2"
+      - name: Prepare pinned JOSM 19555 host
+        run: |
+          python3 scripts/prepare-ci-josm19555.py --output-dir "$RUNNER_TEMP/josm19555-host"
+          echo "ORG_GRADLE_PROJECT_josm19555HostJar=$RUNNER_TEMP/josm19555-host/JOSM-Linux-java11-19555.jar" >> "$GITHUB_ENV"
+      - name: Check diagnostic protocol
+        run: |
+          python3 -m pytest -q scripts/tests/test_legacy_perf_diagnostics_workflow.py scripts/tests/test_legacy_perf_diagnostics_analysis.py
+          sh gradlew test -PvalidationProfile=public --tests '*LegacyPerformanceDiagnosticsTest' --console=plain
+      - name: Run the fixed diagnostic cohort
+        env:
+          COMPARISON: ${{ matrix.comparison }}
+          PERF_ROOT: ${{ runner.temp }}/legacy-performance-diagnostics-${{ matrix.comparison }}
+        run: |
+          mkdir -p "$PERF_ROOT"
+          lscpu --json > "$PERF_ROOT/hardware.json"
+          : > "$PERF_ROOT/invocations.txt"
+          extra=()
+          if test "$COMPARISON" = tracker; then
+            extra+=("-PlegacyTrackerPerformancePolicy=native-reciprocal-support-paired-chord-v4")
+          fi
+          failed=0
+          for fork in 0 1 2; do
+            if sh gradlew legacyNormalPerformance \
+                -PlegacyNormalPerformanceFork="$fork" \
+                -PlegacyNormalPerformanceOutput="$PERF_ROOT/fork-$fork" \
+                -PlegacyNormalPerformanceDiagnostics=true \
+                "${extra[@]}" --console=plain; then
+              result=0
+            else
+              result=$?
+            fi
+            printf 'fork=%s exit=%s\n' "$fork" "$result" >> "$PERF_ROOT/invocations.txt"
+            if test "$result" -ne 0; then failed=1; fi
+          done
+          exit "$failed"
+      - name: Analyze without granting qualification
+        if: always()
+        env:
+          COMPARISON: ${{ matrix.comparison }}
+          PERF_ROOT: ${{ runner.temp }}/legacy-performance-diagnostics-${{ matrix.comparison }}
+        run: |
+          python3 scripts/analyze-legacy-performance-diagnostics.py \
+            --comparison "$COMPARISON" --root "$PERF_ROOT" \
+            --report "$PERF_ROOT/diagnostic-report.json"
+      - name: Upload complete diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-performance-diagnostics-${{ matrix.comparison }}
+          path: ${{ runner.temp }}/legacy-performance-diagnostics-${{ matrix.comparison }}/
+          if-no-files-found: error
+          retention-days: 5
