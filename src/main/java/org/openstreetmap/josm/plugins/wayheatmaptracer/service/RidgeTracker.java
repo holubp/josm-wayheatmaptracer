@@ -205,6 +205,8 @@ public final class RidgeTracker {
     private void rejectDominatedSyntheticCenters(List<RenderedHeatmapSampler.CrossSectionProfile> ordinary,
             ContinuitySupportPolicy continuity, CancellationProbe cancellation) {
         RenderedHeatmapSampler.CrossSectionPeak[] owners = null;
+        var supportBank = continuity.policy().capsDominatedSupportGains()
+            ? cancellableProfiles(ordinary, cancellation) : ordinary;
         // All coherence decisions use the complete ordinary retained stage.
         // Store borrowed owners only: no duplicated profile/peak bank, and no
         // later deletion may change another row's owner eligibility.
@@ -225,7 +227,7 @@ public final class RidgeTracker {
                 var peak = peaks.get(j);
                 if (!peak.syntheticCenter() && Double.isFinite(peak.intensity())
                         && scalarSupportAt(profile, peak.offsetPx()) != null
-                        && longitudinalSupport(ordinary, i, peak, continuity) >= 2
+                        && longitudinalSupport(supportBank, i, peak, continuity) >= 2
                         && (owners[i] == null || peak.intensity() > owners[i].intensity())) {
                     owners[i] = peak;
                 }
@@ -308,6 +310,46 @@ public final class RidgeTracker {
                 support++;
             }
         }
+        return continuity.policy().capsDominatedSupportGains() && support > 0
+            ? capDominatedSupportGain(profiles, profileIndex, peak, support) : support;
+    }
+
+    /**
+     * Physical matching may retain a moving ridge, but it must not newly reward
+     * a measured weaker competitor of an already coherent observed ridge.
+     * Every comparison reads the same immutable input set of this support stage.
+     */
+    private int capDominatedSupportGain(List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+            int index, RenderedHeatmapSampler.CrossSectionPeak target, int nativeSupport) {
+        var profile = profiles.get(index);
+        if (!profile.anchorWithinRaster() || profile.peaks().size() < 2) { return nativeSupport; }
+        var measured = scalarSupportAt(profile, target.offsetPx());
+        if (measured == null) { return nativeSupport; }
+        int historical = -1;
+        for (int j = 0; j < profile.peaks().size(); j++) {
+            // Preserve cooperative cancellation when this is the live wrapper.
+            var rival = profiles.get(index).peaks().get(j);
+            if (rival == target || rival.syntheticCenter()) { continue; }
+            var observed = scalarSupportAt(profile, rival.offsetPx());
+            if (observed == null || !(observed.raw() > measured.raw()
+                    && observed.b3() > measured.b3() && observed.b5() > measured.b5())) { continue; }
+            if (historical < 0) {
+                historical = historicalLongitudinalSupport(profiles, index, target);
+                if (nativeSupport <= historical) { return nativeSupport; }
+            }
+            // Check coherence only after the cheap, strict measured dominance.
+            if (historicalLongitudinalSupport(profiles, index, rival) >= 2) { return historical; }
+        }
+        return nativeSupport;
+    }
+
+    private int historicalLongitudinalSupport(List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+            int index, RenderedHeatmapSampler.CrossSectionPeak peak) {
+        int support = 0;
+        double tolerance = ContinuitySupportPolicy.historicalTolerance(peak.supportWidthPx());
+        for (int i = Math.max(0, index - 2); i <= Math.min(profiles.size() - 1, index + 2); i++) {
+            if (i != index && hasNearbyPeak(profiles.get(i), peak, tolerance)) { support++; }
+        }
         return support;
     }
 
@@ -366,7 +408,11 @@ public final class RidgeTracker {
         RenderedHeatmapSampler.CrossSectionPeak target,
         ContinuitySupportPolicy continuity
     ) {
-        double tolerance = continuity.longitudinalTolerance(target.supportWidthPx());
+        return hasNearbyPeak(profile, target, continuity.longitudinalTolerance(target.supportWidthPx()));
+    }
+
+    private boolean hasNearbyPeak(RenderedHeatmapSampler.CrossSectionProfile profile,
+            RenderedHeatmapSampler.CrossSectionPeak target, double tolerance) {
         double minimumIntensity = Math.max(0.10, target.intensity() * 0.35);
         for (RenderedHeatmapSampler.CrossSectionPeak peak : profile.peaks()) {
             boolean intensityBacked = peak.intensity() >= minimumIntensity;
@@ -1286,6 +1332,10 @@ public final class RidgeTracker {
                 return Math.max(pitch, Math.min(2.0 * pitch,
                     Math.max(pitch / 3.0, supportWidthRasterPx) * 1.5));
             }
+            return historicalTolerance(supportWidthRasterPx);
+        }
+
+        static double historicalTolerance(double supportWidthRasterPx) {
             return Math.max(6.0, Math.min(12.0, Math.max(2.0, supportWidthRasterPx) * 1.5));
         }
     }

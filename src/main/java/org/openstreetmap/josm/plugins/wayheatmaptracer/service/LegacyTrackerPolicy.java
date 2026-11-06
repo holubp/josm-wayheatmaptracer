@@ -9,7 +9,8 @@ public enum LegacyTrackerPolicy {
     FINE_LOCALIZATION_V1("fine-localization-v1"),
     NATIVE_RECIPROCAL_SUPPORT_FINE_LOCALIZATION_V1("native-reciprocal-support-fine-localization-v1"),
     NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V1("native-reciprocal-support-paired-chord-v1"),
-    NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2("native-reciprocal-support-paired-chord-v2");
+    NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2("native-reciprocal-support-paired-chord-v2"),
+    NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V3("native-reciprocal-support-paired-chord-v3");
 
     private final String id;
 
@@ -22,7 +23,7 @@ public enum LegacyTrackerPolicy {
         return switch (this) {
             case NATIVE_RECIPROCAL_SUPPORT_V1, NATIVE_RECIPROCAL_SUPPORT_GEOMETRY_V1,
                     NATIVE_RECIPROCAL_SUPPORT_FINE_LOCALIZATION_V1, NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V1,
-                    NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2 -> true;
+                    NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2, NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V3 -> true;
             case ORIGINAL_V02, GEOMETRY_ONLY_V1, FINE_LOCALIZATION_V1 -> false;
         };
     }
@@ -32,7 +33,7 @@ public enum LegacyTrackerPolicy {
             case GEOMETRY_ONLY_V1, NATIVE_RECIPROCAL_SUPPORT_GEOMETRY_V1 -> true;
             case ORIGINAL_V02, NATIVE_RECIPROCAL_SUPPORT_V1, FINE_LOCALIZATION_V1,
                     NATIVE_RECIPROCAL_SUPPORT_FINE_LOCALIZATION_V1, NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V1,
-                    NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2 -> false;
+                    NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2, NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V3 -> false;
         };
     }
 
@@ -41,7 +42,7 @@ public enum LegacyTrackerPolicy {
             case FINE_LOCALIZATION_V1, NATIVE_RECIPROCAL_SUPPORT_FINE_LOCALIZATION_V1 -> true;
             case ORIGINAL_V02, NATIVE_RECIPROCAL_SUPPORT_V1, GEOMETRY_ONLY_V1,
                     NATIVE_RECIPROCAL_SUPPORT_GEOMETRY_V1, NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V1,
-                    NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2 -> false;
+                    NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2, NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V3 -> false;
         };
     }
 
@@ -52,10 +53,15 @@ public enum LegacyTrackerPolicy {
     }
 
     boolean localizesPairedChord() {
-        return this == NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V1 || this == NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2;
+        return this == NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V1 || this == NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2
+            || this == NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V3;
     }
 
-    boolean correctsSyntheticPositions() { return this == NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2; }
+    boolean correctsSyntheticPositions() {
+        return this == NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2 || this == NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V3;
+    }
+
+    boolean capsDominatedSupportGains() { return this == NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V3; }
 
     boolean requiresNativePitch() {
         return usesNativeSupport() || guardsSmoothingGeometry() || localizesFineCenters();

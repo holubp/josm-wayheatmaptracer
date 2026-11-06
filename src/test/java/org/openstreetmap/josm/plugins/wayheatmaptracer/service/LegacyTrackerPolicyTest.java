@@ -17,7 +17,7 @@ class LegacyTrackerPolicyTest {
     static final LegacyTrackerPolicy COMBINED = LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_GEOMETRY_V1;
 
     @Test void onlyIndependentlyScopedPoliciesAreSelectable() {
-        assertEquals(8, LegacyTrackerPolicy.values().length);
+        assertEquals(9, LegacyTrackerPolicy.values().length);
         for (var p : LegacyTrackerPolicy.values()) {
             if (p.isParked()) {
                 assertThrows(IllegalArgumentException.class, () -> LegacyTrackerPolicy.fromId(p.id()));
