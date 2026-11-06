@@ -3210,7 +3210,7 @@ and partial-failure evidence. Matched speed evidence, public CI execution, and
 release remain open; Filters are deferred. No further benchmark-task design is
 authorized by this checkpoint.
 
-R1 performance-evidence correction is committed as `35fb39f6` (result hashes
+R1 performance-evidence correction is committed as `9a46ba4f` (result hashes
 must be valid and stable per scene/source/policy across all 20 pairs and three
 forks; geometry/support controls and failed-fork receipts are enforced). One
 public quality preflight completed with 16 discovery rows and no performance
