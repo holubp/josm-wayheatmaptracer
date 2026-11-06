@@ -14,6 +14,99 @@
 
 ### Active execution card — authoritative
 
+#### Active Legacy goal exit matrix
+
+This matrix audits the explicit current goal (Legacy Drasov quality, other-test
+preservation and fast Legacy). It does not complete the broader Corridor A or
+stable0.22 release workstreams in this plan/specification.
+
+| Criterion | Current evidence / disposition |
+| --- | --- |
+| Approved usable Drasov shape | VERIFIED: actual d604b381 production tree reproduces all4 user-approved V2 geometry/native-support CSVs byte-for-byte;1076runtime/input files unchanged. `paired-chord-v4-anchor-reuse-one-process.json`. |
+| Other real controls | VERIFIED:10captured ways×5palettes, all50mean/max/envelope comparisons byte-identical to historical/coarse V4 baseline. `v4-anchor-reuse-integration/all-policy-comparisons.csv`. |
+| Deterministic regression and integration | VERIFIED:147tests/15archivedXML plus owning14 (12overlap/2new) with archived phase negatives; codecs/live capture/actual production runner/Hybrid/resource/old policies/synthetic controls. Full d604 CI42258615701 PASS:2517Java0f/e/s, full Python/scale/diff/integrity and both actual GUI jobsPASS. |
+| Fast Legacy | VERIFIED official unchanged normal+tracker gates and local raw rechecksPASS,3forks×8groups×20pairs each,0breaches. Tracker worstmedian2.284ms/worstp957.490ms. Historical baseline execution retained; no released-JAR whole-app latency guarantee claimed. |
+| Cancellation / memory / ownership | VERIFIED:147union ownership/admission tests plus fresh owning-class14PASS (12overlap+2newphasechecks), both wrapper-bypass negative controls fail. Source unchanged; controller9547367c/worker cb171b4f test-only. Sol inspected exact marker propagation during construction/later-seed solve; both final GUI jobs verify cancellation/no-late-preview/dataset+Undo unchanged. |
+| Independent complete criterion audit | VERIFIED: source/quality/optimization, Legacy-spec mapping, phase cancellations and final artifact binding reviews PASS, no remaining blocking Legacy finding. Mode coverage compositional, not four private Drasov replays. |
+| Testable final JAR | VERIFIED independently: CRC/manifest/SHA,1049productionclasses match all6benchmarked class trees, Jar+233JUnitXML identity matches CI receipt. Delivered `build/wayheatmaptracer-legacy-drasov-d604b381.jar`, SHA8605baf4...89576. |
+| Safe coherent repository / checkpoint | VERIFIED scoped code/test commits, production d604b381 already pushed, test-only9547367c reviewed and source unchanged. Primary branch/HEAD preserved117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a; diff checksPASS, no uncommitted production code,3preexisting untracked handoff plans preserved. Final checkpoint accompanies test-only push; remote delivery receipt retained separately. No public release authorized. |
+
+All active Legacy goal criteria above now have direct verified evidence. Final
+delivery commit/remote equality is recorded in the completion audit artifact;
+mark the goal complete only after that final push is confirmed.
+
+**FINAL LEGACY GOAL VERIFICATION PASS — 2026-11-06:** Independent Sol final
+closure verifies full public2517/233XML0f/e/s, all public stages, both actual GUI
+jobs, exact JAR CRC/bytes1049classes/6benchmark runtimes/native dependencies,
+Javaevidence receipt and explicit controller worktree main-tree equality.
+An initially wrong-cwd primary-tree probe was explicitly corrected with
+`git -C` controller; source remained699768...9c99b and no binding issue exists.
+Delivered production qualification remains d604, test-only954 owning14 separate;
+no new-classpath qualification or public release is implied. Both earlier timing
+failures and diagnostic-only observation remain preserved, never waived. The
+requested Legacy Drasov shape/nonregression/speed work is verified; this does not
+complete Corridor A repair, filter experiments, or stable0.22 release work.
+
+**DELIVERED ARTIFACT / FULL CI VERIFIED — 2026-11-06:** Build42258615701 terminal
+SUCCESS all5jobs. Public233XML2517Java0f/e/s; allpublicstagesPASS. Both actual
+GUI jobsPASS geometry/ordinary action/cancellation/noLatePreview/dataset+Undo
+unchanged/silentSettingsSave. Downloaded JAR CRC/manifest rc.14/JOSM19555 valid;
+SHA256 `8605baf40b5b66344d7cbba774b409df012e50aaf6690f4dcaccc64989c89576`.
+All1049class aggregate fd2be223e6f5f594399347afda9d9215b564ed5fb9e27c968cac2a07451467c4
+matches every normal+tracker fork's actual productionClassesSha256, not merely
+an implementation summary. Jar+allJUnit identity197085b7cfbce3a703d9265318e4f12bcf5e347c4e19234b44fe42f76db66ee7
+matches CI java-build receipt. Runtime deps retain native cd7b6a...cd42f; both
+GUI officialLinuxJOSM19555 host hashes d2e2310e...0338e. Current entire main tree
+equals delivered d604 main699768...9c99b. Full record `ci-anchor-reuse-42258615701/test-jar-verification.json`;
+user copy root build `wayheatmaptracer-legacy-drasov-d604b381.jar`+checksum.
+Final independent artifact evidence review running, then scoped checkpoint/test
+push and goal completion audit. Broader A/stable0.22 remain unfinished/outsidegoal.
+
+**PHASE GAP CLOSED / COMPOSITIONAL PROOF REVIEWED — 2026-11-06:** Test-only
+cb171b4f cherry-picked9547367c. Full owningclass14PASS0f/e/s, both negative-control
+failures and GREEN XML/logs archived; no subsequent Gradle overwrites. Sol verifies
+actual3seed/nonempty-cache marker tests and production-source tree equality to
+d604. Native d604 speed/CI/JAR identities must remain d604: NEVER retag rawgate
+hashes or claim the changed test classpath was benchmark-qualified. Reviewer
+explicitly accepts unchanged d604 delivered productionJAR/fullpublic/GUI/gates
+plus fresh owning14 as compositional final goal proof after exact JAR/source/
+dependency bindings. No further fullcohort/fullCI is required solely for these
+isolated test additions. Historical aggregate SHA256SUMS includes old/new same
+testpath hashes: use the current cancellation follow-up evidence as current,
+historical lines as lineage; no false all-lines-current claim.
+
+**FINAL AUDIT TEST-ONLY GAP — 2026-11-06:** Sol explicit goal audit closes
+Legacy criteria mapping except pending CI/JAR and two packet-promised phase
+cancellation checks. Source is sound but generic floor/early-owner cancellations
+do not prove these phases. Luna solewriter in existing anchor-reuse worktree0e138
+assigned TEST-ONLY existing cancellableProfiles/marker checks during construction
+and cached anchors on a later actualseed; no mainhook/newframework/productionedit.
+Run owning LegacyResolvedSupportTest and archiveXML before anything overwrites it,
+then scopedcommit/evidence review. Retain d604 successful speed measurements;
+sourceproductiontree remains unchanged. Do not silently waive promised tests.
+
+**BOTH OFFICIAL SPEED GATES PASS — 2026-11-06:** Build42258615701 source d604b381
+normal/tracker jobs terminalSUCCESS, full public validation still running.
+All raw artifacts downloaded `ci-anchor-reuse-42258615701/{normal,tracker}`.
+Both unchanged local gate rechecksPASS:3forks×8groups×20pairs,0breaches,
+960nondiagnostic observations/comparison. Normal maxmedian0.932ms/maxp958.168ms;
+tracker maxmedian2.284ms/maxp957.490ms. Previously failing tracker managedparallel
+median excess2.284/2.032/1.980ms, baseline30.444/19.123/20.106ms. No timing
+threshold/warmup/protocol change, no dropped pauses/observations. Prior failures
+retained. This closes official speed gate for this exactsource/cohort, not all-host
+latency guarantee. Quality147private/integrated tests+50exactcontrols+4Drasovfiles
+and independent source/quality review remain valid. Await fullpublic/GUI/JAR,
+then final whole-goal evidence audit before complete. No public release.
+
+**ANCHOR REUSE OFFICIAL CI STARTED — 2026-11-06:** Reviewed source/checkpoint
+`d604b381f64bfbb1fc5b3c065e31e59813bf7404` pushed. Build42258615701 confirmedqueued.
+Sol closes test-evidence gap:17manifestentriesverified,147tests/15XML0f/e/s,
+controller/worker ENTIREproductiontree identical699768de71c5a953891d9edb10ab4bb2c889c99b,
+all50CSV and4Drasovfiles exact. Source+qualityPASS, speed NOT qualified.
+Next inspect this exact run's official normal/tracker3fork gates and fullpublic/
+GUI evidence, download/verifyJAR ifvalid. Preserve failures; no blindrerun or
+public release. Goal remainsactive until finalwhole-objective audit passes.
+
 **ANCHOR REUSE INTEGRATED QUALITY GREEN — 2026-11-06:** Controller6318cc03
 combined147tests/15suites PASS,0failures/errors/skips (57092,10m05s). All terminal
 XML archived BEFORE any later Gradle run to root build
