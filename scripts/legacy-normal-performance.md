@@ -36,6 +36,18 @@ exceeds `max(5 ms, 10% of median baseline)` or p95 overhead exceeds
 inconclusive and exits nonzero. Only zero breaches pass. CI uploads all raw fork
 outputs and the gate report even when a run or gate fails.
 
+The harness also requires stable result hashes and profile counts by scene,
+source kind, and policy across repeated pairs and all forks, full support for
+each accepted alternative, unchanged exact fixed endpoints, and no new safety
+warnings. Straight/parallel outputs must match by native identity; the Gaussian
+candidate must stay within 3 m of its analytic ridge without backward travel;
+parallel results must retain both distinct strands within factual source-pixel
+uncertainty. The hairpin control checks policy nonregression against the immediate
+baseline within source-pixel uncertainty. Its managed immediate baseline misses
+the analytic apex by about 116.5 m, so it does not establish true-apex fidelity.
+If a fork fails after earlier discoveries, its CSV and an explicitly failed
+summary retain the completed observations; the gate rejects that partial fork.
+
 These synthetic results are a public performance regression check. They do not
 establish quality on captured data or replace the production/ordinary-action
 benchmark and cancellation gates.

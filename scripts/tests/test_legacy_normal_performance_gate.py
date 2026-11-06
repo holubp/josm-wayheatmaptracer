@@ -35,6 +35,11 @@ def summary(fork: int, candidate_ns: int = 101_000_000) -> dict[str, object]:
                 rows.append({
                     "scene": scene, "sourceKind": kind, "pair": pair, "policy": policy,
                     "elapsedNanos": elapsed, "fixtureSha256": fixture,
+                    "alternativesSha256": "e" * 64 if policy == "IMMEDIATE_V1" else "f" * 64,
+                    "geometrySha256": "1" * 64 if policy == "IMMEDIATE_V1" else "2" * 64,
+                    "profileCount": 15, "acceptedAlternativeCount": 1, "supportedProfiles": 15,
+                    "fixedPointsExact": True, "warnings": "[]", "qualityChecksPassed": True,
+                    "qualityFailures": "",
                 })
         paired[group] = {"pairedCount": 20, "rawPairs": pairs}
     return {
@@ -61,6 +66,14 @@ def test_rejects_missing_fork() -> None:
         gate.evaluate_forks(forks()[:2])
 
 
+def test_rejects_failed_partial_fork_receipt() -> None:
+    inputs = forks()
+    inputs[1]["status"] = "FAILED_PUBLIC_SYNTHETIC_FORK"
+    inputs[1]["rows"] = inputs[1]["rows"][:4]
+    with pytest.raises(gate.GateError, match="run did not complete"):
+        gate.evaluate_forks(inputs)
+
+
 def test_rejects_malformed_raw_pairs() -> None:
     inputs = forks()
     inputs[0]["pairedTimingSummary"][GROUPS[0]]["rawPairs"].pop()
@@ -72,6 +85,57 @@ def test_rejects_malformed_row_identity_without_crashing() -> None:
     inputs = forks()
     inputs[0]["rows"][0]["policy"] = []
     with pytest.raises(gate.GateError, match="invalid row identity"):
+        gate.evaluate_forks(inputs)
+
+
+def test_rejects_absent_result_hash() -> None:
+    inputs = forks()
+    del inputs[0]["rows"][0]["geometrySha256"]
+    with pytest.raises(gate.GateError, match="invalid result hash"):
+        gate.evaluate_forks(inputs)
+
+
+def test_rejects_malformed_result_hash() -> None:
+    inputs = forks()
+    inputs[0]["rows"][0]["alternativesSha256"] = "not-a-sha256"
+    with pytest.raises(gate.GateError, match="invalid result hash"):
+        gate.evaluate_forks(inputs)
+
+
+def test_rejects_unstable_result_hash_across_pairs() -> None:
+    inputs = forks()
+    row = next(row for row in inputs[0]["rows"] if row["scene"] == "STRAIGHT"
+               and row["sourceKind"] == "VISIBLE" and row["pair"] == 1
+               and row["policy"] == "IMMEDIATE_V1")
+    row["geometrySha256"] = "3" * 64
+    with pytest.raises(gate.GateError, match="result hash mismatch within"):
+        gate.evaluate_forks(inputs)
+
+
+def test_rejects_unstable_result_hash_across_forks() -> None:
+    inputs = forks()
+    for row in inputs[1]["rows"]:
+        if row["scene"] == "STRAIGHT" and row["sourceKind"] == "VISIBLE" and row["policy"] == "PROTECTED_SECANT3_V1":
+            row["alternativesSha256"] = "3" * 64
+    with pytest.raises(gate.GateError, match="result hash mismatch across forks"):
+        gate.evaluate_forks(inputs)
+
+
+def test_rejects_changed_profile_counts_across_pairs() -> None:
+    inputs = forks()
+    row = next(row for row in inputs[0]["rows"] if row["scene"] == "STRAIGHT"
+               and row["sourceKind"] == "VISIBLE" and row["pair"] == 1)
+    row["profileCount"] = row["supportedProfiles"] = 14
+    with pytest.raises(gate.GateError, match="profile count changed"):
+        gate.evaluate_forks(inputs)
+
+
+def test_rejects_failed_quality_or_policy_warning_delta() -> None:
+    inputs = forks()
+    row = next(row for row in inputs[0]["rows"] if row["scene"] == "STRAIGHT"
+               and row["sourceKind"] == "VISIBLE" and row["policy"] == "PROTECTED_SECANT3_V1")
+    row["warnings"] = "[new-warning]"
+    with pytest.raises(gate.GateError, match="changed warnings"):
         gate.evaluate_forks(inputs)
 
 

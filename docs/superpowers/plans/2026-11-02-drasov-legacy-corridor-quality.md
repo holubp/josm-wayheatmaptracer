@@ -3197,3 +3197,28 @@ Sole source writer `/root/query_policy`, new worktree
 `codex/drasov-local-final-failure`, BASE7374eb2; it owns local Gradle. Old compiled
 zero-local worktree remains immutable baseline. Luna evidence worker prepares only
 external runner execution selection; no graph until tests/independent review.
+
+Current production milestone: integrated `996099fa`; LSEC1/LSEC2 reviews are
+closed after fix-review SHA
+`b0461f16223a96f50661e5da3085718296aca1186931755f48dbd5a36616c294`. The
+corrected LSEC1 accounting is 178 allocations, not 79; LSEC2 retains its
+additional allocation. Final combined private regression is 20 passed, 0 failed,
+0 skipped in 4m32s; XML is archived under root integration `private-final-xml`.
+The reusable public Legacy normal-policy harness/gate is recorded in benchmark
+commit `1fa751` under R1 gate checks, result repeatability, geometry controls,
+and partial-failure evidence. Matched speed evidence, public CI execution, and
+release remain open; Filters are deferred. No further benchmark-task design is
+authorized by this checkpoint.
+
+R1 performance-evidence correction is committed as `35fb39f6` (result hashes
+must be valid and stable per scene/source/policy across all 20 pairs and three
+forks; geometry/support controls and failed-fork receipts are enforced). One
+public quality preflight completed with 16 discovery rows and no performance
+decision. Evidence:
+`build/reports/legacy-normal-quality-preflight-20261106/summary.json`
+SHA-256 `8e00d4ca872d3610d0851a1e9e2e232f6aaf520469660d70cb5e01740104974a`;
+`observations.csv` SHA-256
+`75fbcf66d29bd6203d49b3e55e12d8460d2522ce89ec9e6ba50be35efe2b39d5`;
+harness class SHA-256
+`f22792670c659562e8a4491dfa9f6d046f052fd1cbe627bd87919892e8939132`.
+Matched speed evidence, public CI execution, and release remain open.

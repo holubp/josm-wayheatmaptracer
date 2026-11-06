@@ -83,6 +83,11 @@ def _validate_fork(summary_value: Any, expected_fork: int) -> dict[str, Any]:
         raise GateError(f"fork {expected_fork}: expected all native rows for 8 groups x 20 pairs x 2 policies")
     rows: dict[tuple[str, int, str], dict[str, Any]] = {}
     fixture_by_group: dict[str, set[str]] = {group: set() for group in GROUPS}
+    profile_counts: dict[str, set[int]] = {group: set() for group in GROUPS}
+    results_by_group_policy: dict[str, dict[str, dict[str, set[str]]]] = {
+        group: {policy: {"alternativesSha256": set(), "geometrySha256": set()} for policy in POLICIES}
+        for group in GROUPS
+    }
     for index, raw_row in enumerate(rows_value):
         row = _mapping(raw_row, f"fork {expected_fork} row {index}")
         scene, kind, policy = row.get("scene"), row.get("sourceKind"), row.get("policy")
@@ -98,15 +103,48 @@ def _validate_fork(summary_value: Any, expected_fork: int) -> dict[str, Any]:
         elapsed = _positive_finite(row.get("elapsedNanos"), f"fork {expected_fork} row elapsedNanos")
         if not elapsed.is_integer():
             raise GateError(f"fork {expected_fork}: elapsedNanos must be integral")
+        profile_count = row.get("profileCount")
+        supported_profiles = row.get("supportedProfiles")
+        accepted_count = row.get("acceptedAlternativeCount")
+        if (isinstance(profile_count, bool) or not isinstance(profile_count, int) or profile_count <= 0
+                or isinstance(supported_profiles, bool) or not isinstance(supported_profiles, int)
+                or supported_profiles != profile_count
+                or isinstance(accepted_count, bool) or not isinstance(accepted_count, int) or accepted_count <= 0):
+            raise GateError(f"fork {expected_fork}: invalid profile/support census")
+        if row.get("fixedPointsExact") is not True or row.get("qualityChecksPassed") is not True:
+            raise GateError(f"fork {expected_fork}: fixed-point or geometry/support quality check failed")
+        if row.get("qualityFailures") != "":
+            raise GateError(f"fork {expected_fork}: quality failure details are present")
+        if not isinstance(row.get("warnings"), str):
+            raise GateError(f"fork {expected_fork}: warnings must be preserved as text")
+        profile_counts[group].add(profile_count)
         fixture_hash = row.get("fixtureSha256")
         if not isinstance(fixture_hash, str) or not SHA256.fullmatch(fixture_hash):
             raise GateError(f"fork {expected_fork}: invalid fixture hash")
         fixture_by_group[group].add(fixture_hash)
+        for hash_key in ("alternativesSha256", "geometrySha256"):
+            result_hash = row.get(hash_key)
+            if not isinstance(result_hash, str) or not SHA256.fullmatch(result_hash):
+                raise GateError(f"fork {expected_fork}: invalid result hash {hash_key}")
+            results_by_group_policy[group][policy][hash_key].add(result_hash)
         rows[key] = row
     if len(rows) != len(GROUPS) * PAIR_COUNT * 2:
         raise GateError(f"fork {expected_fork}: missing policy/pair rows")
     if any(len(hashes) != 1 for hashes in fixture_by_group.values()):
         raise GateError(f"fork {expected_fork}: fixture hash mismatch within a scene/source group")
+    if any(len(counts) != 1 for counts in profile_counts.values()):
+        raise GateError(f"fork {expected_fork}: profile count changed within a scene/source group")
+    for group in GROUPS:
+        for pair in range(PAIR_COUNT):
+            old = rows[(group, pair, "IMMEDIATE_V1")]
+            new = rows[(group, pair, "PROTECTED_SECANT3_V1")]
+            if old["warnings"] != new["warnings"]:
+                raise GateError(f"fork {expected_fork}: policy introduced or changed warnings for {group} pair {pair}")
+    for group, policies in results_by_group_policy.items():
+        for policy, hashes in policies.items():
+            for hash_key, values in hashes.items():
+                if len(values) != 1:
+                    raise GateError(f"fork {expected_fork}: result hash mismatch within {group}/{policy} for {hash_key}")
 
     paired = _mapping(summary.get("pairedTimingSummary"), f"fork {expected_fork} pairedTimingSummary")
     if set(paired) != set(GROUPS):
@@ -139,6 +177,10 @@ def _validate_fork(summary_value: Any, expected_fork: int) -> dict[str, Any]:
         group_pairs[group] = [by_pair[index] for index in range(PAIR_COUNT)]
     return {"fork": expected_fork, "classes": classes, "fixtures": {
         group: next(iter(values)) for group, values in fixture_by_group.items()
+    }, "profileCounts": {group: next(iter(values)) for group, values in profile_counts.items()}, "results": {
+        group: {policy: {key: next(iter(values)) for key, values in hashes.items()}
+                for policy, hashes in policies.items()}
+        for group, policies in results_by_group_policy.items()
     }, "pairs": group_pairs}
 
 
@@ -153,6 +195,12 @@ def evaluate_forks(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     for group in GROUPS:
         if len({fork["fixtures"][group] for fork in forks}) != 1:
             raise GateError(f"fixture hash mismatch across forks for {group}")
+        if len({fork["profileCounts"][group] for fork in forks}) != 1:
+            raise GateError(f"profile count mismatch across forks for {group}")
+        for policy in POLICIES:
+            for hash_key in ("alternativesSha256", "geometrySha256"):
+                if len({fork["results"][group][policy][hash_key] for fork in forks}) != 1:
+                    raise GateError(f"result hash mismatch across forks for {group}/{policy} {hash_key}")
 
     group_reports: dict[str, Any] = {}
     breach_count = 0
@@ -187,7 +235,11 @@ def evaluate_forks(summaries: list[dict[str, Any]]) -> dict[str, Any]:
             blocked_groups.append(group)
         elif group_breaches == 1:
             isolated_groups.append(group)
-        group_reports[group] = {"breachForkCount": group_breaches, "forks": fork_reports}
+        group_reports[group] = {
+            "breachForkCount": group_breaches,
+            "resultHashesByPolicy": forks[0]["results"][group],
+            "forks": fork_reports,
+        }
     status = "BLOCKED" if blocked_groups else "INCONCLUSIVE" if isolated_groups else "PASS"
     return {
         "schemaVersion": 1, "status": status, "forkCount": FORK_COUNT,

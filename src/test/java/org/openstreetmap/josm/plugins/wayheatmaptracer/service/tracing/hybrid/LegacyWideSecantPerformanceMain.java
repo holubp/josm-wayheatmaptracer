@@ -63,9 +63,11 @@ public final class LegacyWideSecantPerformanceMain {
             LegacyManagedProfileSampler.Input managedImmediate,
             List<XY> trueRidge, String fixtureHash, Map<SourceKind, Boolean> normalDirectionsDiffer) { }
     private record Observation(Scene scene, SourceKind sourceKind, int pair, String order, String policy,
-            long elapsedNanos, int profileCount, int alternativeCount, int seedCount,
+            long elapsedNanos, int profileCount, int alternativeCount, int acceptedAlternativeCount, int seedCount,
             String alternativesDigest, String geometryDigest, boolean fixedPointsExact, String warnings,
             int supportedProfiles, String fixtureHash, String alternativesJson,
+            boolean qualityChecksPassed, String qualityFailures,
+            Map<String, String> nativeOutputSignatures,
             Map<String, List<ProjectedPoint>> acceptedGeometry) { }
 
     private LegacyWideSecantPerformanceMain() { }
@@ -81,26 +83,36 @@ public final class LegacyWideSecantPerformanceMain {
         Path output = Path.of(args[preflight ? 1 : 2]).toAbsolutePath().normalize();
         Files.createDirectory(output);
         var observations = new ArrayList<Observation>();
-        for (Scene scene : Scene.values()) {
-            Fixture fixture = fixture(scene);
-            for (SourceKind sourceKind : SourceKind.values()) {
-                if (scene == Scene.GAUSSIAN_KINK && !fixture.normalDirectionsDiffer().get(sourceKind)) {
-                    throw new IllegalStateException("Protected secant normals did not change in the noisy " + sourceKind + " fixture");
-                }
-                int warmups = preflight ? 0 : WARMUP_PAIRS;
-                int measuredPairs = preflight ? 1 : MEASURED_PAIRS;
-                for (int pair = 0; pair < warmups; pair++) {
-                    boolean candidateFirst = ((pair + fork) & 1) == 1;
-                    timedPair(fixture, scene, sourceKind, pair, candidateFirst, false, observations);
-                }
-                for (int pair = 0; pair < measuredPairs; pair++) {
-                    boolean candidateFirst = ((pair + fork) & 1) == 1;
-                    timedPair(fixture, scene, sourceKind, pair, candidateFirst, true, observations);
+        try {
+            for (Scene scene : Scene.values()) {
+                Fixture fixture = fixture(scene);
+                for (SourceKind sourceKind : SourceKind.values()) {
+                    if (scene == Scene.GAUSSIAN_KINK && !fixture.normalDirectionsDiffer().get(sourceKind)) {
+                        throw new IllegalStateException("Protected secant normals did not change in the noisy " + sourceKind + " fixture");
+                    }
+                    int warmups = preflight ? 0 : WARMUP_PAIRS;
+                    int measuredPairs = preflight ? 1 : MEASURED_PAIRS;
+                    for (int pair = 0; pair < warmups; pair++) {
+                        boolean candidateFirst = ((pair + fork) & 1) == 1;
+                        timedPair(fixture, scene, sourceKind, pair, candidateFirst, false, observations);
+                    }
+                    for (int pair = 0; pair < measuredPairs; pair++) {
+                        boolean candidateFirst = ((pair + fork) & 1) == 1;
+                        timedPair(fixture, scene, sourceKind, pair, candidateFirst, true, observations);
+                    }
                 }
             }
+            writeCsv(output.resolve("observations.csv"), observations);
+            writeSummary(output.resolve("summary.json"), fork, observations, preflight);
+        } catch (Throwable failure) {
+            try {
+                writeCsv(output.resolve("observations.csv"), observations);
+                writeFailureSummary(output.resolve("summary.json"), fork, observations, failure);
+            } catch (Throwable receiptFailure) {
+                failure.addSuppressed(receiptFailure);
+            }
+            throw failure;
         }
-        writeCsv(output.resolve("observations.csv"), observations);
-        writeSummary(output.resolve("summary.json"), fork, observations, preflight);
     }
 
     /** Times the real retained Legacy discovery for both policies on one frozen public fixture. */
@@ -110,17 +122,36 @@ public final class LegacyWideSecantPerformanceMain {
         Observation baseline;
         if (candidateFirst) {
             candidate = discover(fixture, scene, sourceKind, pair, "PROTECTED_SECANT3_V1", true);
+            if (measured) out.add(candidate);
             baseline = discover(fixture, scene, sourceKind, pair, "IMMEDIATE_V1", true);
+            if (measured) out.add(baseline);
         } else {
             baseline = discover(fixture, scene, sourceKind, pair, "IMMEDIATE_V1", false);
+            if (measured) out.add(baseline);
             candidate = discover(fixture, scene, sourceKind, pair, "PROTECTED_SECANT3_V1", false);
+            if (measured) out.add(candidate);
+        }
+        if (!baseline.qualityChecksPassed() || !candidate.qualityChecksPassed()) {
+            throw new IllegalStateException("Synthetic geometry/support quality checks failed: "
+                    + scene + "/" + sourceKind + " baseline=" + baseline.qualityFailures()
+                    + " candidate=" + candidate.qualityFailures());
+        }
+        if (!candidate.warnings().equals(baseline.warnings())) {
+            throw new IllegalStateException("Protected policy introduced or changed safety warnings on " + scene + "/" + sourceKind);
+        }
+        if ((scene == Scene.STRAIGHT || scene == Scene.PARALLEL_STRANDS)
+                && !nativeOutputsById(candidate).equals(nativeOutputsById(baseline))) {
+            throw new IllegalStateException("Equivalent immediate/protected normals changed native output on " + scene + "/" + sourceKind);
+        }
+        if (scene == Scene.PARALLEL_STRANDS
+                && !parallelBranchSigns(candidate).equals(parallelBranchSigns(baseline))) {
+            throw new IllegalStateException("Parallel strand identity changed between normal policies");
+        }
+        if (scene == Scene.SUPPORTED_HAIRPIN) {
+            requireHairpinNonregression(candidate, baseline, sourceKind);
         }
         if (scene == Scene.GAUSSIAN_KINK && !materialGeometryDifference(candidate.acceptedGeometry(), baseline.acceptedGeometry())) {
             throw new IllegalStateException("Protected policy produced no material actual discovery geometry change on Gaussian-kink control");
-        }
-        if (measured) {
-            if (candidateFirst) { out.add(candidate); out.add(baseline); }
-            else { out.add(baseline); out.add(candidate); }
         }
     }
 
@@ -160,29 +191,29 @@ public final class LegacyWideSecantPerformanceMain {
             root.close();
         }
         long elapsed = System.nanoTime() - start;
-        if (result.profileCount() < 10) throw new IllegalStateException("Need at least ten native profiles");
-        if (result.alternatives().isEmpty() || result.seeds().isEmpty()) {
-            throw new IllegalStateException("Discovery returned no usable native alternatives/seeds");
-        }
-        if (result.alternatives().stream().noneMatch(a -> a.rejection().isEmpty())) {
-            throw new IllegalStateException("Discovery returned no accepted native alternative");
-        }
         boolean exact = exactFixedPoints(f.input().originalProjected(), result.alternatives());
-        if (!exact) throw new IllegalStateException("Discovery final preview moved an exact fixed endpoint");
-        int supported = result.alternatives().stream().mapToInt(a -> a.evidence().supportedProfiles()).max().orElse(0);
+        List<String> qualityFailures = qualityFailures(f, sourceKind, candidate, result, exact);
+        List<LegacyBProductionRunner.LegacyAlternative> accepted = result.alternatives().stream()
+                .filter(a -> a.rejection().isEmpty()).toList();
+        int supported = accepted.stream().mapToInt(a -> a.evidence().supportedProfiles()).min().orElse(0);
         String digest = alternativesDigest(result);
         String geometry = geometryDigest(result);
         String warnings = result.alternatives().stream().map(a -> String.join("|", a.safetyWarnings()))
                 .distinct().sorted().toList().toString();
         String alternativesJson = alternativesJson(result);
         Map<String, List<ProjectedPoint>> acceptedGeometry = new LinkedHashMap<>();
+        Map<String, String> nativeOutputSignatures = new LinkedHashMap<>();
+        for (var alternative : result.alternatives()) {
+            nativeOutputSignatures.put(alternative.nativeId(), alternative.toString());
+        }
         for (var alternative : result.alternatives()) if (alternative.rejection().isEmpty()) {
             acceptedGeometry.put(alternative.nativeId(), alternative.finalProjected());
         }
         return new Observation(scene, sourceKind, pair, candidateFirst ? "candidate-first" : "baseline-first",
-                policy, elapsed, result.profileCount(), result.alternatives().size(), result.seeds().size(),
+                policy, elapsed, result.profileCount(), result.alternatives().size(), accepted.size(), result.seeds().size(),
                 digest, geometry, exact, warnings, supported,
-                f.fixtureHash(), alternativesJson, Map.copyOf(acceptedGeometry));
+                f.fixtureHash(), alternativesJson, qualityFailures.isEmpty(), String.join("|", qualityFailures),
+                Map.copyOf(nativeOutputSignatures), Map.copyOf(acceptedGeometry));
     }
 
     private static boolean materialGeometryDifference(Map<String, List<ProjectedPoint>> candidate,
@@ -197,6 +228,154 @@ public final class LegacyWideSecantPerformanceMain {
             if (maximum > 0.25) return true;
         }
         return false;
+    }
+
+    private static List<String> qualityFailures(Fixture fixture, SourceKind sourceKind, boolean candidate,
+            LegacyBProductionRunner.Discovery result, boolean fixedPointsExact) {
+        var failures = new ArrayList<String>();
+        if (result.profileCount() < 10) failures.add("profile-count-below-10");
+        if (result.seeds().isEmpty()) failures.add("no-seeds");
+        var accepted = result.alternatives().stream().filter(a -> a.rejection().isEmpty()).toList();
+        if (accepted.isEmpty()) failures.add("no-accepted-native-alternative");
+        if (!fixedPointsExact) failures.add("fixed-endpoint-moved");
+        double sourcePitch = sourcePixelPitch(sourceKind);
+        var parallelBranches = new java.util.HashSet<Integer>();
+        for (var alternative : accepted) {
+            if (alternative.evidence().supportedProfiles() != result.profileCount()) {
+                failures.add(alternative.nativeId() + ":incomplete-direct-support");
+            }
+            if (!alternative.safetyWarnings().isEmpty()) failures.add(alternative.nativeId() + ":safety-warning");
+            List<ProjectedPoint> points = alternative.finalProjected();
+            if (points.size() < 2) {
+                failures.add(alternative.nativeId() + ":short-final-geometry");
+                continue;
+            }
+            List<Integer> interior = outsideFixedEndpointApproach(points, 25.0);
+            if (interior.size() < 2) {
+                failures.add(alternative.nativeId() + ":insufficient-interior-geometry");
+                continue;
+            }
+            if (fixture.scene() == Scene.STRAIGHT || fixture.scene() == Scene.GAUSSIAN_KINK) {
+                double maximum = 0.0;
+                for (int index : interior) maximum = Math.max(maximum,
+                        distanceToPolyline(points.get(index), fixture.trueRidge()));
+                double limit = fixture.scene() == Scene.GAUSSIAN_KINK ? 3.0 : sourcePitch;
+                if (maximum > limit) failures.add(alternative.nativeId() + ":truth-ridge-distance=" + maximum);
+                if (fixture.scene() == Scene.GAUSSIAN_KINK && candidate
+                        && hasEastBacktrack(points, interior)) {
+                    failures.add(alternative.nativeId() + ":candidate-east-backtrack");
+                }
+            } else if (fixture.scene() == Scene.SUPPORTED_HAIRPIN) {
+                if (!xDirectionSignature(points).equals(List.of(1, -1))) {
+                    failures.add(alternative.nativeId() + ":hairpin-order-changed");
+                }
+            } else if (fixture.scene() == Scene.PARALLEL_STRANDS) {
+                int branch = points.get(interior.get(interior.size() / 2)).north() >= 0.0 ? 1 : -1;
+                parallelBranches.add(branch);
+                List<XY> branchLine = branch > 0
+                        ? fixture.trueRidge().subList(0, 2) : fixture.trueRidge().subList(2, 4);
+                for (int index : interior) {
+                    ProjectedPoint point = points.get(index);
+                    if (point.north() * branch <= 0.0) failures.add(alternative.nativeId() + ":parallel-branch-switch");
+                    if (distanceToPolyline(point, branchLine) > sourcePitch) {
+                        failures.add(alternative.nativeId() + ":parallel-strand-distance");
+                        break;
+                    }
+                }
+            }
+        }
+        if (fixture.scene() == Scene.PARALLEL_STRANDS
+                && (accepted.size() != 2 || !parallelBranches.equals(Set.of(-1, 1)))) {
+            failures.add("parallel-strands-not-two-faithful-branches");
+        }
+        return List.copyOf(failures);
+    }
+
+    private static double sourcePixelPitch(SourceKind sourceKind) {
+        return sourceKind == SourceKind.VISIBLE ? RASTER_METERS_PER_PIXEL
+                : 2.0 * Math.PI * EARTH_RADIUS_M / (MANAGED_TILE_SIZE * Math.pow(2, MANAGED_ZOOM));
+    }
+
+    private static List<Integer> outsideFixedEndpointApproach(List<ProjectedPoint> points, double approachMeters) {
+        double[] chainage = new double[points.size()];
+        for (int i = 1; i < points.size(); i++) chainage[i] = chainage[i - 1]
+                + Math.hypot(points.get(i).east() - points.get(i - 1).east(),
+                        points.get(i).north() - points.get(i - 1).north());
+        var indices = new ArrayList<Integer>();
+        for (int i = 0; i < points.size(); i++) {
+            if (chainage[i] >= approachMeters && chainage[chainage.length - 1] - chainage[i] >= approachMeters) {
+                indices.add(i);
+            }
+        }
+        return indices;
+    }
+
+    private static boolean hasEastBacktrack(List<ProjectedPoint> points, List<Integer> interior) {
+        for (int i = 1; i < interior.size(); i++) {
+            if (points.get(interior.get(i)).east() < points.get(interior.get(i - 1)).east() - 1e-9) return true;
+        }
+        return false;
+    }
+
+    private static List<Integer> xDirectionSignature(List<ProjectedPoint> points) {
+        var signature = new ArrayList<Integer>();
+        int previous = 0;
+        for (int i = 1; i < points.size(); i++) {
+            double delta = points.get(i).east() - points.get(i - 1).east();
+            int direction = delta > 1e-9 ? 1 : delta < -1e-9 ? -1 : 0;
+            if (direction != 0 && direction != previous) signature.add(direction);
+            if (direction != 0) previous = direction;
+        }
+        return List.copyOf(signature);
+    }
+
+    private static double distanceToPolyline(ProjectedPoint point, List<XY> polyline) {
+        double best = Double.POSITIVE_INFINITY;
+        for (int i = 0; i + 1 < polyline.size(); i++) {
+            XY a = polyline.get(i), b = polyline.get(i + 1);
+            double dx = b.x() - a.x(), dy = b.y() - a.y();
+            double t = Math.max(0.0, Math.min(1.0,
+                    ((point.east() - a.x()) * dx + (point.north() - a.y()) * dy) / (dx * dx + dy * dy)));
+            best = Math.min(best, Math.hypot(point.east() - a.x() - t * dx, point.north() - a.y() - t * dy));
+        }
+        return best;
+    }
+
+    private static Map<String, String> nativeOutputsById(Observation observation) {
+        return observation.nativeOutputSignatures();
+    }
+
+    private static Map<String, Integer> parallelBranchSigns(Observation observation) {
+        Map<String, Integer> signs = new LinkedHashMap<>();
+        observation.acceptedGeometry().forEach((nativeId, points) -> {
+            List<Integer> interior = outsideFixedEndpointApproach(points, 25.0);
+            if (!interior.isEmpty()) signs.put(nativeId,
+                    points.get(interior.get(interior.size() / 2)).north() >= 0.0 ? 1 : -1);
+        });
+        return Map.copyOf(signs);
+    }
+
+    private static void requireHairpinNonregression(Observation candidate, Observation baseline,
+            SourceKind sourceKind) {
+        double pitch = sourcePixelPitch(sourceKind);
+        if (!candidate.acceptedGeometry().keySet().equals(baseline.acceptedGeometry().keySet())) {
+            throw new IllegalStateException("Hairpin native identity set changed between policies");
+        }
+        for (String nativeId : baseline.acceptedGeometry().keySet()) {
+            List<ProjectedPoint> old = baseline.acceptedGeometry().get(nativeId);
+            List<ProjectedPoint> next = candidate.acceptedGeometry().get(nativeId);
+            if (old.size() != next.size() || !xDirectionSignature(old).equals(xDirectionSignature(next))) {
+                throw new IllegalStateException("Hairpin order/excursion shape changed for " + nativeId);
+            }
+            double maximum = 0.0;
+            for (int i = 0; i < old.size(); i++) maximum = Math.max(maximum,
+                    Math.hypot(old.get(i).east() - next.get(i).east(), old.get(i).north() - next.get(i).north()));
+            double oldApex = old.stream().mapToDouble(ProjectedPoint::east).max().orElseThrow();
+            double nextApex = next.stream().mapToDouble(ProjectedPoint::east).max().orElseThrow();
+            if (maximum > pitch || Math.abs(oldApex - nextApex) > pitch) {
+                throw new IllegalStateException("Hairpin policy geometry/excursion changed beyond one source pixel for " + nativeId);
+            }
+        }
     }
 
     private static boolean exactFixedPoints(List<ProjectedPoint> source,
@@ -526,13 +705,14 @@ public final class LegacyWideSecantPerformanceMain {
     }
 
     private static void writeCsv(Path path, List<Observation> observations) throws Exception {
-        StringBuilder csv = new StringBuilder("scene,source_kind,pair,order,policy,elapsed_ns,profile_count,alternative_count,seed_count,alternatives_sha256,geometry_sha256,fixed_points_exact,warnings,supported_profiles,fixture_sha256,alternatives_json\n");
+        StringBuilder csv = new StringBuilder("scene,source_kind,pair,order,policy,elapsed_ns,profile_count,alternative_count,accepted_alternative_count,seed_count,alternatives_sha256,geometry_sha256,fixed_points_exact,warnings,supported_profiles,quality_checks_passed,quality_failures,fixture_sha256,alternatives_json\n");
         for (Observation row : observations) {
             csv.append(row.scene()).append(',').append(row.sourceKind()).append(',').append(row.pair()).append(',').append(row.order()).append(',')
                     .append(row.policy()).append(',').append(row.elapsedNanos()).append(',').append(row.profileCount())
-                    .append(',').append(row.alternativeCount()).append(',').append(row.seedCount()).append(',')
+                    .append(',').append(row.alternativeCount()).append(',').append(row.acceptedAlternativeCount()).append(',').append(row.seedCount()).append(',')
                     .append(row.alternativesDigest()).append(',').append(row.geometryDigest()).append(',').append(row.fixedPointsExact()).append(',')
                     .append(quote(row.warnings())).append(',').append(row.supportedProfiles()).append(',')
+                    .append(row.qualityChecksPassed()).append(',').append(quote(row.qualityFailures())).append(',')
                     .append(row.fixtureHash()).append(',').append(quote(row.alternativesJson())).append('\n');
         }
         Files.writeString(path, csv);
@@ -557,21 +737,46 @@ public final class LegacyWideSecantPerformanceMain {
                 .append("  \"plannedFreshJvmForks\":3,\n  \"measuredRows\":").append(rows.size()).append(",\n")
                 .append("  \"predeclaredBlock\":\"overhead > max(5ms,10% baseline) or p95 > max(10ms,20% baseline) in >=2/3 forks/scene/source\",\n")
                 .append("  \"sourceSupport\":\"synthetic heat raster; supported-profile count and safety warnings retained per discovery\",\n")
+                .append("  \"geometryControls\":\"straight and parallel native outputs exactly match by nativeId; Gaussian interior stays within 3m of analytic ridge and protected east-backtrack is zero; parallel alternatives remain on distinct +/-24m branches within factual source-pixel pitch; hairpin is nonregression-only against immediate baseline within source-pixel pitch\",\n")
+                .append("  \"hairpinControlLimitation\":\"the saved managed immediate baseline apex is x=-116.485m versus the analytic x=0m apex; this control checks only policy nonregression and does not claim true-apex fidelity\",\n")
                 .append("  \"noBExecution\":true,\n  \"timingScope\":\"policy planning + actual production discovery + owner close; excludes fixture creation, acquisition, rendering, export\",\n")
                 .append("  \"managedSource\":\"decoded native 1024x1024 z15 raster; pixel-center EPSG:3857 mapping; virtual scale P/(0.389/6); RAW_HIGH_RESOLUTION\",\n")
                 .append("  \"fixtureGeometry\":\"15 source occurrences; prescribed Gaussian source x=4*[-80,-40,-20,-9,-3,-2,-1,0,1,2,3,9,20,40,80], y=4*exp(-x*x/32); true ridge y=21; other scenes centered within +/-600m; fixed original endpoints 0 and 14\",\n")
                 .append("  \"pairedTimingSummary\":").append(pairedSummary(rows)).append(",\n")
                 .append("  \"rows\":[");
         for (int i = 0; i < rows.size(); i++) {
-            Observation r = rows.get(i);
             if (i > 0) json.append(',');
-            json.append("\n    {\"scene\":\"").append(r.scene()).append("\",\"sourceKind\":\"").append(r.sourceKind()).append("\",\"pair\":").append(r.pair())
-                    .append(",\"policy\":\"").append(r.policy()).append("\",\"elapsedNanos\":").append(r.elapsedNanos())
-                    .append(",\"fixtureSha256\":\"").append(r.fixtureHash()).append("\",\"alternativesSha256\":\"")
-                    .append(r.alternativesDigest()).append("\",\"geometrySha256\":\"").append(r.geometryDigest()).append("\"}");
+            appendSummaryRow(json, rows.get(i));
         }
         json.append("\n  ]\n}\n");
         Files.writeString(path, json);
+    }
+
+    private static void writeFailureSummary(Path path, int fork, List<Observation> rows,
+            Throwable failure) throws Exception {
+        StringBuilder json = new StringBuilder("{\n  \"status\":\"FAILED_PUBLIC_SYNTHETIC_FORK\",\n")
+                .append("  \"fork\":").append(fork).append(",\n  \"noBExecution\":true,\n")
+                .append("  \"completedObservationRows\":").append(rows.size()).append(",\n")
+                .append("  \"failureClass\":\"").append(escape(failure.getClass().getName())).append("\",\n")
+                .append("  \"failureMessage\":\"").append(escape(String.valueOf(failure.getMessage()))).append("\",\n")
+                .append("  \"rows\":[");
+        for (int i = 0; i < rows.size(); i++) {
+            if (i > 0) json.append(',');
+            appendSummaryRow(json, rows.get(i));
+        }
+        json.append("\n  ]\n}\n");
+        Files.writeString(path, json);
+    }
+
+    private static void appendSummaryRow(StringBuilder json, Observation r) {
+        json.append("\n    {\"scene\":\"").append(r.scene()).append("\",\"sourceKind\":\"").append(r.sourceKind()).append("\",\"pair\":").append(r.pair())
+                .append(",\"policy\":\"").append(r.policy()).append("\",\"elapsedNanos\":").append(r.elapsedNanos())
+                .append(",\"profileCount\":").append(r.profileCount()).append(",\"acceptedAlternativeCount\":").append(r.acceptedAlternativeCount())
+                .append(",\"supportedProfiles\":").append(r.supportedProfiles()).append(",\"fixedPointsExact\":").append(r.fixedPointsExact())
+                .append(",\"warnings\":\"").append(escape(r.warnings())).append("\",\"qualityChecksPassed\":").append(r.qualityChecksPassed())
+                .append(",\"qualityFailures\":\"").append(escape(r.qualityFailures())).append("\"")
+                .append(",\"fixtureSha256\":\"").append(r.fixtureHash()).append("\",\"alternativesSha256\":\"")
+                .append(r.alternativesDigest()).append("\",\"geometrySha256\":\"").append(r.geometryDigest()).append("\"}");
     }
 
     private static String pairedSummary(List<Observation> rows) {
@@ -630,5 +835,22 @@ public final class LegacyWideSecantPerformanceMain {
     }
 
     private static String quote(String value) { return "\"" + value.replace("\"", "\"\"") + "\""; }
-    private static String escape(String value) { return value.replace("\\", "\\\\").replace("\"", "\\\""); }
+    private static String escape(String value) {
+        StringBuilder out = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            switch (ch) {
+                case '\\' -> out.append("\\\\");
+                case '"' -> out.append("\\\"");
+                case '\n' -> out.append("\\n");
+                case '\r' -> out.append("\\r");
+                case '\t' -> out.append("\\t");
+                default -> {
+                    if (ch < 0x20) out.append(String.format("\\u%04x", (int) ch));
+                    else out.append(ch);
+                }
+            }
+        }
+        return out.toString();
+    }
 }
