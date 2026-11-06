@@ -1056,6 +1056,99 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
+    void discoveryFailureClosesNewNormalMetadataAndPreservesCancellationOrPrimaryFailure() throws Exception {
+        Fixture fixture = fixture();
+        var service = new LiveBPreviewService();
+        var config = config(TrackerMode.LEGACY_THEN_B);
+        var captured = new LiveBPreviewService.Captured[1];
+        var invocation = new LiveBPreviewService.LegacyBInvocation[1];
+        int side = 192;
+        int[] pixels = new int[side * side];
+        for (int y = 0; y < side; y++) {
+            double distance = (y - side / 2.0) / 6.0;
+            int gray = (int) Math.round(255 * (.02 + .80 * Math.exp(-.5 * distance * distance / (1.2 * 1.2))));
+            java.util.Arrays.fill(pixels, y * side, (y + 1) * side, 0xff000000 | gray << 16 | gray << 8 | gray);
+        }
+        var tinyRaster = new LiveBPreviewService.VisibleRaster(side, side, pixels, -16, -16, 16, 16,
+                1, 1, OptionalDouble.of(1), "normal-owner-test", "EPSG:3857");
+        SwingUtilities.invokeAndWait(() -> {
+            captured[0] = service.capture(fixture.dataSet(), fixture.selection(), tinyRaster, config);
+            invocation[0] = LiveBPreviewService.LegacyBInvocation.capture(fixture.selection(), config);
+        });
+        for (RuntimeException primary : List.of(new java.util.concurrent.CancellationException("synthetic-discovery-cancel"),
+                new IllegalStateException("synthetic-discovery-failure"))) {
+            var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+            var owner = ledger.rootOwner();
+            var chargedAtFailure = new java.util.concurrent.atomic.AtomicLong();
+            var scratchObserved = new java.util.concurrent.atomic.AtomicBoolean();
+            var paidCallbacks = new java.util.concurrent.atomic.AtomicInteger();
+            long expectedRetained = 1024 + 64L * fixture.selection().segmentNodes().size() + 16;
+            CancellationProbe failInDiscovery = () -> {
+                long paid = ledger.currentBytes();
+                if (paid == 0) return false; // Do not inspect stacks or instrument every captured pixel.
+                if (paidCallbacks.incrementAndGet() > 16) throw new AssertionError("Expected metadata ownership transition was missed");
+                if (paid > expectedRetained) scratchObserved.set(true);
+                if (scratchObserved.get() && paid == expectedRetained) {
+                    chargedAtFailure.set(paid); // First callback after temporary scratch closes, before discovery allocates.
+                    throw primary;
+                }
+                return false;
+            };
+            try {
+                var method = LiveBPreviewService.class.getDeclaredMethod("computeOwned", LiveBPreviewService.Captured.class,
+                        CancellationProbe.class, LiveBPreviewService.LegacyBInvocation.class,
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner.class,
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Deadline.class);
+                method.setAccessible(true);
+                var wrapper = assertThrows(java.lang.reflect.InvocationTargetException.class, () -> method.invoke(service,
+                        captured[0], failInDiscovery, invocation[0], owner,
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Deadline.production()));
+                assertSame(primary, wrapper.getCause());
+                assertTrue(chargedAtFailure.get() > 0, "Fail only after source metadata has been adopted and scratch closed");
+                assertEquals(0, ledger.currentBytes(), "Discovery failure must close metadata before outer owner cleanup");
+                assertFalse(owner.isClosed());
+            } finally { owner.close(); }
+        }
+    }
+
+    @Test
+    void actualHybridSourceMetadataRemainsOwnedAfterDiscoveryAndRefinementScratchClose() throws Exception {
+        Fixture fixture = fixture();
+        var service = new LiveBPreviewService();
+        var config = config(TrackerMode.LEGACY_THEN_B);
+        var captured = new LiveBPreviewService.Captured[1];
+        var invocation = new LiveBPreviewService.LegacyBInvocation[1];
+        SwingUtilities.invokeAndWait(() -> {
+            captured[0] = service.capture(fixture.dataSet(), fixture.selection(), raster(), config);
+            invocation[0] = LiveBPreviewService.LegacyBInvocation.capture(fixture.selection(), config);
+        });
+        var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+        var owner = ledger.rootOwner();
+        try {
+            var method = LiveBPreviewService.class.getDeclaredMethod("computeOwned", LiveBPreviewService.Captured.class,
+                    CancellationProbe.class, LiveBPreviewService.LegacyBInvocation.class,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner.class,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Deadline.class);
+            method.setAccessible(true);
+            var computed = (LiveBPreviewService.Computed) method.invoke(service, captured[0], CancellationProbe.NONE,
+                    invocation[0], owner,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Deadline.production());
+            var source = computed.legacyB().visibleSource();
+            var retained = assertDoesNotThrow(() -> owner.retain(source),
+                    "The actual provenance Input must still own incremental metadata after temporary scratch closes");
+            assertTrue(retained.bytes() >= 1024 + 64L * source.anchors().size());
+            assertTrue(retained.bytes() < org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid
+                    .LegacyBProductionRunner.normalPolicyWorkingBytes(source.anchors().size()),
+                    "Do not retain the entire planner scratch reservation");
+            retained.close();
+            owner.close();
+            assertEquals(0, ledger.currentBytes(), "Explicit computation owner close must release metadata before test cleanup");
+        } finally {
+            owner.close();
+        }
+    }
+
+    @Test
     void actualLiveHybridFreezesEffectiveProtectedNormalPolicyWithoutChangingSource() throws Exception {
         Fixture full = fiveNodeFixture();
         var selected = full.selection().segmentNodes().subList(1, 4);

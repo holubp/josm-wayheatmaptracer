@@ -16,6 +16,7 @@ import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import javax.swing.SwingUtilities;
 
@@ -66,6 +67,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Selected
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedSegmentNodeAuthority.NodeAuthorityReason;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorEngineAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernCandidateAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
@@ -1638,41 +1640,77 @@ public final class LiveBPreviewService {
         LegacyManagedProfileSampler.Input managed = null;
         org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted<LegacyBProductionRunner.Discovery> discovered;
         var runner = new LegacyBProductionRunner();
-        if (captured.raster() != null) {
-            cancellation.checkpoint();
-            visible = LegacyBSourceCapture.visible(legacy.sampling(), captured.raster(), geometry.originalProjected(), detector);
-            long normalBytes = Math.addExact(LegacyBProductionRunner.normalPolicyWorkingBytes(geometry.originalProjected().size()),
-                    Math.multiplyExact(128L, visible.detectors().size()));
-            try (var normalScratch = owner.reserve(normalBytes)) {
-                visible = visible.withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1,
-                        LegacyBProductionRunner.samplingFixedIndices(input, cancellation));
+        Accounted<?> normalMetadata = null;
+        try {
+            if (captured.raster() != null) {
+                cancellation.checkpoint();
+                var original = LegacyBSourceCapture.visible(legacy.sampling(), captured.raster(), geometry.originalProjected(), detector);
+                long scratchBytes = Math.addExact(LegacyBProductionRunner.normalPolicyWorkingBytes(geometry.originalProjected().size()),
+                        Math.multiplyExact(128L, original.detectors().size()));
+                var normal = retainLegacyNormalMetadata(owner,
+                        legacyNormalRetainedBytes(geometry.originalProjected().size(), original.detectors().size(), 0),
+                        scratchBytes, cancellation, () -> original.withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1,
+                            LegacyBProductionRunner.samplingFixedIndices(input, cancellation)));
+                normalMetadata = normal;
+                visible = normal.value();
+                PluginLog.verbose("Hybrid Legacy sampling normals: policy=%s fallback=%s boundaries=%d.",
+                        visible.normalPolicy().id(), visible.normalPolicyFallbackReason().isEmpty() ? "none"
+                            : visible.normalPolicyFallbackReason(), visible.fixedSourceIndices().size());
+                discovered = runner.discoverVisible(input, visible, cancellation, owner, deadline);
+            } else {
+                if (captured.sourceRasters() == null) {
+                    throw new IllegalArgumentException("Sequential Hybrid requires its acquired managed source rasters");
+                }
+                cancellation.checkpoint();
+                var original = managedCapture != null ? managedCapture.input(detector)
+                        : LegacyBSourceCapture.managed(legacy.sampling(), captured.sourceRasters(),
+                            geometry.originalProjected(), captured.projectionCode(), detector);
+                long scratchBytes = Math.addExact(LegacyBProductionRunner.normalPolicyWorkingBytes(geometry.originalProjected().size()),
+                        Math.multiplyExact(128L, Math.addExact((long) original.mosaics().size(), original.detectors().size())));
+                var normal = retainLegacyNormalMetadata(owner,
+                        legacyNormalRetainedBytes(geometry.originalProjected().size(), original.detectors().size(), original.mosaics().size()),
+                        scratchBytes, cancellation, () -> original.withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1,
+                            LegacyBProductionRunner.samplingFixedIndices(input, cancellation)));
+                normalMetadata = normal;
+                managed = normal.value();
+                PluginLog.verbose("Hybrid Legacy sampling normals: policy=%s fallback=%s boundaries=%d.",
+                        managed.normalPolicy().id(), managed.normalPolicyFallbackReason().isEmpty() ? "none"
+                            : managed.normalPolicyFallbackReason(), managed.fixedSourceIndices().size());
+                discovered = runner.discoverManaged(input, managed, cancellation, owner, deadline);
             }
-            cancellation.checkpoint();
-            PluginLog.verbose("Hybrid Legacy sampling normals: policy=%s fallback=%s boundaries=%d.",
-                    visible.normalPolicy().id(), visible.normalPolicyFallbackReason().isEmpty() ? "none"
-                        : visible.normalPolicyFallbackReason(), visible.fixedSourceIndices().size());
-            discovered = runner.discoverVisible(input, visible, cancellation, owner, deadline);
-        } else {
-            if (captured.sourceRasters() == null) {
-                throw new IllegalArgumentException("Sequential Hybrid requires its acquired managed source rasters");
+            return new LegacyBDiscoveredChoice(evidence,options,input,visible,managed,discovered,ModernDiagnosticCounters.snapshot());
+        } catch (RuntimeException | Error failure) {
+            if (normalMetadata != null) {
+                try { normalMetadata.owner().close(); }
+                catch (RuntimeException | Error cleanup) { if (cleanup != failure) failure.addSuppressed(cleanup); }
             }
-            cancellation.checkpoint();
-            managed = managedCapture != null ? managedCapture.input(detector)
-                    : LegacyBSourceCapture.managed(legacy.sampling(), captured.sourceRasters(),
-                        geometry.originalProjected(), captured.projectionCode(), detector);
-            long normalBytes = Math.addExact(LegacyBProductionRunner.normalPolicyWorkingBytes(geometry.originalProjected().size()),
-                    Math.multiplyExact(128L, Math.addExact((long) managed.mosaics().size(), managed.detectors().size())));
-            try (var normalScratch = owner.reserve(normalBytes)) {
-                managed = managed.withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1,
-                        LegacyBProductionRunner.samplingFixedIndices(input, cancellation));
-            }
-            cancellation.checkpoint();
-            PluginLog.verbose("Hybrid Legacy sampling normals: policy=%s fallback=%s boundaries=%d.",
-                    managed.normalPolicy().id(), managed.normalPolicyFallbackReason().isEmpty() ? "none"
-                        : managed.normalPolicyFallbackReason(), managed.fixedSourceIndices().size());
-            discovered = runner.discoverManaged(input, managed, cancellation, owner, deadline);
+            throw failure;
         }
-        return new LegacyBDiscoveredChoice(evidence,options,input,visible,managed,discovered,ModernDiagnosticCounters.snapshot());
+    }
+
+    /** Incremental wrapper/index/list/map payload only: borrowed pixels, mosaics and source values are excluded. */
+    private static long legacyNormalRetainedBytes(int originals, int detectors, int mosaics) {
+        if (originals < 2 || detectors < 1 || mosaics < 0) throw new IllegalArgumentException("Incomplete Legacy metadata dimensions");
+        // 64/original covers boxed fixed indices plus immutable index/source-reference arrays;
+        // 128/mosaic covers copied LinkedHashMap nodes/table, 16/detector a possible reference-list copy.
+        return Math.addExact(1024L, Math.addExact(Math.multiplyExact(64L, originals),
+                Math.addExact(Math.multiplyExact(16L, detectors), Math.multiplyExact(128L, mosaics))));
+    }
+
+    /** Keeps only newly constructed metadata alive through later choices/refinement under the attempt owner. */
+    private static <T> Accounted<T> retainLegacyNormalMetadata(AttemptMemoryLedger.Owner parent,
+            long retainedBytes, long scratchBytes, CancellationProbe cancellation, Supplier<T> construct) {
+        var metadataOwner = parent.child("legacy-normal-metadata");
+        try (var retained = metadataOwner.reserve(retainedBytes); var scratch = metadataOwner.reserve(scratchBytes)) {
+            T value = construct.get();
+            cancellation.checkpoint();
+            retained.adopt(value);
+            return new Accounted<>(value, metadataOwner);
+        } catch (RuntimeException | Error failure) {
+            try { metadataOwner.close(); }
+            catch (RuntimeException | Error cleanup) { if (cleanup != failure) failure.addSuppressed(cleanup); }
+            throw failure;
+        }
     }
 
     private ChoiceRun finishLegacyBChoice(Captured captured, LegacyBDiscoveredChoice discovered,

@@ -30,6 +30,99 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.Le
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry.ProjectedPoint;
 
 class LegacyManagedProfileSamplerTest {
+    @Test void commonNormalMetadataOwnerKeepsOnlyIncrementalManagedPayloadAfterScratchClose() throws Exception {
+        var input = managedNormalOwnershipInput();
+        long retained = 1024 + 64L * input.sourcePolyline().size() + 16L * input.detectors().size() + 128L * input.mosaics().size();
+        long scratch = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBProductionRunner
+                .normalPolicyWorkingBytes(input.sourcePolyline().size()) + 128L * (input.mosaics().size() + input.detectors().size());
+        var ledger = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger(retained + scratch);
+        var parent = ledger.rootOwner();
+        try {
+            var accounted = invokeNormalMetadataOwner(parent, retained, scratch, CancellationProbe.NONE,
+                    () -> input.withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 1)));
+            var result = (LegacyManagedProfileSampler.Input) accounted.value();
+            assertEquals(retained, ledger.currentBytes(), "Only the incremental metadata reservation survives");
+            assertEquals(retained + scratch, ledger.peakBytes());
+            assertTrue(retained < scratch);
+            assertNotSame(input.mosaics(), result.mosaics());
+            for (String key : input.mosaics().keySet()) assertSame(input.mosaics().get(key), result.mosaics().get(key),
+                    "Borrowed mosaic/argb payload must not be copied or charged again");
+            var coLease = parent.retain(result);
+            assertEquals(retained, coLease.bytes());
+            coLease.close();
+            accounted.owner().close();
+            assertEquals(0, ledger.currentBytes(), "The actual metadata owner must release before parent cleanup");
+            assertFalse(parent.isClosed());
+        } finally { parent.close(); }
+    }
+
+    @Test void commonNormalMetadataOwnerRefusesTightBudgetBeforeConstructionAndReleasesReservation() throws Exception {
+        var input = managedNormalOwnershipInput();
+        long retained = 1024 + 64L * input.sourcePolyline().size() + 16L * input.detectors().size() + 128L * input.mosaics().size();
+        long scratch = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBProductionRunner
+                .normalPolicyWorkingBytes(input.sourcePolyline().size()) + 128L * (input.mosaics().size() + input.detectors().size());
+        var ledger = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger(retained + scratch - 1);
+        var parent = ledger.rootOwner();
+        var constructions = new AtomicInteger();
+        try {
+            assertThrows(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.ResourceLimitException.class,
+                    () -> invokeNormalMetadataOwner(parent, retained, scratch, CancellationProbe.NONE, () -> {
+                        constructions.incrementAndGet();
+                        return input.withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 1));
+                    }));
+            assertEquals(0, constructions.get());
+            assertEquals(0, ledger.currentBytes(), "Failed prepayment must not leave the retained reservation");
+            assertFalse(parent.isClosed());
+        } finally { parent.close(); }
+    }
+
+    @Test void commonNormalMetadataOwnerReleasesAfterConstructionCancellationAndPreservesFactoryFailure() throws Exception {
+        var input = managedNormalOwnershipInput();
+        long retained = 1024 + 64L * input.sourcePolyline().size() + 16L * input.detectors().size() + 128L * input.mosaics().size();
+        long scratch = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBProductionRunner
+                .normalPolicyWorkingBytes(input.sourcePolyline().size()) + 128L * (input.mosaics().size() + input.detectors().size());
+        var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+        var parent = ledger.rootOwner();
+        var constructions = new AtomicInteger();
+        try {
+            assertThrows(CancellationException.class, () -> invokeNormalMetadataOwner(parent, retained, scratch, () -> true, () -> {
+                constructions.incrementAndGet();
+                return input.withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 1));
+            }));
+            assertEquals(1, constructions.get());
+            assertEquals(0, ledger.currentBytes(), "Cancellation after allocation must release both reservations");
+            var primary = new IllegalStateException("synthetic-normal-construction-failure");
+            var failure = assertThrows(IllegalStateException.class, () -> invokeNormalMetadataOwner(parent, retained, scratch,
+                    CancellationProbe.NONE, () -> { throw primary; }));
+            assertSame(primary, failure);
+            assertEquals(0, ledger.currentBytes(), "Construction failure must close the actual child before outer cleanup");
+            assertFalse(parent.isClosed());
+        } finally { parent.close(); }
+    }
+
+    private static LegacyManagedProfileSampler.Input managedNormalOwnershipInput() {
+        var fixture = fixture(COLORS);
+        return LegacyManagedProfileSampler.freeze(fixture.set(), fixture.source(), "EPSG:3857", "hot",
+                List.of("hot"), IntensitySamplingMode.COLOR_MAPPING, 1.75);
+    }
+
+    private static org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted<?> invokeNormalMetadataOwner(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner parent,
+            long retained, long scratch, CancellationProbe cancellation, java.util.function.Supplier<?> construct) throws Exception {
+        var method = LiveBPreviewService.class.getDeclaredMethod("retainLegacyNormalMetadata",
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner.class,
+                long.class, long.class, CancellationProbe.class, java.util.function.Supplier.class);
+        method.setAccessible(true);
+        try {
+            return (org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted<?>) method.invoke(
+                    null, parent, retained, scratch, cancellation, construct);
+        } catch (java.lang.reflect.InvocationTargetException wrapper) {
+            if (wrapper.getCause() instanceof RuntimeException runtime) throw runtime;
+            if (wrapper.getCause() instanceof Error error) throw error;
+            throw wrapper;
+        }
+    }
+
     @Test void liveNormalResolutionHandlesGeometryFallbackBeforeNativeShapeAndKeepsImmediateMultiDetectorInput() {
         var fixture = fixture(List.of("hot", "blue"));
         var extreme = LegacyManagedProfileSampler.freeze(fixture.set(),
