@@ -14,6 +14,63 @@
 
 ### Active execution card — authoritative
 
+**OPTIMIZED QUALITY VERIFIED — 2026-11-06:** Controller22790ac8 combined private
+batch92090 terminalPASS:12suites108tests0failures/errors/skips. All50 captured
+way/palette CSV rows are BYTE-IDENTICAL to pre-optimization V4 (SHA256
+`bb4303ffcff1820081db346200e3a7ac779c8f992c0f73d845a0454017ad42d9`). Evidence
+root build `legacy-wide-secant/feedback-followup-20261106/v4-fastpath-integration/`.
+Correct optimized-runtime actual Drasov pair alsoPASS:1076 fenced input/runtime
+files unchanged, all4 approved geometry/support files BYTE-IDENTICAL. Receipt
+`paired-chord-v4-fastpath-corrected-one-process.json`. Parent first pair used an
+incorrect argv index and thus frozen old runtime; its receipt is explicitly
+invalidForFastpath/superseded, retained for transparency, NEVER adopted as proof.
+Corrected pair binds actual current controller classes explicitly.
+Independent source/regression audit PASS; no new quality regression detected.
+Next: push coherent source/checkpoint for fresh unchanged full/public/GUI and
+normal/tracker official speed gates. Speed remains unverified, no public release.
+
+**FAST PATH INTEGRATED / PRIVATE CHECK RUNNING — 2026-11-06:** Worker frozen
+`e8d282805cea097c4444e787bbc9ae235c02487a`, controller cherry-pick22790ac8.
+Seven focused suites68tests0failures/errors/skips and intended refusal-based
+RED verified independently; Sol source/evidence audit PASS. The branch returns
+supplied nativeSupport unchanged when nativeSupport<=historical; otherwise the
+same scalar/dominance/rival logic runs. No cache/solver/policy change. Artifact
+README corrected to describe that return value precisely; associated manifest
+updated. Parent combined12-suite private/live/replay regression is running
+session92090 with original three RC archive properties; inspect actual terminal
+XML and all50 metrics, then one actual Drasov approved-geometry pin. No speed
+claim or new public CI started yet; unchanged official gates remain required.
+
+**GROUNDED FAST-PATH IMPLEMENTATION — 2026-11-06:** Sol attribution finds
+managed-parallel paired CPU increases59/60 pairs, median+4.544/+3.718/+3.499ms,
+allocated bytes+2,391,744/+2,248,704/+2,248,704. This is recurring real work,
+not solelyGC. Bounded Luna packet in isolated
+`/data/data/com.termux/files/usr/tmp/josm-legacy-v4-support-fastpath`, base71d1228b:
+move the exact historical target support calculation before scalar/rival scans
+in `capDominatedSupportGain`, return immediately when nativeSupport<=historical,
+reuse historical otherwise. Existing code cannot cap that case; no numerical
+or policy-contract change intended. Add deterministic skipped-access regression,
+preserve golden outputs and cancellation, run neighboring tracker suites; no
+private/full workload yet. Early historical scans may add work to nondominant
+cases, so no speed claim before measurement. No cache/new solver/threshold tweak.
+Independent review and exact quality controls remain required before adoption.
+
+**DIAGNOSTIC COHORT COMPLETE — 2026-11-06:** Run42243724732 is terminal SUCCESS
+for both jobs. All artifacts downloaded to root build
+`legacy-wide-secant/feedback-followup-20261106/ci-diagnostic-42243724732/`.
+Parent verified each comparison retains3 forks,1536 raw calls,960 measured
+observations and480 paired records; all fork invocations exit0. Outer reports
+remain DIAGNOSTIC_ONLY/adoptionAllowed=false. Normal read-only wall statistics
+have0 breaches; tracker has isolated breaches in visible/managed hairpin and
+managed parallel, all fork0. These diagnostic statistics are NOT qualification.
+Tracker managed-parallel median overhead is4.562/3.531/3.492ms; pooled observed
+thread CPU medians17.191→21.038ms and allocated bytes28,780,088→31,037,392.
+Largest visible-hairpin32.274ms overhead has30.441ms extra thread CPU,1.696msGC
+and146ms process compilation activity; another30.008ms tail has29.127ms extra
+thread CPU withoutGC. GC alone cannot explain those tails. Sol is inspecting
+actual V4 code against these facts for a grounded smallest semantics-preserving
+repair; no new workload or blind rerun authorized, no model/gate changed.
+
 **INSTRUMENTED CI RUNNING — 2026-11-06:** Diagnostic branch pushed at
 `d1cd4d18298579119128c9284a74cfa191735806`; sole GitHub run42243724732 is confirmed
 in_progress, named `Legacy performance diagnostics (not qualification)`.
