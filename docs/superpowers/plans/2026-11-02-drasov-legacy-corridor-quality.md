@@ -14,6 +14,19 @@
 
 ### Active execution card — authoritative
 
+**RC15 PUBLISHED AND PUBLIC DOWNLOAD VERIFIED — 2026-11-06:** User explicitly
+approved the timing-gate exception after disclosure. Existing draft published as
+prerelease https://github.com/holubp/josm-wayheatmaptracer/releases/tag/v0.22.0-rc.15
+tagtarget111e5027c4d09e8a8ef672c2c58045edc0ce2663 verified via GitHub tag API.
+isDraft=false/isPrerelease=true; singlewayheatmaptracer.jar3086429bytes. Public
+downloadCRC/manifestRC15/JOSM19555/SHA c922217bfa4c25da9efded7db46717a2afb356adf73b4e62c1e04202507e8e52
+and1049classaggregatefd2be223...67c4 verified. Releasebody records explicit
+maintainer-approved exception and exact timing results; no gate relabelled.
+Functional2519Java/publicstages/bothGUI PASS. RawINCONCLUSIVEtimings preserved.
+Local durable receipt rootbuild/rc15-release/release-state.json and public-download/
+contain actual published asset verification. This is RC testing, not stable0.22
+qualification or completion of broader A/filter/B capacity work.
+
 **RC15 READY FOR PUBLICATION EXCEPTION DECISION — 2026-11-06:** CI42282107366
 terminalFAILURE only from two INCONCLUSIVE timing gates recorded below. Public
 validationPASS2519Java0f/e/s, all public stagesPASS; bothactualGUI summariesPASS
