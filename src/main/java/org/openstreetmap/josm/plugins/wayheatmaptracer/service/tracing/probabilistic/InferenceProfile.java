@@ -283,6 +283,40 @@ public final class InferenceProfile {
                     entirelyMissing, structuralGuideCosts, componentResponsibilities));
     }
 
+    /** Selects original observation rows and cell identities without normalizing a new mixture. */
+    InferenceProfile retainedView(int[] indices, AttemptMemoryLedger.Owner owner) {
+        if (indices == null || indices.length == 0 || owner == null)
+            throw new IllegalArgumentException("Retained source indices and owner are required");
+        int previous = -1;
+        for (int index : indices) {
+            if (index <= previous || index >= cells.size())
+                throw new IllegalArgumentException("Retained source indices must be strictly ordered");
+            previous = index;
+        }
+        try (var scratch = owner.child("selected-observation-rows")) {
+            var selected = ProbabilisticInference.allocated(scratch,
+                    ProbabilisticInference.listBytes(indices.length), "adaptive observation view",
+                    () -> new java.util.ArrayList<LateralStateCell>(indices.length));
+            double[] unary = ProbabilisticInference.allocated(scratch,
+                    AttemptMemoryLedger.arrayBytes(indices.length, Double.BYTES),
+                    "adaptive observation view", () -> new double[indices.length]);
+            double[] guide = ProbabilisticInference.allocated(scratch,
+                    AttemptMemoryLedger.arrayBytes(indices.length, Double.BYTES),
+                    "adaptive observation view", () -> new double[indices.length]);
+            double[][] responsibilities = ProbabilisticInference.allocated(scratch,
+                    AttemptMemoryLedger.referenceArrayBytes(indices.length),
+                    "adaptive observation view", () -> new double[indices.length][]);
+            for (int i = 0; i < indices.length; i++) {
+                int index = indices[i]; selected.add(cells.get(index));
+                unary[i] = unaryCosts[index]; guide[i] = structuralGuideCosts[index];
+                responsibilities[i] = componentResponsibilities[index];
+            }
+            return accounted(chainageMeters, anchor, normalUnit, selected, unary,
+                    orientationByBranch, orientationReliabilityByBranch, ownership, entirelyMissing,
+                    guide, responsibilities, owner);
+        }
+    }
+
     private static long retainedBytes(List<LateralStateCell> cells, double[] unaryCosts,
             Map<String, ImageOrientationSupport> orientationByBranch,
             Map<String, Double> orientationReliabilityByBranch,

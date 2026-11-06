@@ -15,7 +15,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
  * <p>The caller remains responsible for performing the check at its original traversal site.
  * Evicted entries are deliberately recomputed rather than changing the inference state space.</p>
  */
-final class TransitionAdmissionMemo {
+final class TransitionAdmissionMemo implements BTransitionAdmission {
     private static final long KEY_BYTES = AttemptMemoryLedger.objectBytes(16);
     private static final long ENTRY_BYTES = 2L * AttemptMemoryLedger.objectBytes(48)
             + AttemptMemoryLedger.objectBytes(16) + 2L * AttemptMemoryLedger.objectBytes(40);
@@ -57,7 +57,7 @@ final class TransitionAdmissionMemo {
         }
     }
 
-    boolean allowed(int startProfile, int startState, int endState,
+    public boolean allowed(int startProfile, int startState, int endState,
         List<InferenceProfile> profiles, MetricRegion decisionRegion) {
         if (decisionRegion == null) {
             return true;

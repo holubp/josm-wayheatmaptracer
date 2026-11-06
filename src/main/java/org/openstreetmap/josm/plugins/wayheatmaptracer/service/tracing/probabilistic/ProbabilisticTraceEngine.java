@@ -249,6 +249,11 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
         long started = System.nanoTime();
         cancellation.checkpoint();
         validateSnapshots(request, evidence, network);
+        boolean adaptive = BPolicy.recorded(request) == BPolicy.ADAPTIVE_MULTIMODAL_V1;
+        if (adaptive && (reference != null || reliabilityPolicy != ReliabilityPolicy.DIRECT_LONGITUDINAL_V2
+                || !parameters.equals(EvidenceModelParameters.defaults()))) {
+            throw new IllegalArgumentException("Recorded adaptive B requires its complete standalone parameter policy");
+        }
         if (request.samplerId().endsWith(LegacyBReferenceFactory.REFERENCE_SAMPLER_SUFFIX)
                 && reference == null) {
             throw new IllegalArgumentException("A bound reference is required for Legacy refinement sampling");
@@ -290,6 +295,9 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
         List<InferenceProfile> evaluated = ProbabilisticInference.allocated(workingOwner,
                 ProbabilisticInference.listBytes(profiles.size()), "evaluated profiles",
                 () -> new ArrayList<>(profiles.size()));
+        List<ProbabilisticStateLattice> adaptiveLattices = adaptive
+                ? ProbabilisticInference.allocated(workingOwner, ProbabilisticInference.listBytes(profiles.size()),
+                    "adaptive dense lattices", () -> new ArrayList<>(profiles.size())) : null;
         long stateCount = 0;
         int minimumStates = Integer.MAX_VALUE;
         int maximumStates = 0;
@@ -317,6 +325,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
                 return accountedRun(limited, 0, 0, candidateOwner);
             }
             ProbabilisticStateLattice lattice = stateResult.lattice().orElseThrow();
+            if (adaptive) adaptiveLattices.add(lattice);
             if ("baseline-plus-continuation-position".equals(stateResult.explanation())) {
                 admittedContinuationPositions++;
             } else if (continuationOffsets != null) {
@@ -336,9 +345,23 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
         org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
             "trace.continuationPositionsAdmitted", admittedContinuationPositions);
         long inferenceStarted = System.nanoTime();
-        ProbabilisticInferenceResult inference = new ProbabilisticInference().solve(evaluated,
-            parameters, request.budgets(), evidence.decisionRegion(), cancellation, workingOwner,
-            ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2);
+        ProbabilisticInferenceResult inference;
+        if (adaptive) {
+            var progress = ProbabilisticInference.allocated(workingOwner,AttemptMemoryLedger.objectBytes(8),
+                    "adaptive native progress",() -> (ProbabilisticInference.WorkProgress)(pairs,scores) -> {
+                        work.pairVisits=pairs; work.transitions=scores;
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                                "b.adaptive.availableScores",scores);
+                    });
+            var adaptiveRun = new AdaptiveBInference().solve(profiles, evaluated, adaptiveLattices,
+                    continuationOffsets, parameters, request.budgets(), evidence.decisionRegion(), cancellation,
+                    workingOwner, AdaptiveBObserver.current(),progress);
+            inference = adaptiveRun.inference(); evaluated = adaptiveRun.profiles();
+        } else {
+            inference = new ProbabilisticInference().solve(evaluated,
+                parameters, request.budgets(), evidence.decisionRegion(), cancellation, workingOwner,
+                ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2);
+        }
         work.pairVisits = inference.evaluatedPairVisits();
         work.transitions = inference.evaluatedTransitions();
         work.rawAlternatives = inference.rawPaths().size();
@@ -438,7 +461,8 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
             EvidenceSnapshot evidence,
             AttemptMemoryLedger.Owner resultOwner, AttemptMemoryLedger.Owner workingOwner) {
         int hypothesisCount = inference.distinctPaths().size();
-        int diagnosticCount = 15;
+        boolean adaptive = inference.workAccounting().map(work -> work.executionPolicy().equals(BPolicy.VERSION)).orElse(false);
+        int diagnosticCount = adaptive ? 17 : 15;
         long outputBytes = ProbabilisticInference.listBytes(hypothesisCount);
         long temporaryBytes = ProbabilisticInference.listBytes(hypothesisCount) * 3L
                 + mapBytes(hypothesisCount);
@@ -542,6 +566,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
         List<ProbabilisticProfile> sampledProfiles, List<InferenceProfile> profiles,
         EvidenceSnapshot evidence) {
         List<TraceHypothesis> result = new ArrayList<>();
+        boolean adaptive = inference.workAccounting().map(work -> work.executionPolicy().equals(BPolicy.VERSION)).orElse(false);
         List<ProbabilisticPath> distinctPaths = inference.distinctPaths();
         List<String> exportedBranches = exportedBranchSignatures(distinctPaths);
         int index = 0;
@@ -564,9 +589,14 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
             diagnostics.put("terminalCountSaturated", completion.terminalCountSaturated() ? 1.0 : 0.0);
             diagnostics.put("rawEnumerationCapped", completion.rawEnumerationCapped() ? 1.0 : 0.0);
             diagnostics.put("requestedDiversityReached", completion.requestedDiversityReached() ? 1.0 : 0.0);
+            if (adaptive) {
+                diagnostics.put("bAdaptivePolicy", 1.0);
+                diagnostics.put("bPosteriorConditional", 1.0);
+            }
             String exportedBranch = exportedBranches.get(index);
             result.add(new TraceHypothesis("probabilistic-" + index++, exportedBranch,
-                path.points(), support, path.energy(), path.conditionalPosteriorMass(), diagnostics));
+                path.points(), support, path.energy(), adaptive ? java.util.OptionalDouble.empty()
+                    : java.util.OptionalDouble.of(path.conditionalPosteriorMass()), diagnostics));
         }
         return List.copyOf(result);
     }

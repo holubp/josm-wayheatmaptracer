@@ -37,6 +37,9 @@ public final class ProbabilisticPath {
         return stateIndices.clone();
     }
 
+    /** Allocation-free read for bounded adaptive rival inspection. */
+    int stateIndexAt(int profileIndex) { return stateIndices[profileIndex]; }
+
     /** Package-private identity seam used only to attach the constructor-owned clone to its lease. */
     int[] ownedStateIndicesIdentity() {
         return stateIndices;

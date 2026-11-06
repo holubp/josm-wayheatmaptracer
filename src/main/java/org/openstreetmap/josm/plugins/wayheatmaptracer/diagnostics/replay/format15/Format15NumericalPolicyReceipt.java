@@ -33,8 +33,9 @@ final class Format15NumericalPolicyReceipt {
         String json = legacy.stripTrailing().substring(0, legacy.stripTrailing().length() - 1)
                 .replace("\"schema\":1", "\"schema\":2")
                 + ",\"executionWorkHash\":\"" + Format15ExecutionWorkCodec.artifact(receipts).sha256() + "\"}\n";
+        String expectedExecution = executionPolicy(computedEngine, parameterHash);
         if (receipts.stream().anyMatch(receipt -> receipt.isEmpty()
-                || !receipt.orElseThrow().hasPolicy(ProbabilisticExecutionPolicy.CURRENT_VERSION))) {
+                || !receipt.orElseThrow().hasPolicy(expectedExecution))) {
             json = json.replace("explicit-current-computation", "execution-unattested");
         }
         if (json.getBytes(StandardCharsets.UTF_8).length > MAX_BYTES) {
@@ -55,7 +56,7 @@ final class Format15NumericalPolicyReceipt {
             + "\"parameterHash\":\"" + Format15Safety.requiredHash(parameterHash, "parameterHash") + "\","
             + "\"capturedEngine\":\"" + capturedEngine.name() + "\","
             + "\"computedEngine\":\"" + computedEngine.name() + "\","
-            + "\"inferencePolicy\":\"" + inferencePolicy(computedEngine) + "\","
+            + "\"inferencePolicy\":\"" + inferencePolicy(computedEngine, parameterHash) + "\","
             + "\"sharedPolicy\":\"" + ModernNumericalPolicy.SHARED_COST + "\"}\n";
         if (json.getBytes(StandardCharsets.UTF_8).length > MAX_BYTES) {
             throw new IllegalArgumentException("numerical-policy-budget");
@@ -112,7 +113,7 @@ final class Format15NumericalPolicyReceipt {
                     ? Format15ExecutionWorkCodec.read(workArtifact) : List.of();
             long computed = 0L;
             for (var receipt : receipts) {
-                if (receipt.isEmpty() || !receipt.orElseThrow().hasPolicy(ProbabilisticExecutionPolicy.CURRENT_VERSION)) {
+                if (receipt.isEmpty() || !receipt.orElseThrow().hasPolicy(executionPolicy(engine, input.request().parameterHash()))) {
                     throw new IllegalArgumentException("execution-policy-unattested");
                 }
                 computed = Math.addExact(computed, receipt.orElseThrow().computedTransitions());
@@ -153,6 +154,19 @@ final class Format15NumericalPolicyReceipt {
             : "engine-specific";
     }
 
+    private static String executionPolicy(TrackerMode engine, String parameterHash) {
+        return engine == TrackerMode.PROBABILISTIC
+                && org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.isAdaptiveHash(parameterHash)
+                ? org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.VERSION
+                : ProbabilisticExecutionPolicy.CURRENT_VERSION;
+    }
+    private static String inferencePolicy(TrackerMode engine, String parameterHash) {
+        String original = inferencePolicy(engine);
+        return executionPolicy(engine, parameterHash).equals(ProbabilisticExecutionPolicy.CURRENT_VERSION)
+                ? original : original.replace("/" + ProbabilisticExecutionPolicy.CURRENT_VERSION,
+                    "/" + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.VERSION);
+    }
+
     private static boolean modern(TrackerMode engine) {
         return engine != null && engine != TrackerMode.LEGACY_V02;
     }
@@ -162,8 +176,12 @@ final class Format15NumericalPolicyReceipt {
     }
 
     static void validateExecuted(TraceHypothesisSet inference) {
+        validateExecuted(inference, null);
+    }
+
+    static void validateExecuted(TraceHypothesisSet inference, String parameterHash) {
         if (probabilistic(inference.engine()) && (inference.workAccounting().isEmpty()
-                || !inference.workAccounting().orElseThrow().hasPolicy(ProbabilisticExecutionPolicy.CURRENT_VERSION))) {
+                || !inference.workAccounting().orElseThrow().hasPolicy(executionPolicy(inference.engine(), parameterHash)))) {
             throw new ReplayMismatchException("numerical-policy-runtime-unattested");
         }
     }

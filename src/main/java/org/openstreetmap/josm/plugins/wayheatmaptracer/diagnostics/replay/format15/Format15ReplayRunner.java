@@ -227,7 +227,7 @@ public final class Format15ReplayRunner {
                 throw new ReplayMismatchException("strict-interval-production-execution-failed");
             }
             TraceWorkUsage usage = production.usage();
-            Format15NumericalPolicyReceipt.validateExecuted(production.result().inference());
+            Format15NumericalPolicyReceipt.validateExecuted(production.result().inference(), request.parameterHash());
             if (usage.pairVisits() > remainingPairs || usage.transitions() > remainingTransitions
                     || retainedRoutes + production.result().routes().size()
                             > IntervalTraceBatch.MAX_RETAINED_ROUTES) {
@@ -613,7 +613,7 @@ public final class Format15ReplayRunner {
         if (result.inference().status() == TraceHypothesisSet.Status.COMPLETE
                 || result.inference().status() == TraceHypothesisSet.Status.AMBIGUOUS
                 || result.inference().workAccounting().isPresent()) {
-            Format15NumericalPolicyReceipt.validateExecuted(result.inference());
+            Format15NumericalPolicyReceipt.validateExecuted(result.inference(), requested.request().parameterHash());
         }
         return result;
     }

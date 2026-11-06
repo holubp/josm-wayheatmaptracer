@@ -25,6 +25,28 @@ public final class ProbabilisticInference {
     private static final double LOG_ZERO = Double.NEGATIVE_INFINITY;
     private static final int ADMISSION_MEMO_CAPACITY = 32_768;
 
+    /** Explicit cached backend; the existing public exact entry points retain their old policy. */
+    public ProbabilisticInferenceResult solveCached(List<InferenceProfile> profiles,
+            EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
+            CancellationProbe cancellation, AttemptMemoryLedger.Owner owner) {
+        return solve(profiles, parameters, budgets, decisionRegion, cancellation, owner,
+                ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V3);
+    }
+
+    @FunctionalInterface
+    interface WorkProgress {
+        WorkProgress NONE = (pairs, scores) -> { };
+        void computed(long pairVisits, long computedScores);
+    }
+
+    /** Reports available actual work even when the pass is interrupted before producing a result. */
+    ProbabilisticInferenceResult solveCached(List<InferenceProfile> profiles,
+            EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
+            CancellationProbe cancellation, AttemptMemoryLedger.Owner owner, WorkProgress progress) {
+        return solve(profiles,parameters,budgets,decisionRegion,cancellation,owner,
+                ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V3,progress);
+    }
+
     /**
      * Solves one complete admitted state graph without score-based beam pruning.
      *
@@ -68,6 +90,13 @@ public final class ProbabilisticInference {
         EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
         CancellationProbe cancellation, AttemptMemoryLedger.Owner resultOwner,
         ProbabilisticExecutionPolicy.Mode mode) {
+        return solve(profiles,parameters,budgets,decisionRegion,cancellation,resultOwner,mode,null);
+    }
+
+    private ProbabilisticInferenceResult solve(List<InferenceProfile> profiles,
+        EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
+        CancellationProbe cancellation, AttemptMemoryLedger.Owner resultOwner,
+        ProbabilisticExecutionPolicy.Mode mode, WorkProgress progress) {
         if (cancellation == null) {
             throw new IllegalArgumentException("Cancellation probe is required");
         }
@@ -91,10 +120,18 @@ public final class ProbabilisticInference {
         try (workOwner) {
             workCounter = allocated(workOwner, AttemptMemoryLedger.objectBytes(80),
                     "execution accounting", () -> new WorkCounter(mode, budgets.maximumTransitions()));
+            if (mode == ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V3) {
+                PreparedBKernel cache = PreparedBKernel.prepare(profiles, parameters, decisionRegion,
+                        cancellation, workOwner.child("primitive-exact-kernel"));
+                workCounter = allocated(workOwner, AttemptMemoryLedger.objectBytes(88),
+                        "cached execution accounting", () -> new CachedWorkCounter(mode,
+                                budgets.maximumTransitions(), cache));
+            }
             long inferenceStarted = System.nanoTime();
             AttemptMemoryLedger.Owner admissionOwner = workOwner.child("transition-admission-memo");
-            TransitionAdmissionMemo admissions = new TransitionAdmissionMemo(
-                    ADMISSION_MEMO_CAPACITY, admissionOwner);
+            PreparedBKernel prepared = workCounter.kernel();
+            BTransitionAdmission admissions = prepared == null ? new TransitionAdmissionMemo(
+                    ADMISSION_MEMO_CAPACITY, admissionOwner) : prepared;
             AttemptMemoryLedger.Owner messagesOwner = workOwner.child("forward-backward");
             GraphMessages messages = forwardBackward(profiles, parameters, budgets, decisionRegion,
                     cancellation, admissions, messagesOwner, workCounter);
@@ -221,6 +258,10 @@ public final class ProbabilisticInference {
                     workCounter == null ? 0 : workCounter.transitions, "numeric failure", profiles,
                     resultOwner, workCounter);
         } finally {
+            if (progress != null && workCounter != null) {
+                progress.computed(workCounter.pairVisits,
+                        Math.addExact(workCounter.forwardBackwardScores,workCounter.kBestScores));
+            }
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
                 "inference.extensionDescriptors", workCounter == null ? 0 : workCounter.extensionDescriptors);
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
@@ -230,10 +271,10 @@ public final class ProbabilisticInference {
 
     private static GraphMessages forwardBackward(List<InferenceProfile> profiles,
         EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
-        CancellationProbe cancellation, TransitionAdmissionMemo admissions,
+        CancellationProbe cancellation, BTransitionAdmission admissions,
         AttemptMemoryLedger.Owner owner, WorkCounter workCounter) {
         cancellation.checkpoint();
-        boolean boundedPairAdmission = workCounter.mode == ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2;
+        boolean boundedPairAdmission = workCounter.mode.exactDominance();
         if (profiles.size() == 1) {
             InferenceProfile profile = profiles.get(0);
             if (profile.cells().size() > budgets.maximumPairVisits()) {
@@ -244,8 +285,8 @@ public final class ProbabilisticInference {
                     AttemptMemoryLedger.arrayBytes(profile.cells().size(), Double.BYTES),
                     "forward/backward", () -> new double[profile.cells().size()]);
             for (int state = 0; state < alpha.length; state++) {
-                alpha[state] = -profileEnergy(profiles, 0, state, parameters) / parameters.temperature()
-                    + logMeasure(profile.cells().get(state));
+                alpha[state] = -workCounter.unary(profiles, 0, state, parameters) / parameters.temperature()
+                    + workCounter.measure(profiles, 0, state);
             }
             return GraphMessages.single(logSumExp(alpha), alpha, profile.cells().size());
         }
@@ -269,12 +310,12 @@ public final class ProbabilisticInference {
                 if (!transitionAllowed(profiles, 0, first, second, decisionRegion, admissions)) {
                     continue;
                 }
-                double energy = profileEnergy(profiles, 0, first, parameters)
-                    + profileEnergy(profiles, 1, second, parameters)
-                    + pairEnergy(profiles, 0, first, second, parameters);
+                double energy = workCounter.unary(profiles, 0, first, parameters)
+                    + workCounter.unary(profiles, 1, second, parameters)
+                    + workCounter.pair(profiles, 0, first, second, parameters);
                 initial[first][second] = -energy / parameters.temperature()
-                    + logMeasure(profiles.get(0).cells().get(first))
-                    + logMeasure(profiles.get(1).cells().get(second));
+                    + workCounter.measure(profiles, 0, first)
+                    + workCounter.measure(profiles, 1, second);
             }
         }
         forward.add(initial);
@@ -315,11 +356,11 @@ public final class ProbabilisticInference {
                             return GraphMessages.limit(pairVisits, transitions,
                                 "transition budget exceeded");
                         }
-                        double increment = profileEnergy(profiles, profileIndex, state, parameters)
-                            + pairEnergy(profiles, profileIndex - 1, prior, state, parameters)
-                            + tripleEnergy(profiles, profileIndex, before, prior, state, parameters);
+                        double increment = workCounter.unary(profiles, profileIndex, state, parameters)
+                            + workCounter.pair(profiles, profileIndex - 1, prior, state, parameters)
+                            + workCounter.turn(profiles, profileIndex, before, prior, state, parameters);
                         double term = prefix - increment / parameters.temperature()
-                            + logMeasure(profiles.get(profileIndex).cells().get(state));
+                            + workCounter.measure(profiles, profileIndex, state);
                         current[prior][state] = logAdd(current[prior][state], term);
                     }
                 }
@@ -361,11 +402,11 @@ public final class ProbabilisticInference {
                             return GraphMessages.limit(pairVisits, transitions,
                                 "transition budget exceeded during backward inference");
                         }
-                        double increment = profileEnergy(profiles, nextProfile, next, parameters)
-                            + pairEnergy(profiles, currentProfile, currentState, next, parameters)
-                            + tripleEnergy(profiles, nextProfile, before, currentState, next, parameters);
+                        double increment = workCounter.unary(profiles, nextProfile, next, parameters)
+                            + workCounter.pair(profiles, currentProfile, currentState, next, parameters)
+                            + workCounter.turn(profiles, nextProfile, before, currentState, next, parameters);
                         double term = -increment / parameters.temperature()
-                            + logMeasure(profiles.get(nextProfile).cells().get(next))
+                            + workCounter.measure(profiles, nextProfile, next)
                             + nextBackward[currentState][next];
                         accumulated = logAdd(accumulated, term);
                     }
@@ -387,7 +428,7 @@ public final class ProbabilisticInference {
     private static KBestResult enumerateKBest(List<InferenceProfile> profiles,
         EvidenceModelParameters parameters, TraceBudgets budgets,
         MetricRegion decisionRegion,
-        CancellationProbe cancellation, TransitionAdmissionMemo admissions,
+        CancellationProbe cancellation, BTransitionAdmission admissions,
         AttemptMemoryLedger.Owner owner, WorkCounter workCounter) {
         cancellation.checkpoint();
         int cap = Math.min(32, budgets.maximumRawAlternatives());
@@ -446,7 +487,7 @@ public final class ProbabilisticInference {
             int beforeStates = current.length;
             int streamCapacity = Math.multiplyExact(beforeStates, cap);
             AttemptMemoryLedger.Owner scratchOwner = nextOwner.child("extension-merge-scratch");
-            boolean exact = workCounter.mode == ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2;
+            boolean exact = workCounter.mode.exactDominance();
             DescriptorHeap descriptors = exact ? allocated(scratchOwner, AttemptMemoryLedger.objectBytes(48),
                     "k-best descriptors", () -> new DescriptorHeap(cap, cancellation, scratchOwner)) : null;
             double[] extensionEnergy = exact ? null : allocated(scratchOwner,
@@ -483,9 +524,11 @@ public final class ProbabilisticInference {
                             // First use stays after admission and logical-extension accounting.
                             // These immutable pair terms keep their original rounded sum.
                             if (!pairReady) {
-                                double unary = profileEnergy(profiles, profileIndex, state, parameters);
+                                double unary = workCounter.unary(profiles, profileIndex, state, parameters);
                                 double pair = 0.0;
-                                if (parameters.orientationWeight() != 0.0) {
+                                if (workCounter.kernel() != null) {
+                                    pair = workCounter.kernel().pair(profileIndex - 1, prior, state);
+                                } else if (parameters.orientationWeight() != 0.0) {
                                     InferenceProfile start = profiles.get(profileIndex - 1);
                                     InferenceProfile end = profiles.get(profileIndex);
                                     MetricPoint first = start.point(prior);
@@ -499,7 +542,9 @@ public final class ProbabilisticInference {
                                 pairReady = true;
                             }
                             double triple = 0.0;
-                            if (parameters.turnWeight() != 0.0) {
+                            if (workCounter.kernel() != null) {
+                                triple = workCounter.kernel().turn(profileIndex, before, prior, state);
+                            } else if (parameters.turnWeight() != 0.0) {
                                 // Keep all three point validations and their original order,
                                 // even when the second heading has already been evaluated.
                                 MetricPoint beforePoint = profiles.get(profileIndex - 2).point(before);
@@ -535,7 +580,7 @@ public final class ProbabilisticInference {
                         descriptors.sortWinners();
                         List<PathRecord> selected = allocated(nextOwner, listBytes(cap),
                                 "k-best frontier", () -> new ArrayList<>(cap));
-                        double measure = logMeasure(profiles.get(profileIndex).cells().get(state));
+                        double measure = workCounter.measure(profiles, profileIndex, state);
                         for (int index = 0; index < descriptors.size; index++) {
                             cancellation.checkpoint();
                             PathRecord prefix = current[descriptors.before[index]][prior]
@@ -986,7 +1031,7 @@ public final class ProbabilisticInference {
             && distinct.get(1).energy() - distinct.get(0).energy() <= parameters.ambiguityEnergyDelta();
     }
 
-    private static double profileEnergy(List<InferenceProfile> profiles, int profileIndex, int state,
+    static double profileEnergy(List<InferenceProfile> profiles, int profileIndex, int state,
         EvidenceModelParameters parameters) {
         InferenceProfile profile = profiles.get(profileIndex);
         return profileQuadrature(profiles, profileIndex) * (parameters.dataWeight()
@@ -1019,7 +1064,7 @@ public final class ProbabilisticInference {
                 * support.mismatchSquared(heading);
     }
 
-    private static double pairEnergyAtHeading(InferenceProfile start, InferenceProfile end,
+    static double pairEnergyAtHeading(InferenceProfile start, InferenceProfile end,
             int startState, int endState, EvidenceModelParameters parameters, double heading) {
         double span = end.chainageMeters() - start.chainageMeters();
         return parameters.orientationWeight() * span * 0.5
@@ -1090,7 +1135,7 @@ public final class ProbabilisticInference {
     }
 
     private static boolean transitionAllowed(List<InferenceProfile> profiles, int startProfile,
-        int startState, int endState, MetricRegion decisionRegion, TransitionAdmissionMemo admissions) {
+        int startState, int endState, MetricRegion decisionRegion, BTransitionAdmission admissions) {
         return admissions.allowed(startProfile, startState, endState, profiles, decisionRegion);
     }
 
@@ -1174,7 +1219,7 @@ public final class ProbabilisticInference {
         return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(nanos);
     }
 
-    private static double logMeasure(LateralStateCell cell) {
+    static double logMeasure(LateralStateCell cell) {
         return cell.exactAnchor() ? 0.0 : StrictMath.log(cell.quadratureWidthMeters());
     }
 
@@ -1583,7 +1628,7 @@ public final class ProbabilisticInference {
         }
     }
 
-    private static final class WorkCounter {
+    private static class WorkCounter {
         private final ProbabilisticExecutionPolicy.Mode mode;
         private final long maximumTransitions;
         private long pairVisits;
@@ -1594,6 +1639,20 @@ public final class ProbabilisticInference {
         private long kBestScores;
         private long logicalKBestExtensions;
         private long refusedScoreAttempts;
+        PreparedBKernel kernel() { return null; }
+
+        double unary(List<InferenceProfile> p, int row, int state, EvidenceModelParameters parameters) {
+            return kernel() == null ? profileEnergy(p, row, state, parameters) : kernel().unary(row, state);
+        }
+        double pair(List<InferenceProfile> p, int row, int a, int b, EvidenceModelParameters parameters) {
+            return kernel() == null ? pairEnergy(p, row, a, b, parameters) : kernel().pair(row, a, b);
+        }
+        double turn(List<InferenceProfile> p, int row, int a, int b, int c, EvidenceModelParameters parameters) {
+            return kernel() == null ? tripleEnergy(p, row, a, b, c, parameters) : kernel().turn(row, a, b, c);
+        }
+        double measure(List<InferenceProfile> p, int row, int state) {
+            return kernel() == null ? logMeasure(p.get(row).cells().get(state)) : kernel().measure(row, state);
+        }
 
         private WorkCounter(ProbabilisticExecutionPolicy.Mode mode, long maximumTransitions) {
             this.mode = mode; this.maximumTransitions = maximumTransitions;
@@ -1607,13 +1666,22 @@ public final class ProbabilisticInference {
             }
             if (forwardBackward) forwardBackwardScores = Math.addExact(forwardBackwardScores, 1L);
             else kBestScores = Math.addExact(kBestScores, 1L);
-            if (mode == ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2) transitions = Math.addExact(transitions, 1L);
+            if (mode.exactDominance()) transitions = Math.addExact(transitions, 1L);
             return true;
         }
 
         void recordLogicalKBestExtensions(long count) {
             logicalKBestExtensions = Math.addExact(logicalKBestExtensions, count);
         }
+    }
+
+    private static final class CachedWorkCounter extends WorkCounter {
+        private final PreparedBKernel cache;
+        CachedWorkCounter(ProbabilisticExecutionPolicy.Mode mode, long limit, PreparedBKernel cache) {
+            super(mode, limit);
+            this.cache = cache;
+        }
+        @Override PreparedBKernel kernel() { return cache; }
     }
 
     static final class MemoryLimit extends RuntimeException {

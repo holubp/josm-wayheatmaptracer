@@ -147,6 +147,46 @@ public final class ProbabilisticInferenceResult {
     /** Present only when a solver policy actually entered execution. */
     public Optional<InferenceWorkAccounting> workAccounting() { return workAccounting; }
 
+    double positionMarginalAt(int row, int state) { return positionMarginals.get(row)[state]; }
+
+    /** Shares immutable retained output with its still-live attempt owner; never asserts full-graph certainty. */
+    ProbabilisticInferenceResult conditionalReview(Status status, String explanation,
+            InferenceWorkAccounting cumulative, long pairVisits,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner) {
+        long bytes = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.objectBytes(136)
+                + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.objectBytes(40)
+                + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.objectBytes(8)
+                + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.objectBytes(24)
+                + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.arrayBytes(explanation.length(), 2);
+        return ProbabilisticInference.allocated(owner, bytes, "conditional adaptive result",
+                () -> new ProbabilisticInferenceResult(this, status, explanation, cumulative, pairVisits));
+    }
+
+    private ProbabilisticInferenceResult(ProbabilisticInferenceResult source, Status status,
+            String explanation, InferenceWorkAccounting cumulative, long pairVisits) {
+        if (pairVisits < 0 || cumulative == null || explanation == null)
+            throw new IllegalArgumentException("Adaptive work result is incomplete");
+        boolean usable = status == Status.REVIEW_REQUIRED;
+        this.status = status;
+        this.mapPath = usable ? source.mapPath : Optional.empty();
+        this.rawPaths = usable ? source.rawPaths : List.of();
+        this.distinctPaths = usable ? source.distinctPaths : List.of();
+        this.logPartition = usable ? source.logPartition : Double.NaN;
+        this.positionMarginals = usable ? source.positionMarginals : List.of();
+        this.componentMarginals = usable ? source.componentMarginals : List.of();
+        this.forwardPositionMarginals = usable ? source.forwardPositionMarginals : List.of();
+        this.backwardPositionMarginals = usable ? source.backwardPositionMarginals : List.of();
+        this.credibleSets = usable ? source.credibleSets : List.of();
+        this.posteriorUsable = false;
+        this.alternativeSearchTruncated = usable && source.alternativeSearchTruncated;
+        this.completion = usable ? source.completion : Optional.empty();
+        this.evaluatedPairVisits = pairVisits;
+        this.evaluatedTransitions = cumulative.computedScores();
+        this.gapSummary = source.gapSummary;
+        this.explanation = explanation;
+        this.workAccounting = Optional.of(cumulative);
+    }
+
     /** Saturated terminal count and independent raw-cap/diversity facts. */
     public record Completion(int effectiveRawLimit, int effectiveDistinctLimit,
         int completePathsAtSaturation, boolean terminalCountSaturated,
