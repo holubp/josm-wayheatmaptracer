@@ -14,6 +14,20 @@
 
 ### Active execution card — authoritative
 
+**Integration milestone — 2026-11-06:** Controller production snapshot950230d5
+contains both standalone and Hybrid/frozen-source integrations. `classes
+testClasses` passed (Gradle9.4.1/JDK17, offline, 2m17s). Controller worktree has
+only the three preserved unrelated untracked handoff/plan files before this
+ledger update. Independent whole-delta audit found two open P2 items; fix round
+1/5 is active with original authors: LSEC-1 adds actual per-attempt sampling
+policy/fallback to ordinary diagnostics JSON; LSEC-2 retains the incremental
+Hybrid input metadata under the attempt owner after temporary planner scratch
+closes. Neither changes the direction algorithm. Covering tests and scoped
+independent re-review are required before closing either finding. Public
+visible/native-managed benchmark preparation is ongoing; no matched speed
+result, final public CI, or release is claimed. Filter optimization remains
+deferred by the user's latest instruction.
+
 **CURRENT NEXT ACTION — 2026-11-06:** The ONE actual Drasov image pair is
 POSITIVE for the marked fold. Integrate only the reviewed sampling-direction
 core into genuine Legacy callers, including its Hybrid stage with truthful
