@@ -14,6 +14,88 @@
 
 ### Active execution card — authoritative
 
+**WRITER HANDOFF — 2026-11-06:** Escalated the coupled policy implementation
+to existing Sol worker `drasov_independent_audit` after two unintended experiment
+couplings (native anchor adjacency and geometry inheriting motion/reciprocal).
+Luna stopped cleanly; no process/Gradle lock remains. Sole writer is now Sol in
+`/data/data/com.termux/files/usr/tmp/josm-legacy-feedback-continuity`, branch
+`codex/drasov-feedback-continuity`, WIP2fa7d0858c562dfeeeca9a517a98f59ce402b83.
+That checkpoint intentionally DOES NOT COMPILE: geometry enum was renamed before
+references were updated. Do not cherry-pick it to controller or claim green.
+Older WIP5e2dc6e/d53ee8c/5c6e605/fbc5c8b/588ee75 preserve all rejected experiments.
+Corrected anchor-stage artifact shows pure-support and ORIGINAL identical on
+temporary1/2/3profile cases; motion/reciprocal still regress3profile. Adoptable
+scope is conservative pure-support and separately proven geometric guard, then
+explicit combined validation; rejected motion models must stay parked.
+Sol restores compilation/isolation and obtains focused public evidence before
+any new private comparison or codec/live integration. Original APIs remain
+historical, no native-pitch substitution for compatibility normalization.
+Primary dirty checkout, user feedback and all experimental evidence are preserved.
+
+**SCOPE/CORRECTNESS CORRECTION — 2026-11-06:** Actual source inspection found an
+extra native `anchorJumpTolerance` change in the prototype, independently
+relaxing the historical normalization*1.35 adjacency skip gate. Earlier private
+positive outputs are factual but their "support-only" attribution is invalid;
+the report is explicitly corrected and the prototype cannot justify adoption.
+Restore the EXACT historical anchor gate for every new candidate; preserve all
+WIP snapshots/results. Motion normalization passes the targeted moving-ridge
+oracle, but temporary-close-strand controls expose regressions; reciprocal
+matching resolves1/2profile borrowing but3profile remains RED. Do not tune or
+enable those more aggressive models. Independently approved NW geometric guard
+remains a separate public experiment, not a hidden combined repair.
+
+Prospective ruling (Sol-reviewed): approved follow-up scope is the two actual
+Drasov residuals, no deterioration and fast Legacy. A synthetic nine-profile
+geometry oracle beyond the pure-support contract may be a documented BASELINE
+LIMITATION only after proving ORIGINAL also fails and pure support does not
+worsen geometry/support/safety. Its failed result must remain explicit, never
+renamed passed or silently removed. The public gate still requires actual
+Drasov improvement, passing negative controls, speed and historical replay
+compatibility. This corrects an overbroad experimental gate, not a waiver of
+a new regression. If those conditions fail, adoption remains blocked.
+
+**NEXT EXPERIMENTS — 2026-11-06:** Tolerance-only prototype is preserved in
+tmp worktree `josm-legacy-feedback-continuity` commit5e2dc6ef; independent NW
+straight-ridge RED is d53ee8c. Motion normalization under a distinct policy now
+passes its targeted stronger-drifting-ridge oracle: multiply only existing raw
+delta/acceleration penalties by6/factualNativePitch (factor1 atpitch6), retaining
+all other compatibility normalization. A new two-profile brighter close side
+fragment exposes a regression in motion-only: old offsets stay0, motion jumps
+to1.5nativepixels. Reciprocal-support experiment is next, not optional adoption:
+both evidence qualifications and distance bounds, unique nearest qualifying
+peak in both directions using original sets, ties contribute no support. Public
+one/two/three-profile temporary-strand results must include historical baseline;
+do not silently waive failures or add the rejected anchor-intensity override.
+
+NW RED uses a true straight ridge y0 with source-derived normals on a wavy source
+backbone. Raw intersections are straight/monotone; existing final offset smoothing
+adds cross-track errors4.84rasterpixels atpitch6 and105.22atpitch24. Sol conditionally
+approved a SEPARATE geometric-smoothing experiment, keeping proposals/fourpasses:
+accept only nonincreasing local actual raster-centreline bending energy over the
+three affected vertices, evaluated against accepted-so-far `next` offsets.
+Energy is squared unit-tangent difference divided by max(adjacentlengthsum,p).
+No positive epsilon may introduce energy fromzero; invalid geometry fails closed.
+Require useful wrinkle smoothing, active faint-arc/hairpin controls and rescaling
+checks. This guard does not prove imagery fidelity or fix prior peak-center bias.
+Do not combine it with the upper experiment before separate public evidence.
+No production adoption, frozen-codec/live changes, filter changes or release yet.
+
+**FOLLOW-UP EXPERIMENT RESULT — 2026-11-06:** One tolerance-only Drasov pair
+completed3.406s with unchanged input/runtime fences and185bit-identical old
+protected-tracker offsets. Upper-SE detour improves: zero native probes10→1,
+mean.257329→.260593, no off-image points/self-contacts/fixed endpoint changes.
+NW residual is unchanged. Public corrected-geometry tests remain8PASS/2FAIL:
+keeping primary peaks does not overcome anchoring/raw-raster motion preferences
+in the stronger drifting-ridge discriminator. No anchor exception was added;
+Sol explicitly held that second heuristic. Do not adopt/release this prototype
+or waive its failing geometry tests. Source and captured normalization/native
+pitch remain separate. Exact artifacts and conclusions are under root
+`legacy-wide-secant/feedback-followup-20261106/tolerance-only-result.md`.
+Interactive exact-final comparison is on loopback8767 with
+`comparison.html?data=continuity&view=upper`; original feedback remains preserved.
+Next: freeze the tolerance-only experiment, review one discriminating next step,
+then address NW smoothing separately. No filter work, no default source changes.
+
 **ACTIVE FOLLOW-UP — 2026-11-06:** User supplied two final-comparison feedback
 records052815/052919 under root inspection `feedback/` and authorized trying
 to correct the remaining defects. Marks denote problem locations, NOT intended
