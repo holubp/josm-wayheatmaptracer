@@ -14,6 +14,19 @@
 
 ### Active execution card — authoritative
 
+**RC15 PUBLICATION AUTHORIZED — 2026-11-06:** User explicitly requests the next
+GitHubRC. LatestpublishedRC14; prepare0.22.0-rc.15 from reviewedf665eed6, changing
+only version/release notes/checkpoint. Local RC15Jar buildPASS, manifestcorrect,
+all1049productionclasses exactqualified fd2be223...67c4; no engine/config/limit change.
+Designated fresh release-build CI must pass ALL configured gates before publishing
+v0.22.0-rc.15 with primaryassetwayheatmaptracer.jar. Then verify publicdownload
+CRC/manifest/SHA/classbinding and record releaseURL. Sol release-contract review:
+allin-scopegatesgreen required; hold ifdesignatedruninconclusive/blocked, no blind
+retry or substituting priorPASS afterseeingfailure. Priorf665 CI42263733210 public/
+bothGUI/trackerPASS, normalINCONCLUSIVE isolated straightvisible2/hairpinvisible1
+tails, retained rootbuild/rc15-release/f665-normal. Originald604qualificationvalid
+but distinct; do not relabel nativeidentities. No stable0.22 claim.
+
 #### Active Legacy goal exit matrix
 
 This matrix audits the explicit current goal (Legacy Drasov quality, other-test
