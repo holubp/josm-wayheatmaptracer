@@ -170,3 +170,61 @@ jobs:
           path: ${{ runner.temp }}/legacy-normal-performance/
           if-no-files-found: ignore
           retention-days: 5
+
+  legacy-tracker-performance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Prepare pinned JOSM 19555 host
+        run: |
+          python3 scripts/prepare-ci-josm19555.py --output-dir "$RUNNER_TEMP/josm19555-host"
+          echo "ORG_GRADLE_PROJECT_josm19555HostJar=$RUNNER_TEMP/josm19555-host/JOSM-Linux-java11-19555.jar" >> "$GITHUB_ENV"
+      - name: Run three fresh public Legacy tracker-policy forks
+        env:
+          PERF_ROOT: ${{ runner.temp }}/legacy-tracker-performance
+          TRACKER_POLICY: native-reciprocal-support-paired-chord-v3
+        run: |
+          mkdir -p "$PERF_ROOT"
+          : > "$PERF_ROOT/invocations.txt"
+          failed=0
+          for fork in 0 1 2; do
+            if sh gradlew legacyNormalPerformance \
+                -PlegacyNormalPerformanceFork="$fork" \
+                -PlegacyNormalPerformanceOutput="$PERF_ROOT/fork-$fork" \
+                -PlegacyTrackerPerformancePolicy="$TRACKER_POLICY" \
+                --console=plain; then
+              result=0
+            else
+              result=$?
+            fi
+            printf 'fork=%s exit=%s\n' "$fork" "$result" >> "$PERF_ROOT/invocations.txt"
+            if test "$result" -ne 0; then failed=1; fi
+          done
+          exit "$failed"
+      - name: Gate raw tracker-policy fork results
+        if: always()
+        env:
+          PERF_ROOT: ${{ runner.temp }}/legacy-tracker-performance
+        run: |
+          python3 scripts/legacy-tracker-performance-gate.py \
+            --candidate-policy native-reciprocal-support-paired-chord-v3 \
+            --fork-dir "$PERF_ROOT/fork-0" \
+            --fork-dir "$PERF_ROOT/fork-1" \
+            --fork-dir "$PERF_ROOT/fork-2" \
+            --report "$PERF_ROOT/gate-report.json"
+      - name: Upload public Legacy tracker-policy evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-legacy-tracker-performance
+          path: ${{ runner.temp }}/legacy-tracker-performance/
+          if-no-files-found: ignore
+          retention-days: 5

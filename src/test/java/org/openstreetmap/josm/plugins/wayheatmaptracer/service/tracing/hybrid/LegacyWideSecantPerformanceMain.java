@@ -68,14 +68,36 @@ public final class LegacyWideSecantPerformanceMain {
             int supportedProfiles, String fixtureHash, String alternativesJson,
             boolean qualityChecksPassed, String qualityFailures,
             Map<String, String> nativeOutputSignatures,
-            Map<String, List<ProjectedPoint>> acceptedGeometry) { }
+            Map<String, List<ProjectedPoint>> acceptedGeometry,
+            String normalPolicyId, String trackerPolicyId, double normalization,
+            double nativePitch, String trackerFallbackReason) { }
+
+    private static LegacyTrackerPolicy trackerComparisonPolicy;
+
+    private static String baselineLabel() {
+        return trackerComparisonPolicy == null ? "IMMEDIATE_V1" : LegacyTrackerPolicy.ORIGINAL_V02.id();
+    }
+
+    private static String candidateLabel() {
+        return trackerComparisonPolicy == null ? "PROTECTED_SECANT3_V1" : trackerComparisonPolicy.id();
+    }
 
     private LegacyWideSecantPerformanceMain() { }
 
     public static void main(String[] args) throws Throwable {
-        boolean preflight = args.length == 2 && "--preflight".equals(args[0]);
-        if (!preflight && (args.length != 3 || !"--fork".equals(args[0]))) {
-            throw new IllegalArgumentException("Expected --preflight NEW_OUTPUT_DIRECTORY or --fork 0|1|2 NEW_OUTPUT_DIRECTORY");
+        trackerComparisonPolicy = null;
+        boolean preflight = args.length >= 2 && "--preflight".equals(args[0]);
+        int ordinaryArguments = preflight ? 2 : 3;
+        if ((!preflight && (args.length < 3 || !"--fork".equals(args[0])))
+                || (args.length != ordinaryArguments && args.length != ordinaryArguments + 2)) {
+            throw new IllegalArgumentException("Expected --preflight OUTPUT or --fork 0|1|2 OUTPUT, optionally --tracker-policy ID");
+        }
+        if (args.length == ordinaryArguments + 2) {
+            if (!"--tracker-policy".equals(args[ordinaryArguments]))
+                throw new IllegalArgumentException("Unknown comparison option");
+            trackerComparisonPolicy = LegacyTrackerPolicy.fromId(args[ordinaryArguments + 1]);
+            if (trackerComparisonPolicy == LegacyTrackerPolicy.ORIGINAL_V02)
+                throw new IllegalArgumentException("Tracker comparison must exercise a non-original policy");
         }
         int fork = preflight ? -1 : Integer.parseInt(args[1]);
         if (!preflight && (fork < 0 || fork > 2)) throw new IllegalArgumentException("Fork index must be 0, 1, or 2");
@@ -84,6 +106,9 @@ public final class LegacyWideSecantPerformanceMain {
         Files.createDirectory(output);
         var observations = new ArrayList<Observation>();
         try {
+            String productionBefore = productionClassesHash();
+            String harnessBefore = codeLocationHash(LegacyWideSecantPerformanceMain.class);
+            String dependenciesBefore = runtimeDependenciesHash();
             for (Scene scene : Scene.values()) {
                 Fixture fixture = fixture(scene);
                 for (SourceKind sourceKind : SourceKind.values()) {
@@ -103,7 +128,13 @@ public final class LegacyWideSecantPerformanceMain {
                 }
             }
             writeCsv(output.resolve("observations.csv"), observations);
-            writeSummary(output.resolve("summary.json"), fork, observations, preflight);
+            if (!productionBefore.equals(productionClassesHash()))
+                throw new IllegalStateException("Production classes changed during discovery");
+            if (!harnessBefore.equals(codeLocationHash(LegacyWideSecantPerformanceMain.class))
+                    || !dependenciesBefore.equals(runtimeDependenciesHash()))
+                throw new IllegalStateException("Harness or runtime dependencies changed during discovery");
+            writeSummary(output.resolve("summary.json"), fork, observations, preflight, productionBefore,
+                    harnessBefore, dependenciesBefore);
         } catch (Throwable failure) {
             try {
                 writeCsv(output.resolve("observations.csv"), observations);
@@ -121,14 +152,14 @@ public final class LegacyWideSecantPerformanceMain {
         Observation candidate;
         Observation baseline;
         if (candidateFirst) {
-            candidate = discover(fixture, scene, sourceKind, pair, "PROTECTED_SECANT3_V1", true);
+            candidate = discover(fixture, scene, sourceKind, pair, candidateLabel(), true);
             if (measured) out.add(candidate);
-            baseline = discover(fixture, scene, sourceKind, pair, "IMMEDIATE_V1", true);
+            baseline = discover(fixture, scene, sourceKind, pair, baselineLabel(), true);
             if (measured) out.add(baseline);
         } else {
-            baseline = discover(fixture, scene, sourceKind, pair, "IMMEDIATE_V1", false);
+            baseline = discover(fixture, scene, sourceKind, pair, baselineLabel(), false);
             if (measured) out.add(baseline);
-            candidate = discover(fixture, scene, sourceKind, pair, "PROTECTED_SECANT3_V1", false);
+            candidate = discover(fixture, scene, sourceKind, pair, candidateLabel(), false);
             if (measured) out.add(candidate);
         }
         if (!baseline.qualityChecksPassed() || !candidate.qualityChecksPassed()) {
@@ -150,7 +181,8 @@ public final class LegacyWideSecantPerformanceMain {
         if (scene == Scene.SUPPORTED_HAIRPIN) {
             requireHairpinNonregression(candidate, baseline, sourceKind);
         }
-        if (scene == Scene.GAUSSIAN_KINK && !materialGeometryDifference(candidate.acceptedGeometry(), baseline.acceptedGeometry())) {
+        if (trackerComparisonPolicy == null && scene == Scene.GAUSSIAN_KINK
+                && !materialGeometryDifference(candidate.acceptedGeometry(), baseline.acceptedGeometry())) {
             throw new IllegalStateException("Protected policy produced no material actual discovery geometry change on Gaussian-kink control");
         }
     }
@@ -158,22 +190,39 @@ public final class LegacyWideSecantPerformanceMain {
     private static Observation discover(Fixture f, Scene scene, SourceKind sourceKind, int pair, String policy,
             boolean candidateFirst) throws Throwable {
         long start = System.nanoTime();
-        boolean candidate = policy.equals("PROTECTED_SECANT3_V1");
-        List<Integer> fixed = candidate
+        boolean candidate = policy.equals(candidateLabel());
+        boolean protectedNormals = trackerComparisonPolicy != null || candidate;
+        List<Integer> fixed = protectedNormals
                 ? LegacyBProductionRunner.samplingFixedIndices(f.input(), CancellationProbe.NONE) : List.of();
         LegacyVisibleProfileSampler.Input visible = null;
         LegacyManagedProfileSampler.Input managed = null;
         if (sourceKind == SourceKind.VISIBLE) {
-            visible = candidate ? f.visibleImmediate().withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, fixed)
+            visible = protectedNormals ? f.visibleImmediate().withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, fixed)
                     : f.visibleImmediate();
-            if (candidate && visible.normalPolicy() != LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1)
+            if (protectedNormals && visible.normalPolicy() != LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1)
                 throw new IllegalStateException("Visible protected source fell back: " + visible.normalPolicyFallbackReason());
+            if (trackerComparisonPolicy != null) visible = visible.withTrackerPolicy(
+                    candidate ? trackerComparisonPolicy : LegacyTrackerPolicy.ORIGINAL_V02,
+                    visible.factualNativeSourcePitchRasterPx(), "");
         } else {
-            managed = candidate ? f.managedImmediate().withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, fixed)
+            managed = protectedNormals ? f.managedImmediate().withNormalPolicy(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, fixed)
                     : f.managedImmediate();
-            if (candidate && managed.normalPolicy() != LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1)
+            if (protectedNormals && managed.normalPolicy() != LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1)
                 throw new IllegalStateException("Managed protected source fell back: " + managed.normalPolicyFallbackReason());
+            if (trackerComparisonPolicy != null) managed = managed.withTrackerPolicy(
+                    candidate ? trackerComparisonPolicy : LegacyTrackerPolicy.ORIGINAL_V02,
+                    managed.factualNativeSourcePitchRasterPx(), "");
         }
+        LegacyTrackerPolicy actualTracker = visible != null ? visible.trackerPolicy() : managed.trackerPolicy();
+        String fallback = visible != null ? visible.trackerPolicyFallbackReason() : managed.trackerPolicyFallbackReason();
+        double actualPitch = (visible != null ? visible.factualNativeSourcePitchRasterPx()
+                : managed.factualNativeSourcePitchRasterPx()).orElse(Double.NaN);
+        double normalization = visible != null ? visible.options().trackerNormalizationRasterPx()
+                : managed.trackerNormalizationRasterPx();
+        String actualNormal = (visible != null ? visible.normalPolicy() : managed.normalPolicy()).id();
+        if (trackerComparisonPolicy != null && (actualTracker != (candidate ? trackerComparisonPolicy
+                : LegacyTrackerPolicy.ORIGINAL_V02) || !fallback.isEmpty() || !Double.isFinite(actualPitch)))
+            throw new IllegalStateException("Tracker comparison did not freeze the requested factual policy/pitch");
         AttemptMemoryLedger.Owner root = AttemptMemoryLedger.production().rootOwner();
         Accounted<LegacyBProductionRunner.Discovery> accounted = null;
         LegacyBProductionRunner.Discovery result;
@@ -213,7 +262,8 @@ public final class LegacyWideSecantPerformanceMain {
                 policy, elapsed, result.profileCount(), result.alternatives().size(), accepted.size(), result.seeds().size(),
                 digest, geometry, exact, warnings, supported,
                 f.fixtureHash(), alternativesJson, qualityFailures.isEmpty(), String.join("|", qualityFailures),
-                Map.copyOf(nativeOutputSignatures), Map.copyOf(acceptedGeometry));
+                Map.copyOf(nativeOutputSignatures), Map.copyOf(acceptedGeometry),
+                actualNormal, actualTracker.id(), normalization, actualPitch, fallback);
     }
 
     private static boolean materialGeometryDifference(Map<String, List<ProjectedPoint>> candidate,
@@ -705,7 +755,7 @@ public final class LegacyWideSecantPerformanceMain {
     }
 
     private static void writeCsv(Path path, List<Observation> observations) throws Exception {
-        StringBuilder csv = new StringBuilder("scene,source_kind,pair,order,policy,elapsed_ns,profile_count,alternative_count,accepted_alternative_count,seed_count,alternatives_sha256,geometry_sha256,fixed_points_exact,warnings,supported_profiles,quality_checks_passed,quality_failures,fixture_sha256,alternatives_json\n");
+        StringBuilder csv = new StringBuilder("scene,source_kind,pair,order,policy,elapsed_ns,profile_count,alternative_count,accepted_alternative_count,seed_count,alternatives_sha256,geometry_sha256,fixed_points_exact,warnings,supported_profiles,quality_checks_passed,quality_failures,fixture_sha256,alternatives_json,normal_policy_id,tracker_policy_id,tracker_normalization_raster_px,native_source_pitch_raster_px,tracker_fallback_reason\n");
         for (Observation row : observations) {
             csv.append(row.scene()).append(',').append(row.sourceKind()).append(',').append(row.pair()).append(',').append(row.order()).append(',')
                     .append(row.policy()).append(',').append(row.elapsedNanos()).append(',').append(row.profileCount())
@@ -713,19 +763,38 @@ public final class LegacyWideSecantPerformanceMain {
                     .append(row.alternativesDigest()).append(',').append(row.geometryDigest()).append(',').append(row.fixedPointsExact()).append(',')
                     .append(quote(row.warnings())).append(',').append(row.supportedProfiles()).append(',')
                     .append(row.qualityChecksPassed()).append(',').append(quote(row.qualityFailures())).append(',')
-                    .append(row.fixtureHash()).append(',').append(quote(row.alternativesJson())).append('\n');
+                    .append(row.fixtureHash()).append(',').append(quote(row.alternativesJson())).append(',')
+                    .append(row.normalPolicyId()).append(',').append(row.trackerPolicyId()).append(',')
+                    .append(row.normalization()).append(',').append(row.nativePitch()).append(',')
+                    .append(quote(row.trackerFallbackReason())).append('\n');
         }
         Files.writeString(path, csv);
     }
 
-    private static void writeSummary(Path path, int fork, List<Observation> rows, boolean preflight) throws Exception {
+    private static void writeSummary(Path path, int fork, List<Observation> rows, boolean preflight,
+            String productionHash, String harnessHash, String dependenciesHash) throws Exception {
         String runnerHash = resourceHash(LegacyBProductionRunner.class);
         String samplerHash = resourceHash(LegacyVisibleProfileSampler.class) + "/" + resourceHash(LegacyManagedProfileSampler.class);
         StringBuilder json = new StringBuilder("{\n  \"status\":\"" + (preflight ? "COMPLETED_ONE_PUBLIC_PREFLIGHT_PAIR_PER_SCENE_AND_SOURCE" : "COMPLETED_ONE_PUBLIC_SYNTHETIC_FORK") + "\",\n")
                 .append("  \"fork\":").append(fork).append(",\n  \"sourceKinds\":[\"VISIBLE_RENDERED\",\"MANAGED_NATIVE_Z15\"],\n")
                 .append("  \"decisionStatus\":\"").append(preflight ? "PREFLIGHT_ONLY_NO_PERFORMANCE_DECISION" : "INCONCLUSIVE_UNTIL_THREE_FORKS").append("\",\n")
-                .append("  \"immediatePolicyId\":\"").append(LegacyProfileNormalPolicy.IMMEDIATE_V1.id()).append("\",\n")
+                .append("  \"comparison\":\"").append(trackerComparisonPolicy == null ? "NORMAL_POLICY_V1" : "TRACKER_POLICY_V1").append("\",\n")
+                .append("  \"immediatePolicyId\":\"").append(trackerComparisonPolicy == null
+                        ? LegacyProfileNormalPolicy.IMMEDIATE_V1.id() : LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1.id()).append("\",\n")
                 .append("  \"candidatePolicyId\":\"").append(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1.id()).append("\",\n")
+                .append("  \"normalPolicyId\":\"").append(LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1.id()).append("\",\n")
+                .append("  \"baselineTrackerPolicyId\":\"").append(LegacyTrackerPolicy.ORIGINAL_V02.id()).append("\",\n")
+                .append("  \"candidateTrackerPolicyId\":\"").append(trackerComparisonPolicy == null
+                        ? LegacyTrackerPolicy.ORIGINAL_V02.id() : trackerComparisonPolicy.id()).append("\",\n")
+                .append("  \"trackerClassSha256\":\"").append(trackerClassHashes()).append("\",\n")
+                .append("  \"trackerPolicyClassSha256\":\"").append(resourceHash(LegacyTrackerPolicy.class)).append("\",\n")
+                .append("  \"productionClassesSha256\":\"").append(productionHash).append("\",\n")
+                .append("  \"productionClassesUnchanged\":true,\n")
+                .append("  \"harnessClassesSha256\":\"").append(harnessHash).append("\",\n")
+                .append("  \"runtimeDependenciesSha256\":\"").append(dependenciesHash).append("\",\n")
+                .append("  \"runtimeUnchanged\":true,\n")
+                .append("  \"javaRuntimeVersion\":\"").append(escape(System.getProperty("java.runtime.version"))).append("\",\n")
+                .append("  \"javaVmName\":\"").append(escape(System.getProperty("java.vm.name"))).append("\",\n")
                 .append("  \"runnerClassSha256\":\"").append(runnerHash).append("\",\n")
                 .append("  \"samplerClassSha256\":\"").append(samplerHash).append("\",\n")
                 .append("  \"harnessClassSha256\":\"").append(resourceHash(LegacyWideSecantPerformanceMain.class)).append("\",\n")
@@ -737,7 +806,7 @@ public final class LegacyWideSecantPerformanceMain {
                 .append("  \"plannedFreshJvmForks\":3,\n  \"measuredRows\":").append(rows.size()).append(",\n")
                 .append("  \"predeclaredBlock\":\"overhead > max(5ms,10% baseline) or p95 > max(10ms,20% baseline) in >=2/3 forks/scene/source\",\n")
                 .append("  \"sourceSupport\":\"synthetic heat raster; supported-profile count and safety warnings retained per discovery\",\n")
-                .append("  \"geometryControls\":\"straight and parallel native outputs exactly match by nativeId; Gaussian interior stays within 3m of analytic ridge and protected east-backtrack is zero; parallel alternatives remain on distinct +/-24m branches within factual source-pixel pitch; hairpin is nonregression-only against immediate baseline within source-pixel pitch\",\n")
+                .append("  \"geometryControls\":\"straight and parallel native outputs exactly match by nativeId; Gaussian interior stays within 3m of analytic ridge and protected east-backtrack is zero; parallel alternatives remain on distinct +/-24m branches within factual source-pixel pitch; hairpin is nonregression-only against the declared baseline within source-pixel pitch; tracker comparison keeps protected normals on BOTH routes\",\n")
                 .append("  \"hairpinControlLimitation\":\"the saved managed immediate baseline apex is x=-116.485m versus the analytic x=0m apex; this control checks only policy nonregression and does not claim true-apex fidelity\",\n")
                 .append("  \"noBExecution\":true,\n  \"timingScope\":\"policy planning + actual production discovery + owner close; excludes fixture creation, acquisition, rendering, export\",\n")
                 .append("  \"managedSource\":\"decoded native 1024x1024 z15 raster; pixel-center EPSG:3857 mapping; virtual scale P/(0.389/6); RAW_HIGH_RESOLUTION\",\n")
@@ -768,6 +837,53 @@ public final class LegacyWideSecantPerformanceMain {
         Files.writeString(path, json);
     }
 
+    /** Binds nested input/adapter/model classes too, without initializing unused classes. */
+    private static String productionClassesHash() throws Exception {
+        return codeLocationHash(RidgeTracker.class);
+    }
+
+    private static String codeLocationHash(Class<?> owner) throws Exception {
+        Path location = Path.of(owner.getProtectionDomain().getCodeSource().getLocation().toURI());
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        if (Files.isRegularFile(location)) {
+            digest.update(Files.readAllBytes(location));
+        } else {
+            try (var paths = Files.walk(location)) {
+                var classes = paths.filter(path -> path.toString().endsWith(".class"))
+                        .sorted().toList();
+                if (classes.isEmpty()) throw new IllegalStateException("Production classes are unavailable");
+                for (Path path : classes) {
+                    digest.update(location.relativize(path).toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    digest.update((byte) 0);
+                    digest.update(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)));
+                }
+            }
+        }
+        return HexFormat.of().formatHex(digest.digest());
+    }
+
+    /** Includes the actual JOSM and every other classpath dependency, outside timed work. */
+    private static String runtimeDependenciesHash() throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        var files = Arrays.stream(System.getProperty("java.class.path").split(java.io.File.pathSeparator))
+                .map(Path::of).filter(Files::isRegularFile).sorted().toList();
+        if (files.isEmpty()) throw new IllegalStateException("Runtime dependency jars are unavailable");
+        for (Path file : files) {
+            digest.update(file.getFileName().toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            digest.update((byte) 0);
+            digest.update(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(file)));
+        }
+        return HexFormat.of().formatHex(digest.digest());
+    }
+
+    private static String trackerClassHashes() throws Exception {
+        StringBuilder hashes = new StringBuilder(resourceHash(RidgeTracker.class));
+        for (Class<?> nested : Arrays.stream(RidgeTracker.class.getDeclaredClasses())
+                .sorted(java.util.Comparator.comparing(Class::getName)).toList())
+            hashes.append('/').append(resourceHash(nested));
+        return hashes.toString();
+    }
+
     private static void appendSummaryRow(StringBuilder json, Observation r) {
         json.append("\n    {\"scene\":\"").append(r.scene()).append("\",\"sourceKind\":\"").append(r.sourceKind()).append("\",\"pair\":").append(r.pair())
                 .append(",\"policy\":\"").append(r.policy()).append("\",\"elapsedNanos\":").append(r.elapsedNanos())
@@ -776,7 +892,13 @@ public final class LegacyWideSecantPerformanceMain {
                 .append(",\"warnings\":\"").append(escape(r.warnings())).append("\",\"qualityChecksPassed\":").append(r.qualityChecksPassed())
                 .append(",\"qualityFailures\":\"").append(escape(r.qualityFailures())).append("\"")
                 .append(",\"fixtureSha256\":\"").append(r.fixtureHash()).append("\",\"alternativesSha256\":\"")
-                .append(r.alternativesDigest()).append("\",\"geometrySha256\":\"").append(r.geometryDigest()).append("\"}");
+                .append(r.alternativesDigest()).append("\",\"geometrySha256\":\"").append(r.geometryDigest()).append('"')
+                .append(",\"normalPolicyId\":\"").append(r.normalPolicyId())
+                .append("\",\"trackerPolicyId\":\"").append(r.trackerPolicyId())
+                .append("\",\"trackerPolicyFallbackReason\":\"").append(escape(r.trackerFallbackReason())).append('"')
+                .append(",\"trackerNormalizationRasterPx\":").append(r.normalization())
+                .append(",\"nativeSourcePitchRasterPx\":").append(Double.isFinite(r.nativePitch()) ? r.nativePitch() : "null")
+                .append('}');
     }
 
     private static String pairedSummary(List<Observation> rows) {
@@ -784,7 +906,7 @@ public final class LegacyWideSecantPerformanceMain {
         for (Scene scene : Scene.values()) for (SourceKind sourceKind : SourceKind.values()) {
             Map<Integer, Long> old = new LinkedHashMap<>(), next = new LinkedHashMap<>();
             for (Observation row : rows) if (row.scene() == scene && row.sourceKind() == sourceKind) {
-                (row.policy().equals("IMMEDIATE_V1") ? old : next).put(row.pair(), row.elapsedNanos());
+                (row.policy().equals(baselineLabel()) ? old : next).put(row.pair(), row.elapsedNanos());
             }
             List<Double> overheadMs = new ArrayList<>(), overheadPercent = new ArrayList<>(), ratios = new ArrayList<>();
             StringBuilder raw = new StringBuilder("[");

@@ -51,3 +51,40 @@ summary retain the completed observations; the gate rejects that partial fork.
 These synthetic results are a public performance regression check. They do not
 establish quality on captured data or replace the production/ordinary-action
 benchmark and cancellation gates.
+
+## Explicit tracker-policy comparison
+
+To measure a tracker change, retain protected secant normals on **both** routes
+and compare `legacy-v02` against the named frozen tracker policy. Set
+`-PlegacyTrackerPerformancePolicy=native-reciprocal-support-paired-chord-v3`
+on the same three fork commands, using three fresh output directories. This
+mode uses the actual production visible/managed discovery runner, including
+source-policy preparation, sampling, tracking, geometry, and owner close. It
+does not include B, acquisition, rendering, or export.
+The baseline is the retained historical tracker policy in the current runtime,
+not a separately launched previous-release binary. Common capture/codec wiring
+cost is therefore shared; report this boundary rather than claiming an old-JAR
+wall-clock speed comparison.
+
+For a single bounded local check before committing the CI workload, add
+`-PlegacyNormalPerformancePreflight=true` and use a fresh output directory.
+This executes one pair per scene/source without warmups and records an explicit
+preflight-only status. Neither gate accepts that output as a performance pass.
+
+Gate those outputs with `scripts/legacy-tracker-performance-gate.py`, supplying
+the same three `--fork-dir` arguments, `--report`, and the explicit
+`--candidate-policy native-reciprocal-support-paired-chord-v3`. The original
+normal-policy gate stays unchanged and rejects tracker-labelled evidence.
+The tracker gate validates both source normal policies, each actual frozen
+tracker ID, separate normalization/native pitch, absence of fallback, and class
+bindings before reusing the unchanged 3-fork, 8-group, 20-pair statistical gate.
+Bindings include the complete production and test/harness class trees, every
+classpath dependency JAR (including JOSM), and JVM runtime/version identity.
+Class and dependency hashes must remain unchanged before/after each fork;
+all bindings must agree across forks. Hashing runs outside timed discovery.
+Raw artifacts are never rewritten. Geometry/support, endpoint, parallel-strand,
+and hairpin nonregression checks remain active. Unlike the normal-policy
+experiment, the tracker mode does not require Gaussian geometry to differ:
+that fixture already has corrected protected normals on both routes. A
+separate faithful paired-kink regression proves the new heuristic actually
+changes the intended defective geometry.

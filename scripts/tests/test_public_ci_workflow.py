@@ -125,3 +125,27 @@ def test_legacy_normal_performance_runs_three_forks_and_uploads_raw_evidence() -
     assert upload["with"]["name"] == "public-legacy-normal-performance"
     assert upload["with"]["if-no-files-found"] == "ignore"
     assert upload["with"]["path"] == "${{ runner.temp }}/legacy-normal-performance/"
+
+
+def test_tracker_performance_uses_explicit_same_policy_and_retains_failed_forks() -> None:
+    job = _workflow()["jobs"]["legacy-tracker-performance"]
+    steps = job["steps"]
+    run = next(step for step in steps if step.get("name") == "Run three fresh public Legacy tracker-policy forks")
+    host = next(step for step in steps if step.get("name") == "Prepare pinned JOSM 19555 host")
+    gate = next(step for step in steps if step.get("name") == "Gate raw tracker-policy fork results")
+    policy = run["env"]["TRACKER_POLICY"]
+    assert policy.startswith("native-reciprocal-support-paired-chord-v")
+    assert f"--candidate-policy {policy}" in gate["run"]
+    assert steps.index(host) < steps.index(run)
+    assert "scripts/prepare-ci-josm19555.py" in host["run"]
+    assert "for fork in 0 1 2" in run["run"]
+    assert '-PlegacyTrackerPerformancePolicy="$TRACKER_POLICY"' in run["run"]
+    assert "legacyNormalPerformancePreflight" not in run["run"]
+    assert 'exit "$failed"' in run["run"]
+    assert gate["if"] == "always()"
+    assert "legacy-tracker-performance-gate.py" in gate["run"]
+    for fork in range(3):
+        assert f'--fork-dir "$PERF_ROOT/fork-{fork}"' in gate["run"]
+    upload = next(step for step in steps if step.get("uses") == "actions/upload-artifact@v4")
+    assert upload["if"] == "always()"
+    assert upload["with"]["path"] == "${{ runner.temp }}/legacy-tracker-performance/"

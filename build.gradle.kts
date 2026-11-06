@@ -247,14 +247,24 @@ tasks.register<JavaExec>("legacyNormalPerformance") {
     jvmArgs("-Xmx512m")
     val fork = providers.gradleProperty("legacyNormalPerformanceFork")
     val output = providers.gradleProperty("legacyNormalPerformanceOutput")
+    val trackerPolicy = providers.gradleProperty("legacyTrackerPerformancePolicy")
+    val preflight = providers.gradleProperty("legacyNormalPerformancePreflight")
+        .map { it.toBooleanStrict() }.orElse(false)
     inputs.property("fork", fork.orElse("missing"))
     inputs.property("output", output.orElse("missing"))
+    inputs.property("trackerPolicy", trackerPolicy.orElse("normal-policy-comparison"))
+    inputs.property("preflight", preflight)
     doFirst {
-        val forkValue = fork.orNull?.toIntOrNull()
-            ?: throw GradleException("legacyNormalPerformance requires -PlegacyNormalPerformanceFork=0|1|2")
-        require(forkValue in 0..2) { "legacyNormalPerformanceFork must be 0, 1, or 2" }
         val outputPath = output.orNull?.takeIf { it.isNotBlank() }
             ?: throw GradleException("legacyNormalPerformance requires -PlegacyNormalPerformanceOutput=<new directory>")
-        args("--fork", forkValue.toString(), file(outputPath).absolutePath)
+        if (preflight.get()) {
+            args("--preflight", file(outputPath).absolutePath)
+        } else {
+            val forkValue = fork.orNull?.toIntOrNull()
+                ?: throw GradleException("legacyNormalPerformance requires -PlegacyNormalPerformanceFork=0|1|2")
+            require(forkValue in 0..2) { "legacyNormalPerformanceFork must be 0, 1, or 2" }
+            args("--fork", forkValue.toString(), file(outputPath).absolutePath)
+        }
+        if (trackerPolicy.isPresent) args("--tracker-policy", trackerPolicy.get())
     }
 }
