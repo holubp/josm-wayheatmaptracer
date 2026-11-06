@@ -14,6 +14,65 @@
 
 ### Active execution card — authoritative
 
+**CI TEST-ORACLE REPAIR GREEN — 2026-11-06:** Initial run42223692356 is
+terminal with2512 Java tests, one failure, zero errors/skips. The sole failure
+is the managed Hybrid reservation-boundary test omitting the new8456-byte
+tracker scratch charge; it refused before intended controlled cancellation.
+GUI jobs were skipped, so no GUI/JAR completion claim. Source model is unchanged.
+Bounded Luna test-only commit `83a4248f` restores independent expected native
+work from observed sample counts, adds independent tracker charge40N+8256,
+and retains exact/one-byte-short/phase/peak/zero-leak assertions. Both supportV1
+and latestV4 now exercise the semantic real-runner routing discriminator.
+Final23 focused tests passed,0 failures/errors/skips; RED and final XML/log are
+under controller build `private-drasov-resume-20261105/feedback-followup-20261106/ci-v4-42223692356/memory-test-repair/`.
+Controller diff audit accepted the correction; only the allocation comment was
+clarified afterward (16N array refs+24N boxes+8256fixed). Production diff against
+7bb70192 is EMPTY. Private107/core99/Drasov and new tracker speed PASS remain
+valid; full public and GUI need fresh-source CI. The new CI normal job is the
+one complete fresh repeat of the initial inconclusive normal cohort; do NOT
+automatically start a third timing cohort if it is again inconclusive.
+Old run automation ended and is explicitly NEEDS_DIAGNOSIS, not running; do not
+restart its claim or infer liveness from the old WAITING state. Next push the
+test-only repair/current checkpoint, monitor new run, download all evidence and
+verify final JAR. No public release; goal remains active.
+
+**FINAL-SOURCE CI ACTIVE — 2026-11-06:** Scoped source pushed as
+`7bb70192a6d392658f55d618ac59b4df164c9671` on `codex/v022-legacy-b-release`.
+Build run42223692356: https://github.com/holubp/josm-wayheatmaptracer/actions/runs/42223692356.
+Unattended watch process49876 writes root build
+`legacy-wide-secant/feedback-followup-20261106/ci-v4-42223692356/watch.log`.
+Tracker performance job127911694046 PASSED: three fresh forks/eight groups/
+20 pairs, zero breaches, largest median overhead3.3209645ms and p95 overhead
+6.756366ms. Downloaded raw evidence locally re-evaluated with unchanged strict
+gate: `tracker/local-rechecked-gate.json` PASS. No end-to-end old-JAR speed claim.
+
+Normal-policy job127911694093 is INCONCLUSIVE, not a statistical block: one
+isolated visible-hairpin fork2 p95 breach13.013233ms vs10.2653638ms limit;
+its median overhead is -0.0061395ms. All three forks completed with all320 rows
+and quality checks; original cohort preserved in `normal/`. Repeat the COMPLETE
+three-fork job with unchanged limits once the parent workflow is terminal.
+An early rerun request was refused while public-validation remained in progress;
+do not repeatedly retry during that state. Full public/GUI validation, fresh
+normal-cohort result, JAR download/checksum and final audit remain pending.
+No public release occurred and goal remains active.
+
+**Unattended CI continuation:** Artifact-only runner
+`ci-v4-42223692356/finish-ci.py` is active as exec session27014; progress is
+`automation-state.json`/`automation.log` in that same root-build evidence folder.
+It reuses existing watcher PID12480/session49876, waits for the initial workflow
+to be terminal, verifies exact source7bb70192, and permits AT MOST ONE complete
+normal-job rerun only if it is the sole failed job and original raw gate remains
+the admitted isolated INCONCLUSIVE cohort. Every other failure stops with
+NEEDS_DIAGNOSIS. It preserves original raw results, waits for the new attempt,
+then downloads fresh normal evidence, full public reports, both GUI summaries
+and test JAR for controller verification. No threshold changes, source edits,
+private-data uploads or release actions. Python syntax/read-only metadata smoke
+passed against live attempt1. Previous public suite needed27m14s, so remote
+compute remains unattended rather than consuming reasoning on repeated polls.
+Next supervisor: inspect actual runner/process state and result JSON; do not
+restart solely because a poll timed out. After download, independently recheck
+both gates, full XML/source/GUI/JAR manifest+SHA; only then final goal audit.
+
 **READY FOR PUBLIC CI — 2026-11-06:** V4 public preflight94633 exited0 in1m31s:
 16 discovery rows/eight scene-source groups, all quality checks PASS, complete
 runtime/class bindings unchanged. It has no statistical speed verdict. Source

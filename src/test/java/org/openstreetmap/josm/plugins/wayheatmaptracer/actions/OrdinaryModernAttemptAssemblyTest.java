@@ -339,8 +339,8 @@ class OrdinaryModernAttemptAssemblyTest {
         // 512 bytes per original occurrence plus 2,048 bytes, in addition to native sampling.
         long policyWorking = explicitPolicy ? 512L * computed.legacyB().input().originalProjected().size() + 2048L : 0L;
         long nativeWorking = 12L * pixels + 4096L * samples;
-        // Independent paired-policy contract: two reference arrays (16N), boxed old/new offsets (16N),
-        // per-profile record/reference allowance (8N), and fixed array/record/iterator allowance (8,256).
+        // Independent paired-policy contract: two reference arrays (16N), boxed offsets (24N),
+        // plus 8,256 fixed bytes for headers, the policy record and bounded temporary scratch.
         long trackerWorking = trackerPolicy == org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyTrackerPolicy.ORIGINAL_V02
                 ? 0L
                 : 40L * profiles.size() + 8256L;
