@@ -66,11 +66,25 @@ final class Format15NumericalPolicyReceipt {
     /** Binds Hybrid's effective source policy while retaining the byte-exact historical receipt. */
     static Format15Artifact withLegacySourcePolicy(Format15Artifact receipt, TrackerMode engine,
             FrozenLegacyBInput source) {
-        if (engine != TrackerMode.LEGACY_THEN_B || source == null || !source.hasExplicitNormalPolicy()) return receipt;
+        if (engine != TrackerMode.LEGACY_THEN_B || source == null
+                || !source.hasExplicitNormalPolicy() && !source.hasExplicitTrackerPolicy()) return receipt;
         String json = new String(receipt.bytes(), StandardCharsets.UTF_8);
         String old = "\"inferencePolicy\":\"" + inferencePolicy(engine) + "\"";
-        String actual = "\"inferencePolicy\":\"legacy-then-b-v2/" + source.normalPolicy().id() + "/"
-                + inferencePolicy(TrackerMode.PROBABILISTIC) + "\"";
+        String actual;
+        if (source.hasExplicitTrackerPolicy()) {
+            String pitch = source.nativeSourcePitchRasterPx().isPresent()
+                    ? Double.toString(source.nativeSourcePitchRasterPx().getAsDouble()) : "unavailable";
+            String normalFallback = source.normalPolicyFallbackReason().isEmpty()
+                    ? "none" : source.normalPolicyFallbackReason();
+            String trackerFallback = source.trackerPolicyFallbackReason().isEmpty()
+                    ? "none" : source.trackerPolicyFallbackReason();
+            actual = "\"inferencePolicy\":\"legacy-then-b-v3/" + source.normalPolicy().id() + "/"
+                    + normalFallback + "/" + source.trackerPolicy().id() + "/" + pitch + "/"
+                    + trackerFallback + "/" + inferencePolicy(TrackerMode.PROBABILISTIC) + "\"";
+        } else {
+            actual = "\"inferencePolicy\":\"legacy-then-b-v2/" + source.normalPolicy().id() + "/"
+                    + inferencePolicy(TrackerMode.PROBABILISTIC) + "\"";
+        }
         if (!json.contains(old)) throw new IllegalArgumentException("Legacy numerical policy is unbound");
         return Format15Artifact.text(ARTIFACT, json.replace(old, actual));
     }

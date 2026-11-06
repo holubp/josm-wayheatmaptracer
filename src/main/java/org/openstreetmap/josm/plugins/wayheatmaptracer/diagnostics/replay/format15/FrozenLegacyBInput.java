@@ -49,11 +49,12 @@ public final class FrozenLegacyBInput {
     private final boolean simplify;
     private final double projectedTolerance;
     private final Optional<ParentPolicy> parentPolicy;
+    private final boolean explicitTrackerPolicy;
 
     private FrozenLegacyBInput(int sourceKind, byte[] sourceBytes, List<Occurrence> occurrences,
             List<OccurrenceRange> frozenRanges, boolean simplify, double projectedTolerance,
             LongConsumer reserve) {
-        if (sourceKind != 1 && sourceKind != 2 || sourceBytes == null
+        if (sourceKind != 1 && sourceKind != 2 || sourceBytes == null || sourceBytes.length < 12
                 || sourceBytes.length > Format15Safety.MAX_ARTIFACT_BYTES
                 || occurrences == null || occurrences.size() < 2 || frozenRanges == null
                 || !Double.isFinite(projectedTolerance) || projectedTolerance < 0) {
@@ -61,6 +62,7 @@ public final class FrozenLegacyBInput {
         }
         this.sourceKind = sourceKind;
         this.sourceBytes = sourceBytes.clone();
+        explicitTrackerPolicy = java.nio.ByteBuffer.wrap(this.sourceBytes).getInt(4) >= 3;
         visibleSource = sourceKind == 1 ? LegacySourceCodec.decodeVisible(sourceBytes, reserve) : null;
         managedSource = sourceKind == 2 ? LegacySourceCodec.decodeManaged(sourceBytes, reserve) : null;
         this.occurrences = List.copyOf(occurrences);
@@ -79,6 +81,7 @@ public final class FrozenLegacyBInput {
 
     private FrozenLegacyBInput(FrozenLegacyBInput source, ParentPolicy policy) {
         sourceKind = source.sourceKind; sourceBytes = source.sourceBytes;
+        explicitTrackerPolicy = source.explicitTrackerPolicy;
         visibleSource = source.visibleSource; managedSource = source.managedSource;
         occurrences = source.occurrences; frozenRanges = source.frozenRanges;
         simplify = source.simplify; projectedTolerance = source.projectedTolerance;
@@ -111,6 +114,9 @@ public final class FrozenLegacyBInput {
     public String trackerPolicyFallbackReason() {
         return visibleSource != null ? visibleSource.trackerPolicyFallbackReason() : managedSource.trackerPolicyFallbackReason();
     }
+
+    /** V3 source payloads carry explicit tracker policy metadata; V1/V2 mean historical behavior. */
+    public boolean hasExplicitTrackerPolicy() { return explicitTrackerPolicy; }
 
     public boolean hasExplicitNormalPolicy() {
         return normalPolicy() != LegacyProfileNormalPolicy.IMMEDIATE_V1 || !normalPolicyFallbackReason().isEmpty();
