@@ -26,14 +26,16 @@ outside the manual envelope by8.41m, mean error >historical+1 native pixel.
 Exact XML is archived under controller build
 `legacy-wide-secant/feedback-followup-20261106/v3-other-capture/red.xml`.
 The stronger test is intentionally RED, not waived. Aggregate run33626 is
-terminal:50 comparisons/10ways/five palettes, exactly TWO regressions (bothpurple).
+terminal:50 comparisons/10ways/five palettes, TWO metric regressions (bothpurple).
 Second case31898795 mean1.9393→2.1382px/max6.8496→12.1386px, previously inside
 manual envelope now outside by2.05m; first case's historical mean11.7850 and
 max60.1545px. All50 comparisons and aggregate XML are archived under the same
 `v3-other-capture/` evidence directory. Other48 stay within the declared
-one-native-pixel mean/max comparison bounds. Preserve explicit no-new-envelope
-violation gate too. Sol implementer is authorized ONE bounded same-bank stage
-diagnosis of bothpurple cases (Original/support/pairedV1/V2/V3), max512MiB/120s,
+one-native-pixel mean/max comparison bounds. Independent envelope inspection
+also finds purple30986022 changes inside→outside (mean3.099494→3.602920px,
+max42.488663px unchanged): THREE blocked controls in total. Preserve explicit
+no-new-envelope violation gate. Sol implementer is authorized ONE bounded same-bank
+stage diagnosis of all three purple cases (Original/support/pairedV1/V2/V3), max512MiB/120s,
 hash-bound runtime/input, then a grounded regression repair. No arbitrary palette
 or case fallback, tuning, new filters or broad model runs. Preserve Drasov V2/V3
 geometry byte identity and existing V2 semantics; find causal stage first.
