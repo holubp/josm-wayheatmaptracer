@@ -190,7 +190,7 @@ jobs:
       - name: Run three fresh public Legacy tracker-policy forks
         env:
           PERF_ROOT: ${{ runner.temp }}/legacy-tracker-performance
-          TRACKER_POLICY: native-reciprocal-support-paired-chord-v3
+          TRACKER_POLICY: native-reciprocal-support-paired-chord-v4
         run: |
           mkdir -p "$PERF_ROOT"
           : > "$PERF_ROOT/invocations.txt"
@@ -215,7 +215,7 @@ jobs:
           PERF_ROOT: ${{ runner.temp }}/legacy-tracker-performance
         run: |
           python3 scripts/legacy-tracker-performance-gate.py \
-            --candidate-policy native-reciprocal-support-paired-chord-v3 \
+            --candidate-policy native-reciprocal-support-paired-chord-v4 \
             --fork-dir "$PERF_ROOT/fork-0" \
             --fork-dir "$PERF_ROOT/fork-1" \
             --fork-dir "$PERF_ROOT/fork-2" \

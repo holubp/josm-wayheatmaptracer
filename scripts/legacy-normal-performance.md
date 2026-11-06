@@ -56,7 +56,7 @@ benchmark and cancellation gates.
 
 To measure a tracker change, retain protected secant normals on **both** routes
 and compare `legacy-v02` against the named frozen tracker policy. Set
-`-PlegacyTrackerPerformancePolicy=native-reciprocal-support-paired-chord-v3`
+`-PlegacyTrackerPerformancePolicy=native-reciprocal-support-paired-chord-v4`
 on the same three fork commands, using three fresh output directories. This
 mode uses the actual production visible/managed discovery runner, including
 source-policy preparation, sampling, tracking, geometry, and owner close. It
@@ -73,7 +73,7 @@ preflight-only status. Neither gate accepts that output as a performance pass.
 
 Gate those outputs with `scripts/legacy-tracker-performance-gate.py`, supplying
 the same three `--fork-dir` arguments, `--report`, and the explicit
-`--candidate-policy native-reciprocal-support-paired-chord-v3`. The original
+`--candidate-policy native-reciprocal-support-paired-chord-v4`. The original
 normal-policy gate stays unchanged and rejects tracker-labelled evidence.
 The tracker gate validates both source normal policies, each actual frozen
 tracker ID, separate normalization/native pitch, absence of fallback, and class
