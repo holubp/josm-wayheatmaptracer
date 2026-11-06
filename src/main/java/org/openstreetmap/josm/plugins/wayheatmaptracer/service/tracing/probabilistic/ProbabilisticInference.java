@@ -47,6 +47,14 @@ public final class ProbabilisticInference {
                 ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V3,progress);
     }
 
+    ProbabilisticInferenceResult solveCachedVersion(List<InferenceProfile> profiles,
+            EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
+            CancellationProbe cancellation, AttemptMemoryLedger.Owner owner,
+            ProbabilisticExecutionPolicy.Mode mode, WorkProgress progress) {
+        if (mode == null || !mode.cached()) throw new IllegalArgumentException("A named cached policy is required");
+        return solve(profiles,parameters,budgets,decisionRegion,cancellation,owner,mode,progress);
+    }
+
     /**
      * Solves one complete admitted state graph without score-based beam pruning.
      *
@@ -120,10 +128,13 @@ public final class ProbabilisticInference {
         try (workOwner) {
             workCounter = allocated(workOwner, AttemptMemoryLedger.objectBytes(80),
                     "execution accounting", () -> new WorkCounter(mode, budgets.maximumTransitions()));
-            if (mode == ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V3) {
+            if (mode.cached()) {
                 PreparedBKernel cache = PreparedBKernel.prepare(profiles, parameters, decisionRegion,
                         cancellation, workOwner.child("primitive-exact-kernel"));
-                workCounter = allocated(workOwner, AttemptMemoryLedger.objectBytes(88),
+                workCounter = mode == ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V4
+                        ? allocated(workOwner,AttemptMemoryLedger.objectBytes(144),
+                            "merged execution accounting",() -> new MergedWorkCounter(mode,budgets.maximumTransitions(),cache))
+                        : allocated(workOwner, AttemptMemoryLedger.objectBytes(88),
                         "cached execution accounting", () -> new CachedWorkCounter(mode,
                                 budgets.maximumTransitions(), cache));
             }
@@ -261,6 +272,22 @@ public final class ProbabilisticInference {
             if (progress != null && workCounter != null) {
                 progress.computed(workCounter.pairVisits,
                         Math.addExact(workCounter.forwardBackwardScores,workCounter.kBestScores));
+            }
+            if (workCounter instanceof MergedWorkCounter merged) {
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add("b.merge.headScores",merged.headScores);
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add("b.merge.advances",merged.advances);
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add("b.merge.pops",merged.pops);
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add("b.merge.cutoffEnergyTies",merged.cutoffEnergyTies);
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add("b.merge.pendingPruned",merged.pendingPruned);
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add("b.merge.closedStreams",merged.closedStreams);
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add("b.merge.scratchBytes",merged.scratchBytes);
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record("b.merge.lastPass.headScores",merged.headScores);
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record("b.merge.lastPass.advances",merged.advances);
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record("b.merge.lastPass.pops",merged.pops);
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record("b.merge.lastPass.cutoffEnergyTies",merged.cutoffEnergyTies);
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record("b.merge.lastPass.pendingPruned",merged.pendingPruned);
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record("b.merge.lastPass.closedStreams",merged.closedStreams);
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record("b.merge.lastPass.scratchBytes",merged.scratchBytes);
             }
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
                 "inference.extensionDescriptors", workCounter == null ? 0 : workCounter.extensionDescriptors);
@@ -490,6 +517,11 @@ public final class ProbabilisticInference {
             boolean exact = workCounter.mode.exactDominance();
             DescriptorHeap descriptors = exact ? allocated(scratchOwner, AttemptMemoryLedger.objectBytes(48),
                     "k-best descriptors", () -> new DescriptorHeap(cap, cancellation, scratchOwner)) : null;
+            boolean merge = workCounter.mode == ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V4;
+            PredecessorHeadHeap heads = merge ? allocated(scratchOwner,AttemptMemoryLedger.objectBytes(56),
+                    "k-best predecessor heads",() -> new PredecessorHeadHeap(beforeStates,cancellation,scratchOwner)) : null;
+            if (merge) ((MergedWorkCounter)workCounter).scratchBytes = Math.addExact(
+                    ((MergedWorkCounter)workCounter).scratchBytes,PredecessorHeadHeap.allocationBytes(beforeStates));
             double[] extensionEnergy = exact ? null : allocated(scratchOwner,
                 AttemptMemoryLedger.arrayBytes(streamCapacity, Double.BYTES), "k-best descriptors",
                 () -> new double[streamCapacity]);
@@ -509,6 +541,7 @@ public final class ProbabilisticInference {
                 for (int state = 0; state < nextStates; state++) {
                     if (exact) {
                         descriptors.reset(state);
+                        if (merge) heads.reset();
                         boolean pairReady = false;
                         double unaryPair = 0.0;
                         boolean headingReady = false;
@@ -563,6 +596,16 @@ public final class ProbabilisticInference {
                                         firstHeading, secondHeading);
                             }
                             double increment = unaryPair + triple;
+                            if (merge) {
+                                cancellation.checkpoint();
+                                if (!workCounter.score(false)) return new KBestResult(List.of(),0,true,transitions,
+                                        "transition budget exceeded during k-best head preparation");
+                                transitions++; workCounter.extensionDescriptors++;
+                                var first = prefixes.get(0);
+                                ((MergedWorkCounter)workCounter).headScores++;
+                                heads.offer(before,0,first.energy()+increment,increment,first.lexicalRank);
+                                continue;
+                            }
                             for (int index = 0; index < prefixes.size(); index++) {
                                 cancellation.checkpoint();
                                 if (!workCounter.score(false)) {
@@ -575,6 +618,42 @@ public final class ProbabilisticInference {
                                 workCounter.extensionDescriptors++;
                                 if (descriptors.strictlyDominated(energy, increment)) break;
                                 descriptors.offer(before, index, energy, prefix.lexicalRank);
+                            }
+                        }
+                        if (merge) {
+                            var metrics = (MergedWorkCounter)workCounter;
+                            while (heads.size > 0) {
+                                cancellation.checkpoint();
+                                // Prefix energies are sorted. Adding one fixed finite increment is
+                                // monotone in binary64 ENERGY, not necessarily in lexical order after
+                                // rounded collapse. Therefore every cutoff-energy tie is exhausted.
+                                // No early cutoff is permitted while a pending head/increment is nonfinite.
+                                if (heads.allFinite() && descriptors.strictlyDominated(heads.energy[0],heads.increment[0])) {
+                                    metrics.pendingPruned = Math.addExact(metrics.pendingPruned,heads.size);
+                                    break;
+                                }
+                                int before=heads.before[0],index=heads.prefix[0];
+                                double energy=heads.energy[0],increment=heads.increment[0];
+                                long rank=heads.rank[0];
+                                if (descriptors.size==cap && energy==descriptors.energy[0]) metrics.cutoffEnergyTies++;
+                                descriptors.offer(before,index,energy,rank); // Reuse the already scored head.
+                                heads.pop(); metrics.pops++;
+                                List<PathRecord> prefixes=current[before][prior];
+                                int nextIndex=index+1;
+                                if (nextIndex < prefixes.size()) {
+                                    cancellation.checkpoint();
+                                    if (!workCounter.score(false)) return new KBestResult(List.of(),0,true,transitions,
+                                            "transition budget exceeded during k-best stream advance");
+                                    transitions++; workCounter.extensionDescriptors++; metrics.advances++;
+                                    var nextPrefix=prefixes.get(nextIndex);
+                                    double nextEnergy=nextPrefix.energy()+increment;
+                                    if (Double.isFinite(energy) && Double.isFinite(nextEnergy)
+                                            && Double.isFinite(increment) && Double.compare(nextEnergy,energy)<0)
+                                        throw new ArithmeticException("non-monotone predecessor stream energy");
+                                    heads.offer(before,nextIndex,nextEnergy,increment,nextPrefix.lexicalRank);
+                                } else {
+                                    heads.closeStream(); metrics.closedStreams++;
+                                }
                             }
                         }
                         descriptors.sortWinners();
@@ -1675,13 +1754,83 @@ public final class ProbabilisticInference {
         }
     }
 
-    private static final class CachedWorkCounter extends WorkCounter {
+    private static class CachedWorkCounter extends WorkCounter {
         private final PreparedBKernel cache;
         CachedWorkCounter(ProbabilisticExecutionPolicy.Mode mode, long limit, PreparedBKernel cache) {
             super(mode, limit);
             this.cache = cache;
         }
         @Override PreparedBKernel kernel() { return cache; }
+    }
+
+    private static final class MergedWorkCounter extends CachedWorkCounter {
+        private long headScores,advances,pops,cutoffEnergyTies,pendingPruned,closedStreams,scratchBytes;
+        MergedWorkCounter(ProbabilisticExecutionPolicy.Mode mode,long limit,PreparedBKernel cache) {
+            super(mode,limit,cache);
+        }
+    }
+
+    /** One pending rounded descriptor per predecessor; no path records or cubic storage. */
+    private static final class PredecessorHeadHeap {
+        private final int[] before,prefix;
+        private final double[] energy,increment;
+        private final long[] rank;
+        private final CancellationProbe cancellation;
+        private int size,nonfinite;
+        PredecessorHeadHeap(int cap,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner) {
+            this.cancellation=cancellation;cancellation.checkpoint();
+            before=allocated(owner,AttemptMemoryLedger.arrayBytes(cap,Integer.BYTES),"k-best predecessor heads",() -> new int[cap]);
+            prefix=allocated(owner,AttemptMemoryLedger.arrayBytes(cap,Integer.BYTES),"k-best predecessor heads",() -> new int[cap]);
+            energy=allocated(owner,AttemptMemoryLedger.arrayBytes(cap,Double.BYTES),"k-best predecessor heads",() -> new double[cap]);
+            increment=allocated(owner,AttemptMemoryLedger.arrayBytes(cap,Double.BYTES),"k-best predecessor heads",() -> new double[cap]);
+            rank=allocated(owner,AttemptMemoryLedger.arrayBytes(cap,Long.BYTES),"k-best predecessor heads",() -> new long[cap]);
+        }
+        static long allocationBytes(int n) {
+            return Math.addExact(AttemptMemoryLedger.objectBytes(56),Math.addExact(
+                    Math.multiplyExact(2,AttemptMemoryLedger.arrayBytes(n,Integer.BYTES)),
+                    Math.multiplyExact(3,AttemptMemoryLedger.arrayBytes(n,Double.BYTES))));
+        }
+        void reset() { cancellation.checkpoint();size=0;nonfinite=0; }
+        boolean allFinite() { return nonfinite==0; }
+        void offer(int predecessor,int index,double rounded,double step,long lexicalRank) {
+            cancellation.checkpoint();
+            if(size==before.length) throw new IllegalStateException("predecessor head capacity exceeded");
+            int at=size++;before[at]=predecessor;prefix[at]=index;energy[at]=rounded;
+            increment[at]=step;rank[at]=lexicalRank;
+            if(!Double.isFinite(rounded)||!Double.isFinite(step)) nonfinite++;
+            while(at>0) {
+                cancellation.checkpoint();int parent=(at-1)>>>1;
+                if(compare(at,parent)>=0) break;
+                swapHeads(at,parent);at=parent;
+            }
+        }
+        void pop() {
+            cancellation.checkpoint();
+            if(size==0) throw new IllegalStateException("empty predecessor frontier");
+            if(!Double.isFinite(energy[0])||!Double.isFinite(increment[0])) nonfinite--;
+            int last=--size;if(last==0) return;
+            before[0]=before[last];prefix[0]=prefix[last];energy[0]=energy[last];
+            increment[0]=increment[last];rank[0]=rank[last];
+            int at=0;
+            while(true) {
+                cancellation.checkpoint();int left=2*at+1;if(left>=size) break;
+                int right=left+1,best=right<size&&compare(right,left)<0?right:left;
+                if(compare(at,best)<=0) break;
+                swapHeads(at,best);at=best;
+            }
+        }
+        void closeStream() { cancellation.checkpoint(); }
+        private int compare(int a,int b) {
+            int value=Double.compare(energy[a],energy[b]);if(value!=0)return value;
+            value=Long.compare(rank[a],rank[b]);if(value!=0)return value;
+            value=Integer.compare(before[a],before[b]);return value!=0?value:Integer.compare(prefix[a],prefix[b]);
+        }
+        private void swapHeads(int a,int b) {
+            swap(before,a,b);swap(prefix,a,b);
+            double v=energy[a];energy[a]=energy[b];energy[b]=v;
+            v=increment[a];increment[a]=increment[b];increment[b]=v;
+            long r=rank[a];rank[a]=rank[b];rank[b]=r;
+        }
     }
 
     static final class MemoryLimit extends RuntimeException {

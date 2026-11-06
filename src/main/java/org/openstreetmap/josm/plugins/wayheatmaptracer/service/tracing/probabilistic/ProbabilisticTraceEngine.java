@@ -249,7 +249,8 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
         long started = System.nanoTime();
         cancellation.checkpoint();
         validateSnapshots(request, evidence, network);
-        boolean adaptive = BPolicy.recorded(request) == BPolicy.ADAPTIVE_MULTIMODAL_V1;
+        BPolicy recordedPolicy=BPolicy.recorded(request);
+        boolean adaptive = recordedPolicy != BPolicy.EXACT_DEFAULT;
         if (adaptive && (reference != null || reliabilityPolicy != ReliabilityPolicy.DIRECT_LONGITUDINAL_V2
                 || !parameters.equals(EvidenceModelParameters.defaults()))) {
             throw new IllegalArgumentException("Recorded adaptive B requires its complete standalone parameter policy");
@@ -355,7 +356,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
                     });
             var adaptiveRun = new AdaptiveBInference().solve(profiles, evaluated, adaptiveLattices,
                     continuationOffsets, parameters, request.budgets(), evidence.decisionRegion(), cancellation,
-                    workingOwner, AdaptiveBObserver.current(),progress);
+                    workingOwner, AdaptiveBObserver.current(),progress,recordedPolicy);
             inference = adaptiveRun.inference(); evaluated = adaptiveRun.profiles();
         } else {
             inference = new ProbabilisticInference().solve(evaluated,
@@ -461,7 +462,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
             EvidenceSnapshot evidence,
             AttemptMemoryLedger.Owner resultOwner, AttemptMemoryLedger.Owner workingOwner) {
         int hypothesisCount = inference.distinctPaths().size();
-        boolean adaptive = inference.workAccounting().map(work -> work.executionPolicy().equals(BPolicy.VERSION)).orElse(false);
+        boolean adaptive = inference.workAccounting().map(work -> BPolicy.isAdaptiveVersion(work.executionPolicy())).orElse(false);
         int diagnosticCount = adaptive ? 17 : 15;
         long outputBytes = ProbabilisticInference.listBytes(hypothesisCount);
         long temporaryBytes = ProbabilisticInference.listBytes(hypothesisCount) * 3L
@@ -566,7 +567,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
         List<ProbabilisticProfile> sampledProfiles, List<InferenceProfile> profiles,
         EvidenceSnapshot evidence) {
         List<TraceHypothesis> result = new ArrayList<>();
-        boolean adaptive = inference.workAccounting().map(work -> work.executionPolicy().equals(BPolicy.VERSION)).orElse(false);
+        boolean adaptive = inference.workAccounting().map(work -> BPolicy.isAdaptiveVersion(work.executionPolicy())).orElse(false);
         List<ProbabilisticPath> distinctPaths = inference.distinctPaths();
         List<String> exportedBranches = exportedBranchSignatures(distinctPaths);
         int index = 0;
@@ -590,7 +591,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
             diagnostics.put("rawEnumerationCapped", completion.rawEnumerationCapped() ? 1.0 : 0.0);
             diagnostics.put("requestedDiversityReached", completion.requestedDiversityReached() ? 1.0 : 0.0);
             if (adaptive) {
-                diagnostics.put("bAdaptivePolicy", 1.0);
+                diagnostics.put("bAdaptivePolicy", inference.workAccounting().orElseThrow().executionPolicy().equals(BPolicy.VERSION)?1.0:2.0);
                 diagnostics.put("bPosteriorConditional", 1.0);
             }
             String exportedBranch = exportedBranches.get(index);

@@ -224,7 +224,7 @@ class V022AdaptiveBSolverTest {
         assertEquals(0,ledger.currentBytes());
     }
 
-    @Test void ordinaryPipelineSelectsTheFrozenAdaptivePolicyAndDoesNotExportFullPosterior() {
+    @Test void ordinaryPipelineSelectsTheFrozenAdaptivePolicyAndDoesNotExportFullPosterior() throws Exception {
         var evidence = V022LocalizationEvidenceTest.snapshot((x,y) -> .02 + .6 * Math.exp(-.5 * Math.pow(y-31,2)));
         var first = PrimitiveKey.existing(PrimitiveKey.Type.NODE,1);
         var last = PrimitiveKey.existing(PrimitiveKey.Type.NODE,2);
@@ -244,19 +244,44 @@ class V022AdaptiveBSolverTest {
                 RecoveryPermissions.disabled(25),TraceBudgets.defaults(),evidence.snapshotId(),evidence.canonicalHash(),
                 network.snapshotId(),network.canonicalHash(),"settings",BPolicy.exactParameterHash(),"sampler",2,
                 new ProbabilisticProfileFactory().profileChainage(source,2),evidence.resolution());
-        var adaptive = BPolicy.adaptiveRequest(exact);
         var options = new ModernTracePipeline.Options("scalar",GeometryCleanupConfig.disabled(),"native",0);
-        var frozen = new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput(
-                adaptive,evidence,network,options);
-        var decoded = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec.decode(
-                org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec.encode(frozen));
-        var result = new ModernTracePipeline((request,e,n,c) -> { throw new AssertionError("A must not run"); })
-                .run(decoded.request(),decoded.evidence(),decoded.network(),decoded.options(),CancellationProbe.NONE);
-        assertTrue(result.inference().workAccounting().orElseThrow().hasPolicy(BPolicy.VERSION));
-        assertEquals(TraceHypothesisSet.Status.AMBIGUOUS,result.inference().status());
-        assertFalse(result.inference().hypotheses().isEmpty());
-        assertTrue(result.inference().hypotheses().stream().allMatch(h -> h.posteriorProbability().isEmpty()));
-        assertTrue(result.inference().explanation().contains("originalIndexHash="));
+        List<String> previousIndices=null;
+        List<TraceHypothesis> previousHypotheses=null;
+        for(var policy:List.of(BPolicy.ADAPTIVE_MULTIMODAL_V1,BPolicy.ADAPTIVE_MULTIMODAL_V2)) {
+            var adaptive = BPolicy.adaptiveRequest(exact,policy);
+            var frozen = new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput(
+                    adaptive,evidence,network,options);
+            var decoded = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec.decode(
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec.encode(frozen));
+            List<String> indices=new ArrayList<>();
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.begin();
+            try(var observation=AdaptiveBObserver.observe((pass,row,compact,originalIndex) ->
+                    indices.add(pass+","+row+","+compact+","+originalIndex))) {
+                var result = new ModernTracePipeline((request,e,n,c) -> { throw new AssertionError("A must not run"); })
+                        .run(decoded.request(),decoded.evidence(),decoded.network(),decoded.options(),CancellationProbe.NONE);
+                assertTrue(result.inference().workAccounting().orElseThrow().hasPolicy(policy.version()));
+                assertEquals(TraceHypothesisSet.Status.AMBIGUOUS,result.inference().status());
+                assertFalse(result.inference().hypotheses().isEmpty());
+                assertTrue(result.inference().hypotheses().stream().allMatch(h -> h.posteriorProbability().isEmpty()));
+                assertTrue(result.inference().explanation().contains("originalIndexHash="));
+                if(previousIndices!=null) {
+                    assertEquals(previousIndices,indices,"V4 must not change initial or refined retained indices");
+                    assertEquals(previousHypotheses.size(),result.inference().hypotheses().size());
+                    for(int i=0;i<previousHypotheses.size();i++) {
+                        assertEquals(previousHypotheses.get(i).points(),result.inference().hypotheses().get(i).points());
+                        assertEquals(previousHypotheses.get(i).objective(),result.inference().hypotheses().get(i).objective());
+                    }
+                }
+                previousIndices=List.copyOf(indices);previousHypotheses=result.inference().hypotheses();
+                if(policy==BPolicy.ADAPTIVE_MULTIMODAL_V2) {
+                    var counters=org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.snapshot();
+                    assertTrue(counters.containsKey("b.merge.pass0.headScores"));
+                    long scored=counters.get("b.merge.headScores").longValue()+counters.get("b.merge.advances").longValue();
+                    assertEquals(result.inference().workAccounting().orElseThrow().bStages().get(0).kBestScores(),scored);
+                    assertTrue(counters.size()<=128);
+                }
+            } finally { org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.end(); }
+        }
     }
 
     private static ProbabilisticProfile sampled(boolean anchor) {

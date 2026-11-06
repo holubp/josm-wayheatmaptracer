@@ -3,6 +3,32 @@
 Base: `55e8920f`; isolated `codex/drasov-b-adaptive-solver`. Sole source writer: B worker.
 Approved contract: private Astra design and B03 count report in root `build/private-drasov-b-resource-20261106/`.
 
+## Exact stream merge follow-up
+
+Before edits, the 19-file V3/V1 prototype was preserved in scoped WIP commit
+`e535267ce01378484f3f6f098c22d1e0dce59851`, acknowledging the 128M failure and 379 GREEN tests.
+Approved follow-up: private `astra-b-second-stage-review-xhigh.md`. Keep every graph, fine/mandatory
+retention rule, coefficient, 32/8 limit and cumulative cap unchanged; change only exact local k-best execution.
+V3/V1 remain named/executable; V4/V2 bind distinct recorded identities.
+
+Behavioral RED: V4 reference used the existing cached traversal and failed to reduce scores when the
+best predecessor stream appeared last. Core GREEN: 18 tests, including 15 unchanged old exact tests;
+new comparisons cover every raw cap, rounded lexical collapse, unequal rows and nonzero/reversed shape.
+The next gate passed cancellation at head offer/pop/tail closure, memory denial, the independently counted
+3199/3198 score boundary and exhaustive cutoff ties; its sole intended RED was the initially shared V2 identity.
+Version wiring/focused GREEN:49 tests. Broader GREEN:388 B/codec tests in33suites, zero failures/errors/skips.
+One V4 Drasov run completed65,148,362scores with no refusal, unchanged7,256/8,784index sequences,
+32raw/1distinct alternatives, and27final assignments. Pipeline65,474ms is not clean/substantial speed proof.
+Final MOVE_EXISTING_NODES quality is HARD_BLOCKED by PRECISE_SHAPE_REQUIRED:2.057558640m representation
+error exceeds1.556065597m native pitch. Eighteen additional review findings remain. Algorithms stopped.
+Native evidence/source snapshots and report are private `v4-production-run/`; exit0 and fresh attestation validate.
+
+Independent Astra source review subsequently identified a blocking early zero-work refusal receipt bug:
+adaptive first/second `workAccounting().orElseThrow()` can replace native pre-entry resource refusal with an
+exception. The current V4 checkpoint is frozen before that separately scoped TDD fix; no private inference
+rerun is authorized for the fix. Metadata-explicit saved-hypothesis Precise finalization is a separate approved
+zero-inference experiment after the fix, and must not relabel this Move result or change live defaults.
+
 - B04: immutable retained-index views preserving dense observations/cell quadrature; explicit opt-in only.
 - B05: separately named cached exact backend; old default arithmetic/work/replay path remains available.
 - B06: at most one all-rival refinement with one cumulative budget; conditional approximation stays review-required.

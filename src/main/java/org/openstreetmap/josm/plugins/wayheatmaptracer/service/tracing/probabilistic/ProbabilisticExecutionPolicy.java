@@ -10,12 +10,14 @@ public final class ProbabilisticExecutionPolicy {
     /** Explicit selection; old solver entry points retain eager execution. */
     public enum Mode {
         EAGER_V1(VERSION), EXACT_DOMINANCE_V2(CURRENT_VERSION),
-        CACHED_EXACT_V3("cached-pair-exact-scored-work-v3");
+        CACHED_EXACT_V3("cached-pair-exact-scored-work-v3"),
+        CACHED_EXACT_V4("cached-pair-stream-merge-scored-work-v4");
 
         private final String version;
         Mode(String version) { this.version = version; }
         public String version() { return version; }
         boolean exactDominance() { return this != EAGER_V1; }
+        boolean cached() { return this == CACHED_EXACT_V3 || this == CACHED_EXACT_V4; }
     }
 
     private ProbabilisticExecutionPolicy() { }

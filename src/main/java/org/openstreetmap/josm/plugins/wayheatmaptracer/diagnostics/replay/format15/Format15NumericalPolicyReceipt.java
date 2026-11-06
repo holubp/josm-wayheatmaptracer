@@ -155,16 +155,14 @@ final class Format15NumericalPolicyReceipt {
     }
 
     private static String executionPolicy(TrackerMode engine, String parameterHash) {
-        return engine == TrackerMode.PROBABILISTIC
-                && org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.isAdaptiveHash(parameterHash)
-                ? org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.VERSION
-                : ProbabilisticExecutionPolicy.CURRENT_VERSION;
+        String adaptive=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.adaptiveVersion(parameterHash);
+        return engine == TrackerMode.PROBABILISTIC && adaptive!=null ? adaptive : ProbabilisticExecutionPolicy.CURRENT_VERSION;
     }
     private static String inferencePolicy(TrackerMode engine, String parameterHash) {
         String original = inferencePolicy(engine);
         return executionPolicy(engine, parameterHash).equals(ProbabilisticExecutionPolicy.CURRENT_VERSION)
                 ? original : original.replace("/" + ProbabilisticExecutionPolicy.CURRENT_VERSION,
-                    "/" + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.VERSION);
+                    "/" + executionPolicy(engine,parameterHash));
     }
 
     private static boolean modern(TrackerMode engine) {

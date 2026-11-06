@@ -647,6 +647,40 @@ The numerical contract follows the Java 17
 [StrictMath specification](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/lang/StrictMath.html)
 and [strict expression rules](https://docs.oracle.com/javase/specs/jls/se17/html/jls-15.html#jls-15.4).
 
+#### Explicit adaptive B revisions and exact stream merging
+
+The opt-in adaptive prototypes preserve the full physical profiles and dense observation
+mixture before selecting immutable original-cell views. Kept cells retain their original
+unary values, responsibilities, orientation ownership and quadrature. All mandatory/exact
+states, admitted continuation states, fine measured cores and full-window background
+sentinels remain; no brightest-mode or original-way preference is introduced. At most one
+all-rival refinement shares the original score/pair cap and final 32/8 limits. Its posterior
+is conditional on retained states and remains review-required, with full-graph confidence
+withheld. These prototypes are not live defaults or qualified releases.
+
+`ADAPTIVE_MULTIMODAL_V1` retains cached exact V3 execution for its existing frozen captures.
+`ADAPTIVE_MULTIMODAL_V2` selects `cached-pair-stream-merge-scored-work-v4` through a separate
+known managed/visible parameter identity. Unknown historic hashes cannot opt into an
+adaptive policy. Ordinary replay selects the recorded revision from frozen values; adding
+the new revision does not relabel the old work identity or change exact default comparisons.
+
+V4 keeps the existing K-winner descriptor heap and merges predecessor streams using one
+pending rounded-energy head per predecessor. Each head is scored once and reused when
+offered to the winner heap; only its own stream advances. A fixed finite binary64 addition
+is monotone in energy, but rounding can collapse unequal prefix energies and reorder lexical
+ties. Therefore stopping requires a full winner heap and **every** pending energy strictly
+above its worst energy. All cutoff-energy ties are consumed; non-finite pending energies or
+increments disable this cutoff. Selected winners retain the original energy grouping,
+lexical ordering, terminal saturation and diversity proofs. Logical extensions/topology
+counts include every admitted stream, including tails not numerically scored.
+
+The head frontier uses ledger-admitted primitive arrays in O(predecessor states + K)
+scratch, with cancellation during preparation, heap operations and tail closure. It creates
+no speculative ancestry or cubic cache. Native counters distinguish actual head/advance
+scores, tie processing, pruned pending streams, admitted scratch and ancestry counts per
+pass. Score refusals remain explicit; successful small differential cases do not establish
+Drasov completion, geometry quality, tenfold latency or release readiness.
+
 ## Corridor-Aware Promotion Contract
 
 The maintainer approved `CORRIDOR_AWARE` as the default for `0.20.0`. A missing, blank, or unknown tracker preference resolves to corridor-aware; an explicitly stored `LEGACY_V02` preference remains legacy and round-trips without migration. Geometry cleanup remains independently disabled by default. Promotion verification includes the full Gradle suite, `wayheatmaptracer-testing.zip`, palette fixtures for `hot`, `blue`, `bluered`, `purple`, `gray`, and `all-colors-combined`, plus the existing broad-corridor, sparse-corridor, sustained sine/switchback, endpoint/junction, topology, and parent/child ambiguity regressions. Future changes must preserve the explicit legacy fallback and must not weaken these gates.

@@ -15,6 +15,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCoun
 final class AdaptiveBInference {
     private static final byte[] HASH_DOMAIN = (BPolicy.VERSION + "/original-cell-indices-v1")
             .getBytes(StandardCharsets.UTF_8);
+    private static final byte[] HASH_DOMAIN_V2 = (BPolicy.CURRENT_VERSION + "/original-cell-indices-v1")
+            .getBytes(StandardCharsets.UTF_8);
     record Result(ProbabilisticInferenceResult inference, List<InferenceProfile> profiles,
             int refinements, long firstScores, long secondScores, String provenanceHash) { }
     Result solve(List<ProbabilisticProfile> sampled, List<InferenceProfile> dense,
@@ -35,7 +37,17 @@ final class AdaptiveBInference {
             EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion region,
             CancellationProbe cancellation, AttemptMemoryLedger.Owner owner, AdaptiveBObserver observer,
             ProbabilisticInference.WorkProgress progress) {
+        return solve(sampled,dense,lattices,continuation,parameters,budgets,region,cancellation,owner,observer,
+                progress,BPolicy.ADAPTIVE_MULTIMODAL_V1);
+    }
+    Result solve(List<ProbabilisticProfile> sampled, List<InferenceProfile> dense,
+            List<ProbabilisticStateLattice> lattices, double[] continuation,
+            EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion region,
+            CancellationProbe cancellation, AttemptMemoryLedger.Owner owner, AdaptiveBObserver observer,
+            ProbabilisticInference.WorkProgress progress,BPolicy policy) {
         cancellation.checkpoint();
+        if(policy==null||policy==BPolicy.EXACT_DEFAULT)throw new IllegalArgumentException("An adaptive policy is required");
+        String version=policy.version();
         if (sampled.size() != dense.size() || dense.size() != lattices.size()
                 || continuation.length != dense.size() || observer == null)
             throw new IllegalArgumentException("Adaptive evidence rows disagree");
@@ -47,11 +59,15 @@ final class AdaptiveBInference {
         }
         var profiles = profiles(views,owner);
         MessageDigest hash = ProbabilisticInference.allocated(owner,512,"adaptive provenance",AdaptiveBInference::digest);
-        hash.update(HASH_DOMAIN); provenance(hash,views,0,cancellation,observer);
+        hash.update(policy==BPolicy.ADAPTIVE_MULTIMODAL_V1?HASH_DOMAIN:HASH_DOMAIN_V2);
+        provenance(hash,views,0,cancellation,observer);
         ModernDiagnosticCounters.record("b.adaptive.denseStates", states(dense));
         ModernDiagnosticCounters.record("b.adaptive.initialStates", states(profiles));
         ModernDiagnosticCounters.record("b.adaptive.activePass",0);
-        var first = new ProbabilisticInference().solveCached(profiles,parameters,budgets,region,cancellation,owner,progress);
+        long passStarted=System.nanoTime();
+        var first = new ProbabilisticInference().solveCachedVersion(profiles,parameters,budgets,region,cancellation,owner,
+                policy.solverMode(),progress);
+        if(policy==BPolicy.ADAPTIVE_MULTIMODAL_V2) recordPass(0,System.nanoTime()-passStarted,owner);
         long firstScores = first.evaluatedTransitions(), secondScores = 0;
         var work = first.workAccounting().orElseThrow();
         long pairs = first.evaluatedPairVisits();
@@ -88,7 +104,7 @@ final class AdaptiveBInference {
                 long remainingPairs = budgets.maximumPairVisits() - pairs;
                 if (remainingScores <= 0 || remainingPairs <= 0) {
                     return finish(first,profiles,0,firstScores,0,hash,work,pairs,
-                            "refinement-budget-exhausted",owner);
+                            "refinement-budget-exhausted",owner,version);
                 }
                 var refined = list(views.size(),owner);
                 for (int row = 0; row < views.size(); row++) {
@@ -105,11 +121,13 @@ final class AdaptiveBInference {
                         "adaptive cumulative progress",() -> (ProbabilisticInference.WorkProgress)(nowPairs,nowScores) ->
                             progress.computed(Math.addExact(completedPairs,nowPairs),Math.addExact(firstScores,nowScores)));
                 ModernDiagnosticCounters.record("b.adaptive.activePass",1);
-                result = new ProbabilisticInference().solveCached(profiles,parameters,remaining,region,cancellation,owner,
-                        cumulativeProgress);
+                passStarted=System.nanoTime();
+                result = new ProbabilisticInference().solveCachedVersion(profiles,parameters,remaining,region,cancellation,owner,
+                        policy.solverMode(),cumulativeProgress);
+                if(policy==BPolicy.ADAPTIVE_MULTIMODAL_V2) recordPass(1,System.nanoTime()-passStarted,owner);
                 secondScores = result.evaluatedTransitions(); pairs = Math.addExact(pairs,result.evaluatedPairVisits());
                 var second = result.workAccounting().orElseThrow();
-                work = new InferenceWorkAccounting(BPolicy.VERSION,
+                work = new InferenceWorkAccounting(version,
                         Math.addExact(work.forwardBackwardScores(),second.forwardBackwardScores()),
                         Math.addExact(work.kBestScores(),second.kBestScores()),
                         Math.addExact(work.logicalKBestExtensions(),second.logicalKBestExtensions()),
@@ -117,18 +135,18 @@ final class AdaptiveBInference {
             }
         }
         return finish(result,profiles,refinements,firstScores,secondScores,hash,work,pairs,
-                result.explanation(),owner);
+                result.explanation(),owner,version);
     }
 
     private static Result finish(ProbabilisticInferenceResult result,List<InferenceProfile> profiles,
             int refinements,long first,long second,MessageDigest digest,InferenceWorkAccounting work,
-            long pairs,String reason,AttemptMemoryLedger.Owner owner) {
+            long pairs,String reason,AttemptMemoryLedger.Owner owner,String version) {
         String hash = HexFormat.of().formatHex(digest.digest());
-        var cumulative = new InferenceWorkAccounting(BPolicy.VERSION,work.forwardBackwardScores(),
+        var cumulative = new InferenceWorkAccounting(version,work.forwardBackwardScores(),
                 work.kBestScores(),work.logicalKBestExtensions(),work.refusedScoreAttempts());
         var status = "refinement-budget-exhausted".equals(reason) ? ProbabilisticInferenceResult.Status.RESOURCE_LIMIT
                 : usable(result) ? ProbabilisticInferenceResult.Status.REVIEW_REQUIRED : result.status();
-        String explanation = BPolicy.VERSION + "; posterior=conditional-retained-subgraph; refinements="
+        String explanation = version + "; posterior=conditional-retained-subgraph; refinements="
                 + refinements + "; originalIndexHash=" + hash + "; " + reason;
         var conditional = result.conditionalReview(status,explanation,cumulative,pairs,owner);
         ModernDiagnosticCounters.record("b.adaptive.refinements",refinements);
@@ -143,6 +161,24 @@ final class AdaptiveBInference {
         return r.status() == ProbabilisticInferenceResult.Status.COMPLETE
                 || r.status() == ProbabilisticInferenceResult.Status.AMBIGUOUS
                 || r.status() == ProbabilisticInferenceResult.Status.REVIEW_REQUIRED;
+    }
+    private static void recordPass(int pass,long elapsedNanos,AttemptMemoryLedger.Owner owner) {
+        // Bounded diagnostic-map copy only; no untracked per-cell export copies.
+        try(var scratch=owner.child("merge-pass-diagnostic-copy")) {
+            var reservation=scratch.reserve(32768);
+            try {
+                var counters=ModernDiagnosticCounters.snapshot();
+                for(String name:List.of("headScores","advances","pops","cutoffEnergyTies","pendingPruned","closedStreams","scratchBytes")) {
+                    Number value=counters.get("b.merge.lastPass."+name);
+                    if(value!=null)ModernDiagnosticCounters.record("b.merge.pass"+pass+"."+name,value.longValue());
+                }
+                for(String name:List.of("extensionDescriptors","ancestryRecordsAllocated")) {
+                    Number value=counters.get("inference."+name);
+                    if(value!=null)ModernDiagnosticCounters.record("b.merge.pass"+pass+"."+name,value.longValue());
+                }
+                ModernDiagnosticCounters.record("b.merge.pass"+pass+".elapsedMs",elapsedNanos/1_000_000L);
+            } finally { reservation.close(); }
+        }
     }
     private static List<AdaptiveSolverView> list(int n,AttemptMemoryLedger.Owner owner) {
         return ProbabilisticInference.allocated(owner,ProbabilisticInference.listBytes(n),
