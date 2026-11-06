@@ -14,6 +14,45 @@
 
 ### Active execution card — authoritative
 
+**ACTIVE FOLLOW-UP — 2026-11-06:** User supplied two final-comparison feedback
+records052815/052919 under root inspection `feedback/` and authorized trying
+to correct the remaining defects. Marks denote problem locations, NOT intended
+replacement geometry. First marks native(390.55,274.83): small NW deviation near
+rows120–123; second marks native(457–464,240–248): unsupported SE bend near
+rows169–175. The upper detour exists in both original and protected-secant
+results; normals are nearly constant there. Saved selected scalar support is
+sometimes materially below another measured peak; this is a localization/track
+phase investigation, not yet a justified filter change. Production remains at
+verifiedf80fde25 (documentation88e06715); primary dirty checkout is preserved.
+
+Follow-up sequence: (1) reproduce locations from hash-bound saved outputs and
+separate extraction/selection/anchor/smoothing causes; (2) add deterministic
+counterexamples and establish RED before any numerical change; (3) implement
+only evidence-backed bounded Legacy heuristics, keeping filters deferred and
+the previous bend fix/protected boundaries intact; (4) rerun focused/private
+regressions, independent review and existing CI speed/quality gates, then update
+the browser comparison with exact stored results. Do not declare these new
+residual reports solved from the earlier successful comparison alone.
+
+Follow-up diagnosis: saved scalar profiles reconstruct all185 current production
+offsets exactly. At upper rows170/172/173, extraction offers stronger main-ridge
+peaks4.6886/3.9774/2.6644 nativepixels, but historical longitudinal suppression
+drops them with support1/1/0 while retaining the weaker near8pixel side strand
+with support2. The hard6–12rasterpixel tolerance is at most half a native pixel
+at this capture's factual pitch24.0012. Shared support also affects anchors and
+exported stability, so repair must be coherent across those uses. A separate
+explicit tracker-policy experiment will use
+`t=max(p,min(2*p,1.5*max(p/3,w)))`, preserving the old arithmetic at nativepitch6;
+no optimizer/filter/localization/smoothing changes in this first experiment.
+Factual native pitch MUST remain separate from compatibility tracker normalization
+(Hybrid may use6 even when nativepitch is24). Historical APIs and V1/V2 frozen
+sources must retain historical tracking; only a positive experiment justifies
+new versioned live/frozen policy integration. Unknown native pitch cannot be invented.
+Independent Sol consultation accepted this bounded first experiment and required
+close-parallel, isolated-stray, gaps and supported-bend controls. Luna writes only
+the tracker/policy/tests in clean tmp `josm-legacy-feedback-continuity` at88e06715;
+the old checkpoint tmp path unexpectedly resolves to dirty117baaf0 and is preserved.
+
 **LATEST VERIFIED CLOSURE — 2026-11-06:** The active Legacy Drasov zigzag goal
 is complete on pushed production/test snapshot
 `f80fde258d51a6d0d1f0677646d7926535801153`, branch
