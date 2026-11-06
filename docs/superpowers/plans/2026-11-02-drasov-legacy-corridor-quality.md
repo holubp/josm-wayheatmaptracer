@@ -14,6 +14,80 @@
 
 ### Active execution card — authoritative
 
+**INSTRUMENTED CI RUNNING — 2026-11-06:** Diagnostic branch pushed at
+`d1cd4d18298579119128c9284a74cfa191735806`; sole GitHub run42243724732 is confirmed
+in_progress, named `Legacy performance diagnostics (not qualification)`.
+Harness repair `e27afc85` passes6 focused tests; both reviewed failures reproduced
+RED for intended reasons before GREEN. Independent Sol whole-protocol review
+and affected repair re-review PASS. Parent51 Python protocol/gate tests PASS,
+py_compile/diff-check PASS. No production source or official gate changed.
+Await this ONE normal+tracker diagnostic cohort, download ALL raw artifacts,
+inspect CPU/allocation/GC/JIT attribution; never accept it as speed qualification.
+No additional uninstrumented retry is authorized by this observation.
+
+**DIAGNOSTIC INTEGRATION VERIFIED — 2026-11-06:** Isolated harness commit
+`5131e44167eeba34baab4b1080dcb8df7c826ee2` is frozen. Four Java helper tests pass;
+final OFF/ON normal preflights retain identical native alternatives/geometry/support
+across16 rows. Original direct nano start/end remain free of probe bookkeeping;
+OFF emits no diagnostic files. Parent integrated the diagnostic-only workflow,
+read-only analyzer and protocol tests:51 Python tests pass, including unchanged
+normal/tracker acceptance-gate suites. `git diff --check` passes. Independent Sol
+whole-delta audit is running before push; no full diagnostic cohort started yet.
+Worker evidence: root build `feedback-followup-20261106/performance-diagnostics-v4/implementation/README.md`.
+
+Independent review found one harness failure-path blocker: a failed diagnostic
+export could prevent ordinary CSV/failure-summary preservation. Luna is applying
+a deterministic refusing-writer regression and independent best-effort exports;
+Sol continues other review areas, then will re-review the frozen repair. No CI
+cohort/push is admitted until this is corrected and review closes.
+
+Release source71d1228b has now passed2512 public Java tests, full public validation
+and both actual GUI smoke jobs in Build42229264999. Verified test JAR was delivered
+as root build `wayheatmaptracer-legacy-drasov-71d1228b.jar`, SHA256
+`17dec3da8bc7a424cf7f8e77cb13e38682013ab5ca077b3e4d5309c9406746c4`.
+Downloaded JAR and JUnit XML match the CI evidence receipt. No public release;
+performance qualification remains unresolved and the goal remains active.
+
+**PERFORMANCE DIAGNOSIS REQUIRED — 2026-11-06:** Repaired source
+`71d1228b809e80d75eea69d7222dc0f39e3ac8c1` is pushed; Build42229264999 is active
+(public/GUI still inspect actual state). Both fresh performance cohorts are
+INCONCLUSIVE, not PASS/BLOCKED: normal visible-hairpin fork1 p95 overhead23.006ms
+vs14.570ms limit, median0.252ms; tracker managed-parallel fork0 p95 overhead
+10.199819ms vs10ms limit, median3.151794ms. All three forks/320 measured rows
+and quality checks complete. Raw evidence is root build `ci-v4-42229264999/`.
+No third blind/uninstrumented timing retry is admitted; no gate limit waived.
+
+Independent Sol diagnosis of both cohorts confirms recurring tracker managed-
+parallel median overhead2.519–3.399ms across all six forks, under the5ms bound;
+normal tail spikes occur in both execution orders. Raw JSON retention is about
+7.45MiB/fork. Visible discovery allocates23.0713MiB image backing per call,
+at least5.768GiB transient cumulative per fork. These are facts, NOT proof of
+GC/jitter causation; CPU/allocation/GC/JIT timestamps are missing.
+
+Next approved bounded observation is ONE DIAGNOSTIC-ONLY normal+tracker cohort:
+same3forks/8groups/12warmups/20pairs/512MiB/120s, all geometry/wall gates retained,
+every observation preserved. Isolated branch `codex/legacy-perf-diagnostics-v4`,
+worktree `/data/data/com.termux/files/usr/tmp/josm-legacy-perf-diagnostics-v4`
+based exactly71d1228b. Luna is sole harness/helper/Gradle writer; NO src/main
+changes. Probes outside existing nano timing capture aligned CPU/allocated bytes,
+heap, GC and compilation context plus JVM GC/safepoint/compilation logs. Missing
+counters stay unavailable. Diagnostic status differs from qualification so
+unmodified strict gates reject it. Parent prepared diagnostic-only workflow
+template/tests under root build `performance-diagnostics-v4/`; after writer
+freeze integrate workflow/analyzer, independently review and run only this
+diagnostic branch on GitHub. Release Build job graph stays untouched; diagnostic
+branch alone excludes itself from ordinary Build, with its own clearly named
+nonqualification workflow. No hypothesis-only streaming/GC exclusion/CPU-gate
+substitution, no numerical model change or extra private capture run.
+
+Current release controller code remains frozen and quality evidence valid:
+approved Drasov exact pin,107 integration/private tests,50 exact quality controls,
+99 core tests and independent review. Once fresh full public/GUI passes, a
+verified TEST JAR can be provided with the unresolved timing qualification made
+explicit; that does not complete this goal or authorize a public RC. Final
+speed closure still needs causal diagnosis and passing unchanged acceptance
+gates (or an explicit maintainer decision; do not invent one).
+
 **CI TEST-ORACLE REPAIR GREEN — 2026-11-06:** Initial run42223692356 is
 terminal with2512 Java tests, one failure, zero errors/skips. The sole failure
 is the managed Hybrid reservation-boundary test omitting the new8456-byte
