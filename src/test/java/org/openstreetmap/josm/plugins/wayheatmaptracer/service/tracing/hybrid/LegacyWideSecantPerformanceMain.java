@@ -105,7 +105,8 @@ public final class LegacyWideSecantPerformanceMain {
         Path output = Path.of(args[preflight ? 1 : 2]).toAbsolutePath().normalize();
         Files.createDirectory(output);
         var observations = new ArrayList<Observation>();
-        try {
+        try (var diagnostics = LegacyPerformanceDiagnostics.open(output)) {
+          try {
             String productionBefore = productionClassesHash();
             String harnessBefore = codeLocationHash(LegacyWideSecantPerformanceMain.class);
             String dependenciesBefore = runtimeDependenciesHash();
@@ -119,11 +120,11 @@ public final class LegacyWideSecantPerformanceMain {
                     int measuredPairs = preflight ? 1 : MEASURED_PAIRS;
                     for (int pair = 0; pair < warmups; pair++) {
                         boolean candidateFirst = ((pair + fork) & 1) == 1;
-                        timedPair(fixture, scene, sourceKind, pair, candidateFirst, false, observations);
+                        timedPair(fixture, scene, sourceKind, pair, candidateFirst, false, observations, diagnostics);
                     }
                     for (int pair = 0; pair < measuredPairs; pair++) {
                         boolean candidateFirst = ((pair + fork) & 1) == 1;
-                        timedPair(fixture, scene, sourceKind, pair, candidateFirst, true, observations);
+                        timedPair(fixture, scene, sourceKind, pair, candidateFirst, true, observations, diagnostics);
                     }
                 }
             }
@@ -134,32 +135,34 @@ public final class LegacyWideSecantPerformanceMain {
                     || !dependenciesBefore.equals(runtimeDependenciesHash()))
                 throw new IllegalStateException("Harness or runtime dependencies changed during discovery");
             writeSummary(output.resolve("summary.json"), fork, observations, preflight, productionBefore,
-                    harnessBefore, dependenciesBefore);
+                    harnessBefore, dependenciesBefore, diagnostics.isEnabled());
         } catch (Throwable failure) {
             try {
+                diagnostics.failPending(failure);
                 writeCsv(output.resolve("observations.csv"), observations);
-                writeFailureSummary(output.resolve("summary.json"), fork, observations, failure);
+                writeFailureSummary(output.resolve("summary.json"), fork, observations, failure, diagnostics.isEnabled());
             } catch (Throwable receiptFailure) {
                 failure.addSuppressed(receiptFailure);
             }
             throw failure;
+          }
         }
     }
 
     /** Times the real retained Legacy discovery for both policies on one frozen public fixture. */
     private static void timedPair(Fixture fixture, Scene scene, SourceKind sourceKind, int pair, boolean candidateFirst,
-            boolean measured, List<Observation> out) throws Throwable {
+            boolean measured, List<Observation> out, LegacyPerformanceDiagnostics diagnostics) throws Throwable {
         Observation candidate;
         Observation baseline;
         if (candidateFirst) {
-            candidate = discover(fixture, scene, sourceKind, pair, candidateLabel(), true);
+            candidate = discover(fixture, scene, sourceKind, pair, candidateLabel(), true, measured, diagnostics);
             if (measured) out.add(candidate);
-            baseline = discover(fixture, scene, sourceKind, pair, baselineLabel(), true);
+            baseline = discover(fixture, scene, sourceKind, pair, baselineLabel(), true, measured, diagnostics);
             if (measured) out.add(baseline);
         } else {
-            baseline = discover(fixture, scene, sourceKind, pair, baselineLabel(), false);
+            baseline = discover(fixture, scene, sourceKind, pair, baselineLabel(), false, measured, diagnostics);
             if (measured) out.add(baseline);
-            candidate = discover(fixture, scene, sourceKind, pair, candidateLabel(), false);
+            candidate = discover(fixture, scene, sourceKind, pair, candidateLabel(), false, measured, diagnostics);
             if (measured) out.add(candidate);
         }
         if (!baseline.qualityChecksPassed() || !candidate.qualityChecksPassed()) {
@@ -188,7 +191,11 @@ public final class LegacyWideSecantPerformanceMain {
     }
 
     private static Observation discover(Fixture f, Scene scene, SourceKind sourceKind, int pair, String policy,
-            boolean candidateFirst) throws Throwable {
+            boolean candidateFirst, boolean measured, LegacyPerformanceDiagnostics diagnostics) throws Throwable {
+        var diagnosticCall = diagnostics.isEnabled()
+                ? diagnostics.begin(new LegacyPerformanceDiagnostics.Identity(scene.name(), sourceKind.name(),
+                    pair, policy, candidateFirst ? "candidate-first" : "baseline-first", measured ? "measured" : "warmup"))
+                : null;
         long start = System.nanoTime();
         boolean candidate = policy.equals(candidateLabel());
         boolean protectedNormals = trackerComparisonPolicy != null || candidate;
@@ -239,7 +246,9 @@ public final class LegacyWideSecantPerformanceMain {
             if (accounted != null) accounted.owner().close();
             root.close();
         }
-        long elapsed = System.nanoTime() - start;
+        long end = System.nanoTime();
+        long elapsed = end - start;
+        diagnostics.complete(diagnosticCall, start, end, elapsed);
         boolean exact = exactFixedPoints(f.input().originalProjected(), result.alternatives());
         List<String> qualityFailures = qualityFailures(f, sourceKind, candidate, result, exact);
         List<LegacyBProductionRunner.LegacyAlternative> accepted = result.alternatives().stream()
@@ -772,11 +781,13 @@ public final class LegacyWideSecantPerformanceMain {
     }
 
     private static void writeSummary(Path path, int fork, List<Observation> rows, boolean preflight,
-            String productionHash, String harnessHash, String dependenciesHash) throws Exception {
+            String productionHash, String harnessHash, String dependenciesHash, boolean diagnosticOnly) throws Exception {
         String runnerHash = resourceHash(LegacyBProductionRunner.class);
         String samplerHash = resourceHash(LegacyVisibleProfileSampler.class) + "/" + resourceHash(LegacyManagedProfileSampler.class);
-        StringBuilder json = new StringBuilder("{\n  \"status\":\"" + (preflight ? "COMPLETED_ONE_PUBLIC_PREFLIGHT_PAIR_PER_SCENE_AND_SOURCE" : "COMPLETED_ONE_PUBLIC_SYNTHETIC_FORK") + "\",\n")
-                .append("  \"fork\":").append(fork).append(",\n  \"sourceKinds\":[\"VISIBLE_RENDERED\",\"MANAGED_NATIVE_Z15\"],\n")
+        StringBuilder json = new StringBuilder("{\n  \"status\":\"")
+                .append(LegacyPerformanceDiagnostics.completionStatus(preflight, diagnosticOnly)).append("\",\n");
+        if (diagnosticOnly) json.append("  \"diagnosticOnly\":true,\n  \"callsFile\":\"calls.jsonl\",\n");
+        json.append("  \"fork\":").append(fork).append(",\n  \"sourceKinds\":[\"VISIBLE_RENDERED\",\"MANAGED_NATIVE_Z15\"],\n")
                 .append("  \"decisionStatus\":\"").append(preflight ? "PREFLIGHT_ONLY_NO_PERFORMANCE_DECISION" : "INCONCLUSIVE_UNTIL_THREE_FORKS").append("\",\n")
                 .append("  \"comparison\":\"").append(trackerComparisonPolicy == null ? "NORMAL_POLICY_V1" : "TRACKER_POLICY_V1").append("\",\n")
                 .append("  \"immediatePolicyId\":\"").append(trackerComparisonPolicy == null
@@ -822,9 +833,10 @@ public final class LegacyWideSecantPerformanceMain {
     }
 
     private static void writeFailureSummary(Path path, int fork, List<Observation> rows,
-            Throwable failure) throws Exception {
-        StringBuilder json = new StringBuilder("{\n  \"status\":\"FAILED_PUBLIC_SYNTHETIC_FORK\",\n")
-                .append("  \"fork\":").append(fork).append(",\n  \"noBExecution\":true,\n")
+            Throwable failure, boolean diagnosticOnly) throws Exception {
+        StringBuilder json = new StringBuilder("{\n  \"status\":\"FAILED_PUBLIC_SYNTHETIC_FORK\",\n");
+        if (diagnosticOnly) json.append("  \"diagnosticOnly\":true,\n");
+        json.append("  \"fork\":").append(fork).append(",\n  \"noBExecution\":true,\n")
                 .append("  \"completedObservationRows\":").append(rows.size()).append(",\n")
                 .append("  \"failureClass\":\"").append(escape(failure.getClass().getName())).append("\",\n")
                 .append("  \"failureMessage\":\"").append(escape(String.valueOf(failure.getMessage()))).append("\",\n")

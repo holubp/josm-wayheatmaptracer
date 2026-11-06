@@ -248,15 +248,32 @@ tasks.register<JavaExec>("legacyNormalPerformance") {
     val fork = providers.gradleProperty("legacyNormalPerformanceFork")
     val output = providers.gradleProperty("legacyNormalPerformanceOutput")
     val trackerPolicy = providers.gradleProperty("legacyTrackerPerformancePolicy")
+    val diagnostics = providers.gradleProperty("legacyNormalPerformanceDiagnostics")
+        .map { it.toBooleanStrict() }.orElse(false)
     val preflight = providers.gradleProperty("legacyNormalPerformancePreflight")
         .map { it.toBooleanStrict() }.orElse(false)
     inputs.property("fork", fork.orElse("missing"))
     inputs.property("output", output.orElse("missing"))
     inputs.property("trackerPolicy", trackerPolicy.orElse("normal-policy-comparison"))
+    inputs.property("diagnostics", diagnostics)
     inputs.property("preflight", preflight)
     doFirst {
         val outputPath = output.orNull?.takeIf { it.isNotBlank() }
             ?: throw GradleException("legacyNormalPerformance requires -PlegacyNormalPerformanceOutput=<new directory>")
+        if (diagnostics.get()) {
+            val outputFile = file(outputPath).absoluteFile
+            val parent = outputFile.parentFile
+            if (parent == null || !parent.isDirectory) {
+                throw GradleException("Diagnostic performance log parent directory must already exist")
+            }
+            systemProperty("legacyNormalPerformanceDiagnostics", "true")
+            jvmArgs(
+                "-Xlog:gc*,safepoint=info:file=${outputFile.absolutePath}.jvm-gc-safepoint.log:timenanos,uptimenanos,uptimemillis,level,tags",
+                "-XX:+UnlockDiagnosticVMOptions",
+                "-XX:+LogCompilation",
+                "-XX:LogFile=${outputFile.absolutePath}.compilation.xml"
+            )
+        }
         if (preflight.get()) {
             args("--preflight", file(outputPath).absolutePath)
         } else {
