@@ -33,6 +33,7 @@ import javax.xml.parsers.DocumentBuilderFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Tag;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
@@ -56,6 +57,16 @@ class FixtureRegressionTest {
     @Tag("private-fixture")
     @Test
     void tracedChangedSegmentsStayCloseToManualBaseline() throws Exception {
+        checkChangedSegments(LegacyTrackerPolicy.ORIGINAL_V02);
+    }
+
+    @Tag("private-fixture")
+    @Test
+    void nativeLegacyPolicyPreservesOtherCapturedWays() throws Exception {
+        checkChangedSegments(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V3);
+    }
+
+    private void checkChangedSegments(LegacyTrackerPolicy policy) throws Exception {
         Path archive = Path.of(System.getProperty("wayheatmaptracer.fixtureRegressionArchive", FIXTURE_ARCHIVE))
             .toAbsolutePath().normalize();
         assertTrue(Files.exists(archive), "Expected fixture archive at " + archive);
@@ -75,11 +86,29 @@ class FixtureRegressionTest {
 
         List<String> failures = new ArrayList<>();
         List<ComparisonResult> bestResults = new ArrayList<>();
+        StringBuilder policyComparisons = new StringBuilder(
+            "way,palette,historical_mean_px,candidate_mean_px,historical_max_px,candidate_max_px,historical_outside,candidate_outside\n");
         for (ChangedWaySegment changed : regressionCases) {
             ComparisonResult best = null;
             for (String color : COLORS) {
                 TileMosaic mosaic = mosaics.computeIfAbsent(color, c -> fixture.loadMosaic(c));
-                ComparisonResult result = traceAndCompare(changed, color, mosaic, sampler, tracker::track);
+                ComparisonResult result = traceAndCompare(changed, color, mosaic, sampler,
+                    profiles -> tracker.track(profiles, 1.0, 1.0, CancellationProbe.NONE, policy));
+                if (policy != LegacyTrackerPolicy.ORIGINAL_V02) {
+                    ComparisonResult historical = traceAndCompare(changed, color, mosaic, sampler, tracker::track);
+                    if (!historical.outOfCoverage() && !historical.noCandidate()) {
+                        policyComparisons.append(changed.wayId()).append(',').append(color).append(',')
+                            .append(historical.meanDistancePx()).append(',').append(result.meanDistancePx()).append(',')
+                            .append(historical.hausdorffDistancePx()).append(',').append(result.hausdorffDistancePx()).append(',')
+                            .append(historical.outsideEnvelope()).append(',').append(result.outsideEnvelope()).append('\n');
+                        if (result.noCandidate() || (!historical.outsideEnvelope() && result.outsideEnvelope())
+                            || result.meanDistancePx() > historical.meanDistancePx() + 1.0
+                            || result.hausdorffDistancePx() > historical.hausdorffDistancePx() + 1.0) {
+                            failures.add("Native policy regression: historical=" + historical.describe()
+                                + "; candidate=" + result.describe());
+                        }
+                    }
+                }
                 if (best == null || result.betterThan(best)) {
                     best = result;
                 }
@@ -93,6 +122,9 @@ class FixtureRegressionTest {
             }
         }
         writeViolationsOsm(VIOLATIONS_OSM, fixture.bounds(), bestResults);
+        if (policy != LegacyTrackerPolicy.ORIGINAL_V02) {
+            Files.writeString(VISUALIZATION_DIR.resolve("native-policy-comparison.csv"), policyComparisons);
+        }
 
         assertTrue(failures.isEmpty(),
             "Changed-way fixture regression exceeded tolerance:\n" + String.join("\n", failures));

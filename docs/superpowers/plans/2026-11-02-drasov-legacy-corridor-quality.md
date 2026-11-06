@@ -14,6 +14,34 @@
 
 ### Active execution card — authoritative
 
+**CURRENT BLOCKER — V3 OTHER-REAL-CAPTURE COVERAGE, 2026-11-06:** Do NOT push
+or adopt yet. Controller `33139512` integrated GREEN79 tests/eight suites and
+20 historical private tests, but inspection found the private Legacy regression
+calls the historical `track` API, not V3. Parent added a separate private test
+`FixtureRegressionTest.nativeLegacyPolicyPreservesOtherCapturedWays` using the
+same real captured profile banks and factual native/compatibility pitch1, all
+five palettes, manual-reference gates and paired historical error comparison.
+It reproduced a new failure on way232884031/purple: V3 mean13.48px/max67.62px,
+outside the manual envelope by8.41m, mean error >historical+1 native pixel.
+Exact XML is archived under controller build
+`legacy-wide-secant/feedback-followup-20261106/v3-other-capture/red.xml`.
+The stronger test is intentionally RED, not waived. Aggregate run33626 is
+terminal:50 comparisons/10ways/five palettes, exactly TWO regressions (bothpurple).
+Second case31898795 mean1.9393→2.1382px/max6.8496→12.1386px, previously inside
+manual envelope now outside by2.05m; first case's historical mean11.7850 and
+max60.1545px. All50 comparisons and aggregate XML are archived under the same
+`v3-other-capture/` evidence directory. Other48 stay within the declared
+one-native-pixel mean/max comparison bounds. Preserve explicit no-new-envelope
+violation gate too. Sol implementer is authorized ONE bounded same-bank stage
+diagnosis of bothpurple cases (Original/support/pairedV1/V2/V3), max512MiB/120s,
+hash-bound runtime/input, then a grounded regression repair. No arbitrary palette
+or case fallback, tuning, new filters or broad model runs. Preserve Drasov V2/V3
+geometry byte identity and existing V2 semantics; find causal stage first.
+Three generated CSV fixture artifacts have LF line endings regenerated with
+every row byte-identical to committed data; whole-task diff check now passes.
+No public push/release occurred. Goal remains active; older success cards do
+not supersede this discovered real-regression blocker.
+
 **V3 VERIFICATION MILESTONE — 2026-11-06:** Frozen algorithm `edf499d5`
 (controller cherry `e9011cf2`) passed92 tests/12suites, zero failures/errors/skips;
 independent Sol incremental review found no blocker. New private pair
