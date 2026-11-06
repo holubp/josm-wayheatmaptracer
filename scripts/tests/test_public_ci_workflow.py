@@ -107,6 +107,11 @@ def test_legacy_normal_performance_runs_three_forks_and_uploads_raw_evidence() -
     assert job["timeout-minutes"] == "30"
     steps = job["steps"]
     assert isinstance(steps, list)
+    host = next(step for step in steps if step.get("name") == "Prepare pinned JOSM 19555 host")
+    assert "scripts/prepare-ci-josm19555.py" in host["run"]
+    assert "ORG_GRADLE_PROJECT_josm19555HostJar=" in host["run"]
+    assert steps.index(host) < next(index for index, step in enumerate(steps)
+                                    if step.get("name") == "Run three fresh public Legacy normal-policy forks")
     run = next(step for step in steps if step.get("name") == "Run three fresh public Legacy normal-policy forks")
     assert "for fork in 0 1 2" in run["run"]
     assert "legacyNormalPerformance" in run["run"]
