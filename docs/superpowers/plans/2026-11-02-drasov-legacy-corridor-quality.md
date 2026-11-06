@@ -14,6 +14,40 @@
 
 ### Active execution card — authoritative
 
+**V4 INTEGRATION GREEN — 2026-11-06:** Combined run55854 exited0 in2m;
+archived current12 XML suites prove107 tests,0 failures/errors/skips. All50
+captured-way/palette comparisons EXACTLY match historical mean/max/envelope
+values; zero new envelope violations. Actual Drasov remains byte-exact to the
+user-approved V2 improvement. Evidence is controller build
+`legacy-wide-secant/feedback-followup-20261106/v4-live-promotion/green-receipt.json`,
+`green-xml/` and `all-policy-comparisons.csv`. Thus the three V3 purple regressions
+are corrected under V4, not waived. Independent Sol review remains PASS.
+Public V4 preflight is now RUNNING session94633 in performance worktree.
+Remaining adoption gates: its16 rows/eight groups, final source public/GUI CI,
+strict three-fork matched speed, whole-delta/evidence audit and testable JAR.
+No public release or goal-completion claim yet.
+
+**V4 FROZEN / INTEGRATION RUNNING — 2026-11-06:** Core source
+`1f9c383b` (controller `abba402b`) passed99 tests/13suites,0 failures/errors/skips;
+independent Sol source/evidence review PASS closes the three contract concerns.
+Three complete coarse banks exactly match Original including scores/evidence;
+resolved controls exactly match frozenV3. Parent ONE full actual Drasov V4 pair
+exited0 in2.852s, runtime/input fences unchanged, and all four final-geometry
+and native-support CSVs are BYTE-IDENTICAL to approvedV2. Root build receipt:
+`legacy-wide-secant/feedback-followup-20261106/paired-chord-v4-approved-geometry-check.json`.
+This reuses the existing user geometry approval, not a new confirmation gate.
+Manifest/root source/class99XML evidence is in
+`performance-wiring/other-capture-components-one/v4/frozen/`.
+
+Parent promoted live capture and real50 comparison to explicitV4 after two
+correct routing RED failures (expectedV4/actualV3), archived in controller build
+`.../v4-live-promotion/red-source-capture.xml`. Combined live/codec/receipt/
+tracker plus all private tests is RUNNING session55854 (expected107 tests;
+do not claim count/pass until terminal XML inspected). Benchmark candidateV4
+configuration has46 gate/workflow tests PASS; public preflight is next only
+after complete real-control/integration GREEN. Full public/GUI CI and matched
+three-fork speed remain pending. No push/release or final adoption yet.
+
 **CURRENT BLOCKER — V3 OTHER-REAL-CAPTURE COVERAGE, 2026-11-06:** Do NOT push
 or adopt yet. Controller `33139512` integrated GREEN79 tests/eight suites and
 20 historical private tests, but inspection found the private Legacy regression
@@ -43,6 +77,39 @@ Three generated CSV fixture artifacts have LF line endings regenerated with
 every row byte-identical to committed data; whole-task diff check now passes.
 No public push/release occurred. Goal remains active; older success cards do
 not supersede this discovered real-regression blocker.
+
+**Causal observation:** `performance-wiring/other-capture-components-one/`
+completed one admitted512MiB/120s process exit0 in19.327s, all1443 runtime/input
+fences unchanged. Exactly one purple mosaic decode,3 banks,15 existing-policy
+tracks and15 chosen-seed phase parity checks. Original/V3 reproduce the aggregate
+metrics exactly, always sole ridge-1/seed0: no ranking confound. Native support
+alone regresses all3; paired correction makes only tiny changes. On30986022,
+V2 synthetic pruning is a SECOND causal deterioration: envelope overflow grows
+from support-only2.3065m to V2/V3 10.03195m. Worker is inspecting exact rows before
+repair. New behavioral correction must be explicitV4, preserving frozenV3 and
+older semantics. No palette/case fallback, new solver or unmeasured tuning.
+
+**Authorized V4 repair:** Exact component rows prove old support4→native1/0
+deletes true broad peaks, leaving search-edge states. Coarse measured bracket
+spacing2 native pixels (configuredstep4, interleaved) also permits unsupported
+synthetic deletion through interpolation. V4 preserves historical support where
+the native physical tolerance would narrow the historical6..12 bound, and
+requires measured valid brackets<=one factual native pixel for every scalar
+comparison authorizing V4 synthetic deletion or paired position movement.
+Retain all ownership/censor/tie/atomicity checks. No synthetic interpolation can
+claim resolved positional proof on a coarse grid. Drasov measured span24raster
+is below factual pitch24.001 and must retain exact approved185-point geometry.
+Sol is writing reduced RED/GREEN controls in its isolated worktree; independent
+Sol contract review is active. Parent waits for frozen source/classes before
+new complete50 capture, Drasov pin and public preflight. No extra private model
+search or new production-family redesign is authorized.
+Independent contract clarifications: narrowing must consider effective target
+AND neighbor bounds against the actual historical matching rule, not a blanket
+pitch threshold. V4's dominated-support-gain cap also needs resolved scalar
+brackets. A historical directional/nonreciprocal count is compatibility
+retention/scoring, never newly certified native evidence; retain strict native
+ownership/coherence for new pruning/pair authorization. Add boundary controls
+for peer-only narrowing, unresolved scalar caps and floor-only coherence.
 
 **V3 VERIFICATION MILESTONE — 2026-11-06:** Frozen algorithm `edf499d5`
 (controller cherry `e9011cf2`) passed92 tests/12suites, zero failures/errors/skips;

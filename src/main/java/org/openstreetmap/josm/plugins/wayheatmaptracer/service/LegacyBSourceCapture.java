@@ -27,7 +27,7 @@ public final class LegacyBSourceCapture {
 
     /** Single named live-policy seam; change only after paired-source quality and speed evidence. */
     public static LegacyTrackerPolicy liveDrasovTrackerPolicy() {
-        return LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V3;
+        return LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V4;
     }
 
     /** Validated policy selection for a single captured source frame. */

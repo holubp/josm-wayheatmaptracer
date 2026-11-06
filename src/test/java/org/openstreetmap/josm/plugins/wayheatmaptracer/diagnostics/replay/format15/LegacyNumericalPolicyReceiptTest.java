@@ -69,7 +69,8 @@ class LegacyNumericalPolicyReceiptTest {
     @Test void pairedPoliciesRoundTripAndAttestUnderEitherNormalPolicy() {
         var base = V022FrozenFrameTest.input(V022FrozenFrameTest.frame());
         for (var policy : List.of(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2,
-                LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V3)) {
+                LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V3,
+                LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V4)) {
         for (boolean protectedNormals : List.of(false, true)) {
             var selected = v3Source(protectedNormals, false).withTrackerPolicy(
                     policy,

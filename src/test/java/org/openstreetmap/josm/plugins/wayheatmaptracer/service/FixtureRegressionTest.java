@@ -63,7 +63,7 @@ class FixtureRegressionTest {
     @Tag("private-fixture")
     @Test
     void nativeLegacyPolicyPreservesOtherCapturedWays() throws Exception {
-        checkChangedSegments(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V3);
+        checkChangedSegments(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V4);
     }
 
     private void checkChangedSegments(LegacyTrackerPolicy policy) throws Exception {
