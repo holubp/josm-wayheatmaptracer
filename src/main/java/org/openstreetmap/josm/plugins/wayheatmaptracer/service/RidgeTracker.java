@@ -57,6 +57,9 @@ public final class RidgeTracker {
             double trackerNormalizationRasterPx, double nativeSourcePitchRasterPx,
             CancellationProbe cancellation, LegacyTrackerPolicy policy) {
         java.util.Objects.requireNonNull(policy, "Legacy tracker policy is required");
+        if (policy.isParked()) {
+            throw new IllegalArgumentException("Parked Legacy tracker policy");
+        }
         if (policy.requiresNativePitch()
                 && (!Double.isFinite(nativeSourcePitchRasterPx) || nativeSourcePitchRasterPx <= 0.0)) {
             throw new IllegalArgumentException("Factual native source pitch must be finite and positive");
@@ -96,6 +99,9 @@ public final class RidgeTracker {
             List<Point2D.Double> points = new ArrayList<>();
             for (int i = 0; i < profiles.size(); i++) {
                 RenderedHeatmapSampler.CrossSectionProfile profile = profiles.get(i);
+                if (policy.localizesFineCenters() && i > 0 && i + 1 < profiles.size()) {
+                    localizeFineCenter(profiles, offsets, smoothedOffsets, i, continuity);
+                }
                 double offset = smoothedOffsets.get(i);
                 points.add(new Point2D.Double(
                     profile.anchorScreen().x + profile.normalScreen().x * offset,
@@ -756,6 +762,137 @@ public final class RidgeTracker {
         }
         return energy;
     }
+
+    /** One bounded same-peak localization correction, after the historical smoother. */
+    private void localizeFineCenter(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        List<Double> selectedOffsets,
+        List<Double> completedOffsets,
+        int index,
+        ContinuitySupportPolicy continuity
+    ) {
+        var profile = profiles.get(index);
+        if (!profile.anchorWithinRaster()) {
+            return;
+        }
+        var peak = uniqueNearestPeak(profile.peaks(), selectedOffsets.get(index));
+        double current = completedOffsets.get(index);
+        if (peak == null || peak.syntheticCenter() || !Double.isFinite(peak.supportWidthPx())
+                || !(peak.supportWidthPx() > 0.0) || !Double.isFinite(peak.intensity())
+                || uniqueNearestPeak(profile.peaks(), current) != peak) {
+            return;
+        }
+        double center = peak.rawCenterPx();
+        double bound = Math.min(peak.centerUncertaintyPx(), continuity.nativeSourcePitchRasterPx() * 0.5);
+        if (!Double.isFinite(center) || !Double.isFinite(peak.centerUncertaintyPx())
+                || !Double.isFinite(bound) || bound <= 0.0
+                || center != peak.lightFilteredCenterPx() || center != peak.standardFilteredCenterPx()
+                || !(peak.nativeFilteredAgreement() >= 0.55 && peak.nativeFilteredAgreement() <= 1.0)
+                || !(peak.scaleAgreement() >= 0.90 && peak.scaleAgreement() <= 1.0)
+                || uniqueNearestPeak(profile.peaks(), center) != peak
+                || longitudinalSupport(profiles, index, peak, continuity)
+                    < requiredLongitudinalSupport(profiles.size(), index)) {
+            return;
+        }
+        double proposed = current + Math.max(-bound, Math.min(bound, center - current));
+        if (proposed == current || uniqueNearestPeak(profile.peaks(), proposed) != peak) {
+            return;
+        }
+        ScalarSupport oldSupport = scalarSupportAt(profile, current);
+        ScalarSupport newSupport = scalarSupportAt(profile, proposed);
+        ScalarSupport core = scalarSupportAt(profile, center);
+        double pitch = continuity.nativeSourcePitchRasterPx();
+        ScalarSupport left = scalarSupportAt(profile, center - pitch);
+        ScalarSupport right = scalarSupportAt(profile, center + pitch);
+        // Measured two-sided local maximum inside the decision window. A missing
+        // or censored bracket cannot authorize a position, even if its peak exists.
+        if (oldSupport == null || newSupport == null || core == null || left == null || right == null
+                || !(core.raw() > 0.0) || !(core.raw() > peak.noiseFloor())
+                || !(left.raw() < core.raw()) || !(right.raw() < core.raw())
+                || !core.dominates(left) || !core.dominates(right)
+                || !newSupport.dominates(oldSupport) || !core.dominates(newSupport)) {
+            return;
+        }
+        GeometryMetrics before = localGeometryMetrics(profiles, completedOffsets, index, pitch);
+        if (before == null) {
+            return;
+        }
+        completedOffsets.set(index, proposed);
+        GeometryMetrics after = localGeometryMetrics(profiles, completedOffsets, index, pitch);
+        if (after == null || after.energy() > before.energy() || after.maximumTurn() > before.maximumTurn()) {
+            completedOffsets.set(index, current);
+        }
+    }
+
+    /** Scalar-only interpolation between adjacent measured samples; never across invalid support. */
+    private ScalarSupport scalarSupportAt(RenderedHeatmapSampler.CrossSectionProfile profile, double offset) {
+        var samples = profile.intensitySamples();
+        if (!Double.isFinite(offset) || samples.size() < 3) {
+            return null;
+        }
+        int low = 0, high = samples.size() - 1;
+        if (!(offset >= samples.get(low).offsetPx() && offset <= samples.get(high).offsetPx())) {
+            return null;
+        }
+        while (low + 1 < high) {
+            int middle = low + (high - low) / 2;
+            double value = samples.get(middle).offsetPx();
+            if (!Double.isFinite(value)) {
+                return null;
+            }
+            if (value < offset) { low = middle; } else { high = middle; }
+        }
+        var left = samples.get(low);
+        var right = samples.get(high);
+        double width = right.offsetPx() - left.offsetPx();
+        if (!left.insideRaster() || !right.insideRaster() || !Double.isFinite(width) || width <= 0.0) {
+            return null;
+        }
+        var a = new ScalarSupport(left.nativeIntensity(), left.lightFilteredIntensity(), left.standardFilteredIntensity());
+        var b = new ScalarSupport(right.nativeIntensity(), right.lightFilteredIntensity(), right.standardFilteredIntensity());
+        if (!a.valid() || !b.valid()) {
+            return null;
+        }
+        double fraction = (offset - left.offsetPx()) / width;
+        var result = new ScalarSupport(a.raw() + (b.raw() - a.raw()) * fraction,
+                a.b3() + (b.b3() - a.b3()) * fraction, a.b5() + (b.b5() - a.b5()) * fraction);
+        return result.valid() && fraction >= 0.0 && fraction <= 1.0 ? result : null;
+    }
+
+    private GeometryMetrics localGeometryMetrics(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        List<Double> offsets, int changedIndex, double pitch
+    ) {
+        double energy = 0.0, maximumTurn = 0.0;
+        for (int i = Math.max(1, changedIndex - 1); i <= Math.min(offsets.size() - 2, changedIndex + 1); i++) {
+            var a = centerlinePoint(profiles.get(i - 1), offsets.get(i - 1));
+            var b = centerlinePoint(profiles.get(i), offsets.get(i));
+            var c = centerlinePoint(profiles.get(i + 1), offsets.get(i + 1));
+            double ux = b.x - a.x, uy = b.y - a.y, vx = c.x - b.x, vy = c.y - b.y;
+            double left = Math.hypot(ux, uy), right = Math.hypot(vx, vy);
+            double denominator = Math.max(left + right, pitch);
+            if (!Double.isFinite(denominator) || left <= 0.0 || right <= 0.0) {
+                return null;
+            }
+            double dx = vx / right - ux / left, dy = vy / right - uy / left;
+            energy += (dx * dx + dy * dy) / denominator;
+            maximumTurn = Math.max(maximumTurn, Math.abs(Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy)));
+        }
+        return Double.isFinite(energy) && Double.isFinite(maximumTurn) ? new GeometryMetrics(energy, maximumTurn) : null;
+    }
+
+    private record ScalarSupport(double raw, double b3, double b5) {
+        boolean valid() {
+            return Double.isFinite(raw) && raw >= 0.0 && raw <= 1.0
+                && Double.isFinite(b3) && b3 >= 0.0 && b3 <= 1.0
+                && Double.isFinite(b5) && b5 >= 0.0 && b5 <= 1.0;
+        }
+        boolean dominates(ScalarSupport other) {
+            return raw >= other.raw && b3 >= other.b3 && b5 >= other.b5;
+        }
+    }
+
+    private record GeometryMetrics(double energy, double maximumTurn) { }
 
     private Point2D.Double centerlinePoint(RenderedHeatmapSampler.CrossSectionProfile profile, double offset) {
         Point2D.Double anchor = profile.anchorScreen();

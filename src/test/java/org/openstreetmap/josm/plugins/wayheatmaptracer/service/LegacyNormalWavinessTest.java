@@ -10,6 +10,62 @@ import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 class LegacyNormalWavinessTest {
+    @Test void parkedGeometryGuardDemonstratesWhyInputEnergyWasInsufficient() throws Exception {
+        // Relative, rounded reduction of the saved NW chart: no absolute map or
+        // image location, raster pixels, image samples, or replay input is used.
+        for (double pitch : List.of(6.0, 24.0)) {
+            var profiles = shortTurnProfiles(pitch);
+            var offsets = measuredOffsets(profiles);
+            var historical = smooth(profiles, offsets, pitch, pitch, LegacyTrackerPolicy.ORIGINAL_V02);
+            var guarded = smooth(profiles, offsets, pitch, pitch, LegacyTrackerPolicy.GEOMETRY_ONLY_V1);
+            double oldTurn = maximumTurn(points(profiles, historical));
+            double newTurn = maximumTurn(points(profiles, guarded));
+            assertTrue(newTurn > oldTurn,
+                    "Reduced NW regression: historical=" + oldTurn + " guarded=" + newTurn);
+        }
+    }
+
+    static List<RenderedHeatmapSampler.CrossSectionProfile> shortTurnProfiles(double pitch) {
+        double[][] rows = {
+            {0,0,.792713,-.609595,-.147696,.5046,3,.6667},
+            {-.879345,-1.421227,.815399,-.578899,.734829,.4188,6,.8889},
+            {-1.738468,-2.857923,.836840,-.547447,0,.5526,0,1},
+            {-2.597590,-4.294619,.856959,-.515384,3.032985,.4177,11,1},
+            {-3.456712,-5.731315,.891615,-.452794,3.352611,.4644,7,1},
+            {-4.315834,-7.168011,.957452,-.288594,4.355007,.5173,5,1},
+            {-5.174957,-8.604708,.995718,-.092443,5.010021,.5564,3,1},
+            {-5.247015,-10.021792,.993118,.117121,5.329673,.5546,2,1},
+            {-4.317407,-11.413918,.947197,.320653,4.667820,.5956,1,1},
+            {-3.387798,-12.806044,.848475,.529236,4.269254,.5371,2,.8},
+            {-2.458189,-14.198170,.768808,.639480,6.338776,.4986,5,1},
+            {-1.479675,-15.545919,.736081,.676894,6.956684,.4707,6,1},
+            {-.184148,-16.606012,.701558,.712612,5.048939,.4608,3,1},
+            {1.111379,-17.666105,.665511,.746388,5.667534,.4323,4,1}
+        };
+        var profiles = new ArrayList<RenderedHeatmapSampler.CrossSectionProfile>();
+        for (var row : rows) {
+            var anchor = new Point2D.Double(row[0]*pitch,row[1]*pitch);
+            double length = Math.hypot(row[2],row[3]);
+            var normal = new Point2D.Double(row[2]/length,row[3]/length);
+            double offset = row[4]*pitch;
+            var peak = new RenderedHeatmapSampler.CrossSectionPeak(offset,row[5],row[6]*pitch,false,
+                    row[5],0,row[5],0,0,row[7]);
+            profiles.add(new RenderedHeatmapSampler.CrossSectionProfile(
+                    new EastNorth(anchor.x,anchor.y),anchor,normal,List.of(peak)));
+        }
+        return List.copyOf(profiles);
+    }
+
+    static double maximumTurn(List<Point2D.Double> points) {
+        double maximum = 0;
+        for (int i=1;i<points.size()-1;i++) {
+            var a=points.get(i-1);var b=points.get(i);var c=points.get(i+1);
+            double ux=b.x-a.x,uy=b.y-a.y,vx=c.x-b.x,vy=c.y-b.y;
+            maximum=Math.max(maximum,Math.abs(Math.toDegrees(Math.atan2(ux*vy-uy*vx,ux*vx+uy*vy))));
+        }
+        return maximum;
+    }
+
     @Test void actualSecantChartStraightRidgeHistoricalRedBecomesGeometryOnlyGreen(){
         for(double p:List.of(6.0,24.0)){
             var profiles=straightTargetProfiles(p);var measured=measuredOffsets(profiles);
