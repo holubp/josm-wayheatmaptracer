@@ -14,6 +14,161 @@
 
 ### Active execution card — authoritative
 
+**CURRENT OVERRIDE — 2026-11-06, V3 regression closure:** Controller HEAD
+`650a1948` includes V2 core `208caff9`, live/frozen routing and receipt repair
+`c1c3a8b1`. Primary dirty checkout remains untouched. The fenced private
+`paired-chord-v2-one` restores Drasov rows109–114 exactly to Original while
+retaining both turn improvements. User approved its browser geometry.
+Promotion focused evidence:71 tests/seven suites, zero failures/errors/skips,
+archived in controller build `legacy-wide-secant/feedback-followup-20261106/live-promotion/`.
+This does not establish full regression or speed approval.
+
+Public tracker preflight passed straight, Gaussian and visible switchback
+controls, but FAILED managed switchback nonregression. One bounded public
+component observation proved identical base-DP offsets; extra native support
+creates wrong-arm anchors/retention at rows162–167 and182. A surviving point's
+owned return-arm error increases approximately5m to15m. Undirected nearest-ridge
+distance hides this regression and must not replace the existing strict gate.
+
+Sol `drasov_independent_audit` is sole V3 writer in tmp worktree
+`josm-legacy-feedback-continuity`. V3 caps only gains over historical support
+when a coherent observed competitor (historical support>=2) strictly dominates
+valid raw/B3/B5 samples. Ties/censored/unavailable evidence do not permit a cap.
+Preserve V2/older semantics; no extra raster pass, solver, tuning or Original run.
+Owning reduced-public RED/GREEN first; after frozen source/class handoff parent
+runs one fenced Drasov comparison requiring approved V2 geometry unchanged,
+then one full public preflight with unchanged strict gates. Independent review,
+full CI/regressions and matched speed remain required. No public release is
+authorized. Goal remains active. Historical cards below are superseded where
+they conflict with this current override.
+
+**CURRENT / NEW USER REGRESSION — 2026-11-06:** Goal remains ACTIVE. Paired
+chord experiment cfff014d has75public tests/10suites,0fail/error/skip and
+independent Sol CORE PASS over88e06715. Parent's ONEactual full pair improves
+NW42.5368→31.9012degrees, upper36.3127→21.1371, zero-native probes10→1,
+mean.257329→.261168, exact endpoints/no recorded contacts/off-raster points.
+Maximum local-only adjustment relative to support-only is.499974native pixels.
+Approximate earlier user sketch distance mean.316→.192pixels (diagnostic ONLY).
+Artifacts: `paired-chord-combined-one`, its process/fullhash manifests and
+summary/sketch check under root `legacy-wide-secant/feedback-followup-20261106/`.
+
+User approves overall appearance but flags ONE weaker-channel regression in
+`feedback-20261106T100834.547690Z-f6f759675892.json`. Its four points explicitly
+sketch intended stronger ridge (generic markMeaning overridden in roles file).
+All marks use image-boundary coordinates; subtract.5 for native-index comparison.
+It binds paired comparison oldfinal150342c6... /newfinalefa410c9... on image951795.
+Static component split: rows111/112 historical offsets−2.087/−1.965native,
+raw.214/.215; native-support and paired identical there at−.503/−.485native,
+raw.084/.087, interpolating a trough. Thus support change, NOTpaired adjustment,
+causes this regression. It blocks adoption despite earlier positive averages.
+Sol implementer resumed causal diagnosis, no source change yet. Controller ONE
+bounded observed-phase replay (`weaker-channel-phase-one`,1.743s,unchanged hashes)
+reconstructs saved scalar rows, chosen first seed only for Original/support,
+and reproduces ALL185 stored smoothed offsets BIT EXACT. Dumps raw/filtered peaks,
+support/anchors/base/anchored/smoothed rows103–119. No image sampling/new model
+variant. See LegacyFeedbackPhaseInspection.java and process.json/stdout.txt.
+
+Parallel work: Luna source wiring committed7490b3e4 (13files),113focused tests/
+6suites0skip; meaningful coarse-pitch production-routing bypass mutant RED,
+restored GREEN; V1/V2bytegoldens, V3fallback/frame validation and cap tests pass.
+Controller now5a5a0640 (wire+core; liveconstantstillSUPPORT, unreleased). Wiring
+report at controller `build/private-drasov-resume-20261105/feedback-followup-20261106/integration-wiring/README.md`.
+Independent Sol incremental wiring audit is active; core PASS is reused.
+Scratch must cover2referencearrays +Ncoexisting boxed values +constant work:
+`2*referenceArrayBytes(N)+objectBytes(16)+N*objectBytes(8)+8192`, current40N+8256.
+Preserve standalone visible norm6, standalone managed native norm24.001(case),
+and Hybrid captured norm6 separately from factual pitch; never replace one.
+
+Parent performance worktree `/data/data/com.termux/files/usr/tmp/josm-legacy-residual-performance`
+at7c4f7f3a (core+wire) has UNCOMMITTED benchmark changes: explicit tracker mode
+compares retained ORIGINAL versus named policy under protected normals on BOTH
+routes, same3fork/8group/20pair thresholds. Oldnormalgate unchanged. Newstrict
+gate source/policy/class/scale bindings tests and fullPython suite PASS236tests
++9subtests. APIcompile passes; actual local preflight is running execsession56422.
+This baseline is retained historical policy in current runtime, not an old-JAR
+wall-clock comparison; shared wiring cost is a stated boundary. No performance
+PASS/fullCI/adoption/release yet. Primary dirty checkout remains untouched.
+
+User requested maximum useful parallelism: algorithm diagnosis, wiring audit,
+parent benchmark, and private browser artifact were independent. New Luna/medium
+visualization route verified from runtime metadata (gpt-6-luna/medium). New local
+paired comparison at `http://127.0.0.1:8768/comparison.html?data=paired`, PID16251,
+execsession71675. Olddatasets/feedback preserved, exactpair validators tested,
+no synthetic POST. Weekly allowance telemetry remains unavailable/unknown.
+
+**LOCALIZATION ACTUAL RESULT — 2026-11-06:** Sol froze3c3c639a overc644434c,
+70public focused tests/9suites,0fail/error/skip. Parent ran ONE fresh bounded
+`fine-localization-combined-one` pair with full before/after input/runtime
+manifests; exit0,4.272seconds, hashes unchanged. Actual NW max turn remains
+42.536758degrees and rows119–126 remain unchanged. Row118 moves, upper retains
+support-only21.137degrees improvement, zero native probes1, mean.261053, no
+outside/self-contact. Therefore reduced-phase GREEN does NOT establish the
+remaining actual NW repair: localization is NOT ADOPTABLE for this goal yet.
+Previous geometry guard also failed. Stop threshold/guard tuning and diagnose
+the real eligibility/refusal from saved scalar/profile metadata. Sol authorised
+STATIC seam diagnostics only (no new extraction/DP/private variant), using the
+full saved wide-secant-profiles.csv and phase-detail.stdout. Need discriminate
+actual scalar/ownership/geometric refusal vs reduced test assumptions before
+another design. Independent source audit3c3c is scoped only; no adoption claim.
+
+**RESUMED GOAL / ACTUAL PRIVATE RESULTS — 2026-11-06:** Goal is active again:
+finish remaining Drasov Legacy defects without other-case deterioration or
+dramatic runtime growth. Clean experiment c644434c (parent88e06715) passed
+independent SOURCE/CONTRACT audit and65public focused tests. Three bounded
+private pairs now completed, each <2.5seconds, unchanged input/runtime hashes:
+`feedback-followup-20261106/corrected-{native-reciprocal-support-v1,geometry-only-v1,native-reciprocal-support-geometry-v1}`.
+These timings are diagnostic ONLY, not the matched speed gate. Baseline185
+offsets reproduce previous protected-secant output bit-for-bit. Support-only
+improves upper max turn36.31→21.14degrees and zero native probes10→1; NW remains
+42.54degrees. Geometry-only and combined WORSEN the final NW maximum to70.65
+degrees, despite their public energy controls. Do not adopt either guard.
+Combined upper improves21.15degrees, but does not excuse NW regression.
+Existing Sol worker resumed focused tracker/finalization diagnosis and RED/GREEN
+repair in the same isolated worktree; no live/codec integration yet. Exact
+results are `corrected-comparison-summary.json`; no coefficient sweep.
+
+Browser comparison overlays were half a native pixel NW of the SVG image:
+decoded-index geometry must display with(+0.5,+0.5). Comparison HTML now adds
+that DISPLAY-ONLY transform. Image, CSVs, algorithm and saved user records stay
+unchanged. All saved user clicks are image-boundary coordinates: subtract0.5
+when comparing to decoded-index coordinates. Historical static/normal-chart
+figures are superseded for subpixel assessment. JavaScript syntax verified.
+
+**NEXT BOUNDED EXPERIMENT:** Sol static diagnosis shows the guard cannot create
+a proposal when historical smoothing weights are zero. Authorised a distinct
+post-historical SAME-PEAK fine-localization experiment inside the existing
+candidate construction loop: unanimous already-owned raw/B3/B5 centers, unique
+same-peak ownership before/after, finite nonsynthetic complete two-sided scalar
+support, no decrease in any native/B3/B5 sample, total movement bounded by
+min(uncertainty,half factual native pitch), and no increase in affected energy
+OR max turn relative to completed historical/accepted-so-far geometry. No new
+filter pass, DP, normal policy, global averaging, iterations or profile bank.
+Old ORIGINAL/support-only outputs remain unchanged. Park failed geometry guard;
+do not silently substitute this new experiment under its identity. Retain all
+RED controls and exact experiment provenance. Public reduced-NW RED/GREEN and
+support/switchback/parallel/censor controls precede ONE actual private comparison.
+No adoption/integration until actual improvement and non-deterioration evidence.
+
+Read-only Luna mapped eventual integration: standalone AlignmentService and
+Hybrid LegacyBProductionRunner/LegacySeedAdapter must receive compatibility
+normalization and factual native pitch separately. Freeze new explicit policy
+with a new LegacySourceCodec version; V1/V2 remain historical tracker and byte
+compatible. VisibleRaster already carries nativePitchMeters/ground scale;
+managed mosaic virtualRasterScale is inference-specific. Unknown native pitch
+must explicitly fall back ORIGINAL before freezing. Preserve owned-memory
+scratch accounting; extend matched performance beyond normal-policy-only tests
+to exercise the adopted tracker policy. This is mapping, not implementation.
+
+**LATEST USER FEEDBACK — 2026-11-06:** Read new071712/071931 saved feedbacks.
+User accepts upper prototype visually; a small SE maximum offset is OPTIONAL
+and must not risk other cases. Remaining NW kink is priority. The071931four
+points explicitly describe the approximate desired NW path by its note, despite
+the browser's generic "problem locations" marker field; role override is durable
+in root inspection `feedback-roles.json`. Original user files are untouched.
+Both new records bind previous finalCSV6bb903... to prototype2c43df... on the
+unchanged source951795.... They do not validate the corrected pure-support
+variant yet; that still needs its own comparison and public/runtime gates.
+
 **WRITER HANDOFF — 2026-11-06:** Escalated the coupled policy implementation
 to existing Sol worker `drasov_independent_audit` after two unintended experiment
 couplings (native anchor adjacency and geometry inheriting motion/reciprocal).
