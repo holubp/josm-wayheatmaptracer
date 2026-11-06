@@ -344,6 +344,9 @@ class OrdinaryModernAttemptAssemblyTest {
         long trackerWorking = trackerPolicy == org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyTrackerPolicy.ORIGINAL_V02
                 ? 0L
                 : 40L * profiles.size() + 8256L;
+        if (trackerPolicy == org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V4) {
+            trackerWorking += 64L * profiles.size() + 128L;
+        }
         long required = policyWorking + nativeWorking + trackerWorking;
         assertTrue(explicitPolicy, "The managed Hybrid fixture must exercise explicit normal-policy admission");
         assertTrue(required > 0 && required < org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES);

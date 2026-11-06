@@ -88,9 +88,18 @@ public final class RidgeTracker {
         List<CenterlineCandidate> candidates = new ArrayList<>();
         int candidateIndex = 1;
         double edgeLimitPx = profileEdgeLimit(profiles);
+        List<Anchor> v4Anchors = null;
         for (double seed : seeds) {
             State state = bestPathForSeed(profiles, seed, sourcePixel, continuity);
-            PathResult anchored = anchoredPath(profiles, state, sourcePixel, edgeLimitPx, continuity);
+            PathResult anchored;
+            if (policy == LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V4) {
+                if (v4Anchors == null) {
+                    v4Anchors = reliableAnchorsWithReusedSupport(profiles, sourcePixel, edgeLimitPx, continuity);
+                }
+                anchored = anchoredPathWithAnchors(profiles, state, sourcePixel, edgeLimitPx, continuity, v4Anchors);
+            } else {
+                anchored = anchoredPath(profiles, state, sourcePixel, edgeLimitPx, continuity);
+            }
             List<Double> offsets = anchored.offsets();
             List<Double> intensities = anchored.intensities();
 
@@ -586,6 +595,42 @@ public final class RidgeTracker {
         return new PathResult(score, offsets, intensities);
     }
 
+    private PathResult anchoredPathWithAnchors(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        State base,
+        double sourcePixelSizePx,
+        double edgeLimitPx,
+        ContinuitySupportPolicy continuity,
+        List<Anchor> anchors
+    ) {
+        if (anchors.size() < 2) {
+            return new PathResult(base.score(), base.offsets(), base.intensities());
+        }
+
+        List<Double> offsets = new ArrayList<>(base.offsets());
+        List<Double> intensities = new ArrayList<>(base.intensities());
+        double score = base.score();
+        for (int i = 0; i < anchors.size() - 1; i++) {
+            Anchor left = anchors.get(i);
+            Anchor right = anchors.get(i + 1);
+            if (right.index() <= left.index()) {
+                continue;
+            }
+            IntervalPath interval = solveAnchoredInterval(profiles, left, right,
+                sourcePixelSizePx, edgeLimitPx, continuity);
+            if (interval.offsets().isEmpty()) {
+                continue;
+            }
+            for (int profileIndex = left.index(); profileIndex <= right.index(); profileIndex++) {
+                int local = profileIndex - left.index();
+                offsets.set(profileIndex, interval.offsets().get(local));
+                intensities.set(profileIndex, interval.intensities().get(local));
+            }
+            score += interval.scoreBonus();
+        }
+        return new PathResult(score, offsets, intensities);
+    }
+
     private IntervalPath solveAnchoredInterval(
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
         Anchor left,
@@ -678,6 +723,30 @@ public final class RidgeTracker {
         return anchors;
     }
 
+    private List<Anchor> reliableAnchorsWithReusedSupport(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        double sourcePixelSizePx,
+        double edgeLimitPx,
+        ContinuitySupportPolicy continuity
+    ) {
+        List<Anchor> anchors = new ArrayList<>();
+        for (int i = 0; i < profiles.size(); i++) {
+            Anchor anchor = reliableAnchorWithReusedSupport(profiles, i, sourcePixelSizePx, edgeLimitPx, continuity);
+            if (anchor == null) {
+                continue;
+            }
+            if (!anchors.isEmpty()) {
+                Anchor previous = anchors.get(anchors.size() - 1);
+                if (i - previous.index() <= 2 && Math.abs(anchor.offsetPx() - previous.offsetPx())
+                        > sourcePixelSizePx * 1.35) {
+                    continue;
+                }
+            }
+            anchors.add(anchor);
+        }
+        return anchors;
+    }
+
     private Anchor reliableAnchor(
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
         int index,
@@ -721,6 +790,51 @@ public final class RidgeTracker {
         return new Anchor(index, best, quality);
     }
 
+    private Anchor reliableAnchorWithReusedSupport(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        int index,
+        double sourcePixelSizePx,
+        double edgeLimitPx,
+        ContinuitySupportPolicy continuity
+    ) {
+        RenderedHeatmapSampler.CrossSectionProfile profile = profiles.get(index);
+        if (isUnsupportedProfile(profile)) {
+            return null;
+        }
+        RenderedHeatmapSampler.CrossSectionPeak best = null;
+        double quality = Double.NEGATIVE_INFINITY;
+        int support = 0;
+        double secondQuality = Double.NEGATIVE_INFINITY;
+        for (RenderedHeatmapSampler.CrossSectionPeak peak : profile.peaks()) {
+            if (!(peak.intensity() >= 0.30)
+                    || !(peak.supportWidthPx() >= Math.max(6.0, sourcePixelSizePx * 0.20))
+                    || isEdgePeak(peak, sourcePixelSizePx, edgeLimitPx)) {
+                continue;
+            }
+            int candidateSupport = longitudinalSupport(profiles, index, peak, continuity);
+            double candidateQuality = anchorQualityWithSupport(peak, sourcePixelSizePx, edgeLimitPx, candidateSupport);
+            if (best == null || Double.compare(candidateQuality, quality) > 0) {
+                if (best != null) {
+                    secondQuality = Math.max(secondQuality, quality);
+                }
+                best = peak;
+                quality = candidateQuality;
+                support = candidateSupport;
+            } else if (peak != best) {
+                secondQuality = Math.max(secondQuality, candidateQuality);
+            }
+        }
+        if (best == null || support < requiredAnchorSupport(profiles.size(), index)) {
+            return null;
+        }
+        boolean dominant = secondQuality == Double.NEGATIVE_INFINITY || quality >= secondQuality + 0.16;
+        boolean strongEnough = best.intensity() >= 0.42 || best.prominence() >= 0.16 || best.gradientStrength() >= 0.45;
+        if (!dominant && !(strongEnough && quality >= secondQuality + 0.08)) {
+            return null;
+        }
+        return new Anchor(index, best, quality);
+    }
+
     private int requiredAnchorSupport(int profileCount, int profileIndex) {
         if (profileIndex <= 1 || profileIndex >= profileCount - 2) {
             return 1;
@@ -738,6 +852,24 @@ public final class RidgeTracker {
     ) {
         double supportWidthReward = Math.min(0.34, peak.supportWidthPx() / Math.max(1.0, sourcePixelSizePx) * 0.08);
         double supportReward = Math.min(0.28, longitudinalSupport(profiles, index, peak, continuity) * 0.10);
+        double gradientReward = peak.gradientStrength() * (0.16 + 0.10 * peak.gradientBalance());
+        double nativeFilteredReward = peak.nativeFilteredAgreement() * 0.14;
+        double scaleReward = peak.scaleAgreement() * 0.08;
+        double edgePenalty = isEdgePeak(peak, sourcePixelSizePx, edgeLimitPx) ? 0.55 : 0.0;
+        double narrowPenalty = peak.supportWidthPx() <= sourcePixelSizePx * 0.15 ? 0.28 : 0.0;
+        return peak.intensity() + peak.prominence() * 0.18 + supportWidthReward + supportReward + gradientReward
+            + nativeFilteredReward + scaleReward
+            - edgePenalty - narrowPenalty;
+    }
+
+    private double anchorQualityWithSupport(
+        RenderedHeatmapSampler.CrossSectionPeak peak,
+        double sourcePixelSizePx,
+        double edgeLimitPx,
+        int longitudinalSupport
+    ) {
+        double supportWidthReward = Math.min(0.34, peak.supportWidthPx() / Math.max(1.0, sourcePixelSizePx) * 0.08);
+        double supportReward = Math.min(0.28, longitudinalSupport * 0.10);
         double gradientReward = peak.gradientStrength() * (0.16 + 0.10 * peak.gradientBalance());
         double nativeFilteredReward = peak.nativeFilteredAgreement() * 0.14;
         double scaleReward = peak.scaleAgreement() * 0.08;

@@ -89,12 +89,139 @@ class LegacyResolvedSupportTest {
         assertEquals(3,reads[0],"Only the target and historical neighbor profiles should be visited");
     }
 
+    @Test void v4AnchorRankingComputesSupportAndQualityOnlyOncePerEligiblePeak() throws Exception {
+        var target=LegacyTrackerPolicyTest.peak(0,24,.7);
+        var context=LegacyTrackerPolicyTest.context(V4,24,24);
+        var old=RidgeTracker.class.getDeclaredMethod("reliableAnchor",List.class,int.class,double.class,double.class,context.getClass());
+        var optimized=RidgeTracker.class.getDeclaredMethod("reliableAnchorWithReusedSupport",List.class,int.class,double.class,double.class,context.getClass());
+        old.setAccessible(true);optimized.setAccessible(true);
+        var weaker=LegacyTrackerPolicyTest.peak(24,24,.62);
+        for(var peaks:List.of(List.of(target),List.of(target,weaker))) {
+            var complete=repeatedPeaks(peaks);
+            var oldReads=new int[1];
+            var oldCounted=countReads(complete,oldReads);
+            assertNotNull(old.invoke(new RidgeTracker(),oldCounted,4,24,Double.NaN,context));
+            assertEquals(peaks.size()==1?19:66,oldReads[0],"Baseline V4 selector read count for eligible peak bank");
+
+            var newReads=new int[1];
+            var newCounted=countReads(complete,newReads);
+            assertNotNull(optimized.invoke(new RidgeTracker(),newCounted,4,24,Double.NaN,context));
+            assertEquals(peaks.size()==1?10:27,newReads[0],"Observed profile-list reads for one support-aware anchor pass, including V4 cap/rival work");
+        }
+    }
+
+    @Test void v4OnePassAnchorSelectionMatchesHistoricalIdentityTieAndNaNRules() throws Exception {
+        var context=LegacyTrackerPolicyTest.context(V4,24,24);
+        var old=RidgeTracker.class.getDeclaredMethod("reliableAnchor",List.class,int.class,double.class,double.class,context.getClass());
+        var optimized=RidgeTracker.class.getDeclaredMethod("reliableAnchorWithReusedSupport",List.class,int.class,double.class,double.class,context.getClass());
+        old.setAccessible(true);optimized.setAccessible(true);
+        var target=LegacyTrackerPolicyTest.peak(0,24,.7);
+        var weaker=LegacyTrackerPolicyTest.peak(24,24,.62);
+        var distinctTie=List.of(LegacyTrackerPolicyTest.peak(-24,24,.7),LegacyTrackerPolicyTest.peak(24,24,.7));
+        var duplicateIdentity=List.of(target,target);
+        var nanQuality=new RenderedHeatmapSampler.CrossSectionPeak(0,.8,24,false,.1,0,.8,Double.NaN,.5,1,0,0,0,0,1,.5);
+        var cases=List.of(
+                repeatedPeaks(List.of(target,weaker)),
+                repeatedPeaks(List.of(weaker,target,target)),
+                repeatedPeaks(distinctTie),
+                repeatedPeaks(duplicateIdentity),
+                repeatedPeaks(List.of(nanQuality,weaker)),
+                repeatedPeaks(List.of(weaker,nanQuality)),
+                repeatedPeaks(List.of())
+        );
+        for(var policy:List.of(V3,V4)) {
+            var selectedContext=LegacyTrackerPolicyTest.context(policy,24,24);
+            for(var profiles:cases) {
+                Object expected=old.invoke(new RidgeTracker(),profiles,4,24,Double.NaN,selectedContext);
+                Object actual=optimized.invoke(new RidgeTracker(),profiles,4,24,Double.NaN,selectedContext);
+                assertAnchorEqual(expected,actual);
+            }
+        }
+    }
+
+    @Test void v4CandidateOutputsMatchPreReuseRuntimeGolden() throws Exception {
+        var profiles=LegacyTrackerPolicyTest.competingRidges(24);
+        var output=LegacyTrackerPolicyTest.track(profiles,6,24,V4);
+        assertEquals(List.of("ridge-1","ridge-2"),output.stream().map(candidate->candidate.id()).toList());
+        String signature=LegacyTrackerPolicyTest.signature(output);
+        String digest=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(signature.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        assertEquals("399a4030176df4ddd1d0a7136d1021326da7086794b62440c6b605180cc090b3",digest);
+    }
+
+    @Test void v4ReusedAnchorsPreserveThreeSeedAnchoredPathResults() throws Exception {
+        var profiles=new ArrayList<RenderedHeatmapSampler.CrossSectionProfile>();
+        for(int i=0;i<9;i++) {
+            profiles.add(LegacyTrackerPolicyTest.profile(i,List.of(
+                    LegacyTrackerPolicyTest.peak(-48,24,.25),
+                    LegacyTrackerPolicyTest.peak(0,24,.70),
+                    LegacyTrackerPolicyTest.peak(48,24,.24)),48));
+        }
+        var tracker=new RidgeTracker();
+        var context=LegacyTrackerPolicyTest.context(V4,6,24);
+        var suppressMethod=RidgeTracker.class.getDeclaredMethod("suppressLongitudinalNoise",List.class,context.getClass(),
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.class);
+        suppressMethod.setAccessible(true);
+        @SuppressWarnings("unchecked") var retained=(List<RenderedHeatmapSampler.CrossSectionProfile>)suppressMethod.invoke(
+                tracker,profiles,context,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE);
+        var seedsMethod=RidgeTracker.class.getDeclaredMethod("collectSeedOffsets",List.class);seedsMethod.setAccessible(true);
+        @SuppressWarnings("unchecked") var seeds=(List<Double>)seedsMethod.invoke(tracker,retained);
+        assertEquals(3,seeds.size(),"The control exercises three distinct Legacy seeds");
+        var edgeMethod=RidgeTracker.class.getDeclaredMethod("profileEdgeLimit",List.class);edgeMethod.setAccessible(true);
+        double edge=(double)edgeMethod.invoke(tracker,retained);
+        var oldAnchorsMethod=RidgeTracker.class.getDeclaredMethod("reliableAnchors",List.class,double.class,double.class,context.getClass());oldAnchorsMethod.setAccessible(true);
+        var newAnchorsMethod=RidgeTracker.class.getDeclaredMethod("reliableAnchorsWithReusedSupport",List.class,double.class,double.class,context.getClass());newAnchorsMethod.setAccessible(true);
+        var oldAnchors=(List<?>)oldAnchorsMethod.invoke(tracker,retained,6.0,edge,context);
+        var reusedAnchors=(List<?>)newAnchorsMethod.invoke(tracker,retained,6.0,edge,context);
+        assertTrue(oldAnchors.size()>=2,"The three-seed fixture must exercise nonempty anchored intervals");
+        assertEquals(oldAnchors,reusedAnchors,"One-pass V4 anchor identities and qualities must exactly match the old scan");
+
+        var stateClass=Class.forName(RidgeTracker.class.getName()+"$State");
+        var baseMethod=RidgeTracker.class.getDeclaredMethod("bestPathForSeed",List.class,double.class,double.class,context.getClass());baseMethod.setAccessible(true);
+        var oldPathMethod=RidgeTracker.class.getDeclaredMethod("anchoredPath",List.class,stateClass,double.class,double.class,context.getClass());oldPathMethod.setAccessible(true);
+        var reusedPathMethod=RidgeTracker.class.getDeclaredMethod("anchoredPathWithAnchors",List.class,stateClass,double.class,double.class,context.getClass(),List.class);reusedPathMethod.setAccessible(true);
+        for(double seed:seeds) {
+            Object base=baseMethod.invoke(tracker,retained,seed,6.0,context);
+            Object before=oldPathMethod.invoke(tracker,retained,base,6.0,edge,context);
+            Object after=reusedPathMethod.invoke(tracker,retained,base,6.0,edge,context,reusedAnchors);
+            assertEquals(before,after,"Every seed must reuse the same exact anchored path result");
+        }
+    }
+
     private static RenderedHeatmapSampler.CrossSectionProfile capProfile(int index,
             List<RenderedHeatmapSampler.CrossSectionPeak> peaks,
             List<RenderedHeatmapSampler.IntensitySample> samples) {
         var anchor=new Point2D.Double(index*20,0);
         return new RenderedHeatmapSampler.CrossSectionProfile(new EastNorth(anchor.x,anchor.y),anchor,
                 new Point2D.Double(0,1),peaks,true,samples);
+    }
+
+    private static List<RenderedHeatmapSampler.CrossSectionProfile> repeatedPeaks(
+            List<RenderedHeatmapSampler.CrossSectionPeak> peaks) {
+        var result=new ArrayList<RenderedHeatmapSampler.CrossSectionProfile>();
+        for(int i=0;i<9;i++)result.add(LegacyTrackerPolicyTest.profile(i,peaks,48));
+        return result;
+    }
+
+    private static List<RenderedHeatmapSampler.CrossSectionProfile> countReads(
+            List<RenderedHeatmapSampler.CrossSectionProfile> complete,int[] reads) {
+        return new java.util.AbstractList<>(){
+            public RenderedHeatmapSampler.CrossSectionProfile get(int i){reads[0]++;return complete.get(i);}
+            public int size(){return complete.size();}
+        };
+    }
+
+    private static void assertAnchorEqual(Object expected,Object actual) throws Exception {
+        assertEquals(expected==null,actual==null,"Anchor presence must retain historical gates");
+        if(expected==null)return;
+        for(String accessor:List.of("index","peak")) {
+            var method=expected.getClass().getDeclaredMethod(accessor);method.setAccessible(true);
+            Object left=method.invoke(expected),right=method.invoke(actual);
+            if(accessor.equals("peak"))assertSame(left,right);else assertEquals(left,right);
+        }
+        var quality=expected.getClass().getDeclaredMethod("quality");quality.setAccessible(true);
+        assertEquals(Double.doubleToRawLongBits((double)quality.invoke(expected)),
+                Double.doubleToRawLongBits((double)quality.invoke(actual)));
     }
 
     @Test void floorOnlyCoherenceWithResolvedScalarsCannotAuthorizeDeletionOrPairedPosition() throws Exception {

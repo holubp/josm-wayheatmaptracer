@@ -710,7 +710,12 @@ public final class LegacyBProductionRunner {
         long referenceArrays = Math.multiplyExact(2L, AttemptMemoryLedger.referenceArrayBytes(profiles));
         long recordStorage = AttemptMemoryLedger.objectBytes(16L);
         long boxedOffsets = Math.multiplyExact(profiles, AttemptMemoryLedger.objectBytes(8L));
-        return Math.addExact(Math.addExact(referenceArrays, recordStorage), Math.addExact(boxedOffsets, 8192L));
+        long pairedScratch = Math.addExact(Math.addExact(referenceArrays, recordStorage), Math.addExact(boxedOffsets, 8192L));
+        if (policy == LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V4) {
+            long retainedAnchors = Math.addExact(Math.multiplyExact(profiles, 64L), 128L);
+            return Math.addExact(pairedScratch, retainedAnchors);
+        }
+        return pairedScratch;
     }
 
     private static void own(AttemptMemoryLedger.Owner owner, Object value, long bytes) {
