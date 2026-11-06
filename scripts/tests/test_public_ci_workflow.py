@@ -95,3 +95,28 @@ def test_public_gui_smoke_is_xvfb_gated_and_failure_remains_a_job_failure() -> N
     assert report_upload["with"]["path"] == "build/reports/${{ matrix.report }}/summary.json"
     assert report_upload["with"]["name"] == "${{ matrix.report }}-summary"
     assert report_upload["with"]["if-no-files-found"] == "ignore"
+
+
+def test_legacy_normal_performance_runs_three_forks_and_uploads_raw_evidence() -> None:
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    job = jobs["legacy-normal-performance"]
+    assert isinstance(job, dict)
+    assert job["runs-on"] == "ubuntu-24.04"
+    assert job["timeout-minutes"] == "30"
+    steps = job["steps"]
+    assert isinstance(steps, list)
+    run = next(step for step in steps if step.get("name") == "Run three fresh public Legacy normal-policy forks")
+    assert "for fork in 0 1 2" in run["run"]
+    assert "legacyNormalPerformance" in run["run"]
+    assert '-PlegacyNormalPerformanceFork="$fork"' in run["run"]
+    assert run["env"]["PERF_ROOT"] == "${{ runner.temp }}/legacy-normal-performance"
+    gate = next(step for step in steps if step.get("name") == "Gate raw fork results")
+    assert "legacy-normal-performance-gate.py" in gate["run"]
+    assert gate["if"] == "always()"
+    upload = next(step for step in steps if step.get("uses") == "actions/upload-artifact@v4")
+    assert upload["if"] == "always()"
+    assert upload["with"]["name"] == "public-legacy-normal-performance"
+    assert upload["with"]["if-no-files-found"] == "ignore"
+    assert upload["with"]["path"] == "${{ runner.temp }}/legacy-normal-performance/"

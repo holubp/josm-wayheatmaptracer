@@ -237,3 +237,24 @@ tasks.register<JavaExec>("v022ProbabilisticBenchmark") {
     }
     args("--manifest", manifest.orNull ?: "")
 }
+
+tasks.register<JavaExec>("legacyNormalPerformance") {
+    group = "verification"
+    description = "Runs one public synthetic Legacy normal-policy performance fork"
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyWideSecantPerformanceMain")
+    jvmArgs("-Xmx512m")
+    val fork = providers.gradleProperty("legacyNormalPerformanceFork")
+    val output = providers.gradleProperty("legacyNormalPerformanceOutput")
+    inputs.property("fork", fork.orElse("missing"))
+    inputs.property("output", output.orElse("missing"))
+    doFirst {
+        val forkValue = fork.orNull?.toIntOrNull()
+            ?: throw GradleException("legacyNormalPerformance requires -PlegacyNormalPerformanceFork=0|1|2")
+        require(forkValue in 0..2) { "legacyNormalPerformanceFork must be 0, 1, or 2" }
+        val outputPath = output.orNull?.takeIf { it.isNotBlank() }
+            ?: throw GradleException("legacyNormalPerformance requires -PlegacyNormalPerformanceOutput=<new directory>")
+        args("--fork", forkValue.toString(), file(outputPath).absolutePath)
+    }
+}
