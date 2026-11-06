@@ -14,6 +14,40 @@
 
 ### Active execution card — authoritative
 
+**RC15 READY FOR PUBLICATION EXCEPTION DECISION — 2026-11-06:** CI42282107366
+terminalFAILURE only from two INCONCLUSIVE timing gates recorded below. Public
+validationPASS2519Java0f/e/s, all public stagesPASS; bothactualGUI summariesPASS
+ordinary/geometry/cancellation/noLate/dataset+Undo/silentSettingsSave. CI-built
+RC15Jar EXACTLYequals uploaded/downloaded draftasset c922217b...e52;1049classes
+fd2be223...67c4 match all6releasebenchmark forks and earlierqualifiedd604; Java
+Jar+JUnit identity62a8d5492883369c2e865b2e57cacaa187c8fc680b9bb1fe50924d9d3a4c0c83
+matches freshCIreceipt. All evidence retained rootbuild/rc15-release/ci-42282107366/.
+Draftbodyupdated with actualresults/source/SHA and clear publicationhold. No
+code, numerical threshold, limit or gate was changed/retried. Only remaining
+decision: maintainer explicitly accepts the two timing INCONCLUSIVE results for
+this testing prerelease, or retain hold/investigate; approvedspec line219 requires
+allin-scopegatesgreen and cannot be silently waived. If accepted, edit draftbody
+to record explicit exception, publish existingdraft --draft=false --prerelease,
+verify publicrelease/tagtarget111e5027 and downloadJAR/SHA/CRC/manifest again.
+Do not claim alreadypublished or use a fresh unapproved timingretry.
+
+**RC15 DRAFT PREPARED / PUBLICATION HELD — 2026-11-06:** Release source111e5027c4d09e8a8ef672c2c58045edc0ce2663
+pushed; designatedCI42282107366 normal+tracker gates INCONCLUSIVE, neitherBLOCKED:
+normal Gaussianvisiblefork2p9513.771ms vs10ms (median-.781ms); tracker
+hairpinvisiblefork2p9526.573ms vs13.612ms (median.366ms). Raw3fork artifacts retained
+rootbuild/rc15-release/ci-42282107366/{normal,tracker}; no retry/substitution.
+Public validation still running, GUI will follow. Sol release-contract review
+requires designatedrelease allgatesgreen; hold publication absent explicit
+maintainer amendment. Draftv0.22.0-rc.15 target111e5027 is created at
+https://github.com/holubp/josm-wayheatmaptracer/releases/tag/untagged-aec3ddf87ae336427d2a
+with singlewayheatmaptracer.jar asset,3086429bytes, SHA256
+c922217bfa4c25da9efded7db46717a2afb356adf73b4e62c1e04202507e8e52.
+Downloaded draft asset CRC/manifestRC15/JOSM19555 and productionclasses fd2be223...67c4
+verified; every nonmanifest entry byte-identical to qualifiedd604Jar. Only version
+strings differ. Finish pendingpublic/GUI and CIartifact binding; then the only
+remaining publication decision is explicit handling of non-green speed gates.
+Do not mark draft as public/published. Source code has not changed.
+
 **RC15 PUBLICATION AUTHORIZED — 2026-11-06:** User explicitly requests the next
 GitHubRC. LatestpublishedRC14; prepare0.22.0-rc.15 from reviewedf665eed6, changing
 only version/release notes/checkpoint. Local RC15Jar buildPASS, manifestcorrect,
