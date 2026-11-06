@@ -1235,6 +1235,10 @@ public final class ProbabilisticInference {
                     () -> new WorkCounter(mode,0));
             return failureOwned(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,0,0,
                     reason,profiles,resultOwner,zero);
+        } catch (MemoryLimit diagnosticFailure) {
+            var refusal=diagnosticFailure.limitCause();
+            throw new TraceMemoryLimitException(reason,0,0,resultOwner.currentBytes(),
+                    resultOwner.peakBytes(),refusal.limitBytes(),refusal);
         }
     }
 

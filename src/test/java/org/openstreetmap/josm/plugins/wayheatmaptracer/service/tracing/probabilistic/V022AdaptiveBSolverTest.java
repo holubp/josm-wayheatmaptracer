@@ -8,6 +8,18 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 
 class V022AdaptiveBSolverTest {
+    @Test void cachedPreEntryAccountingDenialUsesOwnedTypedMemoryBoundary() {
+        var p=V022ExactKBestExecutionTest.profile(0,new double[]{0,0},new double[]{1,1});
+        var ledger=new AttemptMemoryLedger(1);
+        try(var owner=ledger.rootOwner()) {
+            var denied=assertThrows(TraceMemoryLimitException.class,() -> new ProbabilisticInference().solve(
+                    List.of(p),EvidenceModelParameters.defaults(),new TraceBudgets(1,8_000_000,128_000_000,32,8),
+                    null,CancellationProbe.NONE,owner,ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V4));
+            assertEquals(0,denied.transitions());
+        }
+        assertEquals(0,ledger.currentBytes());
+    }
+
     @Test void earlyCachedRefusalsHaveTypedZeroWorkWithoutChangingExactCompatibility() {
         for (boolean orientation : new boolean[]{false,true}) {
             var p=sampled(false);
