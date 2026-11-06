@@ -370,9 +370,10 @@ public final class RidgeTracker {
             int index, RenderedHeatmapSampler.CrossSectionPeak target, int nativeSupport, double maximumSpan) {
         var profile = profiles.get(index);
         if (!profile.anchorWithinRaster() || profile.peaks().size() < 2) { return nativeSupport; }
+        int historical = historicalLongitudinalSupport(profiles, index, target);
+        if (nativeSupport <= historical) { return nativeSupport; }
         var measured = scalarSupportAt(profile, target.offsetPx(), maximumSpan);
         if (measured == null) { return nativeSupport; }
-        int historical = -1;
         for (int j = 0; j < profile.peaks().size(); j++) {
             // Preserve cooperative cancellation when this is the live wrapper.
             var rival = profiles.get(index).peaks().get(j);
@@ -380,10 +381,6 @@ public final class RidgeTracker {
             var observed = scalarSupportAt(profile, rival.offsetPx(), maximumSpan);
             if (observed == null || !(observed.raw() > measured.raw()
                     && observed.b3() > measured.b3() && observed.b5() > measured.b5())) { continue; }
-            if (historical < 0) {
-                historical = historicalLongitudinalSupport(profiles, index, target);
-                if (nativeSupport <= historical) { return nativeSupport; }
-            }
             // Check coherence only after the cheap, strict measured dominance.
             if (historicalLongitudinalSupport(profiles, index, rival) >= 2) { return historical; }
         }

@@ -63,6 +63,40 @@ class LegacyResolvedSupportTest {
         }
     }
 
+    @Test void nonIncreasingNativeSupportCapReturnsBeforeMeasuredRivalScan() throws Exception {
+        var target=LegacyTrackerPolicyTest.peak(0,1,.7);
+        var rival=LegacyTrackerPolicyTest.peak(2,1,.8);
+        var complete=new ArrayList<RenderedHeatmapSampler.CrossSectionProfile>();
+        complete.add(capProfile(0,List.of(target),LegacySyntheticPositionTest.channelSamples(1,0,.1,false,false,0)));
+        complete.add(capProfile(1,List.of(target,rival),LegacySyntheticPositionTest.channelSamples(1,0,.1,false,true,2)));
+        complete.add(capProfile(2,List.of(target),LegacySyntheticPositionTest.channelSamples(1,0,.1,false,false,0)));
+        assertEquals(2,LegacyTrackerPolicyTest.support(complete,1,target,1,1,V4),
+                "The historical target has support two, equal to the supplied native support");
+
+        int[] reads={0};
+        var historicalOnly=new java.util.AbstractList<RenderedHeatmapSampler.CrossSectionProfile>() {
+            @Override public RenderedHeatmapSampler.CrossSectionProfile get(int index) {
+                if(++reads[0]>3)throw new AssertionError("measured scalar/rival scan continued after historical support was sufficient");
+                return complete.get(index);
+            }
+            @Override public int size(){return complete.size();}
+        };
+        var method=RidgeTracker.class.getDeclaredMethod("capDominatedSupportGain",List.class,int.class,
+                RenderedHeatmapSampler.CrossSectionPeak.class,int.class,double.class);
+        method.setAccessible(true);
+        assertEquals(2,method.invoke(new RidgeTracker(),historicalOnly,1,target,2,1.0),
+                "The V4 support return remains exactly the supplied native count");
+        assertEquals(3,reads[0],"Only the target and historical neighbor profiles should be visited");
+    }
+
+    private static RenderedHeatmapSampler.CrossSectionProfile capProfile(int index,
+            List<RenderedHeatmapSampler.CrossSectionPeak> peaks,
+            List<RenderedHeatmapSampler.IntensitySample> samples) {
+        var anchor=new Point2D.Double(index*20,0);
+        return new RenderedHeatmapSampler.CrossSectionProfile(new EastNorth(anchor.x,anchor.y),anchor,
+                new Point2D.Double(0,1),peaks,true,samples);
+    }
+
     @Test void floorOnlyCoherenceWithResolvedScalarsCannotAuthorizeDeletionOrPairedPosition() throws Exception {
         var profiles=new ArrayList<RenderedHeatmapSampler.CrossSectionProfile>();var offsets=new ArrayList<Double>();
         for(int i=0;i<9;i++) {
