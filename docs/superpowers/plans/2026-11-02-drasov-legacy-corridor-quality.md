@@ -14,6 +14,67 @@
 
 ### Active execution card — authoritative
 
+**ANCHOR REUSE INTEGRATED QUALITY GREEN — 2026-11-06:** Controller6318cc03
+combined147tests/15suites PASS,0failures/errors/skips (57092,10m05s). All terminal
+XML archived BEFORE any later Gradle run to root build
+`legacy-wide-secant/feedback-followup-20261106/v4-anchor-reuse-integration/`,
+with manifest/receipt/all50CSV. This includes missing94focused scope,3seed parity,
+all OrdinaryModernAttemptAssembly cases and original12private/live/replay suites.
+All50 captured-way/palette CSV bytes equal pre-optimization V4; SHA bb4303...42d9.
+New-runtime actualDrasov1076filefence unchanged, all4approved geometry/support
+files BYTE-IDENTICAL; receipt `paired-chord-v4-anchor-reuse-one-process.json`.
+Sol closing prior conditional evidence gap against archived complete reports
+and sourceblob parity. Next: push coherent source/checkpoint for fresh unchanged
+official/public/GUI CI; speed still unverified, no release/goal-completion claim.
+
+**ANCHOR REUSE INTEGRATED / FULL EVIDENCE RESTORATION RUNNING — 2026-11-06:**
+Worker frozen0e13805a94844a5663e3ff1676dc705fe0563687, controller6318cc03.
+Sol conditional SOURCE PASS:8preservedhashesverified,4historicalmethods byte-exact,
+3seedXML1PASS proves actual3post-suppressionseeds,>=2anchors,exactanchors/path
+parity eachseed. No source blocker. Worker94GREEN XML overwritten, NOT independently
+verified; do not reconstruct pass count from stale/missing reports. Parent union
+run57092 now running: original12private/live/replay suites PLUS FineLocalization,
+RidgeTracker and entire OrdinaryModernAttemptAssembly suite. Archive ALL terminal
+XML/50comparisonCSV/receipt BEFORE any further Gradle invocation; this replaces
+the missing focused-scope proof and covers live resource interfaces. Then correct
+actual Drasov runtime pin, independent evidence closure and push for fresh CI.
+No speed claim, public release, or completion. Prior exact quality holds only
+pre-reuse until this new union/pin completes.
+
+**ANCHOR REUSE FINALIZATION — 2026-11-06:** Luna final coherent batch37311
+GREEN94tests after reviewed corrections; prechange V4 output hash399a...090b3
+unchanged. Sol current source review finds no remaining blocker: four historical
+anchor methods restored byte-for-byte; V4 separate helpers/list reuse/checkedscratch
+sound. Actual old/new profile-read controls twopeaks66→27 (5→2support evaluations),
+singleton19→10 (2→1); former guessed46 was an oracle error, corrected from actual
+retained oldmethod, not production change. Need final frozen commit/evidence.
+Explicit3seed/nonempty-anchor exact per-seed parity test pending95036; first
+fixture lacked eligible anchors and was corrected once, not a production defect.
+If second fixture fails, escalate oracle toSol rather than repeat cheap trials.
+Prior94GREEN evidence must be archived independently of targeted test reports.
+Next afterfreeze: affected independent evidence review, integrate, start fresh
+full CI and local private exact controls in parallel (no release; final adoption
+requires all pass). Avoid duplicate unchanged suites for test-only additions.
+
+**FIRST OPTIMIZATION FULL CI VERIFIED — 2026-11-06:** Build42247945477 terminal
+FAILURE solely from speed gates. Public validation PASS:233JUnitXML/2513tests,
+0failures/errors/skips; Python/sampling-scale/diff/artifact stagesPASS. Both
+PROBABILISTIC and LEGACY_THEN_B actual GUI summariesPASS, geometry oracle,
+cancellation/no-late-preview/dataset+Undo unchanged/silentSettingsSave alltrue.
+Artifacts retained `ci-fastpath-42247945477/{public-validation,gui-b,gui-hybrid}`
+alongside failed normal/tracker measurements. No qualification/release claim.
+V4 anchor-reuse worker now implementing after intended work-count/resource RED;
+no new workload is running except worker's bounded build/tests as reported.
+
+Anchor-reuse early Sol review: cached-list lifetime/immutability/interval loop and
+V4-only checked64N+128 reservation are sound. One source blocker: worker's shared
+anchorQuality delegates to new helper, altering historical baseline execution;
+restore old body byte-for-byte and retain separateV4-only helper. Bounded test
+gaps: operationcount must include TWO eligible peaks (old5supportcalls→new2),
+and best-replacement/duplicated-old-best/laterNaN winner branches. Assigned to
+same worker after current batch6924 terminates. No approval until frozen repair
+and focused tests. Two compile-only typos fixed earlier; not counted as RED.
+
 **V4 ANCHOR REUSE PACKET DISPATCHED — 2026-11-06:** Sol finalized concrete
 exact optimization design after first fastpath proved insufficient. Luna sole
 writer `/data/data/com.termux/files/usr/tmp/josm-legacy-v4-anchor-reuse`, base19eb8d5a.
@@ -29,6 +90,13 @@ refusals/empty/oneanchor/cancellation, deterministic work reduction and resource
 exact/one-byte-short/leak controls. Expected observed two-peak/two-seed anchor
 support work10→2/row; NOT a speed claim. Commit/freeze then independent review,
 private exact controls and official timing remain required. No public release.
+
+Luna test-first checkpoint: prechange base19eb8d5a anchor ranking fails intended
+work bound (19 profile-list reads vs<=10); immutable prechange V4 full output
+signature SHA256 `399a4030176df4ddd1d0a7136d1021326da7086794b62440c6b605180cc090b3`
+captured. Placeholder-only failure discarded, not counted as behavioralRED.
+Resource-boundary RED session90811 running; production implementation not yet
+claimed. No further cohort admitted before exact-output/review checks.
 
 **OFFICIAL FAST-PATH SPEED FAILURE — 2026-11-06:** Build42247945477 source19eb8d5a
 normal/tracker jobs are terminalFAILURE; public job still running at observation.
