@@ -106,11 +106,16 @@ class AlignmentServiceTest {
                 1.0, IntensitySamplingMode.COLOR_MAPPING, null);
         List<RenderedHeatmapSampler.CrossSectionProfile> protectedProfiles = service.sampleVisiblePlainProfiles(
             raster, anchors, 8, 1, "hot", IntensitySamplingMode.COLOR_MAPPING, null, selection, config);
+        var visibleReceipt = service.sampleVisiblePlainProfilesWithPolicyReceipt(raster, anchors, 8, 1, "hot",
+            IntensitySamplingMode.COLOR_MAPPING, null, selection, config);
         List<RenderedHeatmapSampler.CrossSectionProfile> corridorProfiles = service.sampleVisiblePlainProfiles(
             raster, anchors, 8, 1, "hot", IntensitySamplingMode.COLOR_MAPPING, null, selection, corridorConfig());
         List<CenterlineCandidate> tracked = new RidgeTracker().track(protectedProfiles);
 
         assertEquals(path.size(), protectedProfiles.size());
+        assertEquals("legacy-protected-secant3-v1", visibleReceipt.resolution().requestedPolicyId());
+        assertEquals("legacy-protected-secant3-v1", visibleReceipt.resolution().effectivePolicyId());
+        assertEquals("", visibleReceipt.resolution().fallbackReason());
         assertTrue(tracked.size() > 0, "the actual painted corridor must produce Legacy geometry");
         assertEquals(path.size(), tracked.get(0).screenPoints().size());
         assertEquals(path.size(), corridorProfiles.size());
@@ -129,6 +134,28 @@ class AlignmentServiceTest {
             assertEquals(rasterAnchors.get(fixedIndex).x, protectedProfiles.get(fixedIndex).anchorScreen().x, 0.0);
             assertEquals(rasterAnchors.get(fixedIndex).y, protectedProfiles.get(fixedIndex).anchorScreen().y, 0.0);
         }
+    }
+
+    @Test
+    void samplingJsonSerializesActualPerDetectorPolicyAndFallbackAndLeavesEmptyReceiptsUnchanged() {
+        AlignmentService service = new AlignmentService();
+        String base = "{\"type\":\"managed-source-tiles\"}";
+        var calls = List.of(
+            new AlignmentService.NormalPolicyCall("hot", new LegacyProfileNormalPolicy.Resolution(
+                LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1.id(),
+                LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1.id(), "")),
+            new AlignmentService.NormalPolicyCall("all-colors-combined", new LegacyProfileNormalPolicy.Resolution(
+                LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1.id(),
+                LegacyProfileNormalPolicy.IMMEDIATE_V1.id(), "invalid-authority")));
+
+        assertEquals(base, service.withLegacyNormalPolicyReceipts(base, List.of()),
+            "ordinary A/B and non-Legacy sampling JSON keeps its prior bytes");
+        assertEquals("{\"type\":\"managed-source-tiles\",\"legacyProfileNormalPolicy\":{\"version\":1,"
+                + "\"calls\":[{\"detector\":\"hot\",\"requested\":\"legacy-protected-secant3-v1\","
+                + "\"effective\":\"legacy-protected-secant3-v1\",\"fallbackReason\":null},"
+                + "{\"detector\":\"all-colors-combined\",\"requested\":\"legacy-protected-secant3-v1\","
+                + "\"effective\":\"legacy-immediate-v1\",\"fallbackReason\":\"invalid-authority\"}]}}",
+            service.withLegacyNormalPolicyReceipts(base, calls));
     }
 
     private static boolean sameNormal(RenderedHeatmapSampler.CrossSectionProfile a,

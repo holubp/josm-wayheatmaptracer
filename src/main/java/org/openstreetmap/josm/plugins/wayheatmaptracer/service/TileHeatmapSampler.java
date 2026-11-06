@@ -193,10 +193,23 @@ public final class TileHeatmapSampler {
         LegacyProfileNormalPolicy normalPolicy,
         List<Integer> fixedOriginalIndices
     ) {
+        return sampleProfilesWithNormalPolicyReceipt(mosaic, sourcePolyline, detectorMode, config,
+            normalPolicy, fixedOriginalIndices).profiles();
+    }
+
+    /** Returns the profiles and actual policy receipt from one managed native sampling call. */
+    NormalPolicySampling sampleProfilesWithNormalPolicyReceipt(
+        TileMosaic mosaic,
+        List<EastNorth> sourcePolyline,
+        String detectorMode,
+        ManagedHeatmapConfig config,
+        LegacyProfileNormalPolicy normalPolicy,
+        List<Integer> fixedOriginalIndices
+    ) {
         var shape = legacySamplingShape(PolylineMath.length(sourcePolyline), sourcePolyline.size(), mosaic.parameters());
         List<EastNorth> dense = PolylineMath.resampleByCount(sourcePolyline, shape.profiles());
         if (dense.size() < 2) {
-            return List.of();
+            return new NormalPolicySampling(List.of(), immediateFallbackResolution(normalPolicy, "invalid-profile-count"));
         }
         List<Point2D.Double> local = localPolyline(mosaic, dense);
         int referenceHalfWidthPx = shape.referenceHalfWidthPx();
@@ -251,7 +264,8 @@ public final class TileHeatmapSampler {
         int stepPx = shape.referenceStepPx();
         return sampleWithNormalPolicy(mosaic.image(), ProfileSamplingAnchor.pair(dense, local, projection),
                 halfWidthPx, stepPx, detectorMode, REFERENCE_RASTER_SCALE, mosaic.virtualRasterScale(), intensityMode,
-                mosaicProjector(mosaic, projection), cancellation, sourcePolyline, normalPolicy, fixedOriginalIndices);
+                mosaicProjector(mosaic, projection), cancellation, sourcePolyline, normalPolicy,
+                fixedOriginalIndices).profiles();
     }
 
     /**
@@ -310,16 +324,28 @@ public final class TileHeatmapSampler {
         LegacyProfileNormalPolicy normalPolicy,
         List<Integer> fixedOriginalIndices
     ) {
+        return sampleAggregatedProfilesWithNormalPolicyReceipt(mosaics, zoom, sourcePolyline,
+            normalPolicy, fixedOriginalIndices).profiles();
+    }
+
+    /** Returns aggregate profiles and the actual policy receipt from one sampling call. */
+    NormalPolicySampling sampleAggregatedProfilesWithNormalPolicyReceipt(
+        TileMosaicSet mosaics,
+        int zoom,
+        List<EastNorth> sourcePolyline,
+        LegacyProfileNormalPolicy normalPolicy,
+        List<Integer> fixedOriginalIndices
+    ) {
         AggregateSourceFrame frame = aggregateSourceFrame(mosaics, zoom);
         if (frame == null) {
-            return List.of();
+            return new NormalPolicySampling(List.of(), immediateFallbackResolution(normalPolicy, "sampling-unavailable"));
         }
         TileMosaic reference = frame.reference();
         Map<String, BufferedImage> images = frame.images();
         var shape = legacySamplingShape(PolylineMath.length(sourcePolyline), sourcePolyline.size(), reference.parameters());
         List<EastNorth> dense = PolylineMath.resampleByCount(sourcePolyline, shape.profiles());
         if (dense.size() < 2) {
-            return List.of();
+            return new NormalPolicySampling(List.of(), immediateFallbackResolution(normalPolicy, "invalid-profile-count"));
         }
         List<Point2D.Double> local = localPolyline(reference, dense);
         int referenceHalfWidthPx = shape.referenceHalfWidthPx();
@@ -329,6 +355,16 @@ public final class TileHeatmapSampler {
         return sampleAggregatedWithNormalPolicy(images, ProfileSamplingAnchor.pair(dense, local),
             referenceHalfWidthPx, referenceStepPx, REFERENCE_RASTER_SCALE, reference.virtualRasterScale(),
             mosaicProjector(reference), CancellationProbe.NONE, sourcePolyline, normalPolicy, fixedOriginalIndices);
+    }
+
+    record NormalPolicySampling(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        LegacyProfileNormalPolicy.Resolution resolution
+    ) {
+        NormalPolicySampling {
+            profiles = List.copyOf(profiles);
+            java.util.Objects.requireNonNull(resolution, "resolution");
+        }
     }
 
     /** Samples native all-color aggregation using captured projection and cooperative cancellation. */
@@ -367,10 +403,11 @@ public final class TileHeatmapSampler {
         int stepPx = shape.referenceStepPx();
         return sampleAggregatedWithNormalPolicy(images, ProfileSamplingAnchor.pair(dense, local, projection),
                 halfWidthPx, stepPx, REFERENCE_RASTER_SCALE, reference.virtualRasterScale(),
-                mosaicProjector(reference, projection), cancellation, sourcePolyline, normalPolicy, fixedOriginalIndices);
+                mosaicProjector(reference, projection), cancellation, sourcePolyline, normalPolicy,
+                fixedOriginalIndices).profiles();
     }
 
-    private List<RenderedHeatmapSampler.CrossSectionProfile> sampleWithNormalPolicy(
+    private NormalPolicySampling sampleWithNormalPolicy(
         BufferedImage raster,
         List<ProfileSamplingAnchor> anchors,
         int halfWidthPx,
@@ -385,25 +422,45 @@ public final class TileHeatmapSampler {
         LegacyProfileNormalPolicy normalPolicy,
         List<Integer> fixedOriginalIndices
     ) {
+        java.util.Objects.requireNonNull(normalPolicy, "normalPolicy");
         RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
         if (normalPolicy != LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1) {
-            return sampler.sampleProfilesOnAnchors(raster, anchors, halfWidthPx, stepPx, detectorMode,
-                rasterScale, sourceCoordinateScale, intensityMode, projector, cancellation);
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnAnchors(
+                raster, anchors, halfWidthPx, stepPx, detectorMode, rasterScale, sourceCoordinateScale,
+                intensityMode, projector, cancellation);
+            return new NormalPolicySampling(profiles, new LegacyProfileNormalPolicy.Resolution(
+                normalPolicy.id(), normalPolicy.id(), ""));
         }
         LegacyProfileNormalFences.Plan plan = LegacyProfileNormalFences.plan(
             originalPolyline, anchors.size(), fixedOriginalIndices);
         if (!plan.eligible()) {
             PluginLog.verbose("Legacy protected normal policy fell back to immediate normals (%s).", plan.reason());
-            return sampler.sampleProfilesOnAnchors(raster, anchors, halfWidthPx, stepPx, detectorMode,
-                rasterScale, sourceCoordinateScale, intensityMode, projector, cancellation);
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnAnchors(
+                raster, anchors, halfWidthPx, stepPx, detectorMode, rasterScale, sourceCoordinateScale,
+                intensityMode, projector, cancellation);
+            return new NormalPolicySampling(profiles, new LegacyProfileNormalPolicy.Resolution(
+                normalPolicy.id(), LegacyProfileNormalPolicy.IMMEDIATE_V1.id(), plan.reason()));
         }
         PluginLog.verbose("Legacy profile normal policy=%s with %d mapped profile fences.",
             LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1.id(), plan.profileBoundaries().size());
-        return sampler.sampleProfilesOnAnchorsWithWideSecants(raster, anchors, halfWidthPx, stepPx, detectorMode,
-            rasterScale, sourceCoordinateScale, intensityMode, projector, cancellation, plan.profileBoundaries());
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnAnchorsWithWideSecants(
+            raster, anchors, halfWidthPx, stepPx, detectorMode, rasterScale, sourceCoordinateScale,
+            intensityMode, projector, cancellation, plan.profileBoundaries());
+        return new NormalPolicySampling(profiles, new LegacyProfileNormalPolicy.Resolution(
+            normalPolicy.id(), normalPolicy.id(), ""));
     }
 
-    private List<RenderedHeatmapSampler.CrossSectionProfile> sampleAggregatedWithNormalPolicy(
+    private LegacyProfileNormalPolicy.Resolution immediateFallbackResolution(
+        LegacyProfileNormalPolicy requestedPolicy,
+        String reason
+    ) {
+        java.util.Objects.requireNonNull(requestedPolicy, "normalPolicy");
+        return new LegacyProfileNormalPolicy.Resolution(requestedPolicy.id(),
+            LegacyProfileNormalPolicy.IMMEDIATE_V1.id(),
+            requestedPolicy == LegacyProfileNormalPolicy.IMMEDIATE_V1 ? "" : reason);
+    }
+
+    private NormalPolicySampling sampleAggregatedWithNormalPolicy(
         Map<String, BufferedImage> rastersByColor,
         List<ProfileSamplingAnchor> anchors,
         int halfWidthPx,
@@ -416,22 +473,32 @@ public final class TileHeatmapSampler {
         LegacyProfileNormalPolicy normalPolicy,
         List<Integer> fixedOriginalIndices
     ) {
+        java.util.Objects.requireNonNull(normalPolicy, "normalPolicy");
         RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
         if (normalPolicy != LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1) {
-            return sampler.sampleProfilesOnAggregatedAnchors(rastersByColor, anchors, halfWidthPx, stepPx,
-                rasterScale, sourceCoordinateScale, projector, cancellation);
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnAggregatedAnchors(
+                rastersByColor, anchors, halfWidthPx, stepPx, rasterScale, sourceCoordinateScale,
+                projector, cancellation);
+            return new NormalPolicySampling(profiles, new LegacyProfileNormalPolicy.Resolution(
+                normalPolicy.id(), normalPolicy.id(), ""));
         }
         LegacyProfileNormalFences.Plan plan = LegacyProfileNormalFences.plan(
             originalPolyline, anchors.size(), fixedOriginalIndices);
         if (!plan.eligible()) {
             PluginLog.verbose("Legacy aggregate protected normal policy fell back to immediate normals (%s).", plan.reason());
-            return sampler.sampleProfilesOnAggregatedAnchors(rastersByColor, anchors, halfWidthPx, stepPx,
-                rasterScale, sourceCoordinateScale, projector, cancellation);
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnAggregatedAnchors(
+                rastersByColor, anchors, halfWidthPx, stepPx, rasterScale, sourceCoordinateScale,
+                projector, cancellation);
+            return new NormalPolicySampling(profiles, new LegacyProfileNormalPolicy.Resolution(
+                normalPolicy.id(), LegacyProfileNormalPolicy.IMMEDIATE_V1.id(), plan.reason()));
         }
         PluginLog.verbose("Legacy aggregate normal policy=%s with %d mapped profile fences.",
             LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1.id(), plan.profileBoundaries().size());
-        return sampler.sampleProfilesOnAggregatedAnchorsWithWideSecants(rastersByColor, anchors, halfWidthPx,
-            stepPx, rasterScale, sourceCoordinateScale, projector, cancellation, plan.profileBoundaries());
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnAggregatedAnchorsWithWideSecants(
+            rastersByColor, anchors, halfWidthPx, stepPx, rasterScale, sourceCoordinateScale,
+            projector, cancellation, plan.profileBoundaries());
+        return new NormalPolicySampling(profiles, new LegacyProfileNormalPolicy.Resolution(
+            normalPolicy.id(), normalPolicy.id(), ""));
     }
 
     /**

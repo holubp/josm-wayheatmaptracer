@@ -33,4 +33,22 @@ public enum LegacyProfileNormalPolicy {
         }
         throw new IllegalArgumentException("Unknown Legacy profile normal policy id");
     }
+
+    /** Immutable result of resolving one actual profile-sampling call. */
+    public record Resolution(String requestedPolicyId, String effectivePolicyId, String fallbackReason) {
+        public Resolution {
+            LegacyProfileNormalPolicy.fromId(requestedPolicyId);
+            LegacyProfileNormalPolicy.fromId(effectivePolicyId);
+            fallbackReason = fallbackReason == null ? "" : fallbackReason;
+            if (!fallbackReason.isEmpty() && !SetHolder.REASONS.contains(fallbackReason)) {
+                throw new IllegalArgumentException("Unknown bounded Legacy normal-policy fallback reason");
+            }
+        }
+
+        private static final class SetHolder {
+            private static final java.util.Set<String> REASONS = java.util.Set.of(
+                "invalid-profile-count", "invalid-authority", "non-finite-geometry", "degenerate-geometry",
+                "sampling-unavailable");
+        }
+    }
 }

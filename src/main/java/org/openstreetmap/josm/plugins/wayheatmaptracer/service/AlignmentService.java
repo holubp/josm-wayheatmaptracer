@@ -664,6 +664,7 @@ public final class AlignmentService {
         StringBuilder associationDecisionsCsv = new StringBuilder(associationDecisionsCsvHeader());
         StringBuilder endpointApproachesCsv = new StringBuilder(endpointApproachesCsvHeader());
         StringBuilder detectorPerformanceCsv = new StringBuilder(detectorPerformanceCsvHeader());
+        List<NormalPolicyCall> normalPolicyCalls = new ArrayList<>();
         int modeIndex = 0;
         IntensitySamplingMode intensitySource = intensitySamplingMode(config);
         int outsideRasterProfiles = 0;
@@ -680,11 +681,20 @@ public final class AlignmentService {
                     effectiveSampling.trackerNormalizationRasterPx(),
                     renderedCaptureProjector(capture))
                 : null;
-            List<RenderedHeatmapSampler.CrossSectionProfile> profiles = multiScale
-                ? profileSet.levelZeroProfiles()
-                : sampleVisiblePlainProfiles(raster, samplingAnchors, effectiveSampling.effectiveHalfWidthPx(),
-                    effectiveSampling.effectiveStepPx(), colorMode,
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles;
+            if (multiScale) {
+                profiles = profileSet.levelZeroProfiles();
+            } else if (config.trackerMode() == TrackerMode.LEGACY_V02) {
+                VisiblePlainSampling sampled = sampleVisiblePlainProfilesWithPolicyReceipt(raster, samplingAnchors,
+                    effectiveSampling.effectiveHalfWidthPx(), effectiveSampling.effectiveStepPx(), colorMode,
                     intensitySource, renderedCaptureProjector(capture), selection, config);
+                profiles = sampled.profiles();
+                normalPolicyCalls.add(new NormalPolicyCall(colorMode, sampled.resolution()));
+            } else {
+                profiles = sampleVisiblePlainProfiles(raster, samplingAnchors,
+                    effectiveSampling.effectiveHalfWidthPx(), effectiveSampling.effectiveStepPx(), colorMode,
+                    intensitySource, renderedCaptureProjector(capture), selection, config);
+            }
             long samplingNanos = System.nanoTime() - samplingStart;
             if (modeIndex == 0) {
                 totalProfiles = profiles.size();
@@ -740,7 +750,7 @@ public final class AlignmentService {
             corridorBandsCsv.toString(), corridorTracksCsv.toString(), optimizerCostsCsv.toString(),
             corridorBundlesCsv.toString(), bundlePointsCsv.toString(),
             scaleSpaceCsv.toString(), corridorTubeCsv.toString(), associationDecisionsCsv.toString(),
-            endpointApproachesCsv.toString(), detectorPerformanceCsv.toString(),
+            endpointApproachesCsv.toString(), detectorPerformanceCsv.toString(), normalPolicyCalls,
             outsideRasterProfiles, totalProfiles, profileSpacing);
     }
 
@@ -755,18 +765,98 @@ public final class AlignmentService {
         SelectionContext selection,
         ManagedHeatmapConfig config
     ) {
+        return sampleVisiblePlainProfilesWithPolicyReceipt(raster, samplingAnchors, halfWidthPx, stepPx,
+            colorMode, intensitySource, projectedCoordinateProjector, selection, config).profiles();
+    }
+
+    VisiblePlainSampling sampleVisiblePlainProfilesWithPolicyReceipt(
+        BufferedImage raster,
+        List<ProfileSamplingAnchor> samplingAnchors,
+        int halfWidthPx,
+        int stepPx,
+        String colorMode,
+        IntensitySamplingMode intensitySource,
+        RenderedHeatmapSampler.RasterCoordinateProjector projectedCoordinateProjector,
+        SelectionContext selection,
+        ManagedHeatmapConfig config
+    ) {
         if (config.trackerMode() != TrackerMode.LEGACY_V02) {
-            return sampler.sampleProfilesOnAnchors(raster, samplingAnchors,
-                halfWidthPx, stepPx, colorMode,
-                RenderedHeatmapSampler.RASTER_SCALE, 1.0, intensitySource, projectedCoordinateProjector);
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnAnchors(raster,
+                samplingAnchors, halfWidthPx, stepPx, colorMode, RenderedHeatmapSampler.RASTER_SCALE,
+                1.0, intensitySource, projectedCoordinateProjector);
+            return new VisiblePlainSampling(profiles, new LegacyProfileNormalPolicy.Resolution(
+                LegacyProfileNormalPolicy.IMMEDIATE_V1.id(), LegacyProfileNormalPolicy.IMMEDIATE_V1.id(), ""));
         }
         List<Integer> fixedIndices = fixedIndices(selection);
+        boolean authorityMatches = samplingAnchors.size() == selection.segmentNodes().size()
+            && fixedIndices.get(0) == 0 && fixedIndices.get(fixedIndices.size() - 1) == samplingAnchors.size() - 1
+            && fixedIndices.stream().allMatch(index -> index >= 0 && index < samplingAnchors.size());
+        if (!authorityMatches) {
+            PluginLog.verbose("Legacy visible normal policy fell back to immediate normals (invalid-authority).");
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnAnchors(raster,
+                samplingAnchors, halfWidthPx, stepPx, colorMode, RenderedHeatmapSampler.RASTER_SCALE,
+                1.0, intensitySource, projectedCoordinateProjector);
+            return new VisiblePlainSampling(profiles, new LegacyProfileNormalPolicy.Resolution(
+                LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1.id(),
+                LegacyProfileNormalPolicy.IMMEDIATE_V1.id(), "invalid-authority"));
+        }
         PluginLog.verbose("Legacy profile normal policy=%s for visible original-occurrence anchors (%d fences).",
             LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1.id(), fixedIndices.size());
-        return sampler.sampleProfilesOnAnchorsWithWideSecants(raster, samplingAnchors,
-            halfWidthPx, stepPx, colorMode,
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnAnchorsWithWideSecants(
+            raster, samplingAnchors, halfWidthPx, stepPx, colorMode,
             RenderedHeatmapSampler.RASTER_SCALE, 1.0, intensitySource, projectedCoordinateProjector,
             CancellationProbe.NONE, Set.copyOf(fixedIndices));
+        return new VisiblePlainSampling(profiles, new LegacyProfileNormalPolicy.Resolution(
+            LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1.id(),
+            LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1.id(), ""));
+    }
+
+    record VisiblePlainSampling(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        LegacyProfileNormalPolicy.Resolution resolution
+    ) {
+        VisiblePlainSampling {
+            profiles = List.copyOf(profiles);
+            Objects.requireNonNull(resolution, "resolution");
+        }
+    }
+
+    record NormalPolicyCall(String detector, LegacyProfileNormalPolicy.Resolution resolution) {
+        NormalPolicyCall {
+            Objects.requireNonNull(detector, "detector");
+            Objects.requireNonNull(resolution, "resolution");
+        }
+    }
+
+    String withLegacyNormalPolicyReceipts(String samplingJson, List<NormalPolicyCall> calls) {
+        if (calls == null || calls.isEmpty()) {
+            return samplingJson;
+        }
+        String value = samplingJson == null || samplingJson.isBlank() ? "{}" : samplingJson.trim();
+        if (!value.endsWith("}")) {
+            return value;
+        }
+        StringBuilder json = new StringBuilder(value.substring(0, value.length() - 1));
+        json.append(value.length() > 2 ? "," : "")
+            .append("\"legacyProfileNormalPolicy\":{\"version\":1,\"calls\":[");
+        for (int index = 0; index < calls.size(); index++) {
+            if (index > 0) {
+                json.append(',');
+            }
+            NormalPolicyCall call = calls.get(index);
+            LegacyProfileNormalPolicy.Resolution resolution = call.resolution();
+            json.append("{\"detector\":\"").append(jsonEscape(call.detector()))
+                .append("\",\"requested\":\"").append(jsonEscape(resolution.requestedPolicyId()))
+                .append("\",\"effective\":\"").append(jsonEscape(resolution.effectivePolicyId()))
+                .append("\",\"fallbackReason\":");
+            if (resolution.fallbackReason().isEmpty()) {
+                json.append("null");
+            } else {
+                json.append('\"').append(jsonEscape(resolution.fallbackReason())).append('\"');
+            }
+            json.append('}');
+        }
+        return json.append("]}}").toString();
     }
 
     private DetectionResult detectTileCandidates(
@@ -799,6 +889,7 @@ public final class AlignmentService {
         StringBuilder associationDecisionsCsv = new StringBuilder(associationDecisionsCsvHeader());
         StringBuilder endpointApproachesCsv = new StringBuilder(endpointApproachesCsvHeader());
         StringBuilder detectorPerformanceCsv = new StringBuilder(detectorPerformanceCsvHeader());
+        List<NormalPolicyCall> normalPolicyCalls = new ArrayList<>();
         IntensitySamplingMode intensitySource = intensitySamplingMode(config);
         int modeIndex = 0;
         int outsideRasterProfiles = 0;
@@ -811,12 +902,18 @@ public final class AlignmentService {
             MultiScaleProfileSet profileSet = multiScale
                 ? tileSampler.sampleAggregatedMultiScaleProfiles(mosaics, mosaic.zoom(), sourcePolyline)
                 : null;
-            List<RenderedHeatmapSampler.CrossSectionProfile> profiles = multiScale
-                ? profileSet.levelZeroProfiles()
-                : config.trackerMode() == TrackerMode.LEGACY_V02
-                    ? tileSampler.sampleAggregatedProfiles(mosaics, mosaic.zoom(), sourcePolyline,
-                        LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, fixedIndices(selection))
-                    : tileSampler.sampleAggregatedProfiles(mosaics, mosaic.zoom(), sourcePolyline);
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles;
+            if (multiScale) {
+                profiles = profileSet.levelZeroProfiles();
+            } else if (config.trackerMode() == TrackerMode.LEGACY_V02) {
+                TileHeatmapSampler.NormalPolicySampling sampled = tileSampler
+                    .sampleAggregatedProfilesWithNormalPolicyReceipt(mosaics, mosaic.zoom(), sourcePolyline,
+                        LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, fixedIndices(selection));
+                profiles = sampled.profiles();
+                normalPolicyCalls.add(new NormalPolicyCall(AGGREGATED_COLOR_MODE, sampled.resolution()));
+            } else {
+                profiles = tileSampler.sampleAggregatedProfiles(mosaics, mosaic.zoom(), sourcePolyline);
+            }
             long samplingNanos = System.nanoTime() - samplingStart;
             totalProfiles = profiles.size();
             outsideRasterProfiles = (int) profiles.stream().filter(profile -> !profile.anchorWithinRaster()).count();
@@ -867,12 +964,18 @@ public final class AlignmentService {
             MultiScaleProfileSet profileSet = multiScale
                 ? tileSampler.sampleMultiScaleProfiles(mosaic, sourcePolyline, colorMode, config)
                 : null;
-            List<RenderedHeatmapSampler.CrossSectionProfile> profiles = multiScale
-                ? profileSet.levelZeroProfiles()
-                : config.trackerMode() == TrackerMode.LEGACY_V02
-                    ? tileSampler.sampleProfiles(mosaic, sourcePolyline, colorMode, config,
-                        LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, fixedIndices(selection))
-                    : tileSampler.sampleProfiles(mosaic, sourcePolyline, colorMode, config);
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles;
+            if (multiScale) {
+                profiles = profileSet.levelZeroProfiles();
+            } else if (config.trackerMode() == TrackerMode.LEGACY_V02) {
+                TileHeatmapSampler.NormalPolicySampling sampled = tileSampler.sampleProfilesWithNormalPolicyReceipt(
+                    mosaic, sourcePolyline, colorMode, config,
+                    LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, fixedIndices(selection));
+                profiles = sampled.profiles();
+                normalPolicyCalls.add(new NormalPolicyCall(colorMode, sampled.resolution()));
+            } else {
+                profiles = tileSampler.sampleProfiles(mosaic, sourcePolyline, colorMode, config);
+            }
             long samplingNanos = System.nanoTime() - samplingStart;
             if (modeIndex == 0) {
                 totalProfiles = profiles.size();
@@ -928,7 +1031,7 @@ public final class AlignmentService {
             corridorBandsCsv.toString(), corridorTracksCsv.toString(), optimizerCostsCsv.toString(),
             corridorBundlesCsv.toString(), bundlePointsCsv.toString(),
             scaleSpaceCsv.toString(), corridorTubeCsv.toString(), associationDecisionsCsv.toString(),
-            endpointApproachesCsv.toString(), detectorPerformanceCsv.toString(),
+            endpointApproachesCsv.toString(), detectorPerformanceCsv.toString(), normalPolicyCalls,
             outsideRasterProfiles, totalProfiles, profileSpacing);
     }
 
@@ -3163,8 +3266,10 @@ public final class AlignmentService {
             millisBetween(t2, t3),
             configWithTileSourcePlan(config),
             selectionToJson(selection),
-            withProfileSpacing(samplingJson(imageryLayer, raster, mapView, effectiveSampling, capture),
-                detection.profileSpacing()),
+            withLegacyNormalPolicyReceipts(
+                withProfileSpacing(samplingJson(imageryLayer, raster, mapView, effectiveSampling, capture),
+                    detection.profileSpacing()),
+                detection.normalPolicyCalls()),
             stringArray(colorModes),
             candidatesToJson(candidates, config, effectiveSampling),
             detection.profilesJson() == null || detection.profilesJson().isBlank() ? "[]" : detection.profilesJson(),
@@ -3213,7 +3318,9 @@ public final class AlignmentService {
             millisBetween(t2, t3),
             configWithTileSourcePlan(config),
             selectionToJson(selection),
-            withProfileSpacing(tileSamplingJson(mosaics, mosaic, effectiveSampling), detection.profileSpacing()),
+            withLegacyNormalPolicyReceipts(
+                withProfileSpacing(tileSamplingJson(mosaics, mosaic, effectiveSampling), detection.profileSpacing()),
+                detection.normalPolicyCalls()),
             stringArray(colorModes),
             candidatesToJson(candidates, config, effectiveSampling),
             detection.profilesJson() == null || detection.profilesJson().isBlank() ? "[]" : detection.profilesJson(),
@@ -4101,10 +4208,14 @@ public final class AlignmentService {
         String associationDecisionsCsv,
         String endpointApproachesCsv,
         String detectorPerformanceCsv,
+        List<NormalPolicyCall> normalPolicyCalls,
         int outsideRasterProfiles,
         int totalProfiles,
         ProfileSpacingStats profileSpacing
     ) {
+        private DetectionResult {
+            normalPolicyCalls = List.copyOf(normalPolicyCalls);
+        }
     }
 
     private record ProfileSpacingStats(

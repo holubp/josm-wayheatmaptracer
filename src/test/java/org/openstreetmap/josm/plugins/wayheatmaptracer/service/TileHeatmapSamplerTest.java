@@ -123,12 +123,23 @@ class TileHeatmapSamplerTest {
             LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 1, 2));
         var invalidAuthorityFallback = sampler.sampleProfiles(hot, source, "hot", config,
             LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(1, 2));
+        var protectedReceipt = sampler.sampleProfilesWithNormalPolicyReceipt(hot, source, "hot", config,
+            LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 1, 2));
+        var fallbackReceipt = sampler.sampleProfilesWithNormalPolicyReceipt(hot, source, "hot", config,
+            LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(1, 2));
 
         assertTrue(immediate.size() >= 9);
         assertEquals(immediate.size(), explicitImmediate.size());
         assertEquals(immediate.size(), invalidAuthorityFallback.size());
         assertEquals(immediate.size(), unfencedSecants.size());
         assertEquals(immediate.size(), protectedProfiles.size());
+        assertEquals(protectedProfiles.size(), protectedReceipt.profiles().size());
+        assertEquals("legacy-protected-secant3-v1", protectedReceipt.resolution().requestedPolicyId());
+        assertEquals("legacy-protected-secant3-v1", protectedReceipt.resolution().effectivePolicyId());
+        assertEquals("", protectedReceipt.resolution().fallbackReason());
+        assertEquals("legacy-protected-secant3-v1", fallbackReceipt.resolution().requestedPolicyId());
+        assertEquals("legacy-immediate-v1", fallbackReceipt.resolution().effectivePolicyId());
+        assertEquals("invalid-authority", fallbackReceipt.resolution().fallbackReason());
         for (int i = 0; i < immediate.size(); i++) {
             assertEquals(immediate.get(i).anchorScreen().x, protectedProfiles.get(i).anchorScreen().x, 0.0);
             assertEquals(immediate.get(i).anchorScreen().y, protectedProfiles.get(i).anchorScreen().y, 0.0);
@@ -162,7 +173,19 @@ class TileHeatmapSamplerTest {
             LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 2));
         var aggregateProtected = sampler.sampleAggregatedProfiles(mosaics, zoom, source,
             LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 1, 2));
+        var aggregateReceipt = sampler.sampleAggregatedProfilesWithNormalPolicyReceipt(mosaics, zoom, source,
+            LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(0, 1, 2));
+        var aggregateFallbackReceipt = sampler.sampleAggregatedProfilesWithNormalPolicyReceipt(mosaics, zoom, source,
+            LegacyProfileNormalPolicy.PROTECTED_SECANT3_V1, List.of(1, 2));
         assertEquals(aggregateImmediate.size(), aggregateProtected.size());
+        assertEquals("legacy-protected-secant3-v1", aggregateReceipt.resolution().effectivePolicyId());
+        assertEquals(aggregateProtected.size(), aggregateReceipt.profiles().size());
+        assertEquals("legacy-immediate-v1", aggregateFallbackReceipt.resolution().effectivePolicyId());
+        assertEquals("invalid-authority", aggregateFallbackReceipt.resolution().fallbackReason());
+        String aggregateFallbackJson = new AlignmentService().withLegacyNormalPolicyReceipts("{}", List.of(
+            new AlignmentService.NormalPolicyCall("all-colors-combined", aggregateFallbackReceipt.resolution())));
+        assertTrue(aggregateFallbackJson.contains("\"effective\":\"legacy-immediate-v1\""));
+        assertTrue(aggregateFallbackJson.contains("\"fallbackReason\":\"invalid-authority\""));
         assertFalse(sameNormal(aggregateUnfenced.get(crossingSecantRow), aggregateProtected.get(crossingSecantRow)),
             "aggregate first-sampling policy must use the same original-occurrence fence");
     }
