@@ -3210,7 +3210,8 @@ Sole source writer `/root/query_policy`, new worktree
 zero-local worktree remains immutable baseline. Luna evidence worker prepares only
 external runner execution selection; no graph until tests/independent review.
 
-Current production milestone: integrated `996099fa`; LSEC1/LSEC2 reviews are
+Current production milestone: production source `cef5556c` (documentation HEAD
+`2d70a549` before this update); LSEC1/LSEC2 reviews are
 closed after fix-review SHA
 `b0461f16223a96f50661e5da3085718296aca1186931755f48dbd5a36616c294`. The
 corrected LSEC1 accounting is 178 allocations, not 79; LSEC2 retains its
@@ -3218,8 +3219,8 @@ additional allocation. Final combined private regression is 20 passed, 0 failed,
 0 skipped in 4m32s; XML is archived under root integration `private-final-xml`.
 The reusable public Legacy normal-policy harness/gate is recorded in benchmark
 commit `1fa751` under R1 gate checks, result repeatability, geometry controls,
-and partial-failure evidence. Matched speed evidence, public CI execution, and
-release remain open; Filters are deferred. No further benchmark-task design is
+and partial-failure evidence. Current CI and matched-speed status is recorded
+below; filters are deferred and no public release is authorized. No further benchmark-task design is
 authorized by this checkpoint.
 
 R1 performance-evidence correction is committed as `9a46ba4f` (result hashes
@@ -3233,4 +3234,30 @@ SHA-256 `8e00d4ca872d3610d0851a1e9e2e232f6aaf520469660d70cb5e01740104974a`;
 `75fbcf66d29bd6203d49b3e55e12d8460d2522ce89ec9e6ba50be35efe2b39d5`;
 harness class SHA-256
 `f22792670c659562e8a4491dfa9f6d046f052fd1cbe627bd87919892e8939132`.
-Matched speed evidence, public CI execution, and release remain open.
+Full public CI `42143312418` completed 2,454 Java tests with one failure:
+`OrdinaryModernAttemptAssemblyTest.managedSequentialHybridUsesAcquiredNativePixelsAndKeepsReplaySource`.
+Its reservation-boundary helper still cancels by the second checkpoint and
+omits explicit normal-policy working bytes, so it cancels during authority
+validation rather than testing the native sampling reservation. The scoped
+test-only correction must use the paid native reservation as its phase boundary;
+production changes and test weakening are outside this repair. GUI validation
+was skipped because Java validation failed. Evidence is under root integration
+`ci-public-42143312418`.
+
+Matched public speed is PASS: three forks, eight scene/source groups, 20 pairs
+per fork/group, zero breaches. Maximum median overhead is 0.431 ms and maximum
+p95 overhead is 7.783 ms. The authoritative locally rechecked gate is root
+integration `ci-performance-42143312418/local-rechecked-gate.json` (PASS). The
+existing private regression remains 20 passed; it was not rerun for this repair.
+
+The full controller Python scripts suite passed 222 tests plus nine subtests in
+195.28 s, exit 0; no Python source changed during the run. Evidence is root
+integration `python-full.log`.
+
+The scoped test-only reservation-boundary correction reproduced that exact
+failure locally, then passed the exact failing method: one test, zero failures,
+errors or skips. It independently includes explicit policy scratch, cancels only
+when the native reservation is paid, checks both phase flags/peak charges, and
+requires zero leaked ownership before cleanup. Production source is unchanged.
+Next: rerun CI on the frozen correction, including the previously skipped GUI gates.
+Filters remain deferred. No public release has occurred or is authorized here.

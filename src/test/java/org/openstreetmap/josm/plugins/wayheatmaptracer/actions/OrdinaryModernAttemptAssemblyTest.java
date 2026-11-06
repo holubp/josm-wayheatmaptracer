@@ -329,27 +329,44 @@ class OrdinaryModernAttemptAssemblyTest {
                 .get(0).profiles();
         long pixels = source.mosaics().values().stream().mapToLong(mosaic -> (long) mosaic.width() * mosaic.height()).sum();
         long samples = profiles.stream().mapToLong(profile -> profile.intensitySamples().size()).sum();
-        long required = 12L * pixels + 4096L * samples;
+        boolean explicitPolicy = source.normalPolicy()
+                != org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyProfileNormalPolicy.IMMEDIATE_V1
+                || !source.normalPolicyFallbackReason().isEmpty();
+        // Independently specified admission contract: explicit normal validation/planning pays
+        // 512 bytes per original occurrence plus 2,048 bytes, in addition to native sampling.
+        long policyWorking = explicitPolicy ? 512L * computed.legacyB().input().originalProjected().size() + 2048L : 0L;
+        long required = 12L * pixels + 4096L * samples + policyWorking;
+        assertTrue(explicitPolicy, "The managed Hybrid fixture must exercise explicit normal-policy admission");
         assertTrue(required > 0 && required < org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES);
         for (boolean exact : new boolean[] {true, false}) {
-            var calls = new AtomicInteger();
+            var authorityPaid = new java.util.concurrent.atomic.AtomicBoolean();
+            var samplingPaid = new java.util.concurrent.atomic.AtomicBoolean();
             var ledger = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger(
                     exact ? required : required - 1);
             try (var owner = ledger.rootOwner()) {
                 var runner = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBProductionRunner();
                 org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe cancelAtSampling =
-                        () -> calls.incrementAndGet() >= 2;
+                        () -> {
+                            long paid = ledger.currentBytes();
+                            if (paid == policyWorking) authorityPaid.set(true);
+                            if (paid != required) return false;
+                            samplingPaid.set(true);
+                            return true;
+                        };
                 if (exact) {
                     assertThrows(java.util.concurrent.CancellationException.class, () -> runner.discoverManaged(
                             computed.legacyB().input(), source, cancelAtSampling, owner,
                             org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Deadline.production()));
-                    assertEquals(2, calls.get(), "Exact reservation reaches native sampling before controlled cancellation");
+                    assertTrue(samplingPaid.get(), "Exact reservation reaches paid native sampling before controlled cancellation");
                 } else {
                     assertThrows(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.ResourceLimitException.class,
                             () -> runner.discoverManaged(computed.legacyB().input(), source, cancelAtSampling, owner,
                                     org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Deadline.production()));
-                    assertEquals(1, calls.get(), "One byte short must refuse before native sampler execution");
+                    assertFalse(samplingPaid.get(), "One byte short must refuse before native sampler execution");
                 }
+                assertTrue(authorityPaid.get(), "Both cases must pass the paid normal-authority validation phase");
+                assertEquals(exact ? required : policyWorking, ledger.peakBytes(),
+                        "Only exact admission may pay the native sampling reservation");
                 assertEquals(0, owner.currentBytes(), "Both refusal and cancellation release all working ownership");
             }
         }
