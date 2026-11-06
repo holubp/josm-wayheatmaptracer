@@ -3214,7 +3214,7 @@ Current production milestone: production source `cef5556c` (documentation HEAD
 `2d70a549` before this update); LSEC1/LSEC2 reviews are
 closed after fix-review SHA
 `b0461f16223a96f50661e5da3085718296aca1186931755f48dbd5a36616c294`. The
-corrected LSEC1 accounting is 178 allocations, not 79; LSEC2 retains its
+corrected LSEC1 test count is 78 tests, not 79; LSEC2 retains its
 additional allocation. Final combined private regression is 20 passed, 0 failed,
 0 skipped in 4m32s; XML is archived under root integration `private-final-xml`.
 The reusable public Legacy normal-policy harness/gate is recorded in benchmark
