@@ -14,6 +14,34 @@
 
 ### Active execution card — authoritative
 
+**LATEST VERIFIED CLOSURE — 2026-11-06:** The active Legacy Drasov zigzag goal
+is complete on pushed production/test snapshot
+`f80fde258d51a6d0d1f0677646d7926535801153`, branch
+`codex/v022-legacy-b-release`. GitHub run42148673153 completed SUCCESS:
+2454 public Java tests (225 XML suites),0failures/errors/skips; complete public
+validation including Python, sampling scale, diff and artifact integrity;
+both Probabilistic and Legacy-then-B Xvfb GUI smoke jobs; and the matched
+Legacy speed job. The three-fork/eight-group/twenty-pair speed gate has zero
+breaches (maximum median overhead0.614427ms, maximum p95 overhead6.954555ms).
+The separately configured20 private regression tests and local Python222tests
+plus9subtests also pass. Independent production and scoped repair reviews have
+no outstanding blocker. Actual unchanged-Drasov image comparison removes the
+marked backward fold (worst164.3896/154.5890degrees becomes maximum42.5368),
+with increasing reference chainage and exact fixed endpoints; the clipped v2
+figure was visually rechecked. No filters or tracker objective were changed.
+
+Validated CI JAR SHA256:
+`162fd0d8b23600ce0354d62fe3333783d81dd78d33972f094fabe00c36ff6a77`.
+Local test copy: root `build/wayheatmaptracer-legacy-zigzag-f80fde25.jar`.
+Its manifest remains0.22.0-rc.14/JOSM19555; this is an explicitly identified CI
+test build, not a newly published RC or stable0.22 release. Artifacts and225
+JUnit XML suites are under root
+`build/private-drasov-resume-20261105/legacy-wide-secant/integration/ci-final-42148673153`.
+Primary dirty checkout and its unrelated/private files remain untouched.
+Filter optimization, pre-existing managed-hairpin baseline apex limitations,
+Corridor-A work and remaining broader0.22 release scope are not claimed solved.
+The older checkpoint paragraphs below are historical and superseded by this closure.
+
 **CI execution milestone — 2026-11-06:** Frozen source `cef5556c820361ebf6d259d70e7aadacc06ef08b`
 pushed to `codex/v022-legacy-b-release`. GitHub Build run42143312418 is in
 progress: https://github.com/holubp/josm-wayheatmaptracer/actions/runs/42143312418.
@@ -25,6 +53,18 @@ passed20 private regression tests,0 failures/errors/skips (2fixture,17palette,
 The three-fork matched performance verdict and full public CI are PENDING;
 do not declare speed acceptance or goal completion before inspecting artifacts.
 No private captures were uploaded, no release published, no filter changes made.
+
+**LATEST CI RERUN:** https://github.com/holubp/josm-wayheatmaptracer/actions/runs/42148673153
+on pushed `f80fde258d51a6d0d1f0677646d7926535801153` is now in progress.
+The earlier42143312418 run completed its three-fork speed gate PASS (zero
+breaches; maximum median overhead0.431ms), but public Java validation had one
+failure in2454 tests: an old ordinal-cancellation memory-boundary test. Test-only
+repair64bbd596 reproduced RED and passed GREEN, and independent review passed
+its paid-allocation-state assertions; production code is unchanged. Full local
+Python suite222tests plus9subtests passes. Latest whole-CI/GUI outcome is pending;
+inspect the new run before closing the active Legacy goal. Root evidence is
+`legacy-wide-secant/integration/ci-performance-42143312418` and
+`integration/ci-public-42143312418/test-fix`. No new filter work or release.
 
 **Integration milestone — 2026-11-06:** Controller production snapshot950230d5
 contains both standalone and Hybrid/frozen-source integrations. `classes
