@@ -20,6 +20,14 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMo
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry.ProjectedPoint;
 
 class LegacyBSourceCaptureTest {
+    @org.junit.jupiter.api.BeforeAll
+    static void initializeJosm() {
+        org.openstreetmap.josm.spi.preferences.Config.setPreferencesInstance(
+                new org.openstreetmap.josm.spi.preferences.MemoryPreferences());
+        org.openstreetmap.josm.data.projection.ProjectionRegistry.setProjection(
+                Projections.getProjectionByCode("EPSG:3857"));
+    }
+
     private LegacyBSourceCapture.Settings settings() {
         return new LegacyBSourceCapture.Settings(12, 2, InferenceMode.STABLE_FIXED_SCALE,
                 15, 13, 7.01, 2, IntensitySamplingMode.COLOR_MAPPING);
@@ -335,7 +343,7 @@ class LegacyBSourceCaptureTest {
         assertEquals(6, input.options().trackerNormalizationRasterPx());
         assertEquals(12, input.factualNativeSourcePitchRasterPx().orElseThrow());
         var selected = LegacyBSourceCapture.withLiveTrackerPolicy(input);
-        assertEquals(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1, selected.trackerPolicy());
+        assertEquals(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2, selected.trackerPolicy());
         assertEquals(12, selected.nativeSourcePitchRasterPx().orElseThrow());
         assertEquals(6, selected.options().trackerNormalizationRasterPx(),
                 "Native pitch must not replace compatibility normalization");
@@ -430,7 +438,7 @@ class LegacyBSourceCaptureTest {
         assertEquals(6, input.trackerNormalizationRasterPx());
         assertEquals(mosaic.virtualRasterScale(), input.factualNativeSourcePitchRasterPx().orElseThrow(), 0);
         var selected = LegacyBSourceCapture.withLiveTrackerPolicy(input);
-        assertEquals(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1, selected.trackerPolicy());
+        assertEquals(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2, selected.trackerPolicy());
         assertEquals(mosaic.virtualRasterScale(), selected.nativeSourcePitchRasterPx().orElseThrow(), 0);
         assertEquals(6, selected.trackerNormalizationRasterPx(),
                 "Managed inference mosaic pitch must remain separate from compatibility normalization");
