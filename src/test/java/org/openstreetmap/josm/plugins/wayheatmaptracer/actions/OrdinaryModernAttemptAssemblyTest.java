@@ -332,10 +332,19 @@ class OrdinaryModernAttemptAssemblyTest {
         boolean explicitPolicy = source.normalPolicy()
                 != org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyProfileNormalPolicy.IMMEDIATE_V1
                 || !source.normalPolicyFallbackReason().isEmpty();
+        var trackerPolicy = source.trackerPolicy();
+        assertTrue(trackerPolicy != org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyTrackerPolicy.ORIGINAL_V02,
+                "The managed fixture must exercise paired tracker-policy scratch ownership");
         // Independently specified admission contract: explicit normal validation/planning pays
         // 512 bytes per original occurrence plus 2,048 bytes, in addition to native sampling.
         long policyWorking = explicitPolicy ? 512L * computed.legacyB().input().originalProjected().size() + 2048L : 0L;
-        long required = 12L * pixels + 4096L * samples + policyWorking;
+        long nativeWorking = 12L * pixels + 4096L * samples;
+        // Independent paired-policy contract: two reference arrays (16N), boxed old/new offsets (16N),
+        // per-profile record/reference allowance (8N), and fixed array/record/iterator allowance (8,256).
+        long trackerWorking = trackerPolicy == org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyTrackerPolicy.ORIGINAL_V02
+                ? 0L
+                : 40L * profiles.size() + 8256L;
+        long required = policyWorking + nativeWorking + trackerWorking;
         assertTrue(explicitPolicy, "The managed Hybrid fixture must exercise explicit normal-policy admission");
         assertTrue(required > 0 && required < org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES);
         for (boolean exact : new boolean[] {true, false}) {

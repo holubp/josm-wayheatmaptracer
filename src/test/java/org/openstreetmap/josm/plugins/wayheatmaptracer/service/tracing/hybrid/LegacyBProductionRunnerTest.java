@@ -21,25 +21,34 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
 class LegacyBProductionRunnerTest {
     @Test void visibleProductionDiscoveryUsesTheFrozenTrackerPolicyAndSeparatePitch() {
         var fixture = fixture(false, false, Double.POSITIVE_INFINITY, true, 10, false, true);
-        var selectedPolicy = LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1;
-        var selected = fixture.visible().withTrackerPolicy(selectedPolicy,
-                fixture.visible().factualNativeSourcePitchRasterPx(), "");
-        var profiles = new LegacyVisibleProfileSampler().sample(selected, CancellationProbe.NONE).get(0).profiles();
-        var expected = new LegacySeedAdapter().track(profiles, selected.options().trackerNormalizationRasterPx(),
-                selected.nativeSourcePitchRasterPx().orElseThrow(), CancellationProbe.NONE, selected.trackerPolicy());
-        var historical = new LegacySeedAdapter().track(profiles, selected.options().trackerNormalizationRasterPx(),
+        var policies = List.of(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1,
+                LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V4);
+        var profiles = new LegacyVisibleProfileSampler().sample(fixture.visible(), CancellationProbe.NONE)
+                .get(0).profiles();
+        var historical = new LegacySeedAdapter().track(profiles, fixture.visible().options().trackerNormalizationRasterPx(),
                 Double.NaN, CancellationProbe.NONE, LegacyTrackerPolicy.ORIGINAL_V02);
-        assertNotEquals(historical.stream().map(candidate -> candidate.evidence()).toList(),
-                expected.stream().map(candidate -> candidate.evidence()).toList(),
-                "Fixture must distinguish the selected policy from historical tracking");
         var runner = new LegacyBProductionRunner();
-        try (var owner = AttemptMemoryLedger.production().rootOwner()) {
-            var discovered = runner.discoverVisible(fixture.input(), selected, CancellationProbe.NONE,
-                    owner, LegacyBPipeline.Deadline.production());
-            assertEquals(expected.stream().map(candidate -> candidate.offsetsPx()).toList(),
-                    discovered.value().alternatives().stream().map(LegacyBProductionRunner.LegacyAlternative::offsetsPx).toList());
-            assertEquals(expected.stream().map(candidate -> candidate.evidence()).toList(),
-                    discovered.value().alternatives().stream().map(LegacyBProductionRunner.LegacyAlternative::evidence).toList());
+        for (var selectedPolicy : policies) {
+            assertNotEquals(LegacyTrackerPolicy.ORIGINAL_V02, selectedPolicy);
+            var selected = fixture.visible().withTrackerPolicy(selectedPolicy,
+                    fixture.visible().factualNativeSourcePitchRasterPx(), "");
+            var expected = new LegacySeedAdapter().track(profiles,
+                    selected.options().trackerNormalizationRasterPx(), selected.nativeSourcePitchRasterPx().orElseThrow(),
+                    CancellationProbe.NONE, selected.trackerPolicy());
+            assertNotEquals(historical.stream().map(candidate -> candidate.evidence()).toList(),
+                    expected.stream().map(candidate -> candidate.evidence()).toList(),
+                    "Fixture must distinguish " + selectedPolicy.id() + " from historical tracking");
+            try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+                var discovered = runner.discoverVisible(fixture.input(), selected, CancellationProbe.NONE,
+                        owner, LegacyBPipeline.Deadline.production());
+                assertEquals(expected.stream().map(candidate -> candidate.offsetsPx()).toList(),
+                        discovered.value().alternatives().stream()
+                                .map(LegacyBProductionRunner.LegacyAlternative::offsetsPx).toList(),
+                        "Production discovery must route " + selectedPolicy.id());
+                assertEquals(expected.stream().map(candidate -> candidate.evidence()).toList(),
+                        discovered.value().alternatives().stream()
+                                .map(LegacyBProductionRunner.LegacyAlternative::evidence).toList());
+            }
         }
     }
 
