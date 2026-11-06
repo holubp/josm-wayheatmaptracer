@@ -235,17 +235,22 @@ final class LegacyPerformanceDiagnostics implements AutoCloseable {
         return width / 2 + width % 2;
     }
 
-    private static Long[] gcMetrics(List<GarbageCollectorMXBean> beans) {
+    static Long[] gcMetrics(List<GarbageCollectorMXBean> beans) {
         long count = 0, time = 0;
-        boolean countSeen = false, timeSeen = false;
-        try {
-            for (GarbageCollectorMXBean bean : beans) {
-                long c = bean.getCollectionCount(), t = bean.getCollectionTime();
-                if (c >= 0) { count = Math.addExact(count, c); countSeen = true; }
-                if (t >= 0) { time = Math.addExact(time, t); timeSeen = true; }
-            }
-        } catch (RuntimeException | LinkageError unavailable) { return new Long[] {null, null}; }
-        return new Long[] {countSeen ? count : null, timeSeen ? time : null};
+        boolean countComplete = !beans.isEmpty(), timeComplete = !beans.isEmpty();
+        for (GarbageCollectorMXBean bean : beans) {
+            try {
+                long value = bean.getCollectionCount();
+                if (value < 0) countComplete = false;
+                else count = Math.addExact(count, value);
+            } catch (RuntimeException | LinkageError unavailable) { countComplete = false; }
+            try {
+                long value = bean.getCollectionTime();
+                if (value < 0) timeComplete = false;
+                else time = Math.addExact(time, value);
+            } catch (RuntimeException | LinkageError unavailable) { timeComplete = false; }
+        }
+        return new Long[] {countComplete ? count : null, timeComplete ? time : null};
     }
 
     private static String metric(String name, Long value) { return ",\"" + name + "\":" + nullable(value); }

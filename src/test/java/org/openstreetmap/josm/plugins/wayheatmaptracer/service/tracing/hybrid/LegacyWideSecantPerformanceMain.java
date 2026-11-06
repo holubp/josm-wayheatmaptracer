@@ -55,14 +55,14 @@ public final class LegacyWideSecantPerformanceMain {
     private static final String POLICY_HASH = "4f7b1ef87be24be0841b3dd040fe8e15d945af284f1bcf8a162b9840d26bdc7e";
     private static final String SETTINGS_HASH = "9b7f8cb4e0f54d1ba9416a412330a6740ab95c1b38308a437a2fa8ea36be6d8";
 
-    private enum Scene { STRAIGHT, GAUSSIAN_KINK, SUPPORTED_HAIRPIN, PARALLEL_STRANDS }
-    private enum SourceKind { VISIBLE, MANAGED }
+    enum Scene { STRAIGHT, GAUSSIAN_KINK, SUPPORTED_HAIRPIN, PARALLEL_STRANDS }
+    enum SourceKind { VISIBLE, MANAGED }
     private record XY(double x, double y) { }
     private record Fixture(Scene scene, LegacyBProductionRunner.Input input,
             LegacyVisibleProfileSampler.Input visibleImmediate,
             LegacyManagedProfileSampler.Input managedImmediate,
             List<XY> trueRidge, String fixtureHash, Map<SourceKind, Boolean> normalDirectionsDiffer) { }
-    private record Observation(Scene scene, SourceKind sourceKind, int pair, String order, String policy,
+    record Observation(Scene scene, SourceKind sourceKind, int pair, String order, String policy,
             long elapsedNanos, int profileCount, int alternativeCount, int acceptedAlternativeCount, int seedCount,
             String alternativesDigest, String geometryDigest, boolean fixedPointsExact, String warnings,
             int supportedProfiles, String fixtureHash, String alternativesJson,
@@ -137,16 +137,24 @@ public final class LegacyWideSecantPerformanceMain {
             writeSummary(output.resolve("summary.json"), fork, observations, preflight, productionBefore,
                     harnessBefore, dependenciesBefore, diagnostics.isEnabled());
         } catch (Throwable failure) {
-            try {
-                diagnostics.failPending(failure);
-                writeCsv(output.resolve("observations.csv"), observations);
-                writeFailureSummary(output.resolve("summary.json"), fork, observations, failure, diagnostics.isEnabled());
-            } catch (Throwable receiptFailure) {
-                failure.addSuppressed(receiptFailure);
-            }
+            preserveFailureArtifacts(output, fork, observations, failure, diagnostics);
             throw failure;
           }
         }
+    }
+
+    static void preserveFailureArtifacts(Path output, int fork, List<Observation> observations, Throwable failure,
+            LegacyPerformanceDiagnostics diagnostics) {
+        try { diagnostics.failPending(failure); }
+        catch (Throwable diagnosticFailure) { suppressExportFailure(failure, diagnosticFailure); }
+        try { writeCsv(output.resolve("observations.csv"), observations); }
+        catch (Throwable csvFailure) { suppressExportFailure(failure, csvFailure); }
+        try { writeFailureSummary(output.resolve("summary.json"), fork, observations, failure, diagnostics.isEnabled()); }
+        catch (Throwable summaryFailure) { suppressExportFailure(failure, summaryFailure); }
+    }
+
+    private static void suppressExportFailure(Throwable primary, Throwable exportFailure) {
+        if (primary != exportFailure) primary.addSuppressed(exportFailure);
     }
 
     /** Times the real retained Legacy discovery for both policies on one frozen public fixture. */
