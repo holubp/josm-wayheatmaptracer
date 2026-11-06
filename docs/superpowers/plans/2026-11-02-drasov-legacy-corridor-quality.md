@@ -14,6 +14,20 @@
 
 ### Active execution card — authoritative
 
+**READY FOR PUBLIC CI — 2026-11-06:** V4 public preflight94633 exited0 in1m31s:
+16 discovery rows/eight scene-source groups, all quality checks PASS, complete
+runtime/class bindings unchanged. It has no statistical speed verdict. Source
+through `0f06ad56` includes reviewedV4, live routing, replay/receipt coverage,
+actual50-capture nonregression and V4 benchmark selector.107 integrated/private
+tests and99 core tests pass with archived XML; full scripts250+9subtests passed,
+affected final selector gate/workflow46 tests pass. Whole-task
+`git diff --check f80fde25 HEAD` passes. Only three pre-existing untracked handoff
+plans remain; primary dirty checkout is untouched. Next publish source branch
+for ordinary GitHub Build (NOT a release), inspect full Java/GUI results and
+both strict three-fork performance gates, download/verify test JAR, then final
+goal audit. No known quality blocker remains in tested cases; speed and full
+CI are explicitly unverified until their fresh final-source artifacts arrive.
+
 **V4 INTEGRATION GREEN — 2026-11-06:** Combined run55854 exited0 in2m;
 archived current12 XML suites prove107 tests,0 failures/errors/skips. All50
 captured-way/palette comparisons EXACTLY match historical mean/max/envelope
