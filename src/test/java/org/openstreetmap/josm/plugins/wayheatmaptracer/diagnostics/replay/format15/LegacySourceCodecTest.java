@@ -11,6 +11,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyManagedProfileSampler;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyTrackerPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyVisibleProfileSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
@@ -118,6 +119,94 @@ class LegacySourceCodecTest {
         assertArrayEquals(managedV2, LegacySourceCodec.encode(LegacySourceCodec.decodeManaged(managedV2)));
     }
 
+    @Test void trackerPolicyV3RoundTripsPitchAndOldVersionsRemainOriginal() {
+        assertEquals(24.0, policyVisibleInput().factualNativeSourcePitchRasterPx().orElseThrow());
+        var visible = policyVisibleInput().withTrackerPolicy(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1,
+                OptionalDouble.of(24.0), "");
+        var visibleBytes = LegacySourceCodec.encode(visible);
+        assertEquals(3, ByteBuffer.wrap(visibleBytes).getInt(4));
+        var decodedVisible = LegacySourceCodec.decodeVisible(visibleBytes);
+        assertEquals(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1, decodedVisible.trackerPolicy());
+        assertEquals(24.0, decodedVisible.nativeSourcePitchRasterPx().orElseThrow());
+        assertEquals(6.0, decodedVisible.options().trackerNormalizationRasterPx());
+        var frozenVisible = FrozenLegacyBInput.visible(visible, List.of(
+                new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid
+                        .LegacyTopologyPlanner.Occurrence(0, false, false),
+                new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid
+                        .LegacyTopologyPlanner.Occurrence(1, false, false)), List.of(), false, 0);
+        assertEquals(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1, frozenVisible.trackerPolicy());
+        assertEquals(24.0, frozenVisible.nativeSourcePitchRasterPx().orElseThrow());
+        assertThrows(IllegalArgumentException.class, () -> policyVisibleInput().withTrackerPolicy(
+                LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1, OptionalDouble.of(25.0), ""));
+
+        var managed = managedInput().withTrackerPolicy(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1,
+                OptionalDouble.of(6.0), "");
+        var managedBytes = LegacySourceCodec.encode(managed);
+        assertEquals(3, ByteBuffer.wrap(managedBytes).getInt(4));
+        var decodedManaged = LegacySourceCodec.decodeManaged(managedBytes);
+        assertEquals(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1, decodedManaged.trackerPolicy());
+        assertEquals(6.0, decodedManaged.nativeSourcePitchRasterPx().orElseThrow());
+
+        var withValidationMosaic = new LinkedHashMap<>(managedInput().mosaics());
+        var validation = managedInput().validationParameters();
+        withValidationMosaic.put("hot@13", new LegacyManagedProfileSampler.Mosaic("hot", 13, 1000, 2000,
+                2, 2, new int[] {1, 2, 3, 4}, validation, false, 900.0));
+        var managedWithValidation = new LegacyManagedProfileSampler.Input(managedInput().inferenceMode(),
+                managedInput().requestedInferenceZoom(), managedInput().requestedValidationZoom(),
+                managedInput().inferenceZoom(), managedInput().validationZoom(), managedInput().tileSize(),
+                withValidationMosaic, managedInput().inferenceParameters(), validation,
+                managedInput().sourcePolyline(), managedInput().projectionCode(), managedInput().selectedPalette(),
+                managedInput().detectors(), managedInput().intensityMode(), managedInput().trackerNormalizationRasterPx());
+        assertEquals(6.0, managedWithValidation.nativeSourcePitchRasterPx().orElseThrow(),
+                "Pitch comes from the selected inference mosaic, not the validation zoom");
+
+        var oldVisible = LegacySourceCodec.decodeVisible(LegacySourceCodec.encode(visibleInput()));
+        var oldManaged = LegacySourceCodec.decodeManaged(LegacySourceCodec.encode(managedInput()));
+        assertEquals(LegacyTrackerPolicy.ORIGINAL_V02, oldVisible.trackerPolicy());
+        assertTrue(oldVisible.nativeSourcePitchRasterPx().isEmpty());
+        assertEquals(LegacyTrackerPolicy.ORIGINAL_V02, oldManaged.trackerPolicy());
+        assertEquals(6.0, oldManaged.nativeSourcePitchRasterPx().orElseThrow());
+    }
+
+    @Test void missingPitchFallsBackToOriginalAndV3DecoderRejectsUnknownOrNonfinitePolicyData() {
+        var old = policyVisibleInput();
+        var unknownRaster = new LiveBPreviewService.VisibleRaster(old.raster().width(), old.raster().height(),
+                old.raster().argb(), old.raster().minimumEast(), old.raster().minimumNorth(),
+                old.raster().maximumEast(), old.raster().maximumNorth(), old.raster().projectionUnitsPerViewPixel(),
+                old.raster().groundMetersPerViewPixel(), OptionalDouble.empty(), old.raster().sourceIdentity(),
+                old.raster().projectionCode());
+        var unknown = new LegacyVisibleProfileSampler.Input(unknownRaster, old.anchors(), old.detectors(),
+                new LegacyVisibleProfileSampler.Options(5, 1, 6.0, IntensitySamplingMode.COLOR_MAPPING));
+        var fallback = org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyBSourceCapture
+                .withLiveTrackerPolicy(unknown);
+        assertEquals(LegacyTrackerPolicy.ORIGINAL_V02, fallback.trackerPolicy());
+        assertTrue(fallback.nativeSourcePitchRasterPx().isEmpty());
+        assertEquals("native-pitch-unavailable", fallback.trackerPolicyFallbackReason());
+        var fallbackBytes = LegacySourceCodec.encode(fallback);
+        assertEquals(3, ByteBuffer.wrap(fallbackBytes).getInt(4));
+        var frozenFallback = LegacySourceCodec.decodeVisible(fallbackBytes);
+        assertEquals(LegacyTrackerPolicy.ORIGINAL_V02, frozenFallback.trackerPolicy());
+        assertTrue(frozenFallback.nativeSourcePitchRasterPx().isEmpty());
+        assertEquals("native-pitch-unavailable", frozenFallback.trackerPolicyFallbackReason());
+
+        byte[] valid = LegacySourceCodec.encode(policyVisibleInput().withTrackerPolicy(
+                LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1, OptionalDouble.of(24.0), ""));
+        byte[] unknownBytes = valid.clone();
+        int idLength = ByteBuffer.wrap(unknownBytes).getInt(12);
+        assertTrue(idLength > 0);
+        java.util.Arrays.fill(unknownBytes, 16, 16 + idLength, (byte) 'x');
+        assertThrows(IllegalArgumentException.class, () -> LegacySourceCodec.decodeVisible(unknownBytes));
+
+        byte[] nonfinite = valid.clone();
+        int pitchOffset = 17 + idLength;
+        ByteBuffer.wrap(nonfinite).putDouble(pitchOffset, Double.NaN);
+        assertThrows(IllegalArgumentException.class, () -> LegacySourceCodec.decodeVisible(nonfinite));
+        byte[] mismatchedPitch = valid.clone();
+        ByteBuffer.wrap(mismatchedPitch).putDouble(pitchOffset, 25.0);
+        assertThrows(IllegalArgumentException.class, () -> LegacySourceCodec.decodeVisible(mismatchedPitch),
+                "A V3 pitch claim must agree with captured visible raster metadata");
+    }
+
     @Test void protectedNormalPolicyRejectsUnknownMissingDuplicatedAndWrongKindMetadata() throws Exception {
         byte[] original = LegacySourceCodec.encode(visibleInput());
         for (byte[] invalid : List.of(
@@ -188,6 +277,17 @@ class LegacySourceCodecTest {
                 new LegacyVisibleProfileSampler.Anchor(new ProjectedPoint(2.5, -2), new RasterPoint(15, 15), 10));
         return new LegacyVisibleProfileSampler.Input(raster, anchors, List.of("hot", "blue"),
                 new LegacyVisibleProfileSampler.Options(5, 1, 1.75, IntensitySamplingMode.COLOR_MAPPING));
+    }
+
+    private static LegacyVisibleProfileSampler.Input policyVisibleInput() {
+        var old = visibleInput();
+        var captured = old.raster();
+        var raster = new LiveBPreviewService.VisibleRaster(captured.width(), captured.height(), captured.argb(),
+                captured.minimumEast(), captured.minimumNorth(), captured.maximumEast(), captured.maximumNorth(),
+                captured.projectionUnitsPerViewPixel(), captured.groundMetersPerViewPixel(), OptionalDouble.of(4.0),
+                captured.sourceIdentity(), captured.projectionCode());
+        return new LegacyVisibleProfileSampler.Input(raster, old.anchors(), old.detectors(),
+                new LegacyVisibleProfileSampler.Options(5, 1, 6.0, IntensitySamplingMode.COLOR_MAPPING));
     }
 
     private static LegacyManagedProfileSampler.Input managedInput() {

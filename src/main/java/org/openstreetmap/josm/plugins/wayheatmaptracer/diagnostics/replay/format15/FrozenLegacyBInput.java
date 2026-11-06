@@ -11,6 +11,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyManagedProfileSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyProfileNormalPolicy;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyTrackerPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyVisibleProfileSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBProductionRunner;
@@ -95,6 +96,20 @@ public final class FrozenLegacyBInput {
 
     public String normalPolicyFallbackReason() {
         return visibleSource != null ? visibleSource.normalPolicyFallbackReason() : managedSource.normalPolicyFallbackReason();
+    }
+
+    /** Frozen tracker semantics; old V1/V2 archives resolve explicitly to the historical policy. */
+    public LegacyTrackerPolicy trackerPolicy() {
+        return visibleSource != null ? visibleSource.trackerPolicy() : managedSource.trackerPolicy();
+    }
+
+    /** Factual native pitch from the frozen source frame, distinct from tracker normalization. */
+    public java.util.OptionalDouble nativeSourcePitchRasterPx() {
+        return visibleSource != null ? visibleSource.nativeSourcePitchRasterPx() : managedSource.nativeSourcePitchRasterPx();
+    }
+
+    public String trackerPolicyFallbackReason() {
+        return visibleSource != null ? visibleSource.trackerPolicyFallbackReason() : managedSource.trackerPolicyFallbackReason();
     }
 
     public boolean hasExplicitNormalPolicy() {

@@ -333,6 +333,12 @@ class LegacyBSourceCaptureTest {
         assertEquals(18, input.anchors().get(0).raster().x());
         assertEquals(60, input.anchors().get(0).raster().y());
         assertEquals(6, input.options().trackerNormalizationRasterPx());
+        assertEquals(12, input.factualNativeSourcePitchRasterPx().orElseThrow());
+        var selected = LegacyBSourceCapture.withLiveTrackerPolicy(input);
+        assertEquals(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1, selected.trackerPolicy());
+        assertEquals(12, selected.nativeSourcePitchRasterPx().orElseThrow());
+        assertEquals(6, selected.options().trackerNormalizationRasterPx(),
+                "Native pitch must not replace compatibility normalization");
         assertEquals(12, input.options().halfWidthPx());
         assertEquals(2, input.options().stepPx());
         var projection = Projections.getProjectionByCode("EPSG:3857");
@@ -422,6 +428,12 @@ class LegacyBSourceCaptureTest {
         image.setRGB(30, 60, 0);
         assertEquals(0xFFEEFFFF, mosaic.argb()[60 * 128 + 30]);
         assertEquals(6, input.trackerNormalizationRasterPx());
+        assertEquals(mosaic.virtualRasterScale(), input.factualNativeSourcePitchRasterPx().orElseThrow(), 0);
+        var selected = LegacyBSourceCapture.withLiveTrackerPolicy(input);
+        assertEquals(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1, selected.trackerPolicy());
+        assertEquals(mosaic.virtualRasterScale(), selected.nativeSourcePitchRasterPx().orElseThrow(), 0);
+        assertEquals(6, selected.trackerNormalizationRasterPx(),
+                "Managed inference mosaic pitch must remain separate from compatibility normalization");
         var projection = Projections.getProjectionByCode("EPSG:3857");
         var sampler = new LegacyManagedProfileSampler();
         for (var point : List.of(new org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint(0, 0),

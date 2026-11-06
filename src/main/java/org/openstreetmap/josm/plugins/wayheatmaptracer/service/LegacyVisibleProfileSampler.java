@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.OptionalDouble;
 
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
@@ -40,10 +41,30 @@ public final class LegacyVisibleProfileSampler {
     /** Fully frozen visible source input; contains no live JOSM primitives or viewport objects. */
     public record Input(LiveBPreviewService.VisibleRaster raster, List<Anchor> anchors,
             List<String> detectors, Options options, LegacyProfileNormalPolicy normalPolicy,
-            List<Integer> fixedSourceIndices, String normalPolicyFallbackReason) {
+            List<Integer> fixedSourceIndices, String normalPolicyFallbackReason,
+            LegacyTrackerPolicy trackerPolicy, OptionalDouble nativeSourcePitchRasterPx,
+            String trackerPolicyFallbackReason) {
         public Input(LiveBPreviewService.VisibleRaster raster, List<Anchor> anchors,
                 List<String> detectors, Options options) {
-            this(raster, anchors, detectors, options, LegacyProfileNormalPolicy.IMMEDIATE_V1, List.of(), "");
+            this(raster, anchors, detectors, options, LegacyProfileNormalPolicy.IMMEDIATE_V1, List.of(), "",
+                    LegacyTrackerPolicy.ORIGINAL_V02, factualNativePitch(raster), "");
+        }
+
+        public Input(LiveBPreviewService.VisibleRaster raster, List<Anchor> anchors,
+                List<String> detectors, Options options, LegacyProfileNormalPolicy normalPolicy,
+                List<Integer> fixedSourceIndices, String normalPolicyFallbackReason) {
+            this(raster, anchors, detectors, options, normalPolicy, fixedSourceIndices, normalPolicyFallbackReason,
+                    LegacyTrackerPolicy.ORIGINAL_V02, factualNativePitch(raster), "");
+        }
+
+        /** Returns the actual captured source-pixel pitch, independent of tracker normalization. */
+        public OptionalDouble factualNativeSourcePitchRasterPx() { return factualNativePitch(raster); }
+
+        /** Adds explicit tracker provenance after validating pitch against the captured visible source. */
+        public Input withTrackerPolicy(LegacyTrackerPolicy policy, OptionalDouble nativePitch, String fallbackReason) {
+            validateTrackerChoice(policy, nativePitch, fallbackReason, factualNativeSourcePitchRasterPx());
+            return new Input(raster, anchors, detectors, options, normalPolicy, fixedSourceIndices,
+                    normalPolicyFallbackReason, policy, nativePitch, fallbackReason);
         }
 
         /** Resolves live eligibility before freezing; malformed explicit replay claims never use this path. */
@@ -52,17 +73,23 @@ public final class LegacyVisibleProfileSampler {
             fixed = validateNormalPolicy(policy, fixed, "", anchors.size());
             if (policy == LegacyProfileNormalPolicy.IMMEDIATE_V1) {
                 return normalPolicy == policy && normalPolicyFallbackReason.isEmpty() ? this
-                        : new Input(raster, anchors, detectors, options);
+                        : new Input(raster, anchors, detectors, options, LegacyProfileNormalPolicy.IMMEDIATE_V1,
+                                List.of(), "", trackerPolicy, nativeSourcePitchRasterPx, trackerPolicyFallbackReason);
             }
             var source = anchors.stream().map(a -> new EastNorth(a.source().east(), a.source().north())).toList();
             var plan = LegacyProfileNormalFences.plan(source, anchors.size(), fixed);
             return new Input(raster, anchors, detectors, options,
                         plan.eligible() ? policy : LegacyProfileNormalPolicy.IMMEDIATE_V1,
-                        fixed, plan.eligible() ? "" : plan.reason());
+                        fixed, plan.eligible() ? "" : plan.reason(), trackerPolicy, nativeSourcePitchRasterPx,
+                        trackerPolicyFallbackReason);
         }
         public Input {
             Objects.requireNonNull(raster, "raster");
             Objects.requireNonNull(options, "options");
+            Objects.requireNonNull(trackerPolicy, "trackerPolicy");
+            nativeSourcePitchRasterPx = nativeSourcePitchRasterPx == null ? OptionalDouble.empty() : nativeSourcePitchRasterPx;
+            trackerPolicyFallbackReason = validateTrackerChoice(trackerPolicy, nativeSourcePitchRasterPx,
+                    trackerPolicyFallbackReason, factualNativePitch(raster));
             if (anchors == null || anchors.size() < 2 || detectors == null || detectors.isEmpty()) {
                 throw new IllegalArgumentException("Legacy visible capture needs anchors and detectors");
             }
@@ -93,6 +120,43 @@ public final class LegacyVisibleProfileSampler {
                 }
             }
         }
+
+        private static OptionalDouble factualNativePitch(LiveBPreviewService.VisibleRaster raster) {
+            if (raster == null || raster.nativePitchMeters().isEmpty()
+                    || !Double.isFinite(raster.groundMetersPerViewPixel())
+                    || raster.groundMetersPerViewPixel() <= 0.0) return OptionalDouble.empty();
+            double groundPerRaster = raster.groundMetersPerViewPixel() / RenderedHeatmapSampler.RASTER_SCALE;
+            double pitch = raster.nativePitchMeters().getAsDouble() / groundPerRaster;
+            return Double.isFinite(pitch) && pitch > 0.0 ? OptionalDouble.of(pitch) : OptionalDouble.empty();
+        }
+    }
+
+    static String validateTrackerChoice(LegacyTrackerPolicy policy, OptionalDouble pitch,
+            String fallbackReason, OptionalDouble factualPitch) {
+        Objects.requireNonNull(policy, "trackerPolicy");
+        pitch = pitch == null ? OptionalDouble.empty() : pitch;
+        String reason = fallbackReason == null ? "" : fallbackReason;
+        if (!reason.isEmpty() && !reason.equals("native-pitch-unavailable")) {
+            throw new IllegalArgumentException("Unknown Legacy tracker fallback reason");
+        }
+        if (pitch.isPresent() && (!Double.isFinite(pitch.getAsDouble()) || pitch.getAsDouble() <= 0.0)) {
+            throw new IllegalArgumentException("Native source pitch must be finite and positive");
+        }
+        if (policy.requiresNativePitch()) {
+            if (reason.length() > 0 || pitch.isEmpty() || factualPitch.isEmpty()
+                    || Math.abs(pitch.getAsDouble() - factualPitch.getAsDouble())
+                        > Math.max(1e-9, factualPitch.getAsDouble() * 1e-9)) {
+                throw new IllegalArgumentException("Tracker policy pitch must match captured visible source metadata");
+            }
+        } else if (!reason.isEmpty() && (policy != LegacyTrackerPolicy.ORIGINAL_V02 || pitch.isPresent()
+                || factualPitch.isPresent())) {
+            throw new IllegalArgumentException("Native-pitch fallback must use the original policy without a pitch");
+        } else if (pitch.isPresent() && (factualPitch.isEmpty()
+                || Math.abs(pitch.getAsDouble() - factualPitch.getAsDouble())
+                    > Math.max(1e-9, factualPitch.getAsDouble() * 1e-9))) {
+            throw new IllegalArgumentException("Native source pitch differs from captured visible source metadata");
+        }
+        return reason;
     }
 
     /** Profiles sampled for one requested detector, retaining detector order and empty results. */

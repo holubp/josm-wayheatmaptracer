@@ -167,8 +167,11 @@ public final class LegacyBProductionRunner {
         long pixels = Math.multiplyExact((long) source.raster().width(), source.raster().height());
         long samples = 4L * source.options().halfWidthPx() * 6 / source.options().stepPx() + 4;
         return discover(input, source.detectors().get(0), source.options().trackerNormalizationRasterPx(),
+                source.nativeSourcePitchRasterPx().orElse(Double.NaN), source.trackerPolicy(),
                 () -> sampler.sample(source, deadline.probe(cancellation)).get(0).profiles(),
-                points -> sampler.project(source, points), Math.addExact(nativeWorkingBytes(pixels, source.anchors().size(), samples),
+                points -> sampler.project(source, points), Math.addExact(Math.addExact(
+                        nativeWorkingBytes(pixels, source.anchors().size(), samples),
+                        trackerPolicyScratchBytes(source.anchors().size(), source.trackerPolicy())),
                         explicitNormalPolicy(source.normalPolicy(), source.normalPolicyFallbackReason())
                             ? normalPolicyWorkingBytes(input.originalProjected().size()) : 0),
                 cancellation, owner, deadline);
@@ -201,14 +204,18 @@ public final class LegacyBProductionRunner {
                 Math.multiplyExact((long) mosaic.width(), mosaic.height()));
         var shape = LegacyManagedProfileSampler.samplingShape(source);
         return discover(input, source.detectors().get(0), source.trackerNormalizationRasterPx(),
+                source.nativeSourcePitchRasterPx().orElse(Double.NaN), source.trackerPolicy(),
                 () -> sampler.sample(source, deadline.probe(cancellation)).get(0).profiles(),
                 points -> sampler.project(source, source.detectors().get(0), points),
-                Math.addExact(nativeWorkingBytes(pixels, shape.profiles(), shape.samplesPerProfile()),
+                Math.addExact(Math.addExact(
+                        nativeWorkingBytes(pixels, shape.profiles(), shape.samplesPerProfile()),
+                        trackerPolicyScratchBytes(shape.profiles(), source.trackerPolicy())),
                         explicitNormalPolicy(source.normalPolicy(), source.normalPolicyFallbackReason())
                             ? normalPolicyWorkingBytes(input.originalProjected().size()) : 0), cancellation, owner, deadline);
     }
 
     private Accounted<Discovery> discover(Input input, String detector, double normalization,
+            double nativeSourcePitchRasterPx, LegacyTrackerPolicy trackerPolicy,
             Supplier<List<RenderedHeatmapSampler.CrossSectionProfile>> sample,
             Function<List<RasterPoint>,List<ProjectedPoint>> project, long workingBytes,
             CancellationProbe cancellation, AttemptMemoryLedger.Owner attemptOwner, Deadline deadline) {
@@ -221,7 +228,8 @@ public final class LegacyBProductionRunner {
                 profiles = sample.get(); reservation.adopt(profiles);
             }
             var adapter = new LegacySeedAdapter();
-            var nativeAlternatives = adapter.track(profiles, normalization, deadline.probe(cancellation));
+            var nativeAlternatives = adapter.track(profiles, normalization, nativeSourcePitchRasterPx,
+                    deadline.probe(cancellation), trackerPolicy);
             var alternatives = new ArrayList<LegacyAlternative>();
             var seeds = new ArrayList<Seed>();
             var sections = new ArrayList<Section>();
@@ -694,6 +702,15 @@ public final class LegacyBProductionRunner {
         // Covers image reconstruction/copies and conservative per-sample native profile/tracker scratch.
         return Math.addExact(Math.multiplyExact(pixels, 12L),
                 Math.multiplyExact(Math.multiplyExact(profiles, samples), 4096L));
+    }
+
+    /** Paired-policy tracker arrays and temporary boxed offsets, held through the tracking call. */
+    private static long trackerPolicyScratchBytes(long profiles, LegacyTrackerPolicy policy) {
+        if (policy == LegacyTrackerPolicy.ORIGINAL_V02) return 0L;
+        long referenceArrays = Math.multiplyExact(2L, AttemptMemoryLedger.referenceArrayBytes(profiles));
+        long recordStorage = AttemptMemoryLedger.objectBytes(16L);
+        long boxedOffsets = Math.multiplyExact(profiles, AttemptMemoryLedger.objectBytes(8L));
+        return Math.addExact(Math.addExact(referenceArrays, recordStorage), Math.addExact(boxedOffsets, 8192L));
     }
 
     private static void own(AttemptMemoryLedger.Owner owner, Object value, long bytes) {

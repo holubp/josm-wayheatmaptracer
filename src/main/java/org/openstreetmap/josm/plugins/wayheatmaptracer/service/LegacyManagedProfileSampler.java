@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.OptionalDouble;
 
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.projection.Projection;
@@ -57,7 +58,9 @@ public final class LegacyManagedProfileSampler {
             List<ProjectedPoint> sourcePolyline, String projectionCode, String selectedPalette,
             List<String> detectors, IntensitySamplingMode intensityMode,
             double trackerNormalizationRasterPx, LegacyProfileNormalPolicy normalPolicy,
-            List<Integer> fixedSourceIndices, String normalPolicyFallbackReason) {
+            List<Integer> fixedSourceIndices, String normalPolicyFallbackReason,
+            LegacyTrackerPolicy trackerPolicy, OptionalDouble nativeSourcePitchRasterPx,
+            String trackerPolicyFallbackReason) {
         public Input(InferenceMode inferenceMode, int requestedInferenceZoom, int requestedValidationZoom,
                 int inferenceZoom, int validationZoom, int tileSize, Map<String, Mosaic> mosaics,
                 TileHeatmapSampler.SamplingParameters inferenceParameters,
@@ -67,7 +70,38 @@ public final class LegacyManagedProfileSampler {
             this(inferenceMode, requestedInferenceZoom, requestedValidationZoom, inferenceZoom, validationZoom,
                     tileSize, mosaics, inferenceParameters, validationParameters, sourcePolyline, projectionCode,
                     selectedPalette, detectors, intensityMode, trackerNormalizationRasterPx,
-                    LegacyProfileNormalPolicy.IMMEDIATE_V1, List.of(), "");
+                    LegacyProfileNormalPolicy.IMMEDIATE_V1, List.of(), "", LegacyTrackerPolicy.ORIGINAL_V02,
+                    factualNativePitch(mosaics, selectedPalette, inferenceZoom), "");
+        }
+
+        public Input(InferenceMode inferenceMode, int requestedInferenceZoom, int requestedValidationZoom,
+                int inferenceZoom, int validationZoom, int tileSize, Map<String, Mosaic> mosaics,
+                TileHeatmapSampler.SamplingParameters inferenceParameters,
+                TileHeatmapSampler.SamplingParameters validationParameters, List<ProjectedPoint> sourcePolyline,
+                String projectionCode, String selectedPalette, List<String> detectors,
+                IntensitySamplingMode intensityMode, double trackerNormalizationRasterPx,
+                LegacyProfileNormalPolicy normalPolicy, List<Integer> fixedSourceIndices,
+                String normalPolicyFallbackReason) {
+            this(inferenceMode, requestedInferenceZoom, requestedValidationZoom, inferenceZoom, validationZoom,
+                    tileSize, mosaics, inferenceParameters, validationParameters, sourcePolyline, projectionCode,
+                    selectedPalette, detectors, intensityMode, trackerNormalizationRasterPx, normalPolicy,
+                    fixedSourceIndices, normalPolicyFallbackReason, LegacyTrackerPolicy.ORIGINAL_V02,
+                    factualNativePitch(mosaics, selectedPalette, inferenceZoom), "");
+        }
+
+        /** Returns the actual selected inference mosaic's source-pixel pitch in raster coordinates. */
+        public OptionalDouble factualNativeSourcePitchRasterPx() {
+            return factualNativePitch(mosaics, selectedPalette, inferenceZoom);
+        }
+
+        /** Adds explicit tracker provenance after validating pitch against the selected inference mosaic. */
+        public Input withTrackerPolicy(LegacyTrackerPolicy policy, OptionalDouble nativePitch, String fallbackReason) {
+            LegacyVisibleProfileSampler.validateTrackerChoice(policy, nativePitch, fallbackReason,
+                    factualNativeSourcePitchRasterPx());
+            return new Input(inferenceMode, requestedInferenceZoom, requestedValidationZoom, inferenceZoom,
+                    validationZoom, tileSize, mosaics, inferenceParameters, validationParameters, sourcePolyline,
+                    projectionCode, selectedPalette, detectors, intensityMode, trackerNormalizationRasterPx,
+                    normalPolicy, fixedSourceIndices, normalPolicyFallbackReason, policy, nativePitch, fallbackReason);
         }
 
         /** Resolves actual live normal eligibility before frozen capture. */
@@ -78,7 +112,8 @@ public final class LegacyManagedProfileSampler {
             if (policy == LegacyProfileNormalPolicy.IMMEDIATE_V1) return new Input(inferenceMode, requestedInferenceZoom,
                     requestedValidationZoom, inferenceZoom, validationZoom, tileSize, mosaics, inferenceParameters,
                     validationParameters, sourcePolyline, projectionCode, selectedPalette, detectors, intensityMode,
-                    trackerNormalizationRasterPx);
+                    trackerNormalizationRasterPx, LegacyProfileNormalPolicy.IMMEDIATE_V1, List.of(), "",
+                    trackerPolicy, nativeSourcePitchRasterPx, trackerPolicyFallbackReason);
             var source = eastNorth(sourcePolyline);
             var plan = LegacyProfileNormalFences.plan(source, source.size(), fixed);
             if (plan.eligible()) plan = LegacyProfileNormalFences.plan(source, samplingShape(this).profiles(), fixed);
@@ -86,7 +121,8 @@ public final class LegacyManagedProfileSampler {
                     validationZoom, tileSize, mosaics, inferenceParameters, validationParameters, sourcePolyline,
                     projectionCode, selectedPalette, detectors, intensityMode, trackerNormalizationRasterPx,
                     plan.eligible() ? policy : LegacyProfileNormalPolicy.IMMEDIATE_V1,
-                    fixed, plan.eligible() ? "" : plan.reason());
+                    fixed, plan.eligible() ? "" : plan.reason(), trackerPolicy, nativeSourcePitchRasterPx,
+                    trackerPolicyFallbackReason);
         }
 
         public Input {
@@ -94,6 +130,11 @@ public final class LegacyManagedProfileSampler {
             Objects.requireNonNull(inferenceParameters, "inferenceParameters");
             Objects.requireNonNull(validationParameters, "validationParameters");
             Objects.requireNonNull(intensityMode, "intensityMode");
+            Objects.requireNonNull(trackerPolicy, "trackerPolicy");
+            nativeSourcePitchRasterPx = nativeSourcePitchRasterPx == null ? OptionalDouble.empty() : nativeSourcePitchRasterPx;
+            trackerPolicyFallbackReason = LegacyVisibleProfileSampler.validateTrackerChoice(
+                    trackerPolicy, nativeSourcePitchRasterPx,
+                    trackerPolicyFallbackReason, factualNativePitch(mosaics, selectedPalette, inferenceZoom));
             if (!validZoom(requestedInferenceZoom) || !validZoom(requestedValidationZoom)
                     || !validZoom(inferenceZoom) || !validZoom(validationZoom)
                     || tileSize <= 0 || mosaics == null || mosaics.isEmpty()
@@ -142,6 +183,15 @@ public final class LegacyManagedProfileSampler {
                     throw new IllegalArgumentException("Frozen mosaic dimensions must be positive");
                 }
             }
+        }
+
+        private static OptionalDouble factualNativePitch(Map<String, Mosaic> mosaics,
+                String selectedPalette, int inferenceZoom) {
+            if (mosaics == null || selectedPalette == null) return OptionalDouble.empty();
+            Mosaic reference = mosaics.get(selectedPalette + "@" + inferenceZoom);
+            if (reference == null || !Double.isFinite(reference.virtualRasterScale())
+                    || reference.virtualRasterScale() <= 0.0) return OptionalDouble.empty();
+            return OptionalDouble.of(reference.virtualRasterScale());
         }
     }
 

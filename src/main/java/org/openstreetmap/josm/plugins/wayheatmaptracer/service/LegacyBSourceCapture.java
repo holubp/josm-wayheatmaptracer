@@ -19,10 +19,60 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.Le
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry.ProjectedPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import java.util.OptionalDouble;
 
 /** Captures only the numerical settings and actual source pixels consumed by sequential Hybrid. */
 public final class LegacyBSourceCapture {
     private LegacyBSourceCapture() { }
+
+    /** Single named live-policy seam; change only after paired-source quality and speed evidence. */
+    public static LegacyTrackerPolicy liveDrasovTrackerPolicy() {
+        return LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1;
+    }
+
+    /** Validated policy selection for a single captured source frame. */
+    public record TrackerSelection(LegacyTrackerPolicy policy, OptionalDouble nativeSourcePitchRasterPx,
+            String fallbackReason) {
+        public TrackerSelection {
+            Objects.requireNonNull(policy);
+            nativeSourcePitchRasterPx = nativeSourcePitchRasterPx == null
+                    ? OptionalDouble.empty() : nativeSourcePitchRasterPx;
+            fallbackReason = fallbackReason == null ? "" : fallbackReason;
+            if (!fallbackReason.isEmpty() && !fallbackReason.equals("native-pitch-unavailable"))
+                throw new IllegalArgumentException("Unknown Legacy tracker fallback reason");
+            if (policy.requiresNativePitch() && (nativeSourcePitchRasterPx.isEmpty()
+                    || !Double.isFinite(nativeSourcePitchRasterPx.getAsDouble())
+                    || nativeSourcePitchRasterPx.getAsDouble() <= 0.0 || !fallbackReason.isEmpty()))
+                throw new IllegalArgumentException("Native Legacy tracker selection requires factual pitch");
+            if (!policy.requiresNativePitch() && !fallbackReason.isEmpty()
+                    && (policy != LegacyTrackerPolicy.ORIGINAL_V02 || nativeSourcePitchRasterPx.isPresent()))
+                throw new IllegalArgumentException("Legacy tracker fallback must select original semantics");
+        }
+    }
+
+    /** Resolves only from a factual captured pitch; a missing pitch never borrows compatibility normalization. */
+    public static TrackerSelection liveTrackerSelection(OptionalDouble factualNativePitch) {
+        if (factualNativePitch == null || factualNativePitch.isEmpty()
+                || !Double.isFinite(factualNativePitch.getAsDouble()) || factualNativePitch.getAsDouble() <= 0.0) {
+            return new TrackerSelection(LegacyTrackerPolicy.ORIGINAL_V02, OptionalDouble.empty(),
+                    "native-pitch-unavailable");
+        }
+        return new TrackerSelection(liveDrasovTrackerPolicy(), factualNativePitch, "");
+    }
+
+    /** Resolves the live policy from the captured visible raster, falling back without inventing pitch. */
+    public static LegacyVisibleProfileSampler.Input withLiveTrackerPolicy(LegacyVisibleProfileSampler.Input input) {
+        Objects.requireNonNull(input);
+        TrackerSelection selection = liveTrackerSelection(input.factualNativeSourcePitchRasterPx());
+        return input.withTrackerPolicy(selection.policy(), selection.nativeSourcePitchRasterPx(), selection.fallbackReason());
+    }
+
+    /** Resolves the live policy from the selected inference detector mosaic, never validation zoom. */
+    public static LegacyManagedProfileSampler.Input withLiveTrackerPolicy(LegacyManagedProfileSampler.Input input) {
+        Objects.requireNonNull(input);
+        TrackerSelection selection = liveTrackerSelection(input.factualNativeSourcePitchRasterPx());
+        return input.withTrackerPolicy(selection.policy(), selection.nativeSourcePitchRasterPx(), selection.fallbackReason());
+    }
 
     /** Exact source coordinates and native Legacy fixed/topology policy, detached on the EDT. */
     public record Geometry(List<ProjectedPoint> originalProjected, List<Occurrence> occurrences,

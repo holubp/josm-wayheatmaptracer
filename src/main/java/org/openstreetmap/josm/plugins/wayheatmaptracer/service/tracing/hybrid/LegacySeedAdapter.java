@@ -12,6 +12,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RidgeTracker;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyTrackerPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry.ProjectedPoint;
 
@@ -29,6 +30,14 @@ public final class LegacySeedAdapter {
     public List<CenterlineCandidate> track(List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
             double sourcePixelSizeRasterPx, CancellationProbe cancellation) {
         return tracker.track(profiles, sourcePixelSizeRasterPx, cancellation);
+    }
+
+    /** Tracks with separate compatibility normalization and factual source-pixel pitch. */
+    public List<CenterlineCandidate> track(List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+            double trackerNormalizationRasterPx, double nativeSourcePitchRasterPx,
+            CancellationProbe cancellation, LegacyTrackerPolicy policy) {
+        return tracker.track(profiles, trackerNormalizationRasterPx, nativeSourcePitchRasterPx,
+                cancellation, policy);
     }
 
     /**

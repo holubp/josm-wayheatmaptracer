@@ -1644,7 +1644,8 @@ public final class LiveBPreviewService {
         try {
             if (captured.raster() != null) {
                 cancellation.checkpoint();
-                var original = LegacyBSourceCapture.visible(legacy.sampling(), captured.raster(), geometry.originalProjected(), detector);
+                var original = LegacyBSourceCapture.withLiveTrackerPolicy(LegacyBSourceCapture.visible(
+                        legacy.sampling(), captured.raster(), geometry.originalProjected(), detector));
                 long scratchBytes = Math.addExact(LegacyBProductionRunner.normalPolicyWorkingBytes(geometry.originalProjected().size()),
                         Math.multiplyExact(128L, original.detectors().size()));
                 var normal = retainLegacyNormalMetadata(owner,
@@ -1656,15 +1657,20 @@ public final class LiveBPreviewService {
                 PluginLog.verbose("Hybrid Legacy sampling normals: policy=%s fallback=%s boundaries=%d.",
                         visible.normalPolicy().id(), visible.normalPolicyFallbackReason().isEmpty() ? "none"
                             : visible.normalPolicyFallbackReason(), visible.fixedSourceIndices().size());
+                PluginLog.verbose("Hybrid Legacy tracker: policy=%s nativePitchRasterPx=%s fallback=%s.",
+                        visible.trackerPolicy().id(), visible.nativeSourcePitchRasterPx().isPresent()
+                                ? Double.toString(visible.nativeSourcePitchRasterPx().getAsDouble()) : "unavailable",
+                        visible.trackerPolicyFallbackReason().isEmpty() ? "none" : visible.trackerPolicyFallbackReason());
                 discovered = runner.discoverVisible(input, visible, cancellation, owner, deadline);
             } else {
                 if (captured.sourceRasters() == null) {
                     throw new IllegalArgumentException("Sequential Hybrid requires its acquired managed source rasters");
                 }
                 cancellation.checkpoint();
-                var original = managedCapture != null ? managedCapture.input(detector)
+                var original = LegacyBSourceCapture.withLiveTrackerPolicy(managedCapture != null
+                        ? managedCapture.input(detector)
                         : LegacyBSourceCapture.managed(legacy.sampling(), captured.sourceRasters(),
-                            geometry.originalProjected(), captured.projectionCode(), detector);
+                            geometry.originalProjected(), captured.projectionCode(), detector));
                 long scratchBytes = Math.addExact(LegacyBProductionRunner.normalPolicyWorkingBytes(geometry.originalProjected().size()),
                         Math.multiplyExact(128L, Math.addExact((long) original.mosaics().size(), original.detectors().size())));
                 var normal = retainLegacyNormalMetadata(owner,
@@ -1676,6 +1682,10 @@ public final class LiveBPreviewService {
                 PluginLog.verbose("Hybrid Legacy sampling normals: policy=%s fallback=%s boundaries=%d.",
                         managed.normalPolicy().id(), managed.normalPolicyFallbackReason().isEmpty() ? "none"
                             : managed.normalPolicyFallbackReason(), managed.fixedSourceIndices().size());
+                PluginLog.verbose("Hybrid Legacy tracker: policy=%s nativePitchRasterPx=%s fallback=%s.",
+                        managed.trackerPolicy().id(), managed.nativeSourcePitchRasterPx().isPresent()
+                                ? Double.toString(managed.nativeSourcePitchRasterPx().getAsDouble()) : "unavailable",
+                        managed.trackerPolicyFallbackReason().isEmpty() ? "none" : managed.trackerPolicyFallbackReason());
                 discovered = runner.discoverManaged(input, managed, cancellation, owner, deadline);
             }
             return new LegacyBDiscoveredChoice(evidence,options,input,visible,managed,discovered,ModernDiagnosticCounters.snapshot());

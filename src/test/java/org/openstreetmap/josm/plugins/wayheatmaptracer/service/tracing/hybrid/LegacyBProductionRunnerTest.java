@@ -19,6 +19,52 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.Le
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
 
 class LegacyBProductionRunnerTest {
+    @Test void visibleProductionDiscoveryUsesTheFrozenTrackerPolicyAndSeparatePitch() {
+        var fixture = fixture(false, false, Double.POSITIVE_INFINITY, true, 10, false, true);
+        var selectedPolicy = LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1;
+        var selected = fixture.visible().withTrackerPolicy(selectedPolicy,
+                fixture.visible().factualNativeSourcePitchRasterPx(), "");
+        var profiles = new LegacyVisibleProfileSampler().sample(selected, CancellationProbe.NONE).get(0).profiles();
+        var expected = new LegacySeedAdapter().track(profiles, selected.options().trackerNormalizationRasterPx(),
+                selected.nativeSourcePitchRasterPx().orElseThrow(), CancellationProbe.NONE, selected.trackerPolicy());
+        var historical = new LegacySeedAdapter().track(profiles, selected.options().trackerNormalizationRasterPx(),
+                Double.NaN, CancellationProbe.NONE, LegacyTrackerPolicy.ORIGINAL_V02);
+        assertNotEquals(historical.stream().map(candidate -> candidate.evidence()).toList(),
+                expected.stream().map(candidate -> candidate.evidence()).toList(),
+                "Fixture must distinguish the selected policy from historical tracking");
+        var runner = new LegacyBProductionRunner();
+        try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+            var discovered = runner.discoverVisible(fixture.input(), selected, CancellationProbe.NONE,
+                    owner, LegacyBPipeline.Deadline.production());
+            assertEquals(expected.stream().map(candidate -> candidate.offsetsPx()).toList(),
+                    discovered.value().alternatives().stream().map(LegacyBProductionRunner.LegacyAlternative::offsetsPx).toList());
+            assertEquals(expected.stream().map(candidate -> candidate.evidence()).toList(),
+                    discovered.value().alternatives().stream().map(LegacyBProductionRunner.LegacyAlternative::evidence).toList());
+        }
+    }
+
+    @Test void nativePolicyScratchIsReservedBeforeTrackingAndReleasedWhenTheCapRejectsIt() {
+        var fixture = fixture(false, false);
+        long sampled = 4L * 4 * 6 / 1 + 4;
+        long historicalReservation = 12L * 720 * 240 + 3L * sampled * 4096;
+        var ledger = new AttemptMemoryLedger(historicalReservation + 2048);
+        var runner = new LegacyBProductionRunner();
+        try (var owner = ledger.rootOwner()) {
+            var historical = fixture.visible().withTrackerPolicy(LegacyTrackerPolicy.ORIGINAL_V02,
+                    fixture.visible().factualNativeSourcePitchRasterPx(), "");
+            var actual = runner.discoverVisible(fixture.input(), historical, CancellationProbe.NONE,
+                    owner, LegacyBPipeline.Deadline.production());
+            actual.owner().close();
+            assertEquals(0, ledger.currentBytes());
+
+            var nativePolicy = fixture.visible().withTrackerPolicy(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1,
+                    fixture.visible().factualNativeSourcePitchRasterPx(), "");
+            assertThrows(AttemptMemoryLedger.ResourceLimitException.class, () -> runner.discoverVisible(
+                    fixture.input(), nativePolicy, CancellationProbe.NONE, owner, LegacyBPipeline.Deadline.production()));
+            assertEquals(0, ledger.currentBytes(), "Rejected pre-tracking admission must release owner reservations");
+        }
+    }
+
     static Fixture coincidentProtectedFixture() {
         return fixture(false,false,Double.POSITIVE_INFINITY,true,10,true);
     }
@@ -450,12 +496,18 @@ class LegacyBProductionRunnerTest {
 
     private static Fixture fixture(boolean fixedMiddle, boolean crossing, double authorizedHalfWidth, boolean signal,
             double contextExtent, boolean coincidentProtected) {
+        return fixture(fixedMiddle, crossing, authorizedHalfWidth, signal, contextExtent, coincidentProtected, false);
+    }
+
+    private static Fixture fixture(boolean fixedMiddle, boolean crossing, double authorizedHalfWidth, boolean signal,
+            double contextExtent, boolean coincidentProtected, boolean trackerPolicyDiscriminator) {
         var projection = Projections.getProjectionByCode("EPSG:3857");
         var frame = LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0, 0),
                 new GeographicPoint(-.01, -.01), new GeographicPoint(.01, .01));
         var projected = coincidentProtected
                 ? List.of(new ProjectedPoint(0,0),new ProjectedPoint(40,0),new ProjectedPoint(40,0),new ProjectedPoint(80,0))
-                : List.of(new ProjectedPoint(0, 0), new ProjectedPoint(40, 0), new ProjectedPoint(80, 0));
+                : List.of(new ProjectedPoint(0, 0), new ProjectedPoint(40, trackerPolicyDiscriminator ? -1.5 : 0),
+                        new ProjectedPoint(80, 0));
         var keys = coincidentProtected ? List.of(nodeKey(1),nodeKey(2),nodeKey(6),nodeKey(3))
                 : List.of(nodeKey(1), nodeKey(2), nodeKey(3));
         var way = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 10);
@@ -487,7 +539,7 @@ class LegacyBProductionRunnerTest {
             scalar[y * width + x] = value / 255.0;
         }
         var raster = new LiveBPreviewService.VisibleRaster(width, height, pixels, -20, -20, 100, 20,
-                1, 1, OptionalDouble.of(1), "synthetic-runner", "EPSG:3857");
+                1, 1, OptionalDouble.of(trackerPolicyDiscriminator ? 4 : 1), "synthetic-runner", "EPSG:3857");
         var origin = metric(frame, -20, 20);
         var xStep = metric(frame, -20 + 1.0 / 6, 20);
         var yStep = metric(frame, -20, 20 - 1.0 / 6);
@@ -529,9 +581,10 @@ class LegacyBProductionRunnerTest {
                 "EPSG:3857", facts, List.of(), false, 0);
         var anchors = new ArrayList<LegacyVisibleProfileSampler.Anchor>();
         for (int i = 0; i < projected.size(); i++) anchors.add(new LegacyVisibleProfileSampler.Anchor(projected.get(i),
-                new RasterPoint((projected.get(i).east() + 20) * 6, 120), original.get(i).xMeters()));
+                new RasterPoint((projected.get(i).east() + 20) * 6, (20 - projected.get(i).north()) * 6), original.get(i).xMeters()));
         return new Fixture(input, new LegacyVisibleProfileSampler.Input(raster, anchors, List.of("hot"),
-                new LegacyVisibleProfileSampler.Options(4, 1, 6, IntensitySamplingMode.DIRECT_VALUE)));
+                new LegacyVisibleProfileSampler.Options(trackerPolicyDiscriminator ? 8 : 4, 1, 6,
+                        IntensitySamplingMode.DIRECT_VALUE)));
     }
 
     private static PrimitiveKey nodeKey(long id) { return PrimitiveKey.existing(PrimitiveKey.Type.NODE, id); }

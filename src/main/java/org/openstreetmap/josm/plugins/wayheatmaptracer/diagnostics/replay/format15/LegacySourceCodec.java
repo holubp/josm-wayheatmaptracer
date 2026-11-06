@@ -23,6 +23,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMo
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyManagedProfileSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyProfileNormalPolicy;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyTrackerPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyVisibleProfileSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
@@ -49,7 +50,11 @@ public final class LegacySourceCodec {
         try {
             BoundedOutput bytes = new BoundedOutput();
             try (DataOutputStream out = new DataOutputStream(bytes)) {
-                header(out, VISIBLE, input.normalPolicy(), input.normalPolicyFallbackReason());
+                int version = sourceVersion(input.trackerPolicy(), input.trackerPolicyFallbackReason(),
+                        input.normalPolicy(), input.normalPolicyFallbackReason());
+                header(out, VISIBLE, version);
+                trackerPolicy(out, version, input.trackerPolicy(), input.nativeSourcePitchRasterPx(),
+                        input.trackerPolicyFallbackReason());
                 LiveBPreviewService.VisibleRaster raster = input.raster();
                 pixelsBound(raster.width(), raster.height(), 1);
                 out.writeInt(raster.width());
@@ -78,7 +83,7 @@ public final class LegacySourceCodec {
                 out.writeInt(input.options().stepPx());
                 out.writeDouble(input.options().trackerNormalizationRasterPx());
                 enumName(out, input.options().intensityMode());
-                normalPolicy(out, input.normalPolicy(), input.fixedSourceIndices(), input.normalPolicyFallbackReason());
+                normalPolicy(out, version, input.normalPolicy(), input.fixedSourceIndices(), input.normalPolicyFallbackReason());
             }
             return bytes.toByteArray();
         } catch (IOException failure) {
@@ -94,6 +99,7 @@ public final class LegacySourceCodec {
     /** Reserves raster payload against a containing frozen-input budget before pixel allocation. */
     static LegacyVisibleProfileSampler.Input decodeVisible(byte[] bytes, java.util.function.LongConsumer reserve) {
         try (DataInputStream in = input(bytes, VISIBLE)) {
+            var tracker = trackerPolicy(in, bytes);
             int width = in.readInt();
             int height = in.readInt();
             pixelsBound(width, height, 1);
@@ -128,9 +134,12 @@ public final class LegacySourceCodec {
             var raster = new LiveBPreviewService.VisibleRaster(width, height, argb,
                     minEast, minNorth, maxEast, maxNorth, projectionUnits, groundMeters,
                     nativePitch, sourceIdentity, projectionCode);
-            return new LegacyVisibleProfileSampler.Input(raster, anchors, detectors,
-                    new LegacyVisibleProfileSampler.Options(halfWidth, step, normalization, intensity),
-                    normal.policy(), normal.fixed(), normal.fallback());
+            var options = new LegacyVisibleProfileSampler.Options(halfWidth, step, normalization, intensity);
+            return ByteBuffer.wrap(bytes).getInt(4) < 3
+                    ? new LegacyVisibleProfileSampler.Input(raster, anchors, detectors, options,
+                            normal.policy(), normal.fixed(), normal.fallback())
+                    : new LegacyVisibleProfileSampler.Input(raster, anchors, detectors, options,
+                            normal.policy(), normal.fixed(), normal.fallback(), tracker.policy(), tracker.pitch(), tracker.fallback());
         } catch (IOException | RuntimeException failure) {
             if (failure instanceof IllegalArgumentException argument) throw argument;
             throw malformed("Malformed frozen Legacy visible source", failure);
@@ -143,7 +152,11 @@ public final class LegacySourceCodec {
         try {
             BoundedOutput bytes = new BoundedOutput();
             try (DataOutputStream out = new DataOutputStream(bytes)) {
-                header(out, MANAGED, input.normalPolicy(), input.normalPolicyFallbackReason());
+                int version = sourceVersion(input.trackerPolicy(), input.trackerPolicyFallbackReason(),
+                        input.normalPolicy(), input.normalPolicyFallbackReason());
+                header(out, MANAGED, version);
+                trackerPolicy(out, version, input.trackerPolicy(), input.nativeSourcePitchRasterPx(),
+                        input.trackerPolicyFallbackReason());
                 enumName(out, input.inferenceMode());
                 out.writeInt(input.requestedInferenceZoom());
                 out.writeInt(input.requestedValidationZoom());
@@ -181,7 +194,7 @@ public final class LegacySourceCodec {
                 strings(out, input.detectors(), MAX_DETECTORS, true);
                 enumName(out, input.intensityMode());
                 out.writeDouble(input.trackerNormalizationRasterPx());
-                normalPolicy(out, input.normalPolicy(), input.fixedSourceIndices(), input.normalPolicyFallbackReason());
+                normalPolicy(out, version, input.normalPolicy(), input.fixedSourceIndices(), input.normalPolicyFallbackReason());
             }
             return bytes.toByteArray();
         } catch (IOException failure) {
@@ -197,6 +210,7 @@ public final class LegacySourceCodec {
     /** Shares the containing frozen-input budget across every decoded native mosaic. */
     static LegacyManagedProfileSampler.Input decodeManaged(byte[] bytes, java.util.function.LongConsumer reserve) {
         try (DataInputStream in = input(bytes, MANAGED)) {
+            var tracker = trackerPolicy(in, bytes);
             InferenceMode mode = enumValue(in, InferenceMode.class);
             int requestedInference = in.readInt();
             int requestedValidation = in.readInt();
@@ -244,10 +258,15 @@ public final class LegacySourceCodec {
             double normalization = positive(in.readDouble());
             var normal = normalPolicy(in, bytes, sourceCount, reserve);
             requireEnd(in);
-            return new LegacyManagedProfileSampler.Input(mode, requestedInference, requestedValidation,
-                    inferenceZoom, validationZoom, tileSize, mosaics, inference, validation, source,
-                    projectionCode, selectedPalette, detectors, intensity, normalization,
-                    normal.policy(), normal.fixed(), normal.fallback());
+            return ByteBuffer.wrap(bytes).getInt(4) < 3
+                    ? new LegacyManagedProfileSampler.Input(mode, requestedInference, requestedValidation,
+                            inferenceZoom, validationZoom, tileSize, mosaics, inference, validation, source,
+                            projectionCode, selectedPalette, detectors, intensity, normalization,
+                            normal.policy(), normal.fixed(), normal.fallback())
+                    : new LegacyManagedProfileSampler.Input(mode, requestedInference, requestedValidation,
+                            inferenceZoom, validationZoom, tileSize, mosaics, inference, validation, source,
+                            projectionCode, selectedPalette, detectors, intensity, normalization,
+                            normal.policy(), normal.fixed(), normal.fallback(), tracker.policy(), tracker.pitch(), tracker.fallback());
         } catch (IOException | RuntimeException failure) {
             if (failure instanceof IllegalArgumentException argument) throw argument;
             throw malformed("Malformed frozen Legacy managed source", failure);
@@ -261,23 +280,65 @@ public final class LegacySourceCodec {
         var in = new DataInputStream(new ByteArrayInputStream(bytes));
         int magic = in.readInt();
         int version = in.readInt();
-        if (magic != MAGIC || version != VERSION && version != 2 || in.readInt() != type) {
+        if (magic != MAGIC || version < VERSION || version > 3 || in.readInt() != type) {
             throw malformed("Unsupported frozen Legacy source codec header");
         }
         return in;
     }
 
-    private static void header(DataOutputStream out, int type, LegacyProfileNormalPolicy policy, String fallback) throws IOException {
+    private static int sourceVersion(LegacyTrackerPolicy trackerPolicy, String trackerFallback,
+            LegacyProfileNormalPolicy normalPolicy, String fallback) {
+        if (trackerPolicy != LegacyTrackerPolicy.ORIGINAL_V02 || !trackerFallback.isEmpty()) return 3;
+        return normalPolicy == LegacyProfileNormalPolicy.IMMEDIATE_V1 && fallback.isEmpty() ? VERSION : 2;
+    }
+
+    private static void header(DataOutputStream out, int type, int version) throws IOException {
         out.writeInt(MAGIC);
-        out.writeInt(policy == LegacyProfileNormalPolicy.IMMEDIATE_V1 && fallback.isEmpty() ? VERSION : 2);
+        out.writeInt(version);
         out.writeInt(type);
     }
 
+    private static void trackerPolicy(DataOutputStream out, int version, LegacyTrackerPolicy policy,
+            OptionalDouble nativePitch, String fallback) throws IOException {
+        if (version < 3) return;
+        nativePitch = nativePitch == null ? OptionalDouble.empty() : nativePitch;
+        fallback = fallback == null ? "" : fallback;
+        boolean validFallback = fallback.isEmpty() || fallback.equals("native-pitch-unavailable");
+        boolean original = policy == LegacyTrackerPolicy.ORIGINAL_V02;
+        if (policy.isParked() || !validFallback || original && (fallback.isEmpty() == nativePitch.isEmpty())
+                || !original && (fallback.length() > 0 || nativePitch.isEmpty())
+                || nativePitch.isPresent() && (!Double.isFinite(nativePitch.getAsDouble()) || nativePitch.getAsDouble() <= 0.0)) {
+            throw malformed("Explicit Legacy tracker policy metadata is inconsistent");
+        }
+        safeString(out, policy.id());
+        out.writeBoolean(nativePitch.isPresent());
+        if (nativePitch.isPresent()) out.writeDouble(nativePitch.getAsDouble());
+        out.writeBoolean(!fallback.isEmpty());
+        if (!fallback.isEmpty()) safeString(out, fallback);
+    }
+
+    private static TrackerPolicy trackerPolicy(DataInputStream in, byte[] bytes) throws IOException {
+        int version = ByteBuffer.wrap(bytes).getInt(4);
+        if (version < 3) return new TrackerPolicy(LegacyTrackerPolicy.ORIGINAL_V02, OptionalDouble.empty(), "");
+        var policy = LegacyTrackerPolicy.fromId(safeString(in, 96));
+        OptionalDouble pitch = in.readBoolean() ? OptionalDouble.of(positive(in.readDouble())) : OptionalDouble.empty();
+        String fallback = in.readBoolean() ? safeString(in, 96) : "";
+        boolean validFallback = fallback.isEmpty() || fallback.equals("native-pitch-unavailable");
+        boolean original = policy == LegacyTrackerPolicy.ORIGINAL_V02;
+        if (policy.isParked() || !validFallback || original && (fallback.isEmpty() == pitch.isEmpty())
+                || !original && (fallback.length() > 0 || pitch.isEmpty())) {
+            throw malformed("Frozen Legacy tracker policy metadata is inconsistent");
+        }
+        return new TrackerPolicy(policy, pitch, fallback);
+    }
+
+    private record TrackerPolicy(LegacyTrackerPolicy policy, OptionalDouble pitch, String fallback) { }
+
     private record NormalPolicy(LegacyProfileNormalPolicy policy, List<Integer> fixed, String fallback) { }
 
-    private static void normalPolicy(DataOutputStream out, LegacyProfileNormalPolicy policy,
+    private static void normalPolicy(DataOutputStream out, int version, LegacyProfileNormalPolicy policy,
             List<Integer> fixed, String fallback) throws IOException {
-        if (policy == LegacyProfileNormalPolicy.IMMEDIATE_V1 && fallback.isEmpty()) return;
+        if (version < 3 && policy == LegacyProfileNormalPolicy.IMMEDIATE_V1 && fallback.isEmpty()) return;
         safeString(out, policy.id());
         count(out, fixed.size(), MAX_ANCHORS);
         for (int index : fixed) out.writeInt(index);
@@ -287,7 +348,8 @@ public final class LegacySourceCodec {
 
     private static NormalPolicy normalPolicy(DataInputStream in, byte[] bytes, int sourceCount,
             java.util.function.LongConsumer reserve) throws IOException {
-        if (ByteBuffer.wrap(bytes).getInt(4) == VERSION) {
+        int version = ByteBuffer.wrap(bytes).getInt(4);
+        if (version == VERSION) {
             return new NormalPolicy(LegacyProfileNormalPolicy.IMMEDIATE_V1, List.of(), "");
         }
         reserve.accept(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid
@@ -297,9 +359,11 @@ public final class LegacySourceCodec {
         var fixed = new ArrayList<Integer>(size);
         for (int i = 0; i < size; i++) fixed.add(in.readInt());
         String fallback = in.readBoolean() ? safeString(in, 96) : "";
-        if (policy == LegacyProfileNormalPolicy.IMMEDIATE_V1 && fallback.isEmpty()) {
+        if (version == 2 && policy == LegacyProfileNormalPolicy.IMMEDIATE_V1 && fallback.isEmpty()) {
             throw malformed("Noncanonical explicit immediate normal policy");
         }
+        if (version == 3 && policy == LegacyProfileNormalPolicy.IMMEDIATE_V1
+                && (!fixed.isEmpty() || !fallback.isEmpty())) throw malformed("Noncanonical V3 immediate normal policy");
         return new NormalPolicy(policy, fixed, fallback);
     }
 

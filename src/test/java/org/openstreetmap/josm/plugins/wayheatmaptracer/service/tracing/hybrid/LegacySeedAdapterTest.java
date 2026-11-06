@@ -13,9 +13,12 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry.ProjectedPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RidgeTracker;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyTrackerPolicy;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 class LegacySeedAdapterTest {
     @Test void finalSeedUsesNativeFinishAndRebasesExactProtectedOccurrences() {
@@ -96,6 +99,21 @@ class LegacySeedAdapterTest {
             assertEquals(original.get(i).score(), result.get(i).score());
             assertEquals(original.get(i).screenPoints(), result.get(i).screenPoints());
         }
+    }
+
+    @Test void explicitPolicyAdapterKeepsCompatibilityNormalizationSeparateFromNativePitch() {
+        var profiles = IntStream.range(0, 9).mapToObj(i ->
+                new RenderedHeatmapSampler.CrossSectionProfile(new EastNorth(i * 10, 0),
+                        new Point2D.Double(i * 10, 0), new Point2D.Double(0, 1),
+                        List.of(new RenderedHeatmapSampler.CrossSectionPeak(i * 24.0, .48, 24, false))))
+                .toList();
+        var policy = LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_V1;
+        var expected = new RidgeTracker().track(profiles, 6.0, 24.0, CancellationProbe.NONE, policy);
+        var actual = new LegacySeedAdapter().track(profiles, 6.0, 24.0, CancellationProbe.NONE, policy);
+        assertEquals(expected.stream().map(CenterlineCandidate::offsetsPx).toList(),
+                actual.stream().map(CenterlineCandidate::offsetsPx).toList());
+        assertEquals(expected.stream().map(CenterlineCandidate::score).toList(),
+                actual.stream().map(CenterlineCandidate::score).toList());
     }
 
     @Test void absentLegacyProfilesYieldNoInventedSeed() {

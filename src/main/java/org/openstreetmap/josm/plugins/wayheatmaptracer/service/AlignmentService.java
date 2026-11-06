@@ -1059,7 +1059,7 @@ public final class AlignmentService {
         TrackerMode trackerMode = config.trackerMode();
         PluginLog.verbose("Tracking %d profiles with %s.", profiles.size(), trackerMode.name());
         return switch (trackerMode) {
-            case LEGACY_V02 -> legacyTrackerOutput(profiles, effectiveSampling.trackerNormalizationRasterPx());
+            case LEGACY_V02 -> legacyTrackerOutput(profiles, effectiveSampling);
             case CORRIDOR_AWARE -> corridorTrackerOutput(detector, profiles,
                 corridorAwareTracker.trackDetailed(profiles, effectiveSampling.trackerNormalizationRasterPx(),
                     junctionContext(selection, profiles.size(), config, effectiveSampling), detector,
@@ -1071,10 +1071,19 @@ public final class AlignmentService {
 
     private TrackerOutput legacyTrackerOutput(
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
-        double sourcePixelSizeRasterPx
+        EffectiveSampling effectiveSampling
     ) {
         long start = System.nanoTime();
-        List<CenterlineCandidate> candidates = ridgeTracker.track(profiles, sourcePixelSizeRasterPx);
+        var selection = LegacyBSourceCapture.liveTrackerSelection(
+            effectiveSampling.samplingScale().nativeSourcePixelSizeRasterPx());
+        if (!selection.fallbackReason().isEmpty()) {
+            PluginLog.verbose("Legacy tracker policy fallback=%s; using %s.",
+                selection.fallbackReason(), selection.policy().id());
+        }
+        List<CenterlineCandidate> candidates = ridgeTracker.track(profiles,
+            effectiveSampling.trackerNormalizationRasterPx(),
+            selection.nativeSourcePitchRasterPx().orElse(Double.NaN), CancellationProbe.NONE,
+            selection.policy());
         long trackingNanos = System.nanoTime() - start;
         DetectorPerformance performance = new DetectorPerformance(0L, 0L, 0L, trackingNanos,
             0L, 0L, 0L, 0L, profiles.size(), 0, 0, candidates.size(), 0, 0L, 0L, 0L, 0);
