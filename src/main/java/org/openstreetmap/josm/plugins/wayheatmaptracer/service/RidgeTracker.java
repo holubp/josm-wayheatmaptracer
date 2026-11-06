@@ -82,7 +82,7 @@ public final class RidgeTracker {
             ? trackerNormalizationRasterPx : 1.0;
         ContinuitySupportPolicy continuity = new ContinuitySupportPolicy(
             policy, sourcePixel, nativeSourcePitchRasterPx);
-        profiles = cancellableProfiles(suppressLongitudinalNoise(profiles, continuity), cancellation);
+        profiles = cancellableProfiles(suppressLongitudinalNoise(profiles, continuity, cancellation), cancellation);
 
         List<Double> seeds = collectSeedOffsets(profiles);
         List<CenterlineCandidate> candidates = new ArrayList<>();
@@ -144,6 +144,14 @@ public final class RidgeTracker {
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
         ContinuitySupportPolicy continuity
     ) {
+        return suppressLongitudinalNoise(profiles, continuity, CancellationProbe.NONE);
+    }
+
+    private List<RenderedHeatmapSampler.CrossSectionProfile> suppressLongitudinalNoise(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        ContinuitySupportPolicy continuity,
+        CancellationProbe cancellation
+    ) {
         if (profiles.size() < 4) {
             return profiles;
         }
@@ -188,7 +196,90 @@ public final class RidgeTracker {
                 profile.projectedLateralTransform()
             ));
         }
+        if (continuity.policy().correctsSyntheticPositions()) {
+            rejectDominatedSyntheticCenters(filtered, continuity, cancellation);
+        }
         return filtered;
+    }
+
+    private void rejectDominatedSyntheticCenters(List<RenderedHeatmapSampler.CrossSectionProfile> ordinary,
+            ContinuitySupportPolicy continuity, CancellationProbe cancellation) {
+        RenderedHeatmapSampler.CrossSectionPeak[] owners = null;
+        // All coherence decisions use the complete ordinary retained stage.
+        // Store borrowed owners only: no duplicated profile/peak bank, and no
+        // later deletion may change another row's owner eligibility.
+        for (int i = 0; i < ordinary.size(); i++) {
+            cancellation.checkpoint();
+            var profile = ordinary.get(i);
+            if (!profile.anchorWithinRaster()) { continue; }
+            var peaks = profile.peaks();
+            boolean synthetic = false;
+            for (int j = 0; j < peaks.size(); j++) {
+                cancellation.checkpoint();
+                if (peaks.get(j).syntheticCenter()) { synthetic = true; break; }
+            }
+            if (!synthetic) { continue; }
+            if (owners == null) { owners = new RenderedHeatmapSampler.CrossSectionPeak[ordinary.size()]; }
+            for (int j = 0; j < peaks.size(); j++) {
+                cancellation.checkpoint();
+                var peak = peaks.get(j);
+                if (!peak.syntheticCenter() && Double.isFinite(peak.intensity())
+                        && scalarSupportAt(profile, peak.offsetPx()) != null
+                        && longitudinalSupport(ordinary, i, peak, continuity) >= 2
+                        && (owners[i] == null || peak.intensity() > owners[i].intensity())) {
+                    owners[i] = peak;
+                }
+            }
+        }
+        if (owners == null) { return; }
+        for (int i = 0; i < ordinary.size(); i++) {
+            cancellation.checkpoint();
+            if (owners[i] == null) { continue; }
+            var profile = ordinary.get(i);
+            var observed = scalarSupportAt(profile, owners[i].offsetPx());
+            if (observed == null) { continue; }
+            var peaks = profile.peaks();
+            List<RenderedHeatmapSampler.CrossSectionPeak> retained = null;
+            for (int j = 0; j < peaks.size(); j++) {
+                cancellation.checkpoint();
+                var peak = peaks.get(j);
+                var center = peak.syntheticCenter() ? scalarSupportAt(profile, peak.offsetPx()) : null;
+                boolean reject = center != null && rawPositionCanBeRejected(profile, peak.offsetPx(), center)
+                    && observed.raw() > center.raw() && observed.b3() > center.b3() && observed.b5() > center.b5();
+                if (reject && retained == null) { retained = new ArrayList<>(peaks.subList(0, j)); }
+                if (!reject && retained != null) { retained.add(peak); }
+            }
+            if (retained != null) {
+                // At least the ordinary retained observed owner remains.
+                ordinary.set(i, new RenderedHeatmapSampler.CrossSectionProfile(profile.samplingAnchor(),
+                    profile.normalScreen(), retained, profile.anchorWithinRaster(), profile.intensitySamples(),
+                    profile.projectedLateralTransform()));
+            }
+        }
+    }
+
+    private boolean rawPositionCanBeRejected(RenderedHeatmapSampler.CrossSectionProfile profile,
+            double offset, ScalarSupport center) {
+        var samples = profile.intensitySamples();
+        int low = 0, high = samples.size() - 1;
+        if (!(offset > samples.get(low).offsetPx() && offset < samples.get(high).offsetPx())) { return false; }
+        while (low + 1 < high) {
+            int middle = low + (high - low) / 2;
+            double value = samples.get(middle).offsetPx();
+            if (!Double.isFinite(value)) { return false; }
+            if (value < offset) { low = middle; } else { high = middle; }
+        }
+        if (samples.get(high).offsetPx() == offset) { low = high - 1; high++; }
+        if (low < 0 || high >= samples.size()) { return false; }
+        var left = samples.get(low); var right = samples.get(high);
+        if (!left.insideRaster() || !right.insideRaster()
+                || !(left.offsetPx() < offset && right.offsetPx() > offset)
+                || !Double.isFinite(left.offsetPx()) || !Double.isFinite(right.offsetPx())) { return false; }
+        var a = new ScalarSupport(left.nativeIntensity(), left.lightFilteredIntensity(), left.standardFilteredIntensity());
+        var b = new ScalarSupport(right.nativeIntensity(), right.lightFilteredIntensity(), right.standardFilteredIntensity());
+        // Arbitrarily faint positive maxima/flat cores are positional evidence.
+        // An exactly zero raw plateau is no measured signal, not a protected core.
+        return a.valid() && b.valid() && (center.raw() == 0.0 || a.raw() > center.raw() || b.raw() > center.raw());
     }
 
     private int requiredLongitudinalSupport(int profileCount, int profileIndex) {
@@ -867,6 +958,10 @@ public final class RidgeTracker {
             Math.min(leftHistorical + leftBound, leftIntersection.offset()));
         Double proposedRight = Math.max(rightHistorical - rightBound,
             Math.min(rightHistorical + rightBound, rightIntersection.offset()));
+        if (continuity.policy().correctsSyntheticPositions()) {
+            proposedLeft = canonicalOffsetForPoint(leftProfile, oldLeft, proposedLeft);
+            proposedRight = canonicalOffsetForPoint(rightProfile, oldRight, proposedRight);
+        }
         if (!Double.isFinite(proposedLeft) || !Double.isFinite(proposedRight)
                 || (proposedLeft.doubleValue() == oldLeft && proposedRight.doubleValue() == oldRight)
                 || !pairedScalarEvidence(leftProfile, leftPeak, oldLeft, proposedLeft, pitch)
@@ -892,6 +987,13 @@ public final class RidgeTracker {
                 completedOffsets.set(index + 1, oldRight);
             }
         }
+    }
+
+    private Double canonicalOffsetForPoint(RenderedHeatmapSampler.CrossSectionProfile profile,
+            Double current, Double proposed) {
+        var a = centerlinePoint(profile, current);
+        var b = centerlinePoint(profile, proposed);
+        return Double.isFinite(a.x) && Double.isFinite(a.y) && a.x == b.x && a.y == b.y ? current : proposed;
     }
 
     private RenderedHeatmapSampler.CrossSectionPeak pairedPeak(

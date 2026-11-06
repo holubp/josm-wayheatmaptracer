@@ -163,32 +163,36 @@ class LegacyPairedChordTest {
     record Fixture(List<RenderedHeatmapSampler.CrossSectionProfile> profiles,List<Double> baseline,List<Double> selected) { }
 
     static Fixture fixture(double pitch) throws Exception {
+        return fixture("legacy-paired-nw",6,pitch);
+    }
+
+    static Fixture fixture(String directory,int count,double pitch) throws Exception {
         var samples=new ArrayList<List<RenderedHeatmapSampler.IntensitySample>>();
         var peaks=new ArrayList<List<RenderedHeatmapSampler.CrossSectionPeak>>();
-        var anchors=new Point2D.Double[6];var normals=new Point2D.Double[6];var baseline=new Double[6];
-        for(int i=0;i<6;i++){samples.add(new ArrayList<>());peaks.add(new ArrayList<>());}
-        for(String[] row:resource("profiles.csv")) {
+        var anchors=new Point2D.Double[count];var normals=new Point2D.Double[count];var baseline=new Double[count];
+        for(int i=0;i<count;i++){samples.add(new ArrayList<>());peaks.add(new ArrayList<>());}
+        for(String[] row:resource(directory,"profiles.csv")) {
             int i=Integer.parseInt(row[0]);anchors[i]=new Point2D.Double(Double.parseDouble(row[1])*pitch,Double.parseDouble(row[2])*pitch);
             normals[i]=new Point2D.Double(Double.parseDouble(row[3]),Double.parseDouble(row[4]));baseline[i]=Double.parseDouble(row[5])*pitch;
             samples.get(i).add(new RenderedHeatmapSampler.IntensitySample(Double.parseDouble(row[6])*pitch,
                     Double.parseDouble(row[7]),Double.parseDouble(row[8]),Double.parseDouble(row[9]),Boolean.parseBoolean(row[10])));
         }
-        for(String[] row:resource("peaks.csv")) {
+        for(String[] row:resource(directory,"peaks.csv")) {
             double[] v=new double[16];for(int j=0;j<16;j++)if(j!=3)v[j]=Double.parseDouble(row[j+1]);
             for(int j:new int[]{0,2,10,11,12,13,15})v[j]*=pitch;
             peaks.get(Integer.parseInt(row[0])).add(new RenderedHeatmapSampler.CrossSectionPeak(v[0],v[1],v[2],Boolean.parseBoolean(row[4]),
                     v[4],v[5],v[6],v[7],v[8],v[9],v[10],v[11],v[12],v[13],v[14],v[15]));
         }
         var profiles=new ArrayList<RenderedHeatmapSampler.CrossSectionProfile>();var selected=new ArrayList<Double>();
-        for(int i=0;i<6;i++) {
+        for(int i=0;i<count;i++) {
             profiles.add(new RenderedHeatmapSampler.CrossSectionProfile(new EastNorth(anchors[i].x,anchors[i].y),anchors[i],normals[i],peaks.get(i),true,samples.get(i)));
             selected.add(peaks.get(i).get(0).offsetPx());
         }
         return new Fixture(List.copyOf(profiles),List.of(baseline),List.copyOf(selected));
     }
 
-    private static List<String[]> resource(String name) throws Exception {
-        try(var stream=LegacyPairedChordTest.class.getResourceAsStream("/legacy-paired-nw/"+name)) {
+    private static List<String[]> resource(String directory,String name) throws Exception {
+        try(var stream=LegacyPairedChordTest.class.getResourceAsStream("/"+directory+"/"+name)) {
             assertNotNull(stream);
             try(var reader=new BufferedReader(new InputStreamReader(stream,StandardCharsets.UTF_8))) {
                 return reader.lines().skip(1).map(line->line.split(",")).toList();

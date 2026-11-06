@@ -17,7 +17,7 @@ class LegacyTrackerPolicyTest {
     static final LegacyTrackerPolicy COMBINED = LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_GEOMETRY_V1;
 
     @Test void onlyIndependentlyScopedPoliciesAreSelectable() {
-        assertEquals(7, LegacyTrackerPolicy.values().length);
+        assertEquals(8, LegacyTrackerPolicy.values().length);
         for (var p : LegacyTrackerPolicy.values()) {
             if (p.isParked()) {
                 assertThrows(IllegalArgumentException.class, () -> LegacyTrackerPolicy.fromId(p.id()));
@@ -150,7 +150,7 @@ class LegacyTrackerPolicyTest {
         for (double norm : List.of(6.0, 24.0)) for (double separation : List.of(1.0, 1.5)) for (int duration : List.of(1, 2, 3)) {
             var profiles = temporaryCloseStrand(24, separation, duration);
             double baseline = excursion(track(profiles, norm, 24, LegacyTrackerPolicy.ORIGINAL_V02));
-            for(var policy:List.of(SUPPORT,COMBINED,LegacyTrackerPolicy.FINE_LOCALIZATION_V1,LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_FINE_LOCALIZATION_V1,LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V1)) {
+            for(var policy:List.of(SUPPORT,COMBINED,LegacyTrackerPolicy.FINE_LOCALIZATION_V1,LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_FINE_LOCALIZATION_V1,LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V1,LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2)) {
               double changed = excursion(track(profiles, norm, 24, policy));
               assertTrue(changed <= baseline + 1e-9,
                     "New transient regression norm=" + norm + " separation=" + separation + " duration=" + duration
@@ -173,7 +173,7 @@ class LegacyTrackerPolicyTest {
                 empty.add(profile(i, List.of(),48));
                 gaps.add(profile(i, i==3||i==4 ? List.of():List.of(peak(144,48,.70)),48));
             }
-            for (var policy : List.of(SUPPORT, LegacyTrackerPolicy.GEOMETRY_ONLY_V1, COMBINED, LegacyTrackerPolicy.FINE_LOCALIZATION_V1, LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_FINE_LOCALIZATION_V1,LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V1)) {
+            for (var policy : List.of(SUPPORT, LegacyTrackerPolicy.GEOMETRY_ONLY_V1, COMBINED, LegacyTrackerPolicy.FINE_LOCALIZATION_V1, LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_FINE_LOCALIZATION_V1,LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V1,LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2)) {
                 var modes = track(parallel,norm,24,policy);
                 assertTrue(modes.stream().anyMatch(c -> nearConstant(c.offsetsPx(),0,24*.45)));
                 assertTrue(modes.stream().anyMatch(c -> nearConstant(c.offsetsPx(),36,24*.45)));
@@ -195,7 +195,7 @@ class LegacyTrackerPolicyTest {
     }
 
     @Test void explicitExperimentsRequireNativePitchAndRetainCancellation() {
-        for (var policy : List.of(SUPPORT, LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V1)) {
+        for (var policy : List.of(SUPPORT, LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V1,LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2)) {
             for (double invalid : List.of(0.0, Double.NaN, Double.POSITIVE_INFINITY)) {
                 assertThrows(IllegalArgumentException.class, () -> track(competingRidges(24),6,invalid,policy));
             }
