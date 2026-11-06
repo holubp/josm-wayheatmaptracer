@@ -14,6 +14,50 @@
 
 ### Active execution card — authoritative
 
+**V4 ANCHOR REUSE PACKET DISPATCHED — 2026-11-06:** Sol finalized concrete
+exact optimization design after first fastpath proved insufficient. Luna sole
+writer `/data/data/com.termux/files/usr/tmp/josm-legacy-v4-anchor-reuse`, base19eb8d5a.
+STRICT V4-only dispatch: keep Original/V1–V3 historical execution paths, including
+official baseline. Lazily reuse reliableAnchors list across seeds (construct
+after first seed DP); new per-row ordered pass computes each eligible peak's
+support/exact same quality once. Preserve first Double.compare ties, identity
+exclusion from second quality, Math.max NaN/signed-zero behavior and all refusal
+gates. No new score table/solver. Retained anchor lifetime overlaps paired
+tracking: reserve additional checked64*N+128 bytes onlyV4, unchanged ceilings.
+Tests must cover exact older/V4 goldens,2/3seeds/ties/repeatedidentities/NaN,
+refusals/empty/oneanchor/cancellation, deterministic work reduction and resource
+exact/one-byte-short/leak controls. Expected observed two-peak/two-seed anchor
+support work10→2/row; NOT a speed claim. Commit/freeze then independent review,
+private exact controls and official timing remain required. No public release.
+
+**OFFICIAL FAST-PATH SPEED FAILURE — 2026-11-06:** Build42247945477 source19eb8d5a
+normal/tracker jobs are terminalFAILURE; public job still running at observation.
+Artifacts retained root build `legacy-wide-secant/feedback-followup-20261106/ci-fastpath-42247945477/`.
+Tracker BLOCKED managed-parallel in forks1/2:median overhead6.242/7.474ms above5ms;
+fork0median4.558ms. Baseline medians20.845/28.118/34.043ms; p95overhead8.263/
+12.530/10.737ms. Normal INCONCLUSIVE isolated visible-hairpin1 and managed-parallel1
+p95 tails. The early-return optimization is NOT sufficient performance closure.
+Quality remains108private tests/all50 exact comparisons/4exact Drasovfiles.
+Sol assigned focused remaining-cost source diagnosis/next exact optimization;
+no blind rerun, instrumentation/gate/JIT tuning, numerical or scope change.
+Keep all failing evidence; no release or completion claim.
+
+Sol's follow-up identifies a stable proportional managed-parallel overhead:
+21.87%/22.20%/21.95% across3forks,301profiles and2seeds/alternatives each.
+`anchoredPath` recomputes seed-independent `reliableAnchors` on the same final
+filtered bank per seed; a two-eligible-peak `reliableAnchor` computes support
+five times, or ten per row across two seeds. Reviewer is preparing the smallest
+exact reuse design with tie/seed-order/cancellation/scratch proof and operation
+count oracle. No new implementation packet issued until design is concrete.
+
+**OFFICIAL OPTIMIZED CI RUNNING — 2026-11-06:** Source/checkpoint
+`19eb8d5a5812e98971adf11f8d88117a86d23b5c` pushed. GitHub Build42247945477
+confirmedin_progress. Full public/GUI plus unchanged official normal/tracker
+three-fork speed jobs are now the next authority. No diagnostic mode, threshold,
+warmup or pair changes. Inspect terminal jobs/artifacts, retain every failed
+measurement, verify/download test JAR if valid; do not declare goal complete
+before official speed and whole-objective audit pass. No public release.
+
 **OPTIMIZED QUALITY VERIFIED — 2026-11-06:** Controller22790ac8 combined private
 batch92090 terminalPASS:12suites108tests0failures/errors/skips. All50 captured
 way/palette CSV rows are BYTE-IDENTICAL to pre-optimization V4 (SHA256
