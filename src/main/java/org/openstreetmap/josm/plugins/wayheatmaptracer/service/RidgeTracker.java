@@ -96,9 +96,16 @@ public final class RidgeTracker {
 
             List<Double> smoothedOffsets = smoothOffsets(profiles, offsets, intensities, sourcePixel,
                 nativeSourcePitchRasterPx, policy);
+            // One reference snapshot, never an offset/path copy per pair. Every
+            // overlapping proposal is capped against the completed historical path.
+            List<Double> completedHistoricalOffsets = policy.localizesPairedChord()
+                ? List.copyOf(smoothedOffsets) : smoothedOffsets;
             List<Point2D.Double> points = new ArrayList<>();
             for (int i = 0; i < profiles.size(); i++) {
                 RenderedHeatmapSampler.CrossSectionProfile profile = profiles.get(i);
+                if (policy.localizesPairedChord() && i > 0 && i + 2 < profiles.size()) {
+                    localizePairedChord(profiles, offsets, completedHistoricalOffsets, smoothedOffsets, i, continuity);
+                }
                 if (policy.localizesFineCenters() && i > 0 && i + 1 < profiles.size()) {
                     localizeFineCenter(profiles, offsets, smoothedOffsets, i, continuity);
                 }
@@ -824,6 +831,129 @@ public final class RidgeTracker {
         }
     }
 
+    /** One atomic neighboring-pair proposal; no runtime search or per-pair path copy. */
+    private boolean localizePairedChord(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        List<Double> selectedOffsets,
+        List<Double> historicalOffsets,
+        List<Double> completedOffsets,
+        int index,
+        ContinuitySupportPolicy continuity
+    ) {
+        var leftProfile = profiles.get(index);
+        var rightProfile = profiles.get(index + 1);
+        var leftPeak = pairedPeak(profiles, selectedOffsets, completedOffsets, index, continuity);
+        var rightPeak = pairedPeak(profiles, selectedOffsets, completedOffsets, index + 1, continuity);
+        if (leftPeak == null || rightPeak == null
+                || uniqueNearestPeak(rightProfile.peaks(), leftPeak.offsetPx()) != rightPeak
+                || uniqueNearestPeak(leftProfile.peaks(), rightPeak.offsetPx()) != leftPeak
+                || !hasReciprocalNearbyPeak(leftProfile, rightProfile, leftPeak, continuity)) {
+            return false;
+        }
+        var chordStart = centerlinePoint(profiles.get(index - 1), completedOffsets.get(index - 1));
+        var chordEnd = centerlinePoint(profiles.get(index + 2), completedOffsets.get(index + 2));
+        var leftIntersection = chordIntersection(leftProfile, chordStart, chordEnd);
+        var rightIntersection = chordIntersection(rightProfile, chordStart, chordEnd);
+        if (leftIntersection == null || rightIntersection == null
+                || !(leftIntersection.fraction() < rightIntersection.fraction())) {
+            return false;
+        }
+        double pitch = continuity.nativeSourcePitchRasterPx();
+        double leftBound = Math.min(leftPeak.centerUncertaintyPx(), pitch * 0.5);
+        double rightBound = Math.min(rightPeak.centerUncertaintyPx(), pitch * 0.5);
+        double leftHistorical = historicalOffsets.get(index), rightHistorical = historicalOffsets.get(index + 1);
+        Double oldLeft = completedOffsets.get(index), oldRight = completedOffsets.get(index + 1);
+        Double proposedLeft = Math.max(leftHistorical - leftBound,
+            Math.min(leftHistorical + leftBound, leftIntersection.offset()));
+        Double proposedRight = Math.max(rightHistorical - rightBound,
+            Math.min(rightHistorical + rightBound, rightIntersection.offset()));
+        if (!Double.isFinite(proposedLeft) || !Double.isFinite(proposedRight)
+                || (proposedLeft.doubleValue() == oldLeft && proposedRight.doubleValue() == oldRight)
+                || !pairedScalarEvidence(leftProfile, leftPeak, oldLeft, proposedLeft, pitch)
+                || !pairedScalarEvidence(rightProfile, rightPeak, oldRight, proposedRight, pitch)) {
+            return false;
+        }
+        GeometryMetrics before = geometryMetrics(profiles, completedOffsets, index - 1, index + 2, pitch);
+        if (before == null) {
+            return false;
+        }
+        boolean accepted = false;
+        try {
+            completedOffsets.set(index, proposedLeft);
+            completedOffsets.set(index + 1, proposedRight);
+            GeometryMetrics after = geometryMetrics(profiles, completedOffsets, index - 1, index + 2, pitch);
+            accepted = after != null && after.energy() <= before.energy() && after.maximumTurn() <= before.maximumTurn();
+            return accepted;
+        } finally {
+            // Includes cancellation/failure during geometry reads: never leave
+            // half a pair committed, and restore the original Double identities.
+            if (!accepted) {
+                completedOffsets.set(index, oldLeft);
+                completedOffsets.set(index + 1, oldRight);
+            }
+        }
+    }
+
+    private RenderedHeatmapSampler.CrossSectionPeak pairedPeak(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles, List<Double> selectedOffsets,
+        List<Double> currentOffsets, int index, ContinuitySupportPolicy continuity
+    ) {
+        var profile = profiles.get(index);
+        var peak = uniqueNearestPeak(profile.peaks(), selectedOffsets.get(index));
+        if (!profile.anchorWithinRaster() || peak == null || peak.syntheticCenter()
+                || !Double.isFinite(peak.supportWidthPx()) || peak.supportWidthPx() <= 0.0
+                || !Double.isFinite(peak.intensity()) || peak.intensity() < 0.0 || peak.intensity() > 1.0
+                || !Double.isFinite(peak.noiseFloor()) || peak.noiseFloor() < 0.0 || peak.noiseFloor() > 1.0
+                || !Double.isFinite(peak.centerUncertaintyPx()) || peak.centerUncertaintyPx() <= 0.0
+                || !Double.isFinite(peak.rawCenterPx())
+                || peak.rawCenterPx() != peak.lightFilteredCenterPx() || peak.rawCenterPx() != peak.standardFilteredCenterPx()
+                || !(peak.nativeFilteredAgreement() >= 0.55 && peak.nativeFilteredAgreement() <= 1.0)
+                || !(peak.scaleAgreement() >= 0.90 && peak.scaleAgreement() <= 1.0)
+                || uniqueNearestPeak(profile.peaks(), currentOffsets.get(index)) != peak
+                || uniqueNearestPeak(profile.peaks(), peak.rawCenterPx()) != peak
+                || longitudinalSupport(profiles, index, peak, continuity) < requiredLongitudinalSupport(profiles.size(), index)) {
+            return null;
+        }
+        return peak;
+    }
+
+    private boolean pairedScalarEvidence(RenderedHeatmapSampler.CrossSectionProfile profile,
+            RenderedHeatmapSampler.CrossSectionPeak peak, double current, double proposed, double pitch) {
+        if (uniqueNearestPeak(profile.peaks(), proposed) != peak) {
+            return false;
+        }
+        var oldSupport = scalarSupportAt(profile, current);
+        var newSupport = scalarSupportAt(profile, proposed);
+        var core = scalarSupportAt(profile, peak.rawCenterPx());
+        var left = scalarSupportAt(profile, peak.rawCenterPx() - pitch);
+        var right = scalarSupportAt(profile, peak.rawCenterPx() + pitch);
+        return oldSupport != null && newSupport != null && core != null && left != null && right != null
+            && core.raw() > 0.0 && core.raw() > peak.noiseFloor()
+            && left.raw() < core.raw() && right.raw() < core.raw()
+            && core.dominates(left) && core.dominates(right)
+            && newSupport.dominates(oldSupport) && core.dominates(newSupport);
+    }
+
+    private ChordIntersection chordIntersection(RenderedHeatmapSampler.CrossSectionProfile profile,
+            Point2D.Double start, Point2D.Double end) {
+        var anchor = profile.anchorScreen();
+        var normal = profile.normalScreen();
+        double dx = end.x - start.x, dy = end.y - start.y;
+        double denominator = normal.x * dy - normal.y * dx;
+        double scale = Math.hypot(normal.x, normal.y) * Math.hypot(dx, dy);
+        if (!Double.isFinite(scale) || scale <= 0.0 || !Double.isFinite(denominator)
+                || Math.abs(denominator) <= Math.ulp(scale) * 8.0) {
+            return null;
+        }
+        double ax = start.x - anchor.x, ay = start.y - anchor.y;
+        double offset = (ax * dy - ay * dx) / denominator;
+        double fraction = (ax * normal.y - ay * normal.x) / denominator;
+        return Double.isFinite(offset) && Double.isFinite(fraction) && fraction >= 0.0 && fraction <= 1.0
+            ? new ChordIntersection(offset, fraction) : null;
+    }
+
+    private record ChordIntersection(double offset, double fraction) { }
+
     /** Scalar-only interpolation between adjacent measured samples; never across invalid support. */
     private ScalarSupport scalarSupportAt(RenderedHeatmapSampler.CrossSectionProfile profile, double offset) {
         var samples = profile.intensitySamples();
@@ -863,8 +993,13 @@ public final class RidgeTracker {
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
         List<Double> offsets, int changedIndex, double pitch
     ) {
+        return geometryMetrics(profiles, offsets, changedIndex - 1, changedIndex + 1, pitch);
+    }
+
+    private GeometryMetrics geometryMetrics(List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+            List<Double> offsets, int firstCenter, int lastCenter, double pitch) {
         double energy = 0.0, maximumTurn = 0.0;
-        for (int i = Math.max(1, changedIndex - 1); i <= Math.min(offsets.size() - 2, changedIndex + 1); i++) {
+        for (int i = Math.max(1, firstCenter); i <= Math.min(offsets.size() - 2, lastCenter); i++) {
             var a = centerlinePoint(profiles.get(i - 1), offsets.get(i - 1));
             var b = centerlinePoint(profiles.get(i), offsets.get(i));
             var c = centerlinePoint(profiles.get(i + 1), offsets.get(i + 1));
