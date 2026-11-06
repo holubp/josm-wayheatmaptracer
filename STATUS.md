@@ -85,3 +85,7 @@ Generic `inference.*` success-only counters still refer to the first completed p
 and adaptive first/second totals are current/cumulative. First-pass physical allocation totals are unavailable.
 Resolve those diagnostic distinctions before live qualification. No strict engine replay or clean benchmark,
 successful dense-control comparison, final-geometry approval, Apply/Undo/device/CI/release proof is claimed.
+
+## Typed cached pre-entry refusal review repair
+
+Astra finding repaired only for cached V3/V4: the two pre-computation orientation/state gates now create a ledger-owned zero-work receipt with the native policy and cause. Historical eager/exact pre-entry receipts remain unattested. Behavioral RED reproduced NoSuchElementException; focused adaptive, exact-merge and replay suites GREEN (20 tests, no skips). First-pass state/orientation and second-pass state refusal preserve actual completed work, no hypotheses, observer provenance and released ownership. Evidence: private `b09-refusal-{red,final-green}.log` and archived XML. No private inference rerun. Saved Precise finalization and matched-control qualification remain pending.

@@ -117,12 +117,10 @@ public final class ProbabilisticInference {
         WorkCounter workCounter = null;
         if (parameters.orientationWeight() > 0.0
             && profiles.stream().anyMatch(InferenceProfile::orientationResourceLimited)) {
-            return failureOwned(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT, 0, 0,
-                "orientation descriptor resource limit", profiles, resultOwner);
+            return preEntryRefusal("orientation descriptor resource limit",profiles,resultOwner,mode,progress);
         }
         if (profiles.stream().anyMatch(profile -> profile.cells().size() > budgets.maximumStatesPerProfile())) {
-            return failureOwned(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT, 0, 0,
-                "state budget exceeded", profiles, resultOwner);
+            return preEntryRefusal("state budget exceeded",profiles,resultOwner,mode,progress);
         }
         AttemptMemoryLedger.Owner workOwner = resultOwner.child("b-exact-inference");
         try (workOwner) {
@@ -1224,6 +1222,20 @@ public final class ProbabilisticInference {
             AttemptMemoryLedger.Owner resultOwner, WorkCounter workCounter) {
         workOwner.close();
         return failureOwned(status, pairVisits, transitions, explanation, profiles, resultOwner, workCounter);
+    }
+
+    /** Only these gates precede all inference work; historical exact receipts stay unattested. */
+    private static ProbabilisticInferenceResult preEntryRefusal(String reason,List<InferenceProfile> profiles,
+            AttemptMemoryLedger.Owner resultOwner,ProbabilisticExecutionPolicy.Mode mode,WorkProgress progress) {
+        if (!mode.cached()) return failureOwned(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,
+                0,0,reason,profiles,resultOwner);
+        if (progress != null) progress.computed(0,0);
+        try (var scratch=resultOwner.child("cached-pre-entry-refusal")) {
+            var zero=allocated(scratch,AttemptMemoryLedger.objectBytes(80),"zero execution accounting",
+                    () -> new WorkCounter(mode,0));
+            return failureOwned(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,0,0,
+                    reason,profiles,resultOwner,zero);
+        }
     }
 
     private static ProbabilisticInferenceResult failureOwned(

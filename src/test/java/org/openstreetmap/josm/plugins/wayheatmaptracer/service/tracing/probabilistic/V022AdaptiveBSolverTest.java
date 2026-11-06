@@ -8,6 +8,43 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 
 class V022AdaptiveBSolverTest {
+    @Test void earlyCachedRefusalsHaveTypedZeroWorkWithoutChangingExactCompatibility() {
+        for (boolean orientation : new boolean[]{false,true}) {
+            var p=sampled(false);
+            var lattice=new ProbabilisticStateBuilder().build(p,96).lattice().orElseThrow();
+            var evaluated=new ProbabilisticObservationModel().evaluate(p,lattice,EvidenceModelParameters.defaults());
+            var dense=orientation ? new InferenceProfile(p.chainageMeters(),p.anchor(),p.normalUnit(),
+                    evaluated.cells(),evaluated.unaryCosts(),ImageOrientationSupport.unknown(
+                    ImageOrientationSupport.Status.RESOURCE_LIMIT),evaluated.ownership(),false) : evaluated;
+            var budget=orientation ? TraceBudgets.defaults() : new TraceBudgets(1,8_000_000,128_000_000,32,8);
+            var ledger=AttemptMemoryLedger.production();
+            try(var owner=ledger.rootOwner()) {
+                var old=new ProbabilisticInference().solve(List.of(dense),EvidenceModelParameters.defaults(),
+                        budget,null,CancellationProbe.NONE,owner,ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2);
+                assertEquals(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,old.status());
+                assertTrue(old.workAccounting().isEmpty(),"historical exact pre-entry receipt remains unattested");
+                for(var policy:List.of(BPolicy.ADAPTIVE_MULTIMODAL_V1,BPolicy.ADAPTIVE_MULTIMODAL_V2)) {
+                    int[] observed={0}; long[] progress={-1,-1};
+                    var result=assertDoesNotThrow(() -> new AdaptiveBInference().solve(List.of(p),List.of(dense),
+                            List.of(lattice),new double[]{Double.NaN},EvidenceModelParameters.defaults(),budget,null,
+                            CancellationProbe.NONE,owner,(pass,row,index,original) -> observed[0]++,
+                            (pairs,scores) -> {progress[0]=pairs;progress[1]=scores;},policy));
+                    var refusal=result.inference();
+                    assertEquals(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,refusal.status());
+                    assertTrue(refusal.explanation().contains(orientation ? "orientation descriptor resource limit" : "state budget exceeded"));
+                    assertEquals(0,result.refinements()); assertEquals(0,result.firstScores());
+                    assertEquals(0,result.secondScores()); assertTrue(refusal.rawPaths().isEmpty());
+                    assertTrue(refusal.mapPath().isEmpty()); assertFalse(refusal.posteriorUsable());
+                    var receipt=refusal.workAccounting().orElseThrow();
+                    assertEquals(policy.version(),receipt.executionPolicy()); assertEquals(0,receipt.computedScores());
+                    assertEquals(0,receipt.refusedScoreAttempts()); assertArrayEquals(new long[]{0,0},progress);
+                    assertTrue(observed[0]>0,"prepared view provenance remains observable");
+                }
+            }
+            assertEquals(0,ledger.currentBytes());
+        }
+    }
+
     @Test void retainedViewKeepsFaintRemoteModesContinuationAndDenseUnaryBits() {
         var profile = sampled(false);
         var builder = new ProbabilisticStateBuilder();
@@ -110,6 +147,20 @@ class V022AdaptiveBSolverTest {
             assertFalse(result.inference().posteriorUsable(),"conditional retained-graph mass is not full-graph certainty");
             assertEquals(result.firstScores()+result.secondScores(),result.inference().evaluatedTransitions());
             assertTrue(result.firstScores()>0 && result.secondScores()>0);
+            int initialWidth=AdaptiveSolverView.initial(sampled.get(0),dense.get(0),lattices.get(0).components(),
+                    9.125,CancellationProbe.NONE,owner).size();
+            long[] progress={-1,-1};
+            var secondRefusal=new AdaptiveBInference().solve(sampled,dense,lattices,new double[]{9.125,9.125,9.125},
+                    EvidenceModelParameters.withoutShapeTerms(),new TraceBudgets(initialWidth,8_000_000,128_000_000,32,8),
+                    null,CancellationProbe.NONE,owner,AdaptiveBObserver.NONE,
+                    (pairs,scores) -> {progress[0]=pairs;progress[1]=scores;},BPolicy.ADAPTIVE_MULTIMODAL_V2);
+            assertEquals(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,secondRefusal.inference().status());
+            assertTrue(secondRefusal.inference().explanation().contains("state budget exceeded"));
+            assertEquals(1,secondRefusal.refinements()); assertTrue(secondRefusal.firstScores()>0);
+            assertEquals(0,secondRefusal.secondScores());
+            assertEquals(secondRefusal.firstScores(),secondRefusal.inference().workAccounting().orElseThrow().computedScores());
+            assertEquals(secondRefusal.firstScores(),progress[1],"second zero-work refusal preserves completed first pass");
+            assertTrue(secondRefusal.inference().rawPaths().isEmpty());
             assertEquals(BPolicy.VERSION,result.inference().workAccounting().orElseThrow().executionPolicy());
             long limit = result.firstScores() + 1;
             var capped = new AdaptiveBInference().solve(sampled,dense,lattices,new double[]{9.125,9.125,9.125},
