@@ -14,6 +14,18 @@
 
 ### Active execution card — authoritative
 
+**CI execution milestone — 2026-11-06:** Frozen source `cef5556c820361ebf6d259d70e7aadacc06ef08b`
+pushed to `codex/v022-legacy-b-release`. GitHub Build run42143312418 is in
+progress: https://github.com/holubp/josm-wayheatmaptracer/actions/runs/42143312418.
+Independent scoped re-review closed BGT-1/2/3 and the pinned JOSM host setup
+after repairs9a46ba4f/cef5556. All18 focused Python gate/workflow tests pass;
+the corrected16-row public quality preflight passes. Combined production source
+passed20 private regression tests,0 failures/errors/skips (2fixture,17palette,
+1sparse replay), with XML retained under root `legacy-wide-secant/integration/private-final-xml`.
+The three-fork matched performance verdict and full public CI are PENDING;
+do not declare speed acceptance or goal completion before inspecting artifacts.
+No private captures were uploaded, no release published, no filter changes made.
+
 **Integration milestone — 2026-11-06:** Controller production snapshot950230d5
 contains both standalone and Hybrid/frozen-source integrations. `classes
 testClasses` passed (Gradle9.4.1/JDK17, offline, 2m17s). Controller worktree has
