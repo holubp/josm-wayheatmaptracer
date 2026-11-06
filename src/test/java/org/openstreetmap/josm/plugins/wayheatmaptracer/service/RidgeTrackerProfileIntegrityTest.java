@@ -20,9 +20,13 @@ class RidgeTrackerProfileIntegrityTest {
     @SuppressWarnings("unchecked")
     void filteringRetainsOriginalEvidenceFrameAndNativeSamples() throws Exception {
         var input = profiles(false);
-        var method = RidgeTracker.class.getDeclaredMethod("suppressLongitudinalNoise", List.class);
+        var contextClass = Class.forName(RidgeTracker.class.getName() + "$ContinuitySupportPolicy");
+        var constructor = contextClass.getDeclaredConstructor(LegacyTrackerPolicy.class, double.class, double.class);
+        constructor.setAccessible(true);
+        var context = constructor.newInstance(LegacyTrackerPolicy.ORIGINAL_V02, 1.0, 1.0);
+        var method = RidgeTracker.class.getDeclaredMethod("suppressLongitudinalNoise", List.class, contextClass);
         method.setAccessible(true);
-        var output = (List<RenderedHeatmapSampler.CrossSectionProfile>) method.invoke(new RidgeTracker(), input);
+        var output = (List<RenderedHeatmapSampler.CrossSectionProfile>) method.invoke(new RidgeTracker(), input, context);
         for (int i = 0; i < input.size(); i++) {
             assertSame(input.get(i).samplingAnchor(), output.get(i).samplingAnchor(),
                     "Peak filtering must not reset measured chainage or replace its coordinate owner");
