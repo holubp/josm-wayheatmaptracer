@@ -21,14 +21,19 @@ public final class CorridorAwareTracker {
     private final CorridorTracker tracker = new CorridorTracker();
     private final CorridorGrouping grouping = new CorridorGrouping();
     private final CorridorTubeBuilder tubeBuilder = new CorridorTubeBuilder();
-    private final CorridorCenterlineOptimizer optimizer = new CorridorCenterlineOptimizer();
+    private final CorridorCenterlineOptimizer optimizer;
     private final CorridorCoverageCalculator coverageCalculator = new CorridorCoverageCalculator();
 
     /**
      * Creates a tracker with the standard extraction, association, grouping, and optimization stages.
      */
     public CorridorAwareTracker() {
-        // Stage services are initialized in field declarations.
+        this(new CorridorCenterlineOptimizer());
+    }
+
+    /** Explicit experiment injection only; normal construction retains the unfiltered optimizer. */
+    public CorridorAwareTracker(CorridorCenterlineOptimizer optimizer) {
+        this.optimizer = java.util.Objects.requireNonNull(optimizer);
     }
 
     /**
@@ -365,6 +370,10 @@ public final class CorridorAwareTracker {
                 track, corridorProfiles, sourcePixelSizePx, junctionContext, effectiveScaleEvidence, tube,
                 cleanupConfig);
             if (optimized.offsetsPx().isEmpty()) {
+                if (optimized.disposition() == CorridorCenterlineOptimizer.SolverDisposition.NO_LEGAL_PATH) {
+                    optimizations.put(track.id(), optimized);
+                    tubes.put(track.id(), tube);
+                }
                 continue;
             }
             SparseCorridorBundle bundle = bundlesById.get(track.id());

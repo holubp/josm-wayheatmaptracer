@@ -10,7 +10,11 @@ import java.util.Set;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorQuality;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.IntensitySample;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /**
  * Selects a stable centerline inside one longitudinal corridor using second-order dynamic programming.
@@ -25,6 +29,10 @@ public final class CorridorCenterlineOptimizer {
 
     private final CorridorOptimizationParameters parameters;
     private final RippleRegularizationParameters rippleParameters;
+    private final RasterMetricTransform hardGeometryTransform;
+    private final CancellationProbe hardGeometryCancellation;
+    private HardGeometryWork hardGeometryWork = new HardGeometryWork(HardGeometryOutcome.DISABLED,
+        0, 0, 0, 0, 0, 0, 0, 0);
 
     /**
      * Creates a stateless centerline optimizer.
@@ -44,9 +52,28 @@ public final class CorridorCenterlineOptimizer {
 
     CorridorCenterlineOptimizer(CorridorOptimizationParameters parameters,
         RippleRegularizationParameters rippleParameters) {
+        this(parameters, rippleParameters, null, CancellationProbe.NONE);
+    }
+
+    private CorridorCenterlineOptimizer(CorridorOptimizationParameters parameters,
+            RippleRegularizationParameters rippleParameters, RasterMetricTransform transform,
+            CancellationProbe cancellation) {
         this.parameters = java.util.Objects.requireNonNull(parameters);
         this.rippleParameters = java.util.Objects.requireNonNull(rippleParameters);
+        this.hardGeometryTransform = transform;
+        this.hardGeometryCancellation = java.util.Objects.requireNonNull(cancellation);
     }
+
+    /** Creates an explicit opt-in experiment using the factual raster-to-ground transform.
+     * Preserves FGE-legal raw paths only. Finalization may insert/remove points; this is not live activation. */
+    public CorridorCenterlineOptimizer withLocalHardBacktrackGuard(RasterMetricTransform transform,
+            CancellationProbe cancellation) {
+        return new CorridorCenterlineOptimizer(parameters, rippleParameters,
+            java.util.Objects.requireNonNull(transform), cancellation);
+    }
+
+    /** Actual work of the last explicitly guarded solve, including rejected/no-route/cancelled work. */
+    public HardGeometryWork hardGeometryWork() { return hardGeometryWork; }
 
     /**
      * Optimizes one corridor track without endpoint constraints.
@@ -169,6 +196,13 @@ public final class CorridorCenterlineOptimizer {
         ExactSolution exactSolution = solveExact(track, profiles, allowed, sourcePixel, junctionContext,
             scaleEvidence, tube, endpointApproaches, rippleSupport, rippleEndpointGates, rippleStrength);
         List<Double> optimizedOffsets = exactSolution.offsetsPx();
+        if (optimizedOffsets.isEmpty()) {
+            return new OptimizationResult(List.of(), List.of(), Double.POSITIVE_INFINITY, List.of(), 0, 0,
+                CorridorQuality.empty(), endpointApproaches, exactSolution.maximumOffsetStates(),
+                exactSolution.maximumPairStates(), exactSolution.transitionEvaluations(),
+                exactSolution.profileCostEvaluations(), exactSolution.pointTableEntries(),
+                exactSolution.adjacentGeometryEntries(), exactSolution.retainedPairStateAllocations());
+        }
         List<Point2D.Double> points = new ArrayList<>(profiles.size());
         List<CostRow> costs = new ArrayList<>(profiles.size());
         int inCorridor = 0;
@@ -252,16 +286,41 @@ public final class CorridorCenterlineOptimizer {
         double[] rippleEndpointGates,
         double rippleStrength
     ) {
+        HardGeometryCounters work = hardGeometryTransform == null ? null : new HardGeometryCounters();
+        try {
+            return solveExactInternal(track, profiles, allowed, sourcePixel, junctionContext, scaleEvidence,
+                tube, endpointApproaches, rippleSupport, rippleEndpointGates, rippleStrength, work);
+        } catch (java.util.concurrent.CancellationException cancelled) {
+            if (work == null) throw cancelled;
+            work.outcome = HardGeometryOutcome.CANCELLED;
+            throw new HardGeometryCancelledException(work.snapshot(), cancelled);
+        } finally {
+            if (work != null) hardGeometryWork = work.snapshot();
+        }
+    }
+
+    private ExactSolution solveExactInternal(CorridorTrack track, List<CorridorProfile> profiles,
+        List<List<Double>> allowed, double sourcePixel, JunctionContext junctionContext,
+        Map<String, BandScaleEvidence> scaleEvidence, LongitudinalCorridorTube tube,
+        EndpointApproachModel endpointApproaches,
+        List<UnsupportedRippleEvaluator.RippleSupport> rippleSupport,
+        double[] rippleEndpointGates, double rippleStrength, HardGeometryCounters work) {
         List<List<OffsetState>> stateTables = buildStateTables(track, profiles, allowed, sourcePixel,
             junctionContext, scaleEvidence, tube, endpointApproaches, rippleSupport,
             rippleEndpointGates, rippleStrength);
         long profileCostEvaluations = stateTables.stream().mapToLong(List::size).sum();
         long pointTableEntries = profileCostEvaluations;
+        MetricEdge[][][] metricEdges = null;
+        if (work != null) {
+            work.profileCosts = profileCostEvaluations;
+            metricEdges = metricEdgeCache(stateTables, work);
+        }
         if (profiles.size() == 1) {
             OffsetState best = stateTables.get(0).stream().min(Comparator
                 .comparingDouble(OffsetState::profileCost)
                 .thenComparingDouble(OffsetState::offset)).orElseThrow();
             int stateCount = stateTables.get(0).size();
+            if (work != null) work.outcome = HardGeometryOutcome.ROUTE;
             return new ExactSolution(List.of(best.offset()), stateCount, stateCount, stateCount,
                 profileCostEvaluations, pointTableEntries, 0L, 0L);
         }
@@ -282,9 +341,11 @@ public final class CorridorCenterlineOptimizer {
             for (int secondIndex = 0; secondIndex < stateTables.get(1).size(); secondIndex++) {
                 OffsetState second = stateTables.get(1).get(secondIndex);
                 transitionEvaluations++;
+                if (work != null) work.attempted++;
                 double cost = first.profileCost() + second.profileCost()
                     + firstGeometry.continuityCost(firstIndex, secondIndex);
                 requireFiniteCost(cost, 1);
+                if (work != null) work.scored++;
                 states[firstIndex][secondIndex] = new PairState(1, first.offset(), second.offset(),
                     firstGeometry.heading(firstIndex, secondIndex), firstGeometry.referenceHeading(),
                     spacingSourcePixels, cost, null);
@@ -294,6 +355,7 @@ public final class CorridorCenterlineOptimizer {
         int maximumPairStates = countStates(states);
 
         for (int profileIndex = 2; profileIndex < profiles.size(); profileIndex++) {
+            if (work != null) hardGeometryCancellation.checkpoint();
             List<OffsetState> previousOffsets = stateTables.get(profileIndex - 1);
             List<OffsetState> currentOffsets = stateTables.get(profileIndex);
             PairState[][] next = new PairState[previousOffsets.size()][currentOffsets.size()];
@@ -315,6 +377,18 @@ public final class CorridorCenterlineOptimizer {
                     for (int currentIndex = 0; currentIndex < currentOffsets.size(); currentIndex++) {
                         OffsetState current = currentOffsets.get(currentIndex);
                         transitionEvaluations++;
+                        if (work != null) {
+                            work.attempted++;
+                            if ((work.attempted & 1023L) == 0L) hardGeometryCancellation.checkpoint();
+                            work.tested++;
+                            MetricEdge incoming = metricEdges[profileIndex - 1][beforeIndex][previousIndex];
+                            MetricEdge outgoing = metricEdges[profileIndex][previousIndex][currentIndex];
+                            if (FinalGeometryEvaluator.hardBacktrackEdges(incoming.east(), incoming.north(),
+                                    incoming.length(), outgoing.east(), outgoing.north(), outgoing.length())) {
+                                work.rejected++;
+                                continue;
+                            }
+                        }
                         double candidateHeading = geometry.heading(previousIndex, currentIndex);
                         double acceleration = profileAccelerationWeight
                             * geometricCurvatureCost(candidateHeading, geometry.referenceHeading(),
@@ -326,6 +400,7 @@ public final class CorridorCenterlineOptimizer {
                             + current.profileCost()
                             + geometry.continuityCost(previousIndex, currentIndex) + acceleration + absoluteTurn;
                         requireFiniteCost(cost, profileIndex);
+                        if (work != null) work.scored++;
                         PairState existing = next[previousIndex][currentIndex];
                         if (existing == null || cost < existing.cost()) {
                             next[previousIndex][currentIndex] = new PairState(profileIndex,
@@ -338,9 +413,16 @@ public final class CorridorCenterlineOptimizer {
             }
             states = next;
             maximumPairStates = Math.max(maximumPairStates, countStates(states));
+            if (work != null && countStates(states) == 0) {
+                work.outcome = HardGeometryOutcome.NO_LEGAL_PATH;
+                return new ExactSolution(List.of(), maximumOffsetStates, maximumPairStates,
+                    transitionEvaluations, profileCostEvaluations, pointTableEntries,
+                    adjacentGeometryEntries, retainedPairStateAllocations);
+            }
         }
 
         PairState best = bestState(states);
+        if (work != null) work.outcome = HardGeometryOutcome.ROUTE;
         Double[] result = new Double[profiles.size()];
         PairState cursor = best;
         while (cursor != null) {
@@ -351,6 +433,71 @@ public final class CorridorCenterlineOptimizer {
         return new ExactSolution(List.of(result), maximumOffsetStates, maximumPairStates, transitionEvaluations,
             profileCostEvaluations, pointTableEntries, adjacentGeometryEntries, retainedPairStateAllocations);
     }
+
+    private MetricEdge[][][] metricEdgeCache(List<List<OffsetState>> states, HardGeometryCounters work) {
+        long points = states.stream().mapToLong(List::size).sum(), edges = 0;
+        for (int i = 1; i < states.size(); i++) edges = Math.addExact(edges,
+            Math.multiplyExact((long) states.get(i - 1).size(), states.get(i).size()));
+        long reserved = Math.addExact(Math.multiplyExact(Math.addExact(points, edges), 64L),
+            Math.multiplyExact(states.size(), 128L));
+        if (reserved > 128L * 1024 * 1024) {
+            work.outcome = HardGeometryOutcome.RESOURCE_LIMIT;
+            throw new HardGeometryResourceLimitException(work.snapshot());
+        }
+        work.reserved = reserved;
+        MetricPoint[][] metric = new MetricPoint[states.size()][];
+        for (int i = 0; i < states.size(); i++) {
+            hardGeometryCancellation.checkpoint();
+            metric[i] = new MetricPoint[states.get(i).size()];
+            for (int j = 0; j < metric[i].length; j++) {
+                var point = states.get(i).get(j).point();
+                metric[i][j] = hardGeometryTransform.pixelCenterToMetric(point.x, point.y);
+                work.points++;
+            }
+        }
+        MetricEdge[][][] result = new MetricEdge[states.size()][][];
+        for (int i = 1; i < states.size(); i++) {
+            hardGeometryCancellation.checkpoint();
+            result[i] = new MetricEdge[metric[i - 1].length][metric[i].length];
+            for (int a = 0; a < metric[i - 1].length; a++) {
+                hardGeometryCancellation.checkpoint();
+                for (int b = 0; b < metric[i].length; b++) {
+                    double east = metric[i][b].xMeters() - metric[i - 1][a].xMeters();
+                    double north = metric[i][b].yMeters() - metric[i - 1][a].yMeters();
+                    result[i][a][b] = new MetricEdge(east, north, StrictMath.hypot(east, north));
+                    work.edges++;
+                }
+            }
+        }
+        return result;
+    }
+
+    /** Typed experimental outcome; default solvers retain their historical path and work. */
+    public enum HardGeometryOutcome { DISABLED, ROUTE, NO_LEGAL_PATH, CANCELLED, RESOURCE_LIMIT }
+    public record HardGeometryWork(HardGeometryOutcome outcome, long profileCostEvaluations,
+        long attemptedTransitions, long testedTriples, long rejectedTriples, long scoredTransitions,
+        long metricPoints, long metricEdges, long metricCacheReservedBytes) { }
+    public static final class HardGeometryCancelledException extends java.util.concurrent.CancellationException {
+        private final HardGeometryWork work;
+        HardGeometryCancelledException(HardGeometryWork work, Throwable cause) {
+            super("Explicit hard-geometry experiment cancelled"); this.work = work; initCause(cause);
+        }
+        public HardGeometryWork work() { return work; }
+    }
+    public static final class HardGeometryResourceLimitException extends IllegalStateException {
+        private final HardGeometryWork work;
+        HardGeometryResourceLimitException(HardGeometryWork work) {
+            super("Explicit hard-geometry metric cache exceeds 128 MiB"); this.work = work;
+        }
+        public HardGeometryWork work() { return work; }
+    }
+    private static final class HardGeometryCounters {
+        HardGeometryOutcome outcome = HardGeometryOutcome.ROUTE;
+        long profileCosts, attempted, tested, rejected, scored, points, edges, reserved;
+        HardGeometryWork snapshot() { return new HardGeometryWork(outcome, profileCosts, attempted,
+            tested, rejected, scored, points, edges, reserved); }
+    }
+    private record MetricEdge(double east, double north, double length) { }
 
     private List<List<OffsetState>> buildStateTables(
         CorridorTrack track,
@@ -980,11 +1127,19 @@ public final class CorridorCenterlineOptimizer {
             endpointApproaches = java.util.Objects.requireNonNull(endpointApproaches);
         }
 
+        /** Distinguishes a spent no-legal-path attempt from an unstarted empty input. */
+        public SolverDisposition disposition() {
+            return !offsetsPx.isEmpty() ? SolverDisposition.ROUTE
+                : profileCostEvaluations > 0 ? SolverDisposition.NO_LEGAL_PATH : SolverDisposition.EMPTY_INPUT;
+        }
+
         static OptimizationResult empty() {
             return new OptimizationResult(List.of(), List.of(), Double.POSITIVE_INFINITY, List.of(), 0.0, 0.0,
                 CorridorQuality.empty(), new EndpointApproachModel(List.of()), 0, 0, 0L, 0L, 0L, 0L, 0L);
         }
     }
+
+    public enum SolverDisposition { ROUTE, NO_LEGAL_PATH, EMPTY_INPUT }
 
     /**
      * Per-profile optimizer diagnostics.
