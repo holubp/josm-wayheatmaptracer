@@ -66,22 +66,24 @@ class LegacyNumericalPolicyReceiptTest {
         assertEquals(oldV2Text, text(receipt(oldProtected)), "V2 receipt layout remains unchanged");
     }
 
-    @Test void liveV2PolicyRoundTripsAndAttestsUnderEitherNormalPolicy() {
+    @Test void pairedPoliciesRoundTripAndAttestUnderEitherNormalPolicy() {
         var base = V022FrozenFrameTest.input(V022FrozenFrameTest.frame());
+        for (var policy : List.of(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2,
+                LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V3)) {
         for (boolean protectedNormals : List.of(false, true)) {
             var selected = v3Source(protectedNormals, false).withTrackerPolicy(
-                    LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2,
+                    policy,
                     OptionalDouble.of(24.0), "");
             var decoded = LegacySourceCodec.decodeVisible(LegacySourceCodec.encode(selected));
             var frozen = frozenInput(base, decoded);
-            assertEquals(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2,
-                    frozen.legacyB().trackerPolicy());
+            assertEquals(policy, frozen.legacyB().trackerPolicy());
             assertEquals(24.0, frozen.legacyB().nativeSourcePitchRasterPx().orElseThrow());
             assertEquals(6.0, decoded.options().trackerNormalizationRasterPx());
             var bound = receipt(frozen);
             assertTrue(text(bound).contains("/" + selected.trackerPolicy().id() + "/24.0/none/"));
             assertRejectedReceiptMutation(frozen, bound, selected.trackerPolicy().id(),
                     LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V1.id());
+        }
         }
     }
 

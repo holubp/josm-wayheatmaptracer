@@ -14,6 +14,31 @@
 
 ### Active execution card — authoritative
 
+**V3 VERIFICATION MILESTONE — 2026-11-06:** Frozen algorithm `edf499d5`
+(controller cherry `e9011cf2`) passed92 tests/12suites, zero failures/errors/skips;
+independent Sol incremental review found no blocker. New private pair
+`paired-chord-v3-one` exited0 in5.10s with every input/runtime hash unchanged.
+Its ordinary and candidate final CSVs and tracker/final native-support CSVs are
+BYTE-IDENTICAL to approved V2. Receipt:
+root build `legacy-wide-secant/feedback-followup-20261106/paired-chord-v3-approved-geometry-check.json`.
+One public V3 preflight completed all16 discovery rows/eight scene-source groups,
+including previously failing managed hairpin, with all quality checks passing
+and production/harness/dependency runtime unchanged. This is NOT speed approval.
+
+Benchmark commit `e3d2f0bb` (controller `5401b85e`) retains strict statistical
+thresholds and adds actual tracker comparisons, runtime bindings and CI job.
+Independent runtime-binding finding repaired: full main/test class trees and
+all classpath JARs checked before/after, JVM identity and all hashes fixed across
+forks, outside timed observations.42 gate tests and46 including workflow tests
+pass; full scripts suite250 tests+9subtests passed170.80s. Latest Java harness
+compiled and ran in the successful V3 preflight. V3 support work depends on peak
+count (worst suppression O(N*K^3)); only the paired geometric scan is linear.
+No unconditional speed/complexity claim. Integrated live V3 selection reproduced
+two intended RED assertions; GREEN focused/replay suite is currently running.
+Remaining: archive its results, commit promotion,20 private regressions, exact
+source public CI/GUI, three matched speed forks, final evidence/task audit and
+testable JAR. Do not release or mark goal complete before those gates.
+
 **CURRENT OVERRIDE — 2026-11-06, V3 regression closure:** Controller HEAD
 `650a1948` includes V2 core `208caff9`, live/frozen routing and receipt repair
 `c1c3a8b1`. Primary dirty checkout remains untouched. The fenced private

@@ -343,7 +343,7 @@ class LegacyBSourceCaptureTest {
         assertEquals(6, input.options().trackerNormalizationRasterPx());
         assertEquals(12, input.factualNativeSourcePitchRasterPx().orElseThrow());
         var selected = LegacyBSourceCapture.withLiveTrackerPolicy(input);
-        assertEquals(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2, selected.trackerPolicy());
+        assertEquals(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V3, selected.trackerPolicy());
         assertEquals(12, selected.nativeSourcePitchRasterPx().orElseThrow());
         assertEquals(6, selected.options().trackerNormalizationRasterPx(),
                 "Native pitch must not replace compatibility normalization");
@@ -438,7 +438,7 @@ class LegacyBSourceCaptureTest {
         assertEquals(6, input.trackerNormalizationRasterPx());
         assertEquals(mosaic.virtualRasterScale(), input.factualNativeSourcePitchRasterPx().orElseThrow(), 0);
         var selected = LegacyBSourceCapture.withLiveTrackerPolicy(input);
-        assertEquals(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V2, selected.trackerPolicy());
+        assertEquals(LegacyTrackerPolicy.NATIVE_RECIPROCAL_SUPPORT_PAIRED_CHORD_V3, selected.trackerPolicy());
         assertEquals(mosaic.virtualRasterScale(), selected.nativeSourcePitchRasterPx().orElseThrow(), 0);
         assertEquals(6, selected.trackerNormalizationRasterPx(),
                 "Managed inference mosaic pitch must remain separate from compatibility normalization");
