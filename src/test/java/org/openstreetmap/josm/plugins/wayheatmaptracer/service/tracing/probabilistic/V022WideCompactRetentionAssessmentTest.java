@@ -65,6 +65,20 @@ class V022WideCompactRetentionAssessmentTest {
             assertEquals(WideCompactRetentionAssessment.Status.UNAVAILABLE,missing.distanceStatus(),"metric index "+i);
         }
     }
+    @Test void diffuseFailedDistanceCannotHideAnyLaterMissingOrInvalidComparisonMetric() {
+        var base=input("diffuse-three-strand",WideCompactRetentionAssessment.Strength.WEAK,0,1,1,1,1);
+        for(int i=1;i<4;i++) for(boolean invalidValue:new boolean[]{false,true}) {
+            var values=new WideCompactRetentionAssessment.Metric[]{m(2.307692),m(.5*WideCompactRetentionAssessment.P),m(.5*WideCompactRetentionAssessment.P),m(WideCompactRetentionAssessment.P)};
+            values[i]=invalidValue?m(Double.NaN):new WideCompactRetentionAssessment.Metric(null,WideCompactRetentionAssessment.Evidence.UNAVAILABLE);
+            var incomplete=copyWithDistances(base,new WideCompactRetentionAssessment.Distances(values[0],values[1],values[2],values[3]));
+            var r=WideCompactRetentionAssessment.assess(new WideCompactRetentionAssessment.Input(incomplete.sceneId(),incomplete.strength(),incomplete.runnerChecks(),incomplete.distances(),true,false,
+                    incomplete.amplitudes(),null,geometry(1.926272,1.926272),geometry(1.153846,1.518346)));
+            assertEquals(WideCompactRetentionAssessment.Verdict.UNAVAILABLE,r.verdict(),"metric="+i+" invalid="+invalidValue);
+            assertEquals(WideCompactRetentionAssessment.Status.FAILED,r.distanceStatus());
+            assertEquals(WideCompactRetentionAssessment.Status.UNAVAILABLE,r.distanceEvidenceCompleteness());
+            assertNotEquals(WideCompactRetentionAssessment.Verdict.ASSESSED_WITH_UNSUITABLE_REFERENCE,r.verdict());
+        }
+    }
     private static WideCompactRetentionAssessment.Input copyWithDistances(WideCompactRetentionAssessment.Input in,WideCompactRetentionAssessment.Distances d) {
         return new WideCompactRetentionAssessment.Input(in.sceneId(),in.strength(),in.runnerChecks(),d,in.supportedBend(),in.absoluteAmplitudeApplicable(),in.amplitudes(),in.absoluteAmplitude(),in.referenceGeometry(),in.candidateGeometry());
     }

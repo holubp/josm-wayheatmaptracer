@@ -26,7 +26,8 @@ final class WideCompactRetentionAssessment {
     record Input(String sceneId, Strength strength, RunnerChecks runnerChecks, Distances distances,
             boolean supportedBend, boolean absoluteAmplitudeApplicable, Amplitudes amplitudes,
             AbsoluteAmplitude absoluteAmplitude, GeometryOracle referenceGeometry, GeometryOracle candidateGeometry) { }
-    record Result(String version, Verdict verdict, Status distanceStatus, ReferenceDisposition referenceDisposition,
+    record Result(String version, Verdict verdict, Status distanceStatus, Status distanceEvidenceCompleteness,
+            ReferenceDisposition referenceDisposition,
             Status amplitudeRetentionStatus, Double amplitudeRetentionRatio, Status candidateAbsoluteQuality,
             Status referenceAbsoluteQuality, Status absoluteQualityDebt, boolean releaseQualified, List<String> reasons) { }
 
@@ -47,7 +48,7 @@ final class WideCompactRetentionAssessment {
         Status required = requiredChecks(input.runnerChecks());
         Status candidateOracle = oracleStatus(input.candidateGeometry(), input.strength());
         Status referenceOracle = oracleStatus(input.referenceGeometry(), input.strength());
-        Status distance = distanceStatus(input.distances(), input.strength());
+        DistanceOutcomes distance = distanceStatus(input.distances(), input.strength());
         Status amplitude = input.supportedBend() ? amplitudeStatus(input.amplitudes()) : Status.NOT_APPLICABLE;
         AbsoluteOutcomes absolute = absoluteStatus(input.absoluteAmplitude(), input.absoluteAmplitudeApplicable(), input.amplitudes());
         ReferenceDisposition disposition;
@@ -63,7 +64,7 @@ final class WideCompactRetentionAssessment {
             reasons.add("one or more mandatory candidate, reference, fidelity, or retention checks failed");
             return assessed(input, Verdict.FAILED, distance, disposition, amplitude, absolute, reasons);
         }
-        if (required == Status.UNAVAILABLE || candidateOracle == Status.UNAVAILABLE || distance == Status.UNAVAILABLE
+        if (required == Status.UNAVAILABLE || candidateOracle == Status.UNAVAILABLE || distance.completeness() == Status.UNAVAILABLE
                 || amplitude == Status.UNAVAILABLE || absolute.debt() == Status.UNAVAILABLE
                 || disposition == ReferenceDisposition.UNAVAILABLE) {
             reasons.add("required runner evidence or measurement is unavailable");
@@ -73,7 +74,7 @@ final class WideCompactRetentionAssessment {
             reasons.add("reference fails the independent geometry oracle outside the frozen exception");
             return assessed(input, Verdict.FAILED, distance, disposition, amplitude, absolute, reasons);
         }
-        if (distance == Status.FAILED) {
+        if (distance.status() == Status.FAILED) {
             if (disposition == ReferenceDisposition.UNSUITABLE_REFERENCE) {
                 reasons.add("frozen diffuse reference fails independent geometry oracle; measured distance failure retained");
                 return assessed(input, Verdict.ASSESSED_WITH_UNSUITABLE_REFERENCE, distance, disposition, amplitude, absolute, reasons);
@@ -98,9 +99,11 @@ final class WideCompactRetentionAssessment {
 
     private record AbsoluteOutcomes(Status candidate, Status reference, Status debt) { }
 
-    private static Result assessed(Input input, Verdict verdict, Status distance, ReferenceDisposition disposition,
+    private record DistanceOutcomes(Status status, Status completeness) { }
+
+    private static Result assessed(Input input, Verdict verdict, DistanceOutcomes distance, ReferenceDisposition disposition,
             Status amplitude, AbsoluteOutcomes absolute, List<String> reasons) {
-        return new Result(VERSION, verdict, distance, disposition, amplitudeRetentionStatus(input),
+        return new Result(VERSION, verdict, distance.status(), distance.completeness(), disposition, amplitudeRetentionStatus(input),
                 amplitudeRatio(input.amplitudes()), absolute.candidate(), absolute.reference(), absolute.debt(), false,
                 List.copyOf(reasons));
     }
@@ -111,7 +114,7 @@ final class WideCompactRetentionAssessment {
 
     private static Result result(Verdict verdict, Status distance, ReferenceDisposition reference, Status amplitude,
             Double ratio, Status candidateAbsolute, Status referenceAbsolute, String reason) {
-        return new Result(VERSION, verdict, distance, reference, amplitude, ratio, candidateAbsolute,
+        return new Result(VERSION, verdict, distance, Status.UNAVAILABLE, reference, amplitude, ratio, candidateAbsolute,
                 referenceAbsolute, Status.UNAVAILABLE, false, List.of(reason));
     }
 
@@ -128,18 +131,25 @@ final class WideCompactRetentionAssessment {
         return unavailable ? Status.UNAVAILABLE : Status.PASS;
     }
 
-    private static Status distanceStatus(Distances d, Strength strength) {
-        if (d == null || strength == null) return Status.UNAVAILABLE;
+    private static DistanceOutcomes distanceStatus(Distances d, Strength strength) {
+        if (d == null || strength == null) return new DistanceOutcomes(Status.UNAVAILABLE, Status.UNAVAILABLE);
         double p95Limit = (strength == Strength.STRONG ? .25 : .5) * P;
         double maxLimit = (strength == Strength.STRONG ? .5 : 1.0) * P;
         Metric[] metrics = {d.rawP95(), d.rawCertifiedMaximum(), d.finalP95(), d.finalCertifiedMaximum()};
+        boolean incomplete = false, failed = false;
         for (int i = 0; i < metrics.length; i++) {
-            Double value = valid(metrics[i]);
-            if (value == null) return Status.UNAVAILABLE;
+            Metric metric = metrics[i];
+            Double value = valid(metric);
+            if (value == null) {
+                incomplete = true;
+                if (metric != null && metric.evidence() == Evidence.FAILED) failed = true;
+                continue;
+            }
             double limit = (i % 2 == 0) ? p95Limit : maxLimit;
-            if (value > limit) return Status.FAILED;
+            if (value > limit) failed = true;
         }
-        return Status.PASS;
+        return new DistanceOutcomes(failed ? Status.FAILED : incomplete ? Status.UNAVAILABLE : Status.PASS,
+                incomplete ? Status.UNAVAILABLE : Status.PASS);
     }
 
     private static Status oracleStatus(GeometryOracle oracle, Strength strength) {
