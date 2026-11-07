@@ -52,12 +52,12 @@ public final class BenchmarkDecisionComparatorMain {
         var firstArchive = Format15ArchiveReader.read(Path.of(args[0]));
         var secondArchive = Format15ArchiveReader.read(Path.of(args[1]));
         if (args.length == 7) {
-            if (BenchmarkComparisonContract.parse(args[4]) != BenchmarkComparisonContract.INVENTORY_V4_APPROVED) {
-                throw new IllegalArgumentException("Seven arguments require named V4 contract");
+            var contract = BenchmarkComparisonContract.parse(args[4]);
+            if (!contract.isInventoryComparison()) {
+                throw new IllegalArgumentException("Seven arguments require named V4 or V5 contract");
             }
             var profile = BenchmarkSourceFixture.parse(args[5]);
             var scope = BenchmarkComparisonContract.ComparisonScope.parse(args[6]);
-            var contract = BenchmarkComparisonContract.INVENTORY_V4_APPROVED;
             var first = BenchmarkIntervalDecisionComparison.sharedInput(firstArchive);
             var second = BenchmarkIntervalDecisionComparison.sharedInput(secondArchive);
             BenchmarkComparisonContract.requireApprovedParameters(contract, scope,
@@ -277,11 +277,11 @@ public final class BenchmarkDecisionComparatorMain {
     private static VerifiedOriginal verifyOriginal(Path osm, String expectedSha256,
             FrozenReplayInput candidate, BenchmarkComparisonContract contract,
             BenchmarkSourceFixture profile, boolean current) throws Exception {
-        if (contract == BenchmarkComparisonContract.INVENTORY_V4_APPROVED
+        if (contract.isInventoryComparison()
                 && (!candidate.request().budgets().equals(
                         org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets.defaults())
                     || !candidate.options().cleanup().equals(GeometryCleanupConfig.disabled()))) {
-            throw new IllegalStateException("V4 fixed fixture budgets or cleanup differ");
+            throw new IllegalStateException(contract.inventoryRevision() + " fixed fixture budgets or cleanup differ");
         }
         if (contract == BenchmarkComparisonContract.RC10_APPROVED) {
             BenchmarkComparisonContract.requireApprovedParameters(candidate.request().parameterHash(),

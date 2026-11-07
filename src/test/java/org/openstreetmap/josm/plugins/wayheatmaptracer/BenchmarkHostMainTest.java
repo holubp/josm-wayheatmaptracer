@@ -16,6 +16,23 @@ import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 class BenchmarkHostMainTest {
+    @Test
+    void v5ProfileIsFiniteAndQualificationFollowsActualOrdinaryCaptureOnly() {
+        var contract = BenchmarkComparisonContract.parse("b-inventory-v5-numerical-readonly-v1");
+        for (var profile : BenchmarkSourceFixture.values()) {
+            assertEquals(profile, BenchmarkHostMain.sourceProfile(contract, profile.identity()));
+        }
+        assertThrows(IllegalArgumentException.class, () -> BenchmarkHostMain.sourceProfile(contract, "unknown"));
+        String ordinary = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.newCaptureParameterHash(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.exactParameterHash());
+        if (ordinary.equals("3d1bc2a30cdbb7e345700c1dc97d8470de4cf5dbcdbcea9d4026e7e073b140c6")) {
+            org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> BenchmarkHostMain.requireOrdinaryActionContract(contract));
+        } else {
+            assertEquals("Current ordinary managed B policy differs from named V5 contract", assertThrows(
+                    IllegalStateException.class, () -> BenchmarkHostMain.requireOrdinaryActionContract(contract)).getMessage());
+        }
+    }
+
     @BeforeEach
     void resetPreferences() {
         Config.setPreferencesInstance(new MemoryPreferences());
@@ -54,7 +71,14 @@ class BenchmarkHostMainTest {
         }
         assertThrows(IllegalArgumentException.class, () -> BenchmarkHostMain.sourceProfile(
                 BenchmarkComparisonContract.INVENTORY_V4_APPROVED, null));
-        BenchmarkHostMain.requireOrdinaryActionContract(BenchmarkComparisonContract.INVENTORY_V4_APPROVED);
+        String ordinary = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.newCaptureParameterHash(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.exactParameterHash());
+        if (ordinary.equals(BenchmarkComparisonContract.V4_MANAGED_B_PARAMETERS)) {
+            BenchmarkHostMain.requireOrdinaryActionContract(BenchmarkComparisonContract.INVENTORY_V4_APPROVED);
+        } else {
+            assertThrows(IllegalStateException.class, () -> BenchmarkHostMain.requireOrdinaryActionContract(
+                    BenchmarkComparisonContract.INVENTORY_V4_APPROVED));
+        }
         assertThrows(IllegalStateException.class, () -> BenchmarkHostMain.requireOrdinaryActionContract(
                 BenchmarkComparisonContract.RC10_APPROVED));
     }

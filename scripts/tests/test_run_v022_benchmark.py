@@ -18,6 +18,52 @@ SPEC.loader.exec_module(benchmark)
 
 
 class BenchmarkRunnerTest(unittest.TestCase):
+    def test_v5_adapter_pins_are_separate_without_changing_old_adapter_registries(self):
+        old = benchmark.REVIEWED_RC6_V4_SOURCE_SHA256
+        new = benchmark.REVIEWED_RC6_V5_SOURCE_SHA256
+        self.assertEqual(6, len(new))
+        self.assertEqual('0b22005abeb94879004fe7bde4212068b9192b32dc29e6854ea3773ccd051450',
+                         old[benchmark._RC6_SOURCE+'BenchmarkHostMain.java'])
+        self.assertNotEqual(old[benchmark._RC6_SOURCE+'BenchmarkHostMain.java'],
+                            new[benchmark._RC6_SOURCE+'BenchmarkHostMain.java'])
+        for path, value in old.items():
+            if not path.endswith('/BenchmarkHostMain.java'):
+                self.assertEqual(value, new[path])
+        benchmark.require_reviewed_rc6(dict(new), list(benchmark.REVIEWED_RC6_V5_DIRTY), benchmark.V5_CONTRACT)
+        for contract in (benchmark.STRICT_CONTRACT, benchmark.APPROVED_CONTRACT, benchmark.V4_CONTRACT):
+            with self.assertRaises(benchmark.GateFailure):
+                benchmark.require_reviewed_rc6(dict(new), list(benchmark.REVIEWED_RC6_V5_DIRTY), contract)
+        with self.assertRaises(benchmark.GateFailure):
+            benchmark.require_reviewed_rc6(dict(old), list(benchmark.REVIEWED_RC6_V4_DIRTY), benchmark.V5_CONTRACT)
+        for path in new:
+            with self.assertRaises(benchmark.GateFailure):
+                benchmark.require_reviewed_rc6({**new, path:'0'*64}, list(benchmark.REVIEWED_RC6_V5_DIRTY), benchmark.V5_CONTRACT)
+        with self.assertRaises(benchmark.GateFailure):
+            benchmark.require_reviewed_rc6(dict(new), [*benchmark.REVIEWED_RC6_V5_DIRTY, '?? extra.java'], benchmark.V5_CONTRACT)
+        self.assertEqual(benchmark.REVIEWED_RC6_V5_PATCH_SHA256,
+                         benchmark.sha256(SCRIPT.parent/'v022-rc6-v5-benchmark-instrumentation.patch'))
+
+    def test_v5_has_a_distinct_contract_registry_and_preserves_both_profiles(self):
+        self.assertEqual('b-inventory-v5-numerical-readonly-v1', benchmark.V5_CONTRACT)
+        self.assertEqual(benchmark.V5_CONTRACT,
+                         benchmark.comparison_contract({'comparisonContract': benchmark.V5_CONTRACT}))
+        self.assertEqual(dict(benchmark.SOURCE_PROFILES), dict(benchmark.V5_SOURCE_PROFILES))
+        reference = {'diagnosticsPath': '/baseline/a.zip', 'diagnosticsSha256': 'a'*64,
+                     'receiptPath': '/baseline/p.json', 'receiptSha256': 'b'*64, 'nonce': 'warmup'}
+        paths = [Path('/'+name) for name in ('java', 'run', 'josm', 'plugin', 'archive', 'osm', 'tiles', 'receipt')]
+        for profile in benchmark.V5_SOURCE_PROFILES:
+            for version in ('baseline', 'candidate'):
+                for action in ('preview', 'cancel'):
+                    command = benchmark.host_command(*paths, 'nonce', 'N1:'+version, action,
+                                                     benchmark.V5_CONTRACT, reference, profile)
+                    self.assertIn('-Dwayheatmaptracer.benchmark.sourceProfile='+profile, command)
+                    self.assertIn('-Dwayheatmaptracer.benchmark.comparisonContract='+benchmark.V5_CONTRACT, command)
+                    self.assertFalse(any('parameterHash' in item for item in command))
+            for scope in ('baseline-repeat', 'candidate-repeat', 'cross-version'):
+                command = benchmark.comparator_command(paths[0], paths[2], paths[3], paths[4], paths[4],
+                    paths[5], 'a'*64, benchmark.V5_CONTRACT, profile, scope)
+                self.assertEqual([benchmark.V5_CONTRACT, profile, scope], command[-3:])
+
     def test_v4_baseline_registry_is_separate_and_rejects_any_unreviewed_bytes(self):
         old = benchmark.REVIEWED_RC6_SOURCE_SHA256
         new = benchmark.REVIEWED_RC6_V4_SOURCE_SHA256

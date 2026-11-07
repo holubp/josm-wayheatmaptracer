@@ -18,12 +18,31 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Selected
 public enum BenchmarkComparisonContract {
     STRICT("rc6-identical-v1"),
     RC10_APPROVED("rc10-approved-numerical-readonly-v1"),
-    INVENTORY_V4_APPROVED("b-inventory-v4-numerical-readonly-v1");
+    INVENTORY_V4_APPROVED("b-inventory-v4-numerical-readonly-v1"),
+    INVENTORY_V5_APPROVED("b-inventory-v5-numerical-readonly-v1");
 
     // Exact reviewed live B parameter identities. A future policy needs a new approved contract.
     public static final String RC6_B_PARAMETERS = "df52ac49e7aae10c1b5953155ef4ba3cc9430c06b1b42ac8a9afe24f3235e825";
     public static final String RC10_B_PARAMETERS = "9814307c79fae2c8ec105c755c7373694d3c4e893be78a747062511361241b35";
     public static final String V4_MANAGED_B_PARAMETERS = "68d3b706f28674e60cb45646be640e4d83d1c14200c93987b4c0a42dcceb5fda";
+    public static final String V5_MANAGED_B_PARAMETERS = "3d1bc2a30cdbb7e345700c1dc97d8470de4cf5dbcdbcea9d4026e7e073b140c6";
+
+    public boolean isInventoryComparison() {
+        return this == INVENTORY_V4_APPROVED || this == INVENTORY_V5_APPROVED;
+    }
+
+    public String inventoryParameters() {
+        return switch (this) {
+            case INVENTORY_V4_APPROVED -> V4_MANAGED_B_PARAMETERS;
+            case INVENTORY_V5_APPROVED -> V5_MANAGED_B_PARAMETERS;
+            default -> throw new IllegalArgumentException("Named inventory comparison required");
+        };
+    }
+
+    String inventoryRevision() {
+        if (!isInventoryComparison()) throw new IllegalArgumentException("Named inventory comparison required");
+        return this == INVENTORY_V5_APPROVED ? "V5" : "V4";
+    }
     public enum ComparisonScope {
         BASELINE_REPEAT("baseline-repeat"), CANDIDATE_REPEAT("candidate-repeat"), CROSS_VERSION("cross-version");
         private final String identity;
@@ -59,11 +78,11 @@ public enum BenchmarkComparisonContract {
     public static void requireApprovedParameters(BenchmarkComparisonContract contract, ComparisonScope scope,
             String baseline, String candidate) {
         if (contract == null || scope == null) throw new IllegalArgumentException("Explicit benchmark contract and scope required");
-        if (contract == INVENTORY_V4_APPROVED) {
-            String first = scope == ComparisonScope.CANDIDATE_REPEAT ? V4_MANAGED_B_PARAMETERS : RC6_B_PARAMETERS;
-            String second = scope == ComparisonScope.BASELINE_REPEAT ? RC6_B_PARAMETERS : V4_MANAGED_B_PARAMETERS;
+        if (contract.isInventoryComparison()) {
+            String first = scope == ComparisonScope.CANDIDATE_REPEAT ? contract.inventoryParameters() : RC6_B_PARAMETERS;
+            String second = scope == ComparisonScope.BASELINE_REPEAT ? RC6_B_PARAMETERS : contract.inventoryParameters();
             if (!first.equals(baseline) || !second.equals(candidate)) {
-                throw new IllegalStateException("Unapproved V4 scope or numerical policy identity");
+                throw new IllegalStateException("Unapproved " + contract.inventoryRevision() + " scope or numerical policy identity");
             }
         } else if (contract == RC10_APPROVED) {
             requireApprovedParameters(baseline, candidate);
@@ -141,6 +160,12 @@ public enum BenchmarkComparisonContract {
         requireReadOnlyExtension(baseline.network(), candidate.network(), fixedIslandKeys);
         BenchmarkDecisionComparatorMain.requireSameEvidence(baseline, candidate);
         requireRequests(contract, baseline.request(), candidate.request());
+    }
+
+    /** The new numerical contract retains the same factual historical source origins. */
+    public static void requireV5BookmarkOrigin(FrozenReplayInput bookmark, FrozenReplayInput nativeBaseline,
+            BenchmarkSourceFixture profile) {
+        requireV4BookmarkOrigin(bookmark, nativeBaseline, profile);
     }
 
     /** Explicit source/selection origin only: a bookmark is never a fresh numerical result. */
@@ -272,7 +297,7 @@ public enum BenchmarkComparisonContract {
     }
 
     public static void requireRequests(BenchmarkComparisonContract contract, TraceRequest a, TraceRequest b) {
-        if (contract == INVENTORY_V4_APPROVED) {
+        if (contract.isInventoryComparison()) {
             requireApprovedParameters(contract, RC6_B_PARAMETERS.equals(a.parameterHash())
                     ? ComparisonScope.CROSS_VERSION : ComparisonScope.CANDIDATE_REPEAT,
                     a.parameterHash(), b.parameterHash());

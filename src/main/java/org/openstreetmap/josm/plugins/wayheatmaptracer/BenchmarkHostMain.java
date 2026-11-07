@@ -93,7 +93,7 @@ public final class BenchmarkHostMain {
     }
 
     static BenchmarkSourceFixture sourceProfile(BenchmarkComparisonContract contract, String value) {
-        if (contract == BenchmarkComparisonContract.INVENTORY_V4_APPROVED) return BenchmarkSourceFixture.parse(value);
+        if (contract.isInventoryComparison()) return BenchmarkSourceFixture.parse(value);
         if (value != null) throw new IllegalArgumentException("Source profile requires the named V4 contract");
         return null;
     }
@@ -119,6 +119,10 @@ public final class BenchmarkHostMain {
                 "wayheatmaptracer.benchmark.comparisonContract", BenchmarkComparisonContract.STRICT.identity()));
         BenchmarkSourceFixture profile = sourceProfile(contract,
                 System.getProperty("wayheatmaptracer.benchmark.sourceProfile"));
+        if (contract == BenchmarkComparisonContract.INVENTORY_V5_APPROVED) {
+            // Read the actual ordinary capture identity; never select a benchmark-only backend.
+            requireOrdinaryActionContract(contract);
+        }
         System.setProperty("wayheatmaptracer.benchmark.offline", "true");
         System.setProperty("wayheatmaptracer.benchmark.pluginJar", args[4]);
         System.setProperty("wayheatmaptracer.benchmark.receipt", receipt.toString());
@@ -190,7 +194,7 @@ public final class BenchmarkHostMain {
         var frozen = historical.network();
         requireOrdinaryActionContract(contract);
         if (contract == BenchmarkComparisonContract.RC10_APPROVED
-                || contract == BenchmarkComparisonContract.INVENTORY_V4_APPROVED) {
+                || contract.isInventoryComparison()) {
             var reference = readBaselineReference(historical, args[6].split(":", 2)[0], contract, profile);
             requireNativeBaselineCapture(reference, seed, contract);
         } else if (!actual.closure().equals(frozen.closure())
@@ -254,10 +258,11 @@ public final class BenchmarkHostMain {
 
     /** The later registered action constructs its own ordinary seed; a compatibility preflight cannot override it. */
     static void requireOrdinaryActionContract(BenchmarkComparisonContract contract) {
-        if (contract == BenchmarkComparisonContract.INVENTORY_V4_APPROVED
-                && !BenchmarkComparisonContract.V4_MANAGED_B_PARAMETERS.equals(
+        if (contract.isInventoryComparison()
+                && !contract.inventoryParameters().equals(
                         BPolicy.newCaptureParameterHash(BPolicy.exactParameterHash()))) {
-            throw new IllegalStateException("Current ordinary managed B policy differs from named V4 contract");
+            throw new IllegalStateException("Current ordinary managed B policy differs from named "
+                    + contract.inventoryRevision() + " contract");
         }
         if (contract == BenchmarkComparisonContract.RC10_APPROVED
                 && !BenchmarkComparisonContract.RC10_B_PARAMETERS.equals(
@@ -310,7 +315,9 @@ public final class BenchmarkHostMain {
         var input = FrozenReplayCodec.decode(nativeArchive.artifact("frozen-input.bin").orElseThrow().bytes());
         org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.BenchmarkFinalOutputComparison
                 .verifyNative(nativeArchive, input);
-        if (contract == BenchmarkComparisonContract.INVENTORY_V4_APPROVED) {
+        if (contract == BenchmarkComparisonContract.INVENTORY_V5_APPROVED) {
+            BenchmarkComparisonContract.requireV5BookmarkOrigin(bookmark, input, profile);
+        } else if (contract == BenchmarkComparisonContract.INVENTORY_V4_APPROVED) {
             BenchmarkComparisonContract.requireV4BookmarkOrigin(bookmark, input, profile);
         } else {
             BenchmarkComparisonContract.requireBookmarkProvenance(bookmark, input);

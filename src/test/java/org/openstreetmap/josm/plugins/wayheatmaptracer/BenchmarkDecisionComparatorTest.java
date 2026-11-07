@@ -1,11 +1,32 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.Test;
 
 class BenchmarkDecisionComparatorTest {
+    @Test void v5IsDistinctAndBindsOnlyNativeRc6AndManagedFrontierRoles() {
+        var contract = BenchmarkComparisonContract.parse("b-inventory-v5-numerical-readonly-v1");
+        String v5 = "3d1bc2a30cdbb7e345700c1dc97d8470de4cf5dbcdbcea9d4026e7e073b140c6";
+        var policy = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_FRONTIER_V5;
+        assertEquals(v5, org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.newCaptureParameterHash(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.exactParameterHash(), policy));
+        for (var scope : BenchmarkComparisonContract.ComparisonScope.values()) {
+            String first = scope == BenchmarkComparisonContract.ComparisonScope.CANDIDATE_REPEAT
+                    ? v5 : BenchmarkComparisonContract.RC6_B_PARAMETERS;
+            String second = scope == BenchmarkComparisonContract.ComparisonScope.BASELINE_REPEAT
+                    ? BenchmarkComparisonContract.RC6_B_PARAMETERS : v5;
+            assertDoesNotThrow(() -> BenchmarkComparisonContract.requireApprovedParameters(contract, scope, first, second));
+            assertThrows(IllegalStateException.class, () -> BenchmarkComparisonContract.requireApprovedParameters(contract,
+                    scope, first, BenchmarkComparisonContract.V4_MANAGED_B_PARAMETERS));
+        }
+        assertThrows(IllegalStateException.class, () -> BenchmarkComparisonContract.requireApprovedParameters(
+                BenchmarkComparisonContract.INVENTORY_V4_APPROVED, BenchmarkComparisonContract.ComparisonScope.CROSS_VERSION,
+                BenchmarkComparisonContract.RC6_B_PARAMETERS, v5));
+    }
+
     @Test void v4ContractBindsExplicitScopeAndRejectsOtherPolicies() {
         var contract = BenchmarkComparisonContract.parse("b-inventory-v4-numerical-readonly-v1");
         var rc6 = BenchmarkComparisonContract.RC6_B_PARAMETERS;

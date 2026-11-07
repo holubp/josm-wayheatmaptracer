@@ -274,20 +274,22 @@ def _worktree_identity(value: Any, base: Path, *, role: str) -> str:
 def _benchmark_contract_profiles(manifest: dict) -> tuple[str, list[str | None]]:
     contract = manifest.get('comparisonContract', 'rc6-identical-v1')
     v4 = 'b-inventory-v4-numerical-readonly-v1'
+    v5 = 'b-inventory-v5-numerical-readonly-v1'
+    inventory_contracts = (v4, v5)
     profiles = {'managed-hot-precise-7m01-z15-v1', 'managed-bluered-precise-25m-z15-v1'}
-    if contract not in ('rc6-identical-v1', 'rc10-approved-numerical-readonly-v1', v4):
+    if contract not in ('rc6-identical-v1', 'rc10-approved-numerical-readonly-v1', *inventory_contracts):
         raise ValidationError('unknown benchmark comparisonContract')
     cases = manifest.get('cases')
     if not isinstance(cases, list) or len(cases) != 2 or [item.get('id') for item in cases if isinstance(item, dict)] != ['N1', 'N2']:
         raise ValidationError('benchmark manifest must contain the exact N1 and N2 cases')
-    expected = {'id', 'archive', 'osm', 'tiles'} | ({'sourceProfile'} if contract == v4 else set())
+    expected = {'id', 'archive', 'osm', 'tiles'} | ({'sourceProfile'} if contract in inventory_contracts else set())
     for case in cases:
         if not isinstance(case, dict) or set(case) != expected:
             raise ValidationError('benchmark case is malformed')
-        if contract == v4 and (not isinstance(case.get('sourceProfile'), str) or case.get('sourceProfile') not in profiles):
+        if contract in inventory_contracts and (not isinstance(case.get('sourceProfile'), str) or case.get('sourceProfile') not in profiles):
             raise ValidationError('benchmark requires a known sourceProfile')
     selected = [case.get('sourceProfile') for case in cases]
-    if contract == v4 and set(selected) != profiles:
+    if contract in inventory_contracts and set(selected) != profiles:
         raise ValidationError('benchmark requires exactly one case per sourceProfile')
     return contract, selected
 
@@ -302,7 +304,7 @@ def benchmark_manifest_identity(path: Path) -> str:
         raise ValidationError("unsupported benchmark manifest schema")
     contract, profiles = _benchmark_contract_profiles(manifest)
     benchmark_runner = None
-    if contract == 'b-inventory-v4-numerical-readonly-v1':
+    if contract in ('b-inventory-v4-numerical-readonly-v1', 'b-inventory-v5-numerical-readonly-v1'):
         spec = importlib.util.spec_from_file_location('validation_benchmark_contract', ROOT / 'scripts/run-v022-benchmark.py')
         if spec is None or spec.loader is None:
             raise ValidationError('benchmark contract validator is unavailable')
@@ -311,8 +313,9 @@ def benchmark_manifest_identity(path: Path) -> str:
         baseline = manifest.get('baseline', {})
         if baseline.get('revision') != benchmark_runner.BASELINE_REVISION:
             raise ValidationError('benchmark baseline must be exact RC6')
-        if baseline.get('sourceHashes') != benchmark_runner.REVIEWED_RC6_V4_SOURCE_SHA256:
-            raise ValidationError('benchmark baseline adapter pins differ from reviewed V4 registry')
+        if baseline.get('sourceHashes') != benchmark_runner.reviewed_rc6_sources(contract):
+            revision = 'V5' if contract == benchmark_runner.V5_CONTRACT else 'V4'
+            raise ValidationError('benchmark baseline adapter pins differ from reviewed ' + revision + ' registry')
     if (type(manifest.get("warmups")) is not int or manifest["warmups"] < 1
             or type(manifest.get("repetitions")) is not int or manifest["repetitions"] < 3
             or type(manifest.get("runTimeoutSeconds")) is not int

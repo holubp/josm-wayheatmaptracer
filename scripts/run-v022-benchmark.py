@@ -35,9 +35,15 @@ PRODUCER = "AlignWayAction.production-preview-v1"
 STRICT_CONTRACT = "rc6-identical-v1"
 APPROVED_CONTRACT = "rc10-approved-numerical-readonly-v1"
 V4_CONTRACT = "b-inventory-v4-numerical-readonly-v1"
+V5_CONTRACT = "b-inventory-v5-numerical-readonly-v1"
 SOURCE_PROFILES = MappingProxyType({
     "managed-hot-precise-7m01-z15-v1": ("hot", {15: 6, 14: 4}),
     "managed-bluered-precise-25m-z15-v1": ("bluered", {15: 4, 14: 2}),
+})
+# Source profiles describe unchanged factual imagery/configuration, independently registered
+# under the new numerical contract rather than relabeling an old V4 run.
+V5_SOURCE_PROFILES = MappingProxyType({
+    name: (palette, MappingProxyType(dict(counts))) for name, (palette, counts) in SOURCE_PROFILES.items()
 })
 BASELINE_REVISION = "6288aafe6dc79e948a6981ae795d27ee56a653fe"
 HEX64 = set("0123456789abcdef")
@@ -64,6 +70,12 @@ REVIEWED_RC6_V4_SOURCE_SHA256 = MappingProxyType({
     _RC6_SOURCE + 'BenchmarkSourceFixture.java': 'aa4e84e4a4ffeb8e43805e58f51101f79525ba75778e95e310e049839db1daec',
 })
 REVIEWED_RC6_V4_DIRTY = REVIEWED_RC6_DIRTY | frozenset({"?? " + _RC6_SOURCE + "BenchmarkSourceFixture.java"})
+REVIEWED_RC6_V5_PATCH_SHA256 = '420973ea59361541a414b560e746e31f6b24f870c6172336bc475a013f052bd8'
+REVIEWED_RC6_V5_SOURCE_SHA256 = MappingProxyType({
+    **REVIEWED_RC6_V4_SOURCE_SHA256,
+    _RC6_SOURCE + 'BenchmarkHostMain.java': '42145717fce4ba913de91d1fb871780dabcf4bd730d30f2edfa24632b638b67f',
+})
+REVIEWED_RC6_V5_DIRTY = frozenset(REVIEWED_RC6_V4_DIRTY)
 
 
 class GateFailure(Exception):
@@ -188,7 +200,7 @@ def host_command(java: Path, run_dir: Path, josm: Path, plugin: Path,
     """Build one production GUI host invocation for preview or cancellation."""
     reference_options = []
     source_profile({"sourceProfile": profile} if profile is not None else {}, contract)
-    if contract in (APPROVED_CONTRACT, V4_CONTRACT) and case_version.endswith(":candidate"):
+    if contract in (APPROVED_CONTRACT, V4_CONTRACT, V5_CONTRACT) and case_version.endswith(":candidate"):
         if baseline_reference is None:
             raise GateFailure("Approved current host requires a native baseline publication")
         reference_options = [f"-Dwayheatmaptracer.benchmark.baseline{stem}={baseline_reference[key]}"
@@ -224,7 +236,7 @@ def comparator_command(java: Path, josm: Path, plugin: Path, first: Path, second
         raise GateFailure('Unknown benchmark comparison scope')
     command = [str(java), '-cp', os.pathsep.join((str(josm), str(plugin))), COMPARE_CLASS,
                str(first), str(second), str(osm), osm_hash]
-    if contract == V4_CONTRACT:
+    if contract in (V4_CONTRACT, V5_CONTRACT):
         command.extend((contract, profile, scope))
     elif contract == APPROVED_CONTRACT and scope != 'baseline-repeat':
         command.append(contract)
@@ -234,12 +246,20 @@ def comparator_command(java: Path, josm: Path, plugin: Path, first: Path, second
 def require_reviewed_rc6(source_hashes: dict[str, str], dirty_lines: list[str],
                          contract: str = STRICT_CONTRACT) -> None:
     comparison_contract({"comparisonContract": contract})
-    hashes = REVIEWED_RC6_V4_SOURCE_SHA256 if contract == V4_CONTRACT else REVIEWED_RC6_SOURCE_SHA256
-    dirty = REVIEWED_RC6_V4_DIRTY if contract == V4_CONTRACT else REVIEWED_RC6_DIRTY
+    hashes = reviewed_rc6_sources(contract)
+    dirty = (REVIEWED_RC6_V5_DIRTY if contract == V5_CONTRACT else
+             REVIEWED_RC6_V4_DIRTY if contract == V4_CONTRACT else REVIEWED_RC6_DIRTY)
     if not hashes or source_hashes != hashes:
         raise GateFailure("Baseline adapter bytes differ from the reviewed RC6 instrumentation")
     if len(dirty_lines) != len(dirty) or set(dirty_lines) != dirty:
         raise GateFailure("Baseline has an unreviewed RC6 worktree delta")
+
+
+def reviewed_rc6_sources(contract: str = STRICT_CONTRACT):
+    comparison_contract({'comparisonContract': contract})
+    if contract == V5_CONTRACT:
+        return REVIEWED_RC6_V5_SOURCE_SHA256
+    return REVIEWED_RC6_V4_SOURCE_SHA256 if contract == V4_CONTRACT else REVIEWED_RC6_SOURCE_SHA256
 
 
 def validate_plugin(spec: dict, name: str, output: Path, contract: str = STRICT_CONTRACT) -> Path:
@@ -279,7 +299,8 @@ def build_plugin(worktree: Path, name: str, output: Path) -> Path:
 
 
 def receipt_file(path: Path, expected: dict, expected_zooms: set[int],
-                 profile: str | None = None, inventory: set[tuple[int, int, int]] | None = None) -> dict:
+                 profile: str | None = None, inventory: set[tuple[int, int, int]] | None = None,
+                 contract: str = V4_CONTRACT) -> dict:
     if not path.is_file():
         raise GateFailure(f"Production publication receipt missing: {path}")
     receipt = json.loads(path.read_text())
@@ -331,7 +352,7 @@ def receipt_file(path: Path, expected: dict, expected_zooms: set[int],
         raise GateFailure(f"Action was not served entirely from positive source cache: {path}")
     observations = tiles.get("recentResults", [])
     if not observations or any(item.get("status") not in {"SUCCESS_DISK_CACHE", "SUCCESS_MEMORY_CACHE"}
-                               or item.get("color") != (SOURCE_PROFILES[profile][0] if profile else "hot")
+                               or item.get("color") != (source_profiles(contract)[profile][0] if profile else "hot")
                                or item.get("activity") != "all"
                                or inventory is not None and (item.get("zoom"), item.get("x"), item.get("y")) not in inventory
                                for item in observations):
@@ -378,17 +399,22 @@ def require_same_preview(reference: dict, run: dict, case_id: str) -> None:
 
 def comparison_contract(manifest: dict) -> str:
     contract = manifest.get("comparisonContract", STRICT_CONTRACT)
-    if contract not in (STRICT_CONTRACT, APPROVED_CONTRACT, V4_CONTRACT):
+    if contract not in (STRICT_CONTRACT, APPROVED_CONTRACT, V4_CONTRACT, V5_CONTRACT):
         raise GateFailure("Unknown benchmark comparison contract")
     return contract
+
+
+def source_profiles(contract: str):
+    comparison_contract({'comparisonContract': contract})
+    return V5_SOURCE_PROFILES if contract == V5_CONTRACT else SOURCE_PROFILES
 
 
 def source_profile(case: dict, contract: str) -> str | None:
     comparison_contract({"comparisonContract": contract})
     profile = case.get("sourceProfile")
-    if contract == V4_CONTRACT:
-        if not isinstance(profile, str) or profile not in SOURCE_PROFILES:
-            raise GateFailure("V4 requires a known sourceProfile")
+    if contract in (V4_CONTRACT, V5_CONTRACT):
+        if not isinstance(profile, str) or profile not in source_profiles(contract):
+            raise GateFailure(("V5" if contract == V5_CONTRACT else "V4") + " requires a known sourceProfile")
     elif "sourceProfile" in case:
         raise GateFailure("sourceProfile requires the named V4 contract")
     return profile
@@ -405,7 +431,7 @@ def pinned_case_inputs(case: dict, contract: str) -> set[tuple[int, int, int]] |
     if index.stat().st_size > 16384:
         raise GateFailure("Selected tile inventory too large")
     lines = index.read_text().splitlines()
-    palette, counts = SOURCE_PROFILES[profile]
+    palette, counts = source_profiles(contract)[profile]
     if not lines or lines[0] != "zoom\tx\ty\tsha256\trelativePath" or len(lines) != sum(counts.values()) + 1:
         raise GateFailure("Selected tile inventory count/header differs")
     addresses, paths, actual = set(), set(), {14: 0, 15: 0}
@@ -485,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
         manifest = json.loads(manifest_path.read_text())
         contract = comparison_contract(manifest)
         report["comparisonContract"] = contract
-        if contract == V4_CONTRACT:
+        if contract in (V4_CONTRACT, V5_CONTRACT):
             report.update(historicalStrictReplay=False, sameObjectiveDenseComparison=False,
                           releaseQualified=False, B07QualityQualification="UNAVAILABLE/INCOMPLETE",
                           qualificationScope="named ordinary-action timing/cancellation comparison only")
@@ -496,8 +522,8 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(cases, list) or len(cases) != 2 or len({c.get("id") for c in cases}) != 2:
             raise GateFailure("Exactly two distinct long cases are required")
         profiles = [source_profile(case, contract) for case in cases]
-        if contract == V4_CONTRACT and set(profiles) != set(SOURCE_PROFILES):
-            raise GateFailure("V4 requires exactly one case per source profile")
+        if contract in (V4_CONTRACT, V5_CONTRACT) and set(profiles) != set(source_profiles(contract)):
+            raise GateFailure(("V5" if contract == V5_CONTRACT else "V4") + " requires exactly one case per source profile")
         worktrees = sorted({Path(manifest[name]["worktree"]).expanduser().resolve()
                             for name in ("baseline", "candidate")})
         if len(worktrees) != 2:
@@ -557,7 +583,7 @@ def main(argv: list[str] | None = None) -> int:
                         raise GateFailure(f"Real host run failed: {result['log']}")
                     observed = receipt_file(receipt,
                         {"caseId": case_id, "version": version, "nonce": nonce},
-                        {15} if version == "baseline" else {14, 15}, profile, inventory)
+                        {15} if version == "baseline" else {14, 15}, profile, inventory, contract)
                     run_record.update(observed)
                     grouped[version].append(run_record)
             reference = grouped["baseline"][0]
