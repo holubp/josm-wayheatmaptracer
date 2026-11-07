@@ -20,7 +20,7 @@ public final class CorridorAwareTracker {
     private final CorridorExtractor extractor = new CorridorExtractor();
     private final CorridorTracker tracker = new CorridorTracker();
     private final CorridorGrouping grouping = new CorridorGrouping();
-    private final CorridorTubeBuilder tubeBuilder = new CorridorTubeBuilder();
+    private final CorridorTubeBuilder tubeBuilder;
     private final CorridorCenterlineOptimizer optimizer;
     private final CorridorCoverageCalculator coverageCalculator = new CorridorCoverageCalculator();
 
@@ -33,7 +33,13 @@ public final class CorridorAwareTracker {
 
     /** Explicit experiment injection only; normal construction retains the unfiltered optimizer. */
     public CorridorAwareTracker(CorridorCenterlineOptimizer optimizer) {
+        this(optimizer, new CorridorTubeBuilder());
+    }
+
+    /** Explicit experiment injection; historical/default tube construction remains unchanged. */
+    public CorridorAwareTracker(CorridorCenterlineOptimizer optimizer, CorridorTubeBuilder tubeBuilder) {
         this.optimizer = java.util.Objects.requireNonNull(optimizer);
+        this.tubeBuilder = java.util.Objects.requireNonNull(tubeBuilder);
     }
 
     /**

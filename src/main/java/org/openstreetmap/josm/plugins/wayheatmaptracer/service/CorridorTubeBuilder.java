@@ -21,10 +21,19 @@ public final class CorridorTubeBuilder {
     private static final int WEAK_STABILITY_MIN_WINDOW_PROFILES = 17;
     private static final int WEAK_STABILITY_MAX_WINDOW_PROFILES = 33;
     private static final int HUBER_ITERATIONS = 2;
+    private final MotionPolicy motionPolicy;
+
+    /** Explicit policy identity; historical replay/default construction remains unchanged. */
+    public enum MotionPolicy { HISTORICAL, BOUNDED_SECONDARY_REVERSAL }
 
     /** Creates a stateless tube builder. */
     public CorridorTubeBuilder() {
-        // Stateless builder.
+        this(MotionPolicy.HISTORICAL);
+    }
+
+    /** Creates an explicitly opted-in motion classifier without changing fit/window parameters. */
+    public CorridorTubeBuilder(MotionPolicy motionPolicy) {
+        this.motionPolicy = java.util.Objects.requireNonNull(motionPolicy);
     }
 
     /**
@@ -291,14 +300,19 @@ public final class CorridorTubeBuilder {
         boolean coherentDirection = coherence >= 0.70 && displacement > Math.max(sourcePixel, uncertainty);
         boolean supportedApex = signChanges <= 1 && positive >= 2 && negative >= 2
             && motionRange > Math.max(sourcePixel, uncertainty);
-        if (!coherentDirection && !supportedApex) {
+        boolean boundedApex = !coherentDirection && !supportedApex && signChanges > 1
+            && motionPolicy == MotionPolicy.BOUNDED_SECONDARY_REVERSAL
+            && !boundedApexWitnesses(observations, sourcePixel, Math.max(sourcePixel, uncertainty)).isEmpty();
+        boolean authorizedApex = supportedApex || boundedApex;
+        if (!coherentDirection && !authorizedApex) {
             return new MotionEvidence(0.0, signChanges > 1 ? "reversing-noise" : "incoherent-motion");
         }
-        double coherenceScore = supportedApex ? 1.0 : clamp((coherence - 0.70) / 0.30);
-        double supportedDisplacement = supportedApex ? motionRange : displacement;
+        double coherenceScore = authorizedApex ? 1.0 : clamp((coherence - 0.70) / 0.30);
+        double supportedDisplacement = authorizedApex ? motionRange : displacement;
         double displacementScore = clamp((supportedDisplacement - Math.max(sourcePixel, uncertainty)) / sourcePixel);
         double support = clamp(coherenceScore * displacementScore * centerAgreement * (1.0 - conflictFraction));
-        String reason = supportedApex ? "supported-apex" : "coherent-direction";
+        String reason = boundedApex ? "supported-apex-bounded-reversal"
+            : supportedApex ? "supported-apex" : "coherent-direction";
         if (centerAgreement < 0.75) {
             reason += "+center-disagreement";
         }
@@ -307,6 +321,55 @@ public final class CorridorTubeBuilder {
         }
         return new MotionEvidence(support, reason);
     }
+
+    /** Boolean authorization witnesses only: no fit or proposed positions are produced. */
+    private List<BoundedApexWitness> boundedApexWitnesses(List<Observation> observations,
+            double sourcePixel, double threshold) {
+        List<BoundedApexWitness> result = new ArrayList<>();
+        double deadband = 0.15 * sourcePixel;
+        for (double sign : List.of(1.0, -1.0)) {
+            for (int apex = 2; apex + 2 < observations.size(); apex++) {
+                double peak = sign * observations.get(apex).centerOffsetPx();
+                double leftExcursion = peak - sign * observations.get(0).centerOffsetPx();
+                double rightExcursion = peak
+                    - sign * observations.get(observations.size() - 1).centerOffsetPx();
+                if (leftExcursion <= threshold || rightExcursion <= threshold) continue;
+                int rising = 0, falling = 0;
+                for (int i = 1; i <= apex; i++) {
+                    if (sign * (observations.get(i).centerOffsetPx()
+                            - observations.get(i - 1).centerOffsetPx()) > deadband) rising++;
+                }
+                for (int i = apex + 1; i < observations.size(); i++) {
+                    if (sign * (observations.get(i - 1).centerOffsetPx()
+                            - observations.get(i).centerOffsetPx()) > deadband) falling++;
+                }
+                if (rising < 2 || falling < 2) continue;
+                double leftViolation = 0.0, rightViolation = 0.0;
+                for (int i = 0; i <= apex; i++) for (int j = i + 1; j <= apex; j++) {
+                    leftViolation = Math.max(leftViolation, sign * (observations.get(i).centerOffsetPx()
+                        - observations.get(j).centerOffsetPx()));
+                }
+                for (int i = apex; i < observations.size(); i++) {
+                    for (int j = i + 1; j < observations.size(); j++) {
+                        rightViolation = Math.max(rightViolation,
+                            sign * (observations.get(j).centerOffsetPx()
+                                - observations.get(i).centerOffsetPx()));
+                    }
+                }
+                if (leftViolation <= threshold && rightViolation <= threshold) {
+                    result.add(new BoundedApexWitness(sign > 0 ? "peak" : "valley",
+                        observations.get(0).profileIndex(), observations.get(apex).profileIndex(),
+                        observations.get(observations.size() - 1).profileIndex(), rising, falling,
+                        leftExcursion, rightExcursion, leftViolation, rightViolation, threshold));
+                }
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private record BoundedApexWitness(String kind, int firstProfile, int apexProfile, int lastProfile,
+        int qualifyingRisingSteps, int qualifyingFallingSteps, double leftExcursionPx,
+        double rightExcursionPx, double leftViolationPx, double rightViolationPx, double thresholdPx) { }
 
     private Regression robustRegression(List<Observation> observations, double targetDistance, double sourcePixel) {
         if (observations.isEmpty()) {
