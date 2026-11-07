@@ -43,7 +43,11 @@ public final class WideCompactRetentionMain {
         var refExpected=referenceBackend.equals("CACHED_V4_ORACLE_AFTER_HISTORICAL_RESOURCE_LIMIT")
                 ?scene.input():WideCompactQualityMain.historical(scene.input());
         markIdentity(record,WideCompactRetentionFlow.Stage.REFERENCE_IDENTITY,scene,refExpected,referenceInput,reference,"reference");
-        markIdentity(record,WideCompactRetentionFlow.Stage.CANDIDATE_IDENTITY,scene,candidateInput,candidateInput,candidate,"candidate");
+        boolean frontier=policy==BPolicy.INVENTORY_FRONTIER_V5||BPolicy.recorded(scene.input().request())==BPolicy.INVENTORY_FRONTIER_V5
+                ||candidateInput!=null&&BPolicy.recorded(candidateInput.request())==BPolicy.INVENTORY_FRONTIER_V5
+                ||candidate!=null&&candidate.capture().expectedPolicy==BPolicy.INVENTORY_FRONTIER_V5;
+        markIdentity(record,WideCompactRetentionFlow.Stage.CANDIDATE_IDENTITY,scene,frontier?scene.input():candidateInput,
+                candidateInput,candidate,"candidate",frontier);
         verifyReferenceCompletion(reference,referenceInput,referenceBackend,record);
         verifyCandidateExecution(scene,candidate,candidateInput.request().budgets(),record,policy);
         try { WideCompactQualityMain.safety(reference,scene,referenceInput,output.resolve("reference-safety"));record.mark(WideCompactRetentionFlow.Stage.REFERENCE_NATIVE_AUTHORITY,WideCompactRetentionFlow.Status.PASS,"actual native finalization, assignment, authority and topology checks passed"); }
@@ -101,6 +105,16 @@ public final class WideCompactRetentionMain {
 
     private static void markIdentity(WideCompactRetentionFlow.SceneRecord record,WideCompactRetentionFlow.Stage stage,
             WideCompactScenes.Scene scene,FrozenReplayInput expected,FrozenReplayInput actual,WideCompactQualityMain.Run run,String role) {
+        markIdentity(record,stage,scene,expected,actual,run,role,false);
+    }
+    /** Whole immutable input relation, also usable to recheck saved execution-input receipts without a solver. */
+    static boolean matchesExecutedInput(FrozenReplayInput expected,FrozenReplayInput actual,String executedInputHash) {
+        return expected!=null&&actual!=null&&expected.canonicalHash().equals(actual.canonicalHash())
+                &&actual.canonicalHash().equals(executedInputHash);
+    }
+    private static void markIdentity(WideCompactRetentionFlow.SceneRecord record,WideCompactRetentionFlow.Stage stage,
+            WideCompactScenes.Scene scene,FrozenReplayInput expected,FrozenReplayInput actual,WideCompactQualityMain.Run run,String role,
+            boolean bindExecution) {
         boolean okay=expected!=null&&actual!=null&&run!=null&&expected.canonicalHash().equals(actual.canonicalHash())
                 &&expected.evidence().canonicalHash().equals(actual.evidence().canonicalHash())
                 &&expected.network().canonicalHash().equals(actual.network().canonicalHash())
@@ -108,7 +122,8 @@ public final class WideCompactRetentionMain {
                 &&actual.network().canonicalHash().equals(scene.input().network().canonicalHash())
                 &&actual.request().profileChainage().equals(scene.input().request().profileChainage())
                 &&actual.request().evidenceSnapshotId().equals(scene.input().request().evidenceSnapshotId())
-                &&actual.request().networkSnapshotId().equals(scene.input().request().networkSnapshotId());
+                &&actual.request().networkSnapshotId().equals(scene.input().request().networkSnapshotId())
+                &&(!bindExecution||matchesExecutedInput(expected,actual,run.executedInputHash()));
         if(okay)record.mark(stage,WideCompactRetentionFlow.Status.PASS,role+" canonical/input/source identities match the frozen scene");
         else if(expected==null||actual==null||run==null)record.unavailable(stage,role+" frozen input or actual run missing");
         else record.fail(stage,new AssertionError(role+" canonical/input/source identity mismatch"));
@@ -304,9 +319,16 @@ public final class WideCompactRetentionMain {
     static void completeScene(WideCompactRetentionFlow.Report report,WideCompactScenes.Scene scene,
             FrozenReplayInput referenceInput,WideCompactQualityMain.Run reference,FrozenReplayInput candidateInput,
             WideCompactQualityMain.Run candidate,Path dir) {
+        completeScene(report,scene,referenceInput,reference,candidateInput,candidate,dir,BPolicy.INVENTORY_PREP_V4);
+    }
+    static void completeScene(WideCompactRetentionFlow.Report report,WideCompactScenes.Scene scene,
+            FrozenReplayInput referenceInput,WideCompactQualityMain.Run reference,FrozenReplayInput candidateInput,
+            WideCompactQualityMain.Run candidate,Path dir,BPolicy policy) {
+        if(policy!=BPolicy.INVENTORY_PREP_V4&&policy!=BPolicy.INVENTORY_FRONTIER_V5)
+            throw new IllegalArgumentException("An explicit V4/V5 inventory fixture policy is required");
         String id=scene.id();var record=report.scene(id);
         if(reference!=null&&candidate!=null) {
-            try { measurePair(scene,referenceInput,reference,referenceBackend(scene,reference),candidateInput,candidate,record,dir); }
+            try { measurePair(scene,referenceInput,reference,referenceBackend(scene,reference),candidateInput,candidate,record,dir,policy); }
             catch(Throwable e) { report.fail(id,WideCompactRetentionFlow.Stage.COMPARISON,e); }
         } else {
             record.setFacts(facts(referenceBackend(scene,reference),referenceInput,reference),facts("INVENTORY_COMPACT_CANDIDATE",candidateInput,candidate));

@@ -94,7 +94,8 @@ public final class WideCompactQualityMain {
             }
         }
     }
-    record Run(ModernTracePipeline.PipelineRun pipeline,Capture capture,Map<String,Number> counters) { }
+    record Run(ModernTracePipeline.PipelineRun pipeline,Capture capture,Map<String,Number> counters,
+            String executedInputHash) { }
     static Run execute(WideCompactScenes.Scene scene,FrozenReplayInput input,boolean oracle,boolean compact,Path out)throws Exception {
         return executeInternal(scene,input,oracle,compact,out,TraceBudgets.defaults(),BPolicy.INVENTORY_PREP_V4);
     }
@@ -115,7 +116,8 @@ public final class WideCompactQualityMain {
                 "Non-default production budget is restricted to the tiny test seam");
         require(input.request().budgets().equals(expectedBudgets),"Run input budgets differ from the pinned execution budget");
         if(compact)require(BPolicy.recorded(input.request())==policy&&BPolicy.recorded(scene.input().request())==policy,"Compact fixture policy does not match its actual frozen source");
-        Files.createDirectories(out);write(out,"input-identity.txt","fixture="+scene.id()+"\ninputHash="+input.canonicalHash()+"\nparameterHash="+input.request().parameterHash()+"\nbackend="+(oracle?BQualityProbe.ORACLE_VERSION:compact?"ordinary recorded "+policy+" candidate":"historical full default production")+"\nstrictHistoricalReplay=false\n");
+        String executedInputHash=input.canonicalHash();
+        Files.createDirectories(out);write(out,"input-identity.txt","fixture="+scene.id()+"\ninputHash="+executedInputHash+"\nparameterHash="+input.request().parameterHash()+"\nbackend="+(oracle?BQualityProbe.ORACLE_VERSION:compact?"ordinary recorded "+policy+" candidate":"historical full default production")+"\nstrictHistoricalReplay=false\n");
         Files.write(out.resolve("frozen-public-input.bin"),FrozenReplayCodec.encode(input),StandardOpenOption.CREATE_NEW);
         var capture=new Capture(compact,expectedBudgets,policy);ModernDiagnosticCounters.begin();long start=System.nanoTime();
         try(var probe=BQualityProbe.install(oracle,capture);var observer=AdaptiveBObserver.observe(capture::retained)) {
@@ -132,7 +134,7 @@ public final class WideCompactQualityMain {
                 assignments.append(route.hypothesis().id()).append(':').append(route.assignments()).append('\n');
             }
             write(out,"geometry.csv",coordinates.toString());write(out,"quality.txt",quality.toString());write(out,"assignments.txt",assignments.toString());
-            return new Run(run,capture,ModernDiagnosticCounters.snapshot());
+            return new Run(run,capture,ModernDiagnosticCounters.snapshot(),executedInputHash);
         }catch(Throwable failure){try(var writer=new PrintWriter(Files.newBufferedWriter(out.resolve("failure.txt"),StandardOpenOption.CREATE_NEW))){failure.printStackTrace(writer);}throw failure;}
         finally{try{write(out,"native-counters.txt",new TreeMap<>(ModernDiagnosticCounters.snapshot())+"\n");capture.dump(out);}finally{ModernDiagnosticCounters.end();}}
     }
