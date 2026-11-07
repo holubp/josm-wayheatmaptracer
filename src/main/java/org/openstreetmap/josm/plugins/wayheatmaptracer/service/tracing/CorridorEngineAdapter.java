@@ -168,6 +168,15 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
     private static List<ObservationOwnership> support(CorridorTrack track, List<Double> offsets,
             List<MetricPoint> points, EvidenceSnapshot evidence, String fieldName,
             boolean fixedEndpoints) {
+        return support(track,offsets,points,evidence,fieldName,fixedEndpoints,null);
+    }
+
+    /** Explicit retained-output ownership view; the original track and gap identities stay unchanged. */
+    public static List<ObservationOwnership> support(CorridorTrack track,List<Double> offsets,
+            List<MetricPoint> points,EvidenceSnapshot evidence,String fieldName,boolean fixedEndpoints,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorWorkingSchedule schedule){
+        if(offsets.size()!=points.size()||schedule!=null&&schedule.workingCount()!=points.size())
+            throw new IllegalArgumentException("Output ownership mapping differs");
         List<ObservationOwnership> result = new ArrayList<>(points.size());
         for (int index = 0; index < points.size(); index++) {
             if (fixedEndpoints && (index == 0 || index == points.size() - 1)) {
@@ -180,7 +189,7 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
                 result.add(ObservationOwnership.NO_RASTER);
                 continue;
             }
-            CorridorTrackPoint source = track.points().get(index);
+            CorridorTrackPoint source = track.points().get(schedule==null?index:schedule.originalRow(index));
             if (source == null || source.support() == CorridorPointSupport.BOUNDED_INTERPOLATION) {
                 result.add(ObservationOwnership.INFERRED_GAP);
                 continue;
