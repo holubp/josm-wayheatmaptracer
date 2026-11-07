@@ -36,11 +36,13 @@ public final class CorridorCenterlineOptimizer {
     private final PreparedCounters preparedCounters=new PreparedCounters();
     /** Spent prepared-domain work, independent of historical/default optimizer diagnostics. */
     public PreparedWork preparedWork(){return preparedCounters.snapshot();}
+    /** Actual completed adjacent objective entries for the current prepared track, not metric cache edges. */
+    public long preparedAdjacentObjectiveEntries(){return preparedCounters.adjacentObjectives;}
     public record PreparedWork(long originalStates,long retainedUnaryEvaluations,long bridgeUnaryEvaluations,
         java.util.OptionalLong estimatedPreparedTableBytes,String outcome,long originalRows,long copiedProfileRows,long solverStarts){ }
     private static final class PreparedCounters{
-        long original,retained,bridge,rows,copied,solves;long bytes=-1;String outcome="UNSTARTED";
-        void reset(){original=retained=bridge=rows=copied=solves=0;bytes=-1;outcome="UNSTARTED";}
+        long original,retained,bridge,rows,copied,solves,adjacentObjectives;long bytes=-1;String outcome="UNSTARTED";
+        void reset(){original=retained=bridge=rows=copied=solves=adjacentObjectives=0;bytes=-1;outcome="UNSTARTED";}
         PreparedWork snapshot(){return new PreparedWork(original,retained,bridge,bytes<0?java.util.OptionalLong.empty():java.util.OptionalLong.of(bytes),outcome,rows,copied,solves);}
     }
 
@@ -659,6 +661,7 @@ public final class CorridorCenterlineOptimizer {
             stateTables.get(0), stateTables.get(1), profiles, tube, track, 1, spacing,
             rippleSupport.get(1), rippleStrength, rippleEndpointGates[1]);
         adjacentGeometryEntries += firstGeometry.entryCount();
+        preparedCounters.adjacentObjectives += firstGeometry.entryCount();
         for (int firstIndex = 0; firstIndex < stateTables.get(0).size(); firstIndex++) {
             OffsetState first = stateTables.get(0).get(firstIndex);
             for (int secondIndex = 0; secondIndex < stateTables.get(1).size(); secondIndex++) {
@@ -691,6 +694,7 @@ public final class CorridorCenterlineOptimizer {
                 profiles, tube, track, profileIndex, spacing, rippleSupport.get(profileIndex), rippleStrength,
                 rippleEndpointGates[profileIndex]);
             adjacentGeometryEntries += geometry.entryCount();
+            preparedCounters.adjacentObjectives += geometry.entryCount();
             double profileAccelerationWeight = effectiveAccelerationWeight(
                 accelerationWeight(track, profileIndex, tube), rippleSupport.get(profileIndex), rippleStrength,
                 rippleEndpointGates[profileIndex]);

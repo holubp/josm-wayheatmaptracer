@@ -267,7 +267,7 @@ public final class Format15ReplayRunner {
                 choices.put(position, expected.chosenRouteIndex());
             }
             actualRuns.add(new IntervalTraceBatch.IntervalRun(interval, request,
-                    replayed, usage));
+                    replayed, usage,production.corridorReceipt()));
         }
         IntervalTraceBatch batch = new IntervalTraceBatch(shared.request(), shared.evidence(),
                 shared.network(), partition, actualRuns, shared.options(), payload.authority());

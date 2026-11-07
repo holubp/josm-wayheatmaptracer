@@ -23,6 +23,63 @@ public final class PreviewSessionController<R> implements AutoCloseable {
     private long sequence;
     private Owner currentOwner;
     private Runnable currentWindowClose;
+    /** Diagnostics-only authority; it never authorizes a preview or edit. */
+    private record CancellationDiagnosticOwner(Owner owner, long jobSequence,
+        AlignmentJob.AttemptSnapshot snapshot, String diagnosticAttemptIdentity) { }
+    private CancellationDiagnosticOwner cancellationDiagnosticOwner;
+
+    /** A new diagnostic attempt may fail before opening a preview owner; revoke only the old sidecar token. */
+    public synchronized void revokeCancellationDiagnostics() {
+        cancellationDiagnosticOwner = null;
+    }
+
+    /** Starts an explicitly owned cancellation-only diagnostic channel. */
+    public synchronized <I> AlignmentJob.StartResult<R> startDetached(Owner owner,
+        AlignmentJob.DetachedCapture<I> capture,AlignmentJob.DetachedWorker<I,R> worker,
+        AlignmentJob.PreviewPublisher<R> publisher,String diagnosticAttemptIdentity,
+        java.util.function.Consumer<AlignmentJob.CancellationDiagnosticEvent> diagnostics){
+        requireCurrent(owner);
+        Objects.requireNonNull(diagnostics, "diagnostics");
+        if (diagnosticAttemptIdentity == null || diagnosticAttemptIdentity.isBlank()) {
+            throw new IllegalArgumentException("Diagnostic attempt identity is required");
+        }
+        cancellationDiagnosticOwner = null;
+        try {
+            var result = job.startDetached(() -> {
+                var captured = capture.capture();
+                cancellationDiagnosticOwner = new CancellationDiagnosticOwner(owner,
+                    job.currentAttempt().sequence(), captured.snapshot(), diagnosticAttemptIdentity);
+                return captured;
+            }, worker, attempt -> {
+                synchronized (this) {
+                    cancellationDiagnosticOwner = null;
+                    if (isCurrent(owner)) publisher.publish(attempt);
+                }
+            }, diagnostics);
+            if (!result.started()) cancellationDiagnosticOwner = null;
+            return result;
+        } catch (RuntimeException failure) {
+            cancellationDiagnosticOwner = null;
+            throw failure;
+        }
+    }
+    /** Atomically consumes only this cancelled attempt's diagnostics publication authority. */
+    public synchronized boolean publishCancellationDiagnosticsIfLatest(Owner owner,
+        AlignmentJob.CancellationDiagnosticEvent event,String diagnosticAttemptIdentity,Runnable publish){
+        Objects.requireNonNull(event, "event");
+        Objects.requireNonNull(publish, "publish");
+        var token = cancellationDiagnosticOwner;
+        if (token == null || !token.owner().equals(owner)
+                || !token.diagnosticAttemptIdentity().equals(diagnosticAttemptIdentity)
+                || token.jobSequence() != event.sequence() || !token.snapshot().equals(event.snapshot())
+                || !job.cancellationDiagnosticCurrent(event.sequence(), event.snapshot())) return false;
+        Runnable closeWindow = isCurrent(owner) ? currentWindowClose : null;
+        cancellationDiagnosticOwner = null;
+        if (isCurrent(owner)) close(owner);
+        publish.run();
+        if (closeWindow != null) closeWindow.run();
+        return true;
+    }
 
     /** Creates a plugin session with the normal bounded alignment worker. */
     public PreviewSessionController(AlignmentJob.EventDispatcher dispatcher) {
@@ -43,6 +100,7 @@ public final class PreviewSessionController<R> implements AutoCloseable {
     public synchronized Owner open(Runnable closeWindow) {
         Objects.requireNonNull(closeWindow, "closeWindow");
         Runnable supersededWindow = currentWindowClose;
+        cancellationDiagnosticOwner = null;
         job.cancel();
         Owner owner = new Owner(++sequence);
         currentOwner = owner;
@@ -64,6 +122,7 @@ public final class PreviewSessionController<R> implements AutoCloseable {
             AlignmentJob.Capture capture, AlignmentJob.Worker<R> worker,
             AlignmentJob.PreviewPublisher<R> publisher) {
         requireCurrent(owner);
+        cancellationDiagnosticOwner = null;
         return job.start(capture, worker, attempt -> {
             if (isCurrent(owner)) {
                 publisher.publish(attempt);
@@ -76,6 +135,7 @@ public final class PreviewSessionController<R> implements AutoCloseable {
             AlignmentJob.DetachedCapture<I> capture, AlignmentJob.DetachedWorker<I, R> worker,
             AlignmentJob.PreviewPublisher<R> publisher) {
         requireCurrent(owner);
+        cancellationDiagnosticOwner = null;
         return job.startDetached(capture, worker, attempt -> {
             if (isCurrent(owner)) {
                 publisher.publish(attempt);
@@ -119,6 +179,7 @@ public final class PreviewSessionController<R> implements AutoCloseable {
         Runnable closeWindow = currentWindowClose;
         currentOwner = null;
         currentWindowClose = null;
+        cancellationDiagnosticOwner = null;
         job.cancel();
         if (closeWindow != null) {
             closeWindow.run();

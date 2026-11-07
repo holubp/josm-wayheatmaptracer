@@ -58,6 +58,8 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
     @Override
     public TraceEngineRun traceWithUsage(TraceRequest request, EvidenceSnapshot evidence,
             NetworkSnapshot network, CancellationProbe cancellation) {
+        if (request != null && request.corridorInput().filter(c -> c.boundedBridgePolicy()).isPresent())
+            return new OwnedInvocation(request,evidence,network,cancellation).execute();
         try {
             return traceInternal(request, evidence, network, cancellation);
         } catch (CancellationException exception) {
@@ -67,6 +69,77 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
             return run(new TraceHypothesisSet(TrackerMode.CORRIDOR_AWARE, List.of(),
                 TraceHypothesisSet.Status.RESOURCE_LIMIT, true, 0, 0,
                 exception.getMessage()), 0, exception.rawAlternatives());
+        }
+    }
+
+    /** Invocation-local ownership; no mutable run state survives on a reusable adapter. */
+    private final class OwnedInvocation {
+        private final TraceRequest request;private final EvidenceSnapshot evidence;private final NetworkSnapshot network;
+        private final CancellationProbe cancellation;
+        private CorridorExecutionReceipt.Phase phase=CorridorExecutionReceipt.Phase.SAMPLING;
+        private java.util.Optional<DetachedScalarProfileSampler.RadiusThreeWork> sampling=java.util.Optional.empty();
+        private CorridorSourceProtection.Certificate certificate;
+        private CorridorAwareTracker tracker;
+        private CorridorAwareTracker.TrackingResult tracked;
+        OwnedInvocation(TraceRequest request,EvidenceSnapshot evidence,NetworkSnapshot network,CancellationProbe cancellation){
+            this.request=request;this.evidence=evidence;this.network=network;this.cancellation=cancellation;
+        }
+        TraceEngineRun execute(){
+            try{
+                validate(request,evidence,network,cancellation);
+                var input=request.corridorInput().orElseThrow();
+                var sampled=new DetachedScalarProfileSampler().sampleRadiusThree(evidence,fieldName,input.profileLocations(),
+                    request.permissions().ordinaryRadiusMeters(),input.lateralStepMeters(),cancellation,
+                    request.profileChainage().sourceOriginGroundMeters());
+                sampling=java.util.Optional.of(sampled.work());
+                phase=CorridorExecutionReceipt.Phase.SOURCE_CERTIFICATE;
+                certificate=CorridorSourceProtection.inspect(request,evidence,network,fieldName,cancellation);
+                double nativePitch=maximumSourcePitch(evidence,input.profileLocations(),request.profileChainage().sourceOriginGroundMeters());
+                var optimizer=new CorridorCenterlineOptimizer().withLocalHardBacktrackGuard(evidence.transform(),cancellation);
+                if(certificate.available()){
+                    var context=certificate.bind(cancellation);
+                    tracker=CorridorAwareTracker.withTargetOwnedBridgeCorrespondence(optimizer,context,
+                        domain->org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorWorkingSchedule.prepare(
+                            domain,context,nativePitch,cancellation));
+                }else{
+                    tracker=CorridorAwareTracker.withTargetOwnedBridgeCorrespondence(optimizer,
+                        domain->org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorWorkingSchedule.refusal(certificate.status()));
+                }
+                phase=CorridorExecutionReceipt.Phase.TRACKING;
+                double outputPitch=evidence.resolution().outputRasterPitchMeters();
+                double sourcePixel=nativePitch/outputPitch;
+                tracked=tracker.trackDetailed(sampled.profiles(),sourcePixel,
+                    junctionContext(request,network,sampled.profiles().levelZeroProfiles().size()),fieldName,
+                    GeometryCleanupConfig.disabled(),outputPitch,request.budgets());
+                phase=CorridorExecutionReceipt.Phase.ADAPTING;cancellation.checkpoint();
+                var usable=tracked.candidates().stream().filter(candidate->candidate.evidence().hasSignal()).toList();
+                int count=Math.min(usable.size(),request.budgets().maximumDistinctAlternatives());
+                var hypotheses=new ArrayList<TraceHypothesis>(count);
+                for(int i=0;i<count;i++){
+                    cancellation.checkpoint();var candidate=usable.get(i);
+                    var prepared=tracker.preparedOptimization(candidate.id()).orElse(null);
+                    hypotheses.add(toHypothesis(candidate,tracked,evidence,fieldName,request,usable.size()>1,
+                        prepared==null?null:prepared.schedule()));
+                }
+                cancellation.checkpoint();phase=CorridorExecutionReceipt.Phase.COMPLETED;
+                boolean truncated=count<usable.size();
+                var status=truncated?TraceHypothesisSet.Status.RESOURCE_LIMIT:hypotheses.isEmpty()?TraceHypothesisSet.Status.NO_ROUTE:
+                    hypotheses.size()==1?TraceHypothesisSet.Status.COMPLETE:TraceHypothesisSet.Status.AMBIGUOUS;
+                return finish(status,hypotheses,truncated,"production opt-in owned correspondence completed");
+            }catch(CancellationException cancelled){
+                return finish(TraceHypothesisSet.Status.CANCELLED,List.of(),false,"cancelled opt-in owned correspondence");
+            }catch(CorridorResourceLimitException|CorridorCenterlineOptimizer.HardGeometryResourceLimitException limited){
+                return finish(TraceHypothesisSet.Status.RESOURCE_LIMIT,List.of(),true,"opt-in owned correspondence resource limit");
+            }
+        }
+        private TraceEngineRun finish(TraceHypothesisSet.Status status,List<TraceHypothesis> hypotheses,boolean truncated,String reason){
+            var totals=CorridorExecutionReceipt.totals(tracker);
+            var result=new TraceHypothesisSet(TrackerMode.CORRIDOR_AWARE,hypotheses,status,truncated,
+                totals.unaryEvaluations(),totals.attemptedTransitions(),reason);
+            var receipt=CorridorExecutionReceipt.freeze(request,evidence,network,result,phase,sampling,certificate,tracker,tracked);
+            int raw=tracker==null?0:tracker.correspondenceDiscoveredTracks().orElse(0);
+            return new TraceEngineRun(result,new TraceWorkUsage(totals.pairVisits(),totals.attemptedTransitions(),raw,hypotheses.size()),
+                0L,java.util.Optional.of(receipt));
         }
     }
 
@@ -128,6 +201,13 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
     private static TraceHypothesis toHypothesis(CenterlineCandidate candidate,
             CorridorAwareTracker.TrackingResult tracked, EvidenceSnapshot evidence, String fieldName,
             TraceRequest request, boolean competingPersistentMode) {
+        return toHypothesis(candidate,tracked,evidence,fieldName,request,competingPersistentMode,null);
+    }
+
+    private static TraceHypothesis toHypothesis(CenterlineCandidate candidate,
+            CorridorAwareTracker.TrackingResult tracked,EvidenceSnapshot evidence,String fieldName,
+            TraceRequest request,boolean competingPersistentMode,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorWorkingSchedule schedule) {
         CorridorCenterlineOptimizer.OptimizationResult optimization =
             tracked.optimizations().get(candidate.id());
         CorridorTrack track = tracked.tracks().stream()
@@ -141,7 +221,7 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
             .map(point -> evidence.transform().pixelCenterToMetric(point.x, point.y)).toList();
         List<ObservationOwnership> support = support(
             track, candidate.offsetsPx(), points, evidence, fieldName,
-            request.permissions().junctionPolicy() == JunctionPolicy.FIXED);
+            request.permissions().junctionPolicy() == JunctionPolicy.FIXED,schedule);
         Map<String, Double> diagnostics = new LinkedHashMap<>();
         diagnostics.put("rawCorridorProposal", 1.0);
         diagnostics.put("trackerScore", candidate.score());
@@ -161,6 +241,13 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
         diagnostics.put("junctionAmbiguity",
             request.permissions().junctionPolicy() == JunctionPolicy.FIXED ? 0.0 : 1.0);
         diagnostics.put("competingPersistentMode", competingPersistentMode ? 1.0 : 0.0);
+        if(request.corridorInput().filter(c->c.boundedBridgePolicy()).isPresent()){
+            diagnostics.put("sourceSecantRadiusProfiles",3.0);
+            diagnostics.put("originalObservationProfiles",(double)candidate.evidence().totalProfiles());
+            diagnostics.put("retainedGeometryProfiles",(double)candidate.offsetsPx().size());
+            diagnostics.put("preparedCorrespondence",schedule==null?0.0:1.0);
+            diagnostics.put("cleanupEvidenceMisalignedCandidateRows",schedule==null?0.0:1.0);
+        }
         return new TraceHypothesis("corridor-" + candidate.id(), candidate.id(), points, support,
             optimization.totalCost(), OptionalDouble.empty(), diagnostics);
     }

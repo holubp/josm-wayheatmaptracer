@@ -201,7 +201,7 @@ public class AlignWayAction extends JosmAction {
                 OrdinaryManagedRasterAcquire managedAcquire,
                 AlignmentJob.PreviewPublisher<LiveBPreviewService.Computed> publisher) {
             return startInternal(session, owner, routing, dataSet, selection, sourceIdentity,
-                    visibleCapture, managedAcquire, null, null, publisher);
+                    visibleCapture, managedAcquire, null, null, publisher, null, ignored -> { });
         }
 
         <S> AlignmentJob.StartResult<LiveBPreviewService.Computed> startWithSources(
@@ -212,7 +212,20 @@ public class AlignWayAction extends JosmAction {
                 OrdinaryManagedSourcesAcquire managedAcquire, TileFetchCoordinator sourceOwner,
                 AlignmentJob.PreviewPublisher<LiveBPreviewService.Computed> publisher) {
             return startInternal(session, owner, routing, dataSet, selection, sourceIdentity,
-                    visibleCapture, null, managedAcquire, sourceOwner, publisher);
+                    visibleCapture, null, managedAcquire, sourceOwner, publisher, null, ignored -> { });
+        }
+
+        <S> AlignmentJob.StartResult<LiveBPreviewService.Computed> startWithSources(
+                PreviewSessionController<LiveBPreviewService.Computed> session,
+                PreviewSessionController.Owner owner, OrdinaryActionRouting<S> routing,
+                DataSet dataSet, SelectionContext selection, String sourceIdentity,
+                OrdinaryVisibleRasterCapture<S> visibleCapture,
+                OrdinaryManagedSourcesAcquire managedAcquire, TileFetchCoordinator sourceOwner,
+                AlignmentJob.PreviewPublisher<LiveBPreviewService.Computed> publisher,
+                String diagnosticAttemptIdentity, Consumer<AlignmentJob.CancellationDiagnosticEvent> diagnostics) {
+            return startInternal(session, owner, routing, dataSet, selection, sourceIdentity,
+                    visibleCapture, null, managedAcquire, sourceOwner, publisher,
+                    diagnosticAttemptIdentity, diagnostics);
         }
 
         private <S> AlignmentJob.StartResult<LiveBPreviewService.Computed> startInternal(
@@ -222,7 +235,8 @@ public class AlignWayAction extends JosmAction {
                 OrdinaryVisibleRasterCapture<S> visibleCapture,
                 OrdinaryManagedRasterAcquire rasterAcquire,
                 OrdinaryManagedSourcesAcquire sourcesAcquire, TileFetchCoordinator sourceOwner,
-                AlignmentJob.PreviewPublisher<LiveBPreviewService.Computed> publisher) {
+                AlignmentJob.PreviewPublisher<LiveBPreviewService.Computed> publisher,
+                String diagnosticAttemptIdentity, Consumer<AlignmentJob.CancellationDiagnosticEvent> diagnostics) {
             Objects.requireNonNull(session, "session");
             Objects.requireNonNull(routing, "routing");
             Objects.requireNonNull(dataSet, "dataSet");
@@ -231,7 +245,7 @@ public class AlignWayAction extends JosmAction {
             ModernAlignmentInvocation invocation = Objects.requireNonNull(
                     routing.route().invocation(), "Ordinary modern invocation");
             RecoveryPermissions permissions = invocation.recovery().toPermissions();
-            return session.startDetached(owner, () -> switch (routing.route().pipeline()) {
+            AlignmentJob.DetachedCapture<OrdinaryCapturedSource> capture = () -> switch (routing.route().pipeline()) {
                 case MODERN_VISIBLE -> {
                     LiveBPreviewService.VisibleRaster raster = Objects.requireNonNull(
                             visibleCapture.capture(routing.visibleSource(), invocation, permissions),
@@ -251,7 +265,8 @@ public class AlignWayAction extends JosmAction {
                 }
                 case LEGACY_COMPATIBILITY -> throw new IllegalArgumentException(
                         "Legacy compatibility alignment cannot enter the modern attempt assembly");
-            }, (captured, context) -> {
+            };
+            AlignmentJob.DetachedWorker<OrdinaryCapturedSource, LiveBPreviewService.Computed> worker = (captured, context) -> {
                 if (captured.visible() != null) {
                     return previewService.compute(captured.visible(), context, captured.legacyB())
                             .withSettingsResolution(settingsResolutionJson(
@@ -267,7 +282,10 @@ public class AlignWayAction extends JosmAction {
                 return previewService.compute(managed, context, captured.legacyB())
                         .withSettingsResolution(settingsResolutionJson(
                                 routing.requestedConfig(), captured.invocation().config()));
-            }, publisher);
+            };
+            return diagnosticAttemptIdentity == null
+                    ? session.startDetached(owner, capture, worker, publisher)
+                    : session.startDetached(owner, capture, worker, publisher, diagnosticAttemptIdentity, diagnostics);
         }
 
         private static AlignmentJob.AttemptSnapshot snapshot(
@@ -591,7 +609,7 @@ public class AlignWayAction extends JosmAction {
         }
         OrdinaryActionBenchmarkObserver.actionStarted();
         ManagedHeatmapConfig config = null;
-        String diagnosticAttemptIdentity = beginDiagnosticAttempt();
+        String diagnosticAttemptIdentity = beginDiagnosticAttempt(livePreviewSession);
         String diagnosticSourceLineage = "unavailable";
         PluginLog.beginSlideSession();
         try {
@@ -793,7 +811,9 @@ public class AlignWayAction extends JosmAction {
                         }, coordinator, attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection,
                                 imageryLayer, mapView, slideConfig, persistedSlideConfig,
                                 tracingAtCapture, attempt.result(), diagnosticAttemptIdentity,
-                                previewSourceOwner));
+                                previewSourceOwner), diagnosticAttemptIdentity,
+                        event -> publishFinalizationCancellationIfLatest(livePreviewSession, previewOwner,
+                                event, sourceLineage, diagnosticAttemptIdentity));
             } else if (managedSource) {
                 final LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
                 final CredentialSnapshot credentials = CredentialSnapshot.fromConfig(slideConfig.heatmap());
@@ -836,7 +856,9 @@ public class AlignWayAction extends JosmAction {
                                 slideConfig)),
                         attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection, imageryLayer, mapView,
                                 slideConfig, persistedSlideConfig, tracingAtCapture, attempt.result(),
-                                diagnosticAttemptIdentity, null));
+                                diagnosticAttemptIdentity, null), diagnosticAttemptIdentity,
+                        event -> publishFinalizationCancellationIfLatest(livePreviewSession, previewOwner,
+                                event, sourceLineage, diagnosticAttemptIdentity));
             }
         } catch (RuntimeException exception) {
             boolean closed = closeAndPublishIfCurrent(livePreviewSession, previewOwner,
@@ -2638,6 +2660,27 @@ public class AlignWayAction extends JosmAction {
         return identity;
     }
 
+    /** The common ordinary/override entry revokes late sidecars even when capture fails before open. */
+    static String beginDiagnosticAttempt(PreviewSessionController<?> session) {
+        synchronized (session) {
+            session.revokeCancellationDiagnostics();
+            return beginDiagnosticAttempt();
+        }
+    }
+
+    /** Builds bounded evidence outside the session monitor, then atomically consumes its owner token. */
+    static boolean publishFinalizationCancellationIfLatest(
+            PreviewSessionController<LiveBPreviewService.Computed> session,
+            PreviewSessionController.Owner owner, AlignmentJob.CancellationDiagnosticEvent event,
+            String sourceLineage, String diagnosticAttemptIdentity) {
+        Format15Bundle base = Format15ProductionBundleFactory.createUnavailableLive(
+                LastSlideDebugBundle.buildIdentity(), "cancelled", sourceLineage, diagnosticAttemptIdentity);
+        Format15Bundle evidence = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                .CorridorExecutionArtifacts.attachCancellation(base, event.summary());
+        return session.publishCancellationDiagnosticsIfLatest(owner, event, diagnosticAttemptIdentity,
+                () -> DiagnosticsRegistry.setLastModernBundle(evidence));
+    }
+
     static boolean closeAndPublishIfCurrent(
             PreviewSessionController<LiveBPreviewService.Computed> session,
             PreviewSessionController.Owner owner, Runnable publish) {
@@ -2753,6 +2796,8 @@ public class AlignWayAction extends JosmAction {
                 state.routeChoices(), intervalSourceReceipt(selected.captured()), status,
                 reviewed, applied);
         var batch = state.batch();
+        bundle = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                .CorridorExecutionArtifacts.attachIntervals(bundle,batch);
         return withSourceChoices(withSettingsResolution(
                 Format15ProductionBundleFactory.withCurrentNumericalPolicy(bundle,
                 new FrozenReplayInput(batch.fullRequest(), batch.evidence(), batch.network(), batch.options()),
@@ -2991,6 +3036,10 @@ public class AlignWayAction extends JosmAction {
         if (computed.legacyB() != null) {
             bundle = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
                     .LegacyBReplayWork.attach(bundle, input, computed.legacyB());
+        }
+        if (computed.corridorReceipt().isPresent()) {
+            bundle = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.CorridorExecutionArtifacts.attach(
+                    bundle,input,computed.pipeline().inference(),computed.corridorReceipt().orElseThrow());
         }
         return withSourceChoices(withSettingsResolution(
                 Format15ProductionBundleFactory.withCurrentNumericalPolicy(

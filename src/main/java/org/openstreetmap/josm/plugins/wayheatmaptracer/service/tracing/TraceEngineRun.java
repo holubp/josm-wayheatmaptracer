@@ -4,7 +4,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 
 /** One trace result paired with its actual attempt-budget usage and retained-memory peak. */
 public record TraceEngineRun(TraceHypothesisSet result, TraceWorkUsage usage,
-        long peakAdditionalRetainedBytes) {
+        long peakAdditionalRetainedBytes, java.util.Optional<CorridorExecutionReceipt> corridorReceipt) {
+    public TraceEngineRun(TraceHypothesisSet result, TraceWorkUsage usage, long peakAdditionalRetainedBytes) {
+        this(result, usage, peakAdditionalRetainedBytes, java.util.Optional.empty());
+    }
     /** Compatibility constructor for engines not yet connected to the attempt-memory seam. */
     public TraceEngineRun(TraceHypothesisSet result, TraceWorkUsage usage) {
         this(result, usage, 0L);
@@ -14,13 +17,14 @@ public record TraceEngineRun(TraceHypothesisSet result, TraceWorkUsage usage,
     public TraceEngineRun {
         if (result == null || usage == null
                 || usage.distinctAlternatives() != result.hypotheses().size()
-                || peakAdditionalRetainedBytes < 0L) {
+                || peakAdditionalRetainedBytes < 0L || corridorReceipt == null
+                || corridorReceipt.isPresent() && result.engine() != org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.CORRIDOR_AWARE) {
             throw new IllegalArgumentException("Trace result usage is incomplete");
         }
     }
 
     /** Returns an otherwise identical run with a factual attempt-memory high-water mark. */
     public TraceEngineRun withPeakAdditionalRetainedBytes(long peakBytes) {
-        return new TraceEngineRun(result, usage, peakBytes);
+        return new TraceEngineRun(result, usage, peakBytes, corridorReceipt);
     }
 }

@@ -11,6 +11,33 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 class CorridorBridgeBindingTest {
     static final RasterMetricTransform FRAME=RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1);
 
+    @Test void objectiveAdjacencyReportMatchesSuccessAndResetsForNextTrack()throws Exception{
+        var f=fixture();var optimizer=guarded(CancellationProbe.NONE);var context=context();
+        var domain=original(optimizer,f,context);var result=optimizer.optimizeOriginalDomain(domain);
+        assertTrue(result.adjacentGeometryEntries()>0);
+        assertEquals(result.adjacentGeometryEntries(),optimizer.preparedAdjacentObjectiveEntries());
+        original(optimizer,f,context);
+        assertEquals(0,optimizer.preparedAdjacentObjectiveEntries());
+    }
+
+    @Test void physicalEdgeCacheCancellationDoesNotInventObjectiveEntries()throws Exception{
+        var f=fixture();var calls=new java.util.concurrent.atomic.AtomicInteger();
+        CancellationProbe cancel=()->StackWalker.getInstance().walk(frames->frames.anyMatch(frame->frame.getMethodName().equals("metricEdgeCache")))
+            &&calls.incrementAndGet()==f.profiles().size()+3;
+        var optimizer=guarded(cancel);var domain=original(optimizer,f,context());
+        assertThrows(java.util.concurrent.CancellationException.class,()->optimizer.optimizeOriginalDomain(domain));
+        assertTrue(optimizer.hardGeometryWork().metricEdges()>0);
+        assertEquals(0,optimizer.preparedAdjacentObjectiveEntries());
+    }
+
+    @Test void cancellationAfterObjectiveWorkKeepsPositiveActualEntries()throws Exception{
+        var f=fixture();var holder=new CorridorCenterlineOptimizer[1];
+        holder[0]=guarded(()->holder[0].preparedAdjacentObjectiveEntries()>0);
+        var domain=original(holder[0],f,context());
+        assertThrows(java.util.concurrent.CancellationException.class,()->holder[0].optimizeOriginalDomain(domain));
+        assertTrue(holder[0].preparedAdjacentObjectiveEntries()>0);
+    }
+
     @Test void equalStateCoordinatesCannotReuseAdmissionFromAnotherOriginalDomain()throws Exception{
         var f=fixture();var optimizer=guarded(()->false);var context=context();
         var first=original(optimizer,f,context);var admission=prepare(first,context);
