@@ -418,10 +418,17 @@ public final class LiveBPreviewService {
             ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options,
             Map<String, Number> counters, IntervalTraceBatch intervalBatch,
             String settingsResolutionJson, List<DetectorAttempt> sourceAttempts,
-            LegacyBComputation legacyB) {
+            LegacyBComputation legacyB,
+            java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorExecutionReceipt> corridorReceipt) {
+        public Computed(Captured captured,EvidenceSnapshot evidence,TraceRequest request,ModernTracePipeline.Result pipeline,
+            ModernTracePipeline.Options options,Map<String,Number> counters,IntervalTraceBatch intervalBatch,
+            String settingsResolutionJson,List<DetectorAttempt> sourceAttempts,LegacyBComputation legacyB){
+            this(captured,evidence,request,pipeline,options,counters,intervalBatch,settingsResolutionJson,sourceAttempts,legacyB,java.util.Optional.empty());
+        }
         public Computed {
             if (captured == null || evidence == null || request == null || options == null
-                    || (pipeline == null) == (intervalBatch == null)) {
+                    || (pipeline == null) == (intervalBatch == null) || corridorReceipt == null
+                    || pipeline == null && corridorReceipt.isPresent()) {
                 throw new IllegalArgumentException("Exactly one live preview result variant is required");
             }
             if (pipeline != null && pipeline.inference().engine() != request.engine()) {
@@ -438,6 +445,7 @@ public final class LiveBPreviewService {
                 throw new IllegalArgumentException("Interval result must retain its frozen capture");
             }
             counters = Map.copyOf(counters);
+            corridorReceipt.ifPresent(receipt->receipt.requireBinding(request,evidence,captured.network(),pipeline.inference()));
             sourceAttempts = List.copyOf(sourceAttempts);
             if (sourceAttempts.stream().anyMatch(attempt -> attempt.owner() != null
                     && (attempt.owner().captured() != captured
@@ -475,7 +483,10 @@ public final class LiveBPreviewService {
         }
         public Computed withSourceAttempts(List<DetectorAttempt> attempts) {
             return new Computed(captured, evidence, request, pipeline, options, counters,
-                    intervalBatch, settingsResolutionJson, attempts, legacyB);
+                    intervalBatch, settingsResolutionJson, attempts, legacyB,corridorReceipt);
+        }
+        public Computed withCorridorReceipt(java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorExecutionReceipt> receipt){
+            return new Computed(captured,evidence,request,pipeline,options,counters,intervalBatch,settingsResolutionJson,sourceAttempts,legacyB,receipt);
         }
         public Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
                 ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options,
@@ -492,7 +503,7 @@ public final class LiveBPreviewService {
                             attempt.sourceTier(), attempt.status(),
                             attempt.owner().withSettingsResolution(redactedJson))).toList();
             return new Computed(captured, evidence, request, pipeline, options, counters,
-                    intervalBatch, redactedJson, updated, legacyB);
+                    intervalBatch, redactedJson, updated, legacyB,corridorReceipt);
         }
         /** Whether this result contains production interval runs instead of a full-way run. */
         public boolean partitioned() {
@@ -1615,7 +1626,7 @@ public final class LiveBPreviewService {
             ModernTracePipeline.PipelineRun run = new ModernTracePipeline(new CorridorEngineAdapter(FIELD))
                     .runWithUsage(request, evidence, captured.network(), options, cancellation, Set.of());
             return new ChoiceRun(new Computed(captured, evidence, request, run.result(), options,
-                    ModernDiagnosticCounters.snapshot()), run.usage());
+                    ModernDiagnosticCounters.snapshot()).withCorridorReceipt(run.corridorReceipt()), run.usage());
         } finally {
             ModernDiagnosticCounters.end();
         }
@@ -1860,7 +1871,7 @@ public final class LiveBPreviewService {
                 remainingTransitions -= usage.transitions();
                 retainedRoutes += production.result().routes().size();
                 runs.add(new IntervalTraceBatch.IntervalRun(interval, request,
-                        production.result(), usage));
+                        production.result(), usage,production.corridorReceipt()));
             }
             cancellation.checkpoint();
             return new IntervalTraceBatch(fullRequest, evidence, captured.network(), partition,

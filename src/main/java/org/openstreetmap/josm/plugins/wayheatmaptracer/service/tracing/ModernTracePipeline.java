@@ -110,9 +110,11 @@ public final class ModernTracePipeline {
     }
 
     /** Production result with actual engine work for an outer attempt-wide budget. */
-    public record PipelineRun(Result result, TraceWorkUsage usage) {
+    public record PipelineRun(Result result, TraceWorkUsage usage,
+            java.util.Optional<CorridorExecutionReceipt> corridorReceipt) {
+        public PipelineRun(Result result,TraceWorkUsage usage){this(result,usage,java.util.Optional.empty());}
         public PipelineRun {
-            if (result == null || usage == null) {
+            if (result == null || usage == null || corridorReceipt == null) {
                 throw new IllegalArgumentException("Pipeline work result is incomplete");
             }
         }
@@ -209,10 +211,13 @@ public final class ModernTracePipeline {
                             request.budgets().maximumRawAlternatives(), result.hypotheses().size()));
         }
         TraceHypothesisSet inference = engineRun.result();
+        var corridorReceipt=engineRun.corridorReceipt();
+        corridorReceipt.ifPresent(receipt->receipt.requireBinding(request,evidence,network,inference));
         long inferenceNanos = System.nanoTime() - inferenceStarted;
         if (inference.hypotheses().isEmpty()) {
-            return new PipelineRun(new Result(inference, List.of()), engineRun.usage());
+            return new PipelineRun(new Result(inference, List.of()), engineRun.usage(),corridorReceipt);
         }
+        try {
         ScalarEvidenceField scalar = evidence.fields().get(options.fieldName());
         if (scalar == null) {
             throw new IllegalArgumentException("Configured scalar field is unavailable");
@@ -226,7 +231,8 @@ public final class ModernTracePipeline {
             cancellation.checkpoint();
             long routeStarted = System.nanoTime();
             routes.add(finalizeRoute(hypothesis, inference, image, evidence, network,
-                    request, options, pitch, cancellation, exactFixed, disconnections));
+                    request, options, pitch, cancellation, exactFixed, disconnections,
+                    corridorReceipt.map(receipt->receipt.candidates().get(hypothesis.id()))));
             finalizationNanos += System.nanoTime() - routeStarted;
         }
         long rankingStarted = System.nanoTime();
@@ -242,7 +248,11 @@ public final class ModernTracePipeline {
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
                 "pipeline.routes", ranked.size());
         }
-        return new PipelineRun(new Result(inference, ranked), engineRun.usage());
+        return new PipelineRun(new Result(inference, ranked), engineRun.usage(),corridorReceipt);
+        } catch (java.util.concurrent.CancellationException cancelled) {
+            if(corridorReceipt.isPresent())throw new CorridorFinalizationCancelledException(engineRun,cancelled);
+            throw cancelled;
+        }
     }
 
     private static long millis(long nanos) {
@@ -267,12 +277,23 @@ public final class ModernTracePipeline {
             ImageCostField image, EvidenceSnapshot evidence, NetworkSnapshot network,
             TraceRequest request, Options options, double pitch, CancellationProbe cancellation,
             Set<Integer> fixedOccurrences, SharedNodeDisconnectionPlanner.Authority disconnections) {
+        return finalizeRoute(source,inference,image,evidence,network,request,options,pitch,cancellation,
+            fixedOccurrences,disconnections,java.util.Optional.empty());
+    }
+
+    private static Route finalizeRoute(TraceHypothesis source,TraceHypothesisSet inference,
+            ImageCostField image,EvidenceSnapshot evidence,NetworkSnapshot network,TraceRequest request,
+            Options options,double pitch,CancellationProbe cancellation,Set<Integer> fixedOccurrences,
+            SharedNodeDisconnectionPlanner.Authority disconnections,
+            java.util.Optional<CorridorExecutionReceipt.CandidateProvenance> corridorProvenance){
         SeedGeometry seed = seedGeometry(source, evidence, network, request, fixedOccurrences, disconnections);
         ImageSupportedLocalCleanup.Mode mode = request.geometryMode()
                 == AlignmentMode.MOVE_EXISTING_NODES
                 || request.engine() == TrackerMode.PROBABILISTIC
                 ? ImageSupportedLocalCleanup.Mode.OFF
                 : cleanupMode(options.cleanup().mode());
+        if(corridorProvenance.filter(CorridorExecutionReceipt.CandidateProvenance::cleanupUnavailable).isPresent())
+            mode=ImageSupportedLocalCleanup.Mode.OFF;
         long cleanupStarted = System.nanoTime();
         ImageSupportedLocalCleanup.Result cleanup = new ImageSupportedLocalCleanup().clean(
                 new ImageSupportedLocalCleanup.Request(seed.pointIds(), seed.points(),

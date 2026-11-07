@@ -27,9 +27,15 @@ public final class CorridorAwareTracker {
     private final Map<String,CorridorWorkingSchedule.Preparation> preparations=new LinkedHashMap<>();
     private final Map<String,CorridorCenterlineOptimizer.PreparedOptimization> preparedOptimizations=new LinkedHashMap<>();
     private final Map<String,TrackPreparationWork> preparationWork=new LinkedHashMap<>();
+    private java.util.OptionalInt correspondenceDiscoveredTracks=java.util.OptionalInt.empty();
     public record TrackPreparationWork(CorridorCenterlineOptimizer.PreparedWork preparation,
-        java.util.Optional<CorridorWorkingSchedule.Preparation> admission,CorridorCenterlineOptimizer.HardGeometryWork hardGeometry){ }
+        java.util.Optional<CorridorWorkingSchedule.Preparation> admission,CorridorCenterlineOptimizer.HardGeometryWork hardGeometry,
+        long adjacentObjectiveEntries){ }
     public Map<String,TrackPreparationWork> correspondenceWork(){return Map.copyOf(preparationWork);}
+    /** Visits immutable current-track records without materializing another complete diagnostic map. */
+    public void visitCorrespondenceWork(java.util.function.BiConsumer<String,TrackPreparationWork> visitor){preparationWork.forEach(visitor);}
+    /** Complete discovery count becomes available only after native grouping, before its budget gate. */
+    public java.util.OptionalInt correspondenceDiscoveredTracks(){return correspondenceDiscoveredTracks;}
     private final CorridorCoverageCalculator coverageCalculator = new CorridorCoverageCalculator();
 
     /**
@@ -82,6 +88,10 @@ public final class CorridorAwareTracker {
     }
     public Map<String,CorridorWorkingSchedule.Preparation> correspondencePreparations(){return Map.copyOf(preparations);}
     public Map<String,CorridorCenterlineOptimizer.PreparedOptimization> preparedOptimizations(){return Map.copyOf(preparedOptimizations);}
+    /** Invocation-local constant-time lookup without copying the population of prepared results. */
+    public java.util.Optional<CorridorCenterlineOptimizer.PreparedOptimization> preparedOptimization(String trackId){
+        return java.util.Optional.ofNullable(preparedOptimizations.get(trackId));
+    }
 
     /**
      * Converts complete scalar profiles into corridor-aware centerline candidates.
@@ -388,10 +398,11 @@ public final class CorridorAwareTracker {
         long scaleAssociationNanos,
         TraceBudgets budgets
     ) {
-        if(preparedCorrespondence!=null){preparations.clear();preparedOptimizations.clear();preparationWork.clear();}
+        if(preparedCorrespondence!=null){preparations.clear();preparedOptimizations.clear();preparationWork.clear();correspondenceDiscoveredTracks=java.util.OptionalInt.empty();}
         long trackingStart = System.nanoTime();
         List<CorridorTrack> elementary = tracker.track(corridorProfiles, sourcePixelSizePx, scaleEvidence);
         CorridorGrouping.GroupingResult grouped = grouping.group(elementary, corridorProfiles, sourcePixelSizePx);
+        if(preparedCorrespondence!=null)correspondenceDiscoveredTracks=java.util.OptionalInt.of(grouped.tracks().size());
         if (budgets != null) {
             enforceSolverBudgets(grouped.tracks().size(), corridorProfiles.size(), budgets);
         }
@@ -451,14 +462,14 @@ public final class CorridorAwareTracker {
                 }catch(java.util.concurrent.CancellationException cancelled){
                     if(cancelled instanceof CorridorWorkingSchedule.PreparationCancelledException partial)preparations.put(track.id(),partial.spent());
                     optimizer.preparationFailed("CANCELLED");throw cancelled;
-                }catch(CorridorResourceLimitException limited){
+                }catch(CorridorResourceLimitException|CorridorCenterlineOptimizer.HardGeometryResourceLimitException limited){
                     optimizer.preparationFailed("RESOURCE_LIMIT");throw limited;
                 }catch(IllegalArgumentException corrupt){
                     if(!optimizer.preparedWork().outcome().equals("BINDING_REFUSED"))optimizer.preparationFailed("BINDING_OR_EXECUTION_FAILURE");
                     throw corrupt;
                 }finally{
                     preparationWork.put(track.id(),new TrackPreparationWork(optimizer.preparedWork(),
-                        java.util.Optional.ofNullable(preparations.get(track.id())),optimizer.hardGeometryWork()));
+                        java.util.Optional.ofNullable(preparations.get(track.id())),optimizer.hardGeometryWork(),optimizer.preparedAdjacentObjectiveEntries()));
                 }
             }
             if (optimized.offsetsPx().isEmpty()) {
