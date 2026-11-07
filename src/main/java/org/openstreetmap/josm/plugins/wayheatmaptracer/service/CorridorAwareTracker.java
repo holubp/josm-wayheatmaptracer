@@ -23,8 +23,13 @@ public final class CorridorAwareTracker {
     private final CorridorTubeBuilder tubeBuilder;
     private final CorridorCenterlineOptimizer optimizer;
     private final PreparedCorrespondencePolicy preparedCorrespondence;
+    private final CorridorWorkingSchedule.BoundContext correspondenceContext;
     private final Map<String,CorridorWorkingSchedule.Preparation> preparations=new LinkedHashMap<>();
     private final Map<String,CorridorCenterlineOptimizer.PreparedOptimization> preparedOptimizations=new LinkedHashMap<>();
+    private final Map<String,TrackPreparationWork> preparationWork=new LinkedHashMap<>();
+    public record TrackPreparationWork(CorridorCenterlineOptimizer.PreparedWork preparation,
+        java.util.Optional<CorridorWorkingSchedule.Preparation> admission,CorridorCenterlineOptimizer.HardGeometryWork hardGeometry){ }
+    public Map<String,TrackPreparationWork> correspondenceWork(){return Map.copyOf(preparationWork);}
     private final CorridorCoverageCalculator coverageCalculator = new CorridorCoverageCalculator();
 
     /**
@@ -47,9 +52,21 @@ public final class CorridorAwareTracker {
     /** Explicit experimental correspondence injection; default discovery/domain/diagnostics are retained. */
     CorridorAwareTracker(CorridorCenterlineOptimizer optimizer,CorridorTubeBuilder tubeBuilder,
         PreparedCorrespondencePolicy preparedCorrespondence){
+        this(optimizer,tubeBuilder,preparedCorrespondence,null);
+    }
+    private CorridorAwareTracker(CorridorCenterlineOptimizer optimizer,CorridorTubeBuilder tubeBuilder,
+        PreparedCorrespondencePolicy preparedCorrespondence,CorridorWorkingSchedule.BoundContext context){
         this.optimizer = java.util.Objects.requireNonNull(optimizer);
         this.tubeBuilder = java.util.Objects.requireNonNull(tubeBuilder);
         this.preparedCorrespondence=preparedCorrespondence;
+        correspondenceContext=context;
+    }
+
+    /** Bound public experiment; admission and inference share the actual frozen context token. */
+    public static CorridorAwareTracker withTargetOwnedBridgeCorrespondence(CorridorCenterlineOptimizer optimizer,
+        CorridorWorkingSchedule.BoundContext context,PreparedCorrespondencePolicy policy){
+        return new CorridorAwareTracker(optimizer,new CorridorTubeBuilder(CorridorTubeBuilder.MotionPolicy.TARGET_OWNED_APEX),
+            java.util.Objects.requireNonNull(policy),java.util.Objects.requireNonNull(context));
     }
 
     /** Named opt-in correspondence experiment on the ordinary owned-apex tube only. */
@@ -371,7 +388,7 @@ public final class CorridorAwareTracker {
         long scaleAssociationNanos,
         TraceBudgets budgets
     ) {
-        if(preparedCorrespondence!=null){preparations.clear();preparedOptimizations.clear();}
+        if(preparedCorrespondence!=null){preparations.clear();preparedOptimizations.clear();preparationWork.clear();}
         long trackingStart = System.nanoTime();
         List<CorridorTrack> elementary = tracker.track(corridorProfiles, sourcePixelSizePx, scaleEvidence);
         CorridorGrouping.GroupingResult grouped = grouping.group(elementary, corridorProfiles, sourcePixelSizePx);
@@ -404,6 +421,8 @@ public final class CorridorAwareTracker {
                 optimized=optimizer.optimize(track,corridorProfiles,sourcePixelSizePx,junctionContext,
                     effectiveScaleEvidence,tube,cleanupConfig);
             }else{
+                optimizer.startTrackPreparation();
+                try{
                 if(!cleanupConfig.isDisabled())throw new IllegalArgumentException("Prepared correspondence requires cleanup Off");
                 var limits=budgets==null?TraceBudgets.defaults():budgets;
                 if(correspondencePairWork>=limits.maximumPairVisits()||correspondenceTransitions>=limits.maximumTransitions())
@@ -411,13 +430,13 @@ public final class CorridorAwareTracker {
                 var remaining=new TraceBudgets(limits.maximumStatesPerProfile(),limits.maximumPairVisits()-correspondencePairWork,
                     limits.maximumTransitions()-correspondenceTransitions,limits.maximumRawAlternatives(),limits.maximumDistinctAlternatives());
                 var original=optimizer.prepareOriginalDomain(track,corridorProfiles,sourcePixelSizePx,
-                    junctionContext,effectiveScaleEvidence,tube,remaining);
+                    junctionContext,effectiveScaleEvidence,tube,remaining,correspondenceContext);
                 var admission=preparedCorrespondence.prepare(original);
                 preparations.put(track.id(),admission);
                 long spent=Math.addExact(admission.contactTests(),admission.pairTests());
                 correspondencePairWork=Math.addExact(correspondencePairWork,spent);
                 if("RESOURCE_LIMIT".equals(admission.status()))throw new CorridorResourceLimitException("Prepared admission work cap");
-                if("NO_TRIGGER".equals(admission.status())){
+                if("NO_TRIGGER".equals(admission.status())||admission.status().startsWith("REFUSED_")&&!admission.status().contains("BINDING")){
                     if(spent>=remaining.maximumPairVisits())throw new CorridorResourceLimitException("Prepared admission exhausted pair work");
                     var solveLimits=new TraceBudgets(remaining.maximumStatesPerProfile(),remaining.maximumPairVisits()-spent,
                         remaining.maximumTransitions(),remaining.maximumRawAlternatives(),remaining.maximumDistinctAlternatives());
@@ -426,9 +445,21 @@ public final class CorridorAwareTracker {
                 else if(admission.admitted()){
                     prepared=optimizer.optimizePrepared(original,admission);
                     preparedOptimizations.put(track.id(),prepared);optimized=prepared.geometry();
-                }else{tubes.put(track.id(),tube);continue;}
+                }else{throw new IllegalArgumentException("Terminal correspondence admission failure: "+admission.status());}
                 correspondencePairWork=Math.addExact(correspondencePairWork,optimized.adjacentGeometryEntries());
                 correspondenceTransitions=Math.addExact(correspondenceTransitions,optimized.transitionEvaluations());
+                }catch(java.util.concurrent.CancellationException cancelled){
+                    if(cancelled instanceof CorridorWorkingSchedule.PreparationCancelledException partial)preparations.put(track.id(),partial.spent());
+                    optimizer.preparationFailed("CANCELLED");throw cancelled;
+                }catch(CorridorResourceLimitException limited){
+                    optimizer.preparationFailed("RESOURCE_LIMIT");throw limited;
+                }catch(IllegalArgumentException corrupt){
+                    if(!optimizer.preparedWork().outcome().equals("BINDING_REFUSED"))optimizer.preparationFailed("BINDING_OR_EXECUTION_FAILURE");
+                    throw corrupt;
+                }finally{
+                    preparationWork.put(track.id(),new TrackPreparationWork(optimizer.preparedWork(),
+                        java.util.Optional.ofNullable(preparations.get(track.id())),optimizer.hardGeometryWork()));
+                }
             }
             if (optimized.offsetsPx().isEmpty()) {
                 if (optimized.disposition() == CorridorCenterlineOptimizer.SolverDisposition.NO_LEGAL_PATH) {

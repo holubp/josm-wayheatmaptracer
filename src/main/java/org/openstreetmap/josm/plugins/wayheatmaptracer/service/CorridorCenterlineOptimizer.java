@@ -37,10 +37,11 @@ public final class CorridorCenterlineOptimizer {
     /** Spent prepared-domain work, independent of historical/default optimizer diagnostics. */
     public PreparedWork preparedWork(){return preparedCounters.snapshot();}
     public record PreparedWork(long originalStates,long retainedUnaryEvaluations,long bridgeUnaryEvaluations,
-        long reservedBytes,String outcome){ }
+        java.util.OptionalLong estimatedPreparedTableBytes,String outcome,long originalRows,long copiedProfileRows,long solverStarts){ }
     private static final class PreparedCounters{
-        long original,retained,bridge,bytes;String outcome="UNSTARTED";
-        PreparedWork snapshot(){return new PreparedWork(original,retained,bridge,bytes,outcome);}
+        long original,retained,bridge,rows,copied,solves;long bytes=-1;String outcome="UNSTARTED";
+        void reset(){original=retained=bridge=rows=copied=solves=0;bytes=-1;outcome="UNSTARTED";}
+        PreparedWork snapshot(){return new PreparedWork(original,retained,bridge,bytes<0?java.util.OptionalLong.empty():java.util.OptionalLong.of(bytes),outcome,rows,copied,solves);}
     }
 
     /**
@@ -85,12 +86,37 @@ public final class CorridorCenterlineOptimizer {
     public HardGeometryWork hardGeometryWork() { return hardGeometryWork; }
 
     /** Original evidence/domain capsule, prepared before any observation/output correspondence choice. */
-    public record OriginalDomain(CorridorTrack track,List<CorridorProfile> profiles,double sourcePixel,
-        JunctionContext junctions,Map<String,BandScaleEvidence> scales,LongitudinalCorridorTube tube,
-        EndpointApproachModel approaches,List<List<Double>> states,org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets){
-        public OriginalDomain{
-            profiles=List.copyOf(profiles);scales=Map.copyOf(scales);states=states.stream().map(List::copyOf).toList();
+    public static final class OriginalDomain {
+        private final Object token;
+        private final CorridorTrack track;private final List<CorridorProfile> profiles;private final double sourcePixel;
+        private final JunctionContext junctions;private final Map<String,BandScaleEvidence> scales;
+        private final LongitudinalCorridorTube tube;private final EndpointApproachModel approaches;
+        private final List<List<Double>> states;private final org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets;
+        private final CorridorWorkingSchedule.BoundContext context;private final PreparedWork generationWork;
+        private OriginalDomain(CorridorTrack track,List<CorridorProfile> profiles,double sourcePixel,JunctionContext junctions,
+            Map<String,BandScaleEvidence> scales,LongitudinalCorridorTube tube,EndpointApproachModel approaches,
+            List<List<Double>> states,org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets,
+            CorridorWorkingSchedule.BoundContext context,Object token,PreparedWork work){
+            this.track=track;this.profiles=List.copyOf(profiles);this.sourcePixel=sourcePixel;this.junctions=junctions;
+            this.scales=Map.copyOf(scales);this.tube=tube;this.approaches=approaches;this.states=states.stream().map(List::copyOf).toList();
+            this.budgets=budgets;this.context=context;this.token=token;generationWork=work;
         }
+        public CorridorTrack track(){return track;}
+        /** Defensive scalar-profile copies keep mutable Point2D normals outside the frozen domain. */
+        public List<CorridorProfile> profiles(){return copyProfiles(profiles);}
+        public double sourcePixel(){return sourcePixel;} public JunctionContext junctions(){return junctions;}
+        public Map<String,BandScaleEvidence> scales(){return scales;} public LongitudinalCorridorTube tube(){return tube;}
+        public EndpointApproachModel approaches(){return approaches;} public List<List<Double>> states(){return states;}
+        public org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets(){return budgets;}
+        Object token(){return token;} CorridorWorkingSchedule.BoundContext context(){return context;}
+    }
+
+    private static List<CorridorProfile> copyProfiles(List<CorridorProfile> profiles){
+        return profiles.stream().map(p->{var s=p.source();var n=s.normalScreen();
+            if(!(s.samplingAnchor() instanceof ProfileSamplingAnchor)&&!(s.samplingAnchor() instanceof DetachedProfileSamplingLocation))
+                throw new IllegalArgumentException("Immutable known profile sampling location required");
+            var copy=new RenderedHeatmapSampler.CrossSectionProfile(s.samplingAnchor(),new Point2D.Double(n.x,n.y),s.peaks(),s.anchorWithinRaster(),s.intensitySamples(),s.projectedLateralTransform());
+            return new CorridorProfile(p.index(),copy,p.bands(),p.maxIntensity(),p.noiseFloor(),p.prominence(),p.supported());}).toList();
     }
 
     /** Builds the historical complete original state domain without executing inference. */
@@ -102,19 +128,35 @@ public final class CorridorCenterlineOptimizer {
     public OriginalDomain prepareOriginalDomain(CorridorTrack track,List<CorridorProfile> profiles,
         double sourcePixel,JunctionContext junctions,Map<String,BandScaleEvidence> scales,LongitudinalCorridorTube tube,
         org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets){
+        return prepareOriginalDomain(track,profiles,sourcePixel,junctions,scales,tube,budgets,null);
+    }
+    public OriginalDomain prepareOriginalDomain(CorridorTrack track,List<CorridorProfile> profiles,
+        double sourcePixel,JunctionContext junctions,Map<String,BandScaleEvidence> scales,LongitudinalCorridorTube tube,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets,CorridorWorkingSchedule.BoundContext context){
+        preparedCounters.reset();preparedCounters.outcome="ORIGINAL_PREPARING";
+        hardGeometryWork=new HardGeometryWork(HardGeometryOutcome.DISABLED,0,0,0,0,0,0,0,0);
+        try{
         sourcePixel=validSourcePixel(sourcePixel);
         if(profiles.isEmpty()||profiles.size()!=tube.slices().size())throw new IllegalArgumentException("Original tube alignment differs");
+        profiles=copyProfiles(profiles);preparedCounters.copied=profiles.size();scales=Map.copyOf(scales);
+        if(context!=null)for(var p:profiles)context.requireProfileFrame(p.source().samplingAnchor());
         var approaches=new EndpointApproachBuilder().build(track,profiles,tube,junctions,scales);
         var states=new ArrayList<List<Double>>();
         for(int row=0;row<profiles.size();row++){
             hardGeometryCancellation.checkpoint();
             states.add(allowedOffsets(track,profiles,row,sourcePixel,junctions,scales,tube.at(row),approaches));
+            preparedCounters.rows++;preparedCounters.original+=states.get(row).size();
         }
-        return new OriginalDomain(track,profiles,sourcePixel,junctions,scales,tube,approaches,states,java.util.Objects.requireNonNull(budgets));
+        preparedCounters.outcome="ORIGINAL_PREPARED";
+        return new OriginalDomain(track,profiles,sourcePixel,junctions,scales,tube,approaches,states,java.util.Objects.requireNonNull(budgets),context,new Object(),preparedCounters.snapshot());
+        }catch(java.util.concurrent.CancellationException cancelled){preparedCounters.outcome="CANCELLED";throw cancelled;}
+        catch(IllegalArgumentException corrupt){preparedCounters.outcome="BINDING_OR_INPUT_FAILURE";throw corrupt;}
     }
 
     /** Identity schedule: uses the already prepared original models/states, with unchanged disabled-cleanup arithmetic. */
     public OptimizationResult optimizeOriginalDomain(OriginalDomain d){
+        beginInference(d);
+        try{
         long pairs=0,transitions=0;
         for(int i=0;i<d.states().size();i++){
             int count=d.states().get(i).size();
@@ -127,23 +169,36 @@ public final class CorridorCenterlineOptimizer {
         var cleanup=GeometryCleanupConfig.disabled();
         var ripple=new UnsupportedRippleEvaluator().evaluate(d.track(),d.tube(),d.sourcePixel(),cleanup.rippleScaleMeters(),false);
         var gates=rippleEndpointGates(d.profiles().size(),d.approaches());
-        var solution=solveExact(d.track(),d.profiles(),d.states(),d.sourcePixel(),d.junctions(),d.scales(),d.tube(),d.approaches(),ripple,gates,0);
-        return finishOptimization(d.track(),d.profiles(),d.sourcePixel(),d.junctions(),d.scales(),d.tube(),cleanup,d.approaches(),ripple,gates,0,solution);
+        preparedCounters.solves++;
+        var solution=solveExact(d.track(),d.profiles,d.states(),d.sourcePixel(),d.junctions(),d.scales(),d.tube(),d.approaches(),ripple,gates,0);
+        var result=finishOptimization(d.track(),d.profiles,d.sourcePixel(),d.junctions(),d.scales(),d.tube(),cleanup,d.approaches(),ripple,gates,0,solution);
+        preparedCounters.retained=result.profileCostEvaluations();preparedCounters.outcome=result.disposition().name();return result;
+        }catch(java.util.concurrent.CancellationException cancelled){preparedCounters.retained=hardGeometryWork.profileCostEvaluations();preparedCounters.outcome="CANCELLED";throw cancelled;}
+        catch(CorridorResourceLimitException limited){preparedCounters.outcome="RESOURCE_LIMIT";throw limited;}
+        catch(ArithmeticException overflow){preparedCounters.outcome="RESOURCE_LIMIT";throw new CorridorResourceLimitException("Prepared table/work estimate overflow");}
     }
 
     static OriginalDomain withBudgets(OriginalDomain d,org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets){
-        return new OriginalDomain(d.track(),d.profiles(),d.sourcePixel(),d.junctions(),d.scales(),d.tube(),d.approaches(),d.states(),budgets);
+        return new OriginalDomain(d.track(),d.profiles,d.sourcePixel(),d.junctions(),d.scales(),d.tube(),d.approaches(),d.states(),budgets,d.context,d.token,d.generationWork);
+    }
+
+    private void beginInference(OriginalDomain d){
+        preparedCounters.reset();preparedCounters.original=d.generationWork.originalStates();preparedCounters.rows=d.generationWork.originalRows();
+        preparedCounters.copied=d.generationWork.copiedProfileRows();preparedCounters.outcome="INFERENCE_PREPARING";
+        hardGeometryWork=new HardGeometryWork(HardGeometryOutcome.DISABLED,0,0,0,0,0,0,0,0);
     }
 
     /** Explicitly selected prepared schedule; no original-domain fallback on failure. */
     public PreparedOptimization optimizePrepared(OriginalDomain d,CorridorWorkingSchedule.Preparation p){
+        beginInference(d);
+        try{p.requireBound(d,hardGeometryTransform);}catch(IllegalArgumentException corrupt){preparedCounters.outcome="BINDING_REFUSED";throw corrupt;}
         if(!p.admitted())throw new IllegalArgumentException("Prepared correspondence was not admitted: "+p.status());
         if(hardGeometryTransform==null)throw new IllegalArgumentException("Prepared correspondence requires factual metric hard geometry guard");
         long spent=Math.addExact(p.contactTests(),p.pairTests());
-        if(spent>=d.budgets().maximumPairVisits())throw new CorridorResourceLimitException("Prepared admission exhausted pair work");
+        if(spent>=d.budgets().maximumPairVisits()){preparedCounters.outcome="RESOURCE_LIMIT";throw new CorridorResourceLimitException("Prepared admission exhausted pair work");}
         var remaining=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets(d.budgets().maximumStatesPerProfile(),
             d.budgets().maximumPairVisits()-spent,d.budgets().maximumTransitions(),d.budgets().maximumRawAlternatives(),d.budgets().maximumDistinctAlternatives());
-        return optimizePrepared(d.track(),d.profiles(),d.sourcePixel(),d.junctions(),d.scales(),d.tube(),d.approaches(),p.schedule(),d.states(),p.domain(),remaining);
+        return optimizePrepared(d.track(),d.profiles,d.sourcePixel(),d.junctions(),d.scales(),d.tube(),d.approaches(),p.schedule(),d.states(),p.domain(),remaining);
     }
 
     /**
@@ -289,6 +344,7 @@ public final class CorridorCenterlineOptimizer {
         double sourcePixel,JunctionContext junctions,Map<String,BandScaleEvidence> scale,
         LongitudinalCorridorTube tube,EndpointApproachModel approaches,CorridorWorkingSchedule schedule,
         List<List<Double>> allowed,CorridorWorkingSchedule.BridgeDomain domain) {
+        preparedCounters.reset();preparedCounters.outcome="GEOMETRY_ONLY_PREPARING";
         return optimizePrepared(track,profiles,sourcePixel,junctions,scale,tube,approaches,schedule,allowed,domain,
             org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets.defaults());
     }
@@ -300,6 +356,7 @@ public final class CorridorCenterlineOptimizer {
         try{return optimizePreparedInternal(track,profiles,sourcePixel,junctions,scale,tube,approaches,schedule,allowed,domain,limits);}
         catch(java.util.concurrent.CancellationException cancelled){preparedCounters.outcome="CANCELLED";throw cancelled;}
         catch(CorridorResourceLimitException limited){preparedCounters.outcome="RESOURCE_LIMIT";throw limited;}
+        catch(ArithmeticException overflow){preparedCounters.outcome="RESOURCE_LIMIT";throw new CorridorResourceLimitException("Prepared table/work estimate overflow");}
     }
 
     private PreparedOptimization optimizePreparedInternal(CorridorTrack track,List<CorridorProfile> profiles,
@@ -307,8 +364,8 @@ public final class CorridorCenterlineOptimizer {
         LongitudinalCorridorTube tube,EndpointApproachModel approaches,CorridorWorkingSchedule schedule,
         List<List<Double>> allowed,CorridorWorkingSchedule.BridgeDomain domain,
         org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets limits) {
-        preparedCounters.original=allowed.stream().mapToLong(List::size).sum();
-        preparedCounters.retained=0;preparedCounters.bridge=0;preparedCounters.bytes=0;preparedCounters.outcome="PREPARING";
+        long originalInventory=allowed.stream().mapToLong(List::size).sum();
+        preparedCounters.retained=0;preparedCounters.bridge=0;preparedCounters.bytes=-1;preparedCounters.outcome="PREPARING";
         if(profiles.size()!=schedule.originalCount()||allowed.size()!=profiles.size()
             ||tube.slices().size()!=profiles.size())throw new IllegalArgumentException("Original domain size differs");
         sourcePixel=validSourcePixel(sourcePixel);
@@ -332,12 +389,8 @@ public final class CorridorCenterlineOptimizer {
         }
         transitions=Math.addExact(transitions,Math.multiplyExact((long)allowed.get(schedule.originalRow(0)).size(),allowed.get(schedule.originalRow(1)).size()));
         long pairBytes=Math.multiplyExact((long)allowed.get(schedule.leftOriginalRow()).size(),allowed.get(schedule.rightOriginalRow()).size());
-        long reserved=Math.addExact(Math.multiplyExact(Math.addExact(points,edges),64L),Math.multiplyExact(schedule.workingCount(),128L));
-        // Include prepared OffsetState/point/list ownership and the complete retained original domain,
-        // separately from the existing metric cache reservation above.
-        reserved=Math.addExact(reserved,Math.addExact(Math.multiplyExact(points,80L),Math.multiplyExact(preparedCounters.original,40L)));
-        reserved=Math.addExact(reserved,Math.multiplyExact(pairBytes,24L));
-        reserved=Math.addExact(reserved,Math.multiplyExact((long)domain.edges().size(),Math.addExact(64L,Math.multiplyExact(schedule.consumedRows().size(),128L))));
+        long reserved=estimatePreparedTableBytes(originalInventory,points,edges,profiles.size(),schedule.workingCount(),pairBytes,domain.edges().size(),schedule.consumedRows().size());
+        preparedCounters.bytes=reserved;
         if(reserved>128L*1024*1024||edges>limits.maximumPairVisits()||transitions>limits.maximumTransitions()){
             preparedCounters.outcome="RESOURCE_LIMIT";throw new CorridorResourceLimitException("Prepared table/work cap");
         }
@@ -384,6 +437,7 @@ public final class CorridorCenterlineOptimizer {
         HardGeometryCounters work=hardGeometryTransform==null?null:new HardGeometryCounters();
         ExactSolution solution;
         try{
+            preparedCounters.solves++;
             solution=solveExactInternal(geometryTrack,geometryProfiles,schedule.retain(allowed),sourcePixel,
                 geometryJunctions,geometryScale,geometryTube,geometryApproaches,geometryRipple,geometryGates,0,work,prepared);
         }catch(java.util.concurrent.CancellationException cancelled){
@@ -406,6 +460,22 @@ public final class CorridorCenterlineOptimizer {
         }
         preparedCounters.outcome=result.disposition().name();
         return new PreparedOptimization(result,schedule,consumed,bridgeCost,bridgeCosts,approaches,bridgeRows);
+    }
+
+    void startTrackPreparation(){preparedCounters.reset();hardGeometryWork=new HardGeometryWork(HardGeometryOutcome.DISABLED,0,0,0,0,0,0,0,0);}
+    void preparationFailed(String outcome){preparedCounters.outcome=outcome;}
+
+    /** Scoped prepared/state/factor/metric-table estimate, excluding PairState ancestry and ordinary
+     * adjacent-geometry/transient/native-field allocations. No heap reservation or owner release is implied. */
+    static long estimatePreparedTableBytes(long originalStates,long points,long edges,long originalRows,
+        long retainedRows,long bridgePairs,long admittedEdges,long consumedRows){
+        for(long value:new long[]{originalStates,points,edges,originalRows,retainedRows,bridgePairs,admittedEdges,consumedRows})
+            if(value<0)throw new IllegalArgumentException("Prepared table counts must be nonnegative");
+        long bytes=Math.addExact(Math.multiplyExact(Math.addExact(points,edges),64L),Math.multiplyExact(retainedRows,128L));
+        bytes=Math.addExact(bytes,Math.addExact(Math.multiplyExact(points,80L),Math.multiplyExact(originalStates,40L)));
+        bytes=Math.addExact(bytes,Math.multiplyExact(originalRows,640L));
+        bytes=Math.addExact(bytes,Math.multiplyExact(bridgePairs,24L));
+        return Math.addExact(bytes,Math.multiplyExact(admittedEdges,Math.addExact(64L,Math.multiplyExact(consumedRows,128L))));
     }
 
     /** Separate original observation identity; the shortened geometry is never cleanup-ready. */

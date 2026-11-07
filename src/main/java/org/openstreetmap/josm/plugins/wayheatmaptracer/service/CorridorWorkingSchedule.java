@@ -79,24 +79,84 @@ public final class CorridorWorkingSchedule {
         };
     }
 
+    /** Actual immutable frozen caller identities and complete detached source-occurrence certificate. */
+    public static final class BoundContext {
+        private final String requestIdentity,networkIdentity,evidenceIdentity,protectionIdentity;
+        private final SourceProtection protection;
+        private final SegmentAuthority nativeAuthority;
+        private final org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame coordinateFrame;
+        private BoundContext(String request,String network,String evidence,String proof,SourceProtection protection,SegmentAuthority authority,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame coordinateFrame){
+            requestIdentity=request;networkIdentity=network;evidenceIdentity=evidence;protectionIdentity=proof;
+            this.protection=protection;nativeAuthority=authority;
+            this.coordinateFrame=coordinateFrame;
+        }
+        public String requestIdentity(){return requestIdentity;}
+        public String networkIdentity(){return networkIdentity;}
+        public String evidenceIdentity(){return evidenceIdentity;}
+        public String protectionIdentity(){return protectionIdentity;}
+        public RasterMetricTransform frame(){return nativeAuthority.frame();}
+        void requireProfileFrame(ProfileSamplingLocation location){
+            if(location instanceof DetachedProfileSamplingLocation detached&&(!frame().equals(detached.rasterTransform())
+                ||!coordinateFrame.equals(detached.coordinateFrame())))throw new IllegalArgumentException("Original sampled/native frame binding differs");
+        }
+    }
+    /** Binds actual evidence, not an analytic predicate. The caller supplies its complete detached proof identity. */
+    public static BoundContext bindContext(String requestIdentity,String networkIdentity,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot evidence,String fieldName,
+        SourceProtection protection,String completeProtectionProofIdentity,CancellationProbe cancellation){
+        for(String id:List.of(requestIdentity,networkIdentity,completeProtectionProofIdentity))
+            if(id.isBlank())throw new IllegalArgumentException("Complete frozen context identities required");
+        return new BoundContext(requestIdentity,networkIdentity,evidence.canonicalHash(),completeProtectionProofIdentity,
+            java.util.Objects.requireNonNull(protection),nativeAuthority(evidence,fieldName,cancellation),evidence.coordinateFrame());
+    }
+
     /** Admission result, including spent work on refused domains; no solver work is implied. */
-    public record Preparation(String status,CorridorWorkingSchedule schedule,BridgeDomain domain,
-        long contactTests,long pairTests,long rayTests,long nativeChecks){
+    public static final class Preparation {
+        private final String status;private final CorridorWorkingSchedule schedule;private final BridgeDomain domain;
+        private final long contactTests,pairTests,rayTests,nativeChecks;
+        private Preparation(String status,CorridorWorkingSchedule schedule,BridgeDomain domain,long contacts,long pairs,long rays,long nativeChecks){
+            this.status=status;this.schedule=schedule;this.domain=domain;contactTests=contacts;pairTests=pairs;rayTests=rays;this.nativeChecks=nativeChecks;
+        }
+        public String status(){return status;} public CorridorWorkingSchedule schedule(){return schedule;} public BridgeDomain domain(){return domain;}
+        public long contactTests(){return contactTests;} public long pairTests(){return pairTests;} public long rayTests(){return rayTests;} public long nativeChecks(){return nativeChecks;}
         public boolean admitted(){return "ADMITTED".equals(status);}
+        void requireBound(CorridorCenterlineOptimizer.OriginalDomain original,RasterMetricTransform frame){
+            if(!admitted()||domain==null||domain.originalToken!=original.token()||domain.context==null
+                ||domain.context!=original.context()||!domain.context.frame().equals(frame))
+                throw new IllegalArgumentException("Prepared original/frame/native/source binding differs");
+        }
+        @Override public String toString(){return "Preparation["+status+", contacts="+contactTests+", pairs="+pairTests+", rays="+rayTests+", native="+nativeChecks+"]";}
+    }
+    /** An external policy may refuse eligibility, but cannot manufacture a public admitted result. */
+    public static Preparation refusal(String reason){
+        if(reason==null||!reason.startsWith("REFUSED_")||reason.contains("BINDING"))throw new IllegalArgumentException("Eligibility refusal reason required");
+        return new Preparation(reason,null,null,0,0,0,0);
+    }
+
+    /** Public bound admission. Analytic geometry-only predicates cannot produce this seal. */
+    public static Preparation prepare(CorridorCenterlineOptimizer.OriginalDomain original,BoundContext context,
+        double nativePitch,CancellationProbe cancellation){
+        if(context==null||original.context()!=context)throw new IllegalArgumentException("Original native/source context binding differs");
+        var p=prepare(original.track(),original.profiles(),original.tube(),original.states(),original.scales(),original.approaches(),
+            original.junctions(),context.frame(),nativePitch,context.protection,context.nativeAuthority,cancellation,original.budgets());
+        if(!p.admitted())return p;
+        var bound=new BridgeDomain(p.schedule,original.states(),p.domain.edges,original.token(),context);
+        return new Preparation(p.status,p.schedule,bound,p.contactTests,p.pairTests,p.rayTests,p.nativeChecks);
     }
 
     /**
      * Selects the one local ordinary-tube component and certifies its complete prepared edge domain.
      * Caller supplies detached, complete source protection and the actual native segment predicate.
      */
-    public static Preparation prepare(CorridorTrack track,List<CorridorProfile> profiles,
+    static Preparation prepare(CorridorTrack track,List<CorridorProfile> profiles,
         LongitudinalCorridorTube tube,List<List<Double>> states,Map<String,BandScaleEvidence> scales,
         EndpointApproachModel approaches,JunctionContext junctions,RasterMetricTransform frame,
         double nativePitch,SourceProtection protection,SegmentAuthority authority,CancellationProbe cancellation){
         return prepare(track,profiles,tube,states,scales,approaches,junctions,frame,nativePitch,protection,authority,cancellation,
             org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets.defaults());
     }
-    public static Preparation prepare(CorridorCenterlineOptimizer.OriginalDomain original,RasterMetricTransform frame,
+    static Preparation prepare(CorridorCenterlineOptimizer.OriginalDomain original,RasterMetricTransform frame,
         double nativePitch,SourceProtection protection,SegmentAuthority authority,CancellationProbe cancellation){
         return prepare(original.track(),original.profiles(),original.tube(),original.states(),original.scales(),original.approaches(),
             original.junctions(),frame,nativePitch,protection,authority,cancellation,original.budgets());
@@ -220,7 +280,13 @@ public final class CorridorWorkingSchedule {
         private final List<List<Double>> originalStates;
         private final List<BridgeEdge> edges;
         private final BridgeEdge[][] indexed;
+        private final Object originalToken;
+        private final BoundContext context;
         private BridgeDomain(CorridorWorkingSchedule schedule,List<List<Double>> states,List<BridgeEdge> edges){
+            this(schedule,states,edges,null,null);
+        }
+        private BridgeDomain(CorridorWorkingSchedule schedule,List<List<Double>> states,List<BridgeEdge> edges,Object token,BoundContext context){
+            originalToken=token;this.context=context;
             this.schedule=schedule;originalStates=states.stream().map(List::copyOf).toList();
             this.edges=List.copyOf(edges);
             indexed=new BridgeEdge[states.get(schedule.left).size()][states.get(schedule.right).size()];
