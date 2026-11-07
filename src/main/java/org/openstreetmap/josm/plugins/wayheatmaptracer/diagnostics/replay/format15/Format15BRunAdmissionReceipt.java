@@ -33,7 +33,8 @@ final class Format15BRunAdmissionReceipt {
             for(int copied=0;copied<length;){cancellation.checkpoint();int chunk=Math.min(4096,length-copied);super.write(bytes,offset+copied,chunk);copied+=chunk;}
         }
     }
-    static boolean intervalPolicy(TraceRequest request){return request.engine()==TrackerMode.PROBABILISTIC&&BPolicy.recorded(request)==BPolicy.INVENTORY_PREP_V4;}
+    static boolean intervalPolicy(TraceRequest request){return request.engine()==TrackerMode.PROBABILISTIC
+            &&(BPolicy.recorded(request)==BPolicy.INVENTORY_PREP_V4||BPolicy.recorded(request)==BPolicy.INVENTORY_FRONTIER_V5);}
     static boolean referencePolicy(TraceRequest request){return request.engine()==TrackerMode.LEGACY_THEN_B&&BReferencePolicyBinding.isNewParentHash(request.parameterHash());}
     static String requestHash(TraceRequest request) {
         return requestHash(request,CancellationProbe.NONE);
@@ -221,7 +222,8 @@ final class Format15BRunAdmissionReceipt {
             pairs=Math.addExact(pairs,usage.pairVisits());scores=Math.addExact(scores,usage.transitions());
             if(e.witness()==null||e.work().isEmpty()||e.status()==TraceHypothesisSet.Status.CANCELLED){attested=false;continue;}
             var bounds=DenseBAdmission.validateWitness(e.witness(),b,e.profiles());var nativeWork=e.work().orElseThrow();
-            String expected=bounds.admitted()?BPolicy.INVENTORY_FULL_VERSION:BPolicy.INVENTORY_COMPACT_VERSION;
+            var policy=root.engine()==TrackerMode.PROBABILISTIC?BPolicy.recorded(root):BPolicy.INVENTORY_PREP_V4;
+            String expected=bounds.admitted()?policy.fullExecutionVersion():policy.compactExecutionVersion();
             if(nativeWork.bStages().size()!=1||nativeWork.otherEngineTransitions()!=0||!nativeWork.hasPolicy(expected)||nativeWork.computedTransitions()!=usage.transitions()
                     ||bounds.admitted()&&(nativeWork.computedTransitions()>bounds.scoreUpper()||nativeWork.bStages().get(0).refusedScoreAttempts()!=0))
                 throw new IllegalArgumentException("b-run-native-work-mismatch");

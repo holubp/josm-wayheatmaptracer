@@ -42,7 +42,7 @@ final class AdmittedBInference {
                         ()->new AdaptiveBInference.Result(inference,dense,0,inference.evaluatedTransitions(),0,provenance));
             } else {
                 run=new AdaptiveBInference().solve(sampled,dense,lattices,continuation,parameters,budgets,region,cancel,scope,
-                        observer,actual,BPolicy.ADAPTIVE_MULTIMODAL_V2);
+                        observer,actual,policy==BPolicy.INVENTORY_FRONTIER_V5?policy:BPolicy.ADAPTIVE_MULTIMODAL_V2);
             }
             String explanation=ProbabilisticInference.allocated(scope,
                     AttemptMemoryLedger.objectBytes(24)+AttemptMemoryLedger.arrayBytes(Math.addExact(witness.length()+128,run.inference().explanation().length()),2),

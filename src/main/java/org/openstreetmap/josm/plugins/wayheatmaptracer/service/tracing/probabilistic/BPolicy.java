@@ -10,7 +10,8 @@ import java.util.HexFormat;
 
 /** Explicit recorded B solver policy; historical requests retain the existing exact default. */
 public enum BPolicy {
-    EXACT_DEFAULT, ADAPTIVE_MULTIMODAL_V1, ADAPTIVE_MULTIMODAL_V2, DENSE_ADMITTED_V3, INVENTORY_PREP_V4;
+    EXACT_DEFAULT, ADAPTIVE_MULTIMODAL_V1, ADAPTIVE_MULTIMODAL_V2, DENSE_ADMITTED_V3, INVENTORY_PREP_V4,
+    INVENTORY_FRONTIER_V5;
 
     /** Retained-graph posterior, fixed retention rules and one cumulative-budget refinement. */
     public static final String VERSION = "adaptive-multimodal-retained-density-v1/"
@@ -24,6 +25,11 @@ public enum BPolicy {
     public static final String INVENTORY_PREP_VERSION=DENSE_ADMISSION_VERSION+"/"+ProbabilisticProfileFactory.OWNED_INVENTORY_VERSION;
     public static final String INVENTORY_FULL_VERSION=INVENTORY_PREP_VERSION+"/full/cached-pair-stream-merge-scored-work-v4";
     public static final String INVENTORY_COMPACT_VERSION=INVENTORY_PREP_VERSION+"/compact/"+CURRENT_VERSION;
+    /** New source retention only; all historical policy strings remain immutable. */
+    public static final String FRONTIER_RETENTION_VERSION=CURRENT_VERSION+"/source-uncertainty-frontier-v1";
+    public static final String INVENTORY_FRONTIER_VERSION=INVENTORY_PREP_VERSION+"/source-uncertainty-frontier-v1";
+    public static final String FRONTIER_FULL_VERSION=INVENTORY_FRONTIER_VERSION+"/full/cached-pair-stream-merge-scored-work-v4";
+    public static final String FRONTIER_COMPACT_VERSION=INVENTORY_FRONTIER_VERSION+"/compact/"+FRONTIER_RETENTION_VERSION;
 
     public String version() {
         return switch(this) {
@@ -32,23 +38,26 @@ public enum BPolicy {
             case ADAPTIVE_MULTIMODAL_V2 -> CURRENT_VERSION;
             case DENSE_ADMITTED_V3 -> DENSE_ADMISSION_VERSION;
             case INVENTORY_PREP_V4 -> INVENTORY_PREP_VERSION;
+            case INVENTORY_FRONTIER_V5 -> INVENTORY_FRONTIER_VERSION;
         };
     }
     ProbabilisticExecutionPolicy.Mode solverMode() {
         return switch(this) {
             case ADAPTIVE_MULTIMODAL_V1 -> ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V3;
-            case ADAPTIVE_MULTIMODAL_V2, DENSE_ADMITTED_V3, INVENTORY_PREP_V4 -> ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V4;
+            case ADAPTIVE_MULTIMODAL_V2, DENSE_ADMITTED_V3, INVENTORY_PREP_V4, INVENTORY_FRONTIER_V5 -> ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V4;
             case EXACT_DEFAULT -> throw new IllegalArgumentException("Exact default is not an adaptive policy");
         };
     }
     public String fullExecutionVersion() {
         if(this==DENSE_ADMITTED_V3)return FULL_EXECUTION_VERSION;
         if(this==INVENTORY_PREP_V4)return INVENTORY_FULL_VERSION;
+        if(this==INVENTORY_FRONTIER_V5)return FRONTIER_FULL_VERSION;
         throw new IllegalArgumentException("Dense admission policy required");
     }
     public String compactExecutionVersion() {
         if(this==DENSE_ADMITTED_V3)return COMPACT_EXECUTION_VERSION;
         if(this==INVENTORY_PREP_V4)return INVENTORY_COMPACT_VERSION;
+        if(this==INVENTORY_FRONTIER_V5)return FRONTIER_COMPACT_VERSION;
         throw new IllegalArgumentException("Dense admission policy required");
     }
 
@@ -58,9 +67,15 @@ public enum BPolicy {
     public static String visibleExactParameterHash() { return sourceParameterHash("live-probabilistic-v2"); }
     /** New capture selection only; frozen requests continue selecting their recorded policy. */
     public static String newCaptureParameterHash(String knownExactHash) {
+        return newCaptureParameterHash(knownExactHash, INVENTORY_PREP_V4);
+    }
+    /** Explicit source-bound opt-in; the ordinary capture default remains historical V4. */
+    public static String newCaptureParameterHash(String knownExactHash, BPolicy policy) {
         if(!exactParameterHash().equals(knownExactHash)&&!visibleExactParameterHash().equals(knownExactHash))
             throw new IllegalArgumentException("New B capture requires a known current source domain");
-        return adaptiveParameterHash(knownExactHash,INVENTORY_PREP_V4);
+        if(policy!=INVENTORY_PREP_V4&&policy!=INVENTORY_FRONTIER_V5)
+            throw new IllegalArgumentException("New B capture requires an explicit inventory policy");
+        return adaptiveParameterHash(knownExactHash,policy);
     }
     private static String sourceParameterHash(String domain) {
         return hash(domain, EvidenceModelParameters.defaults().version() + "/"
@@ -83,6 +98,7 @@ public enum BPolicy {
             case ADAPTIVE_MULTIMODAL_V2 -> hash("live-probabilistic-adaptive-v2",original,CURRENT_VERSION);
             case DENSE_ADMITTED_V3 -> hash("live-probabilistic-dense-admitted-v3",original,DENSE_ADMISSION_VERSION);
             case INVENTORY_PREP_V4 -> hash("live-probabilistic-inventory-prep-v4",original,INVENTORY_PREP_VERSION);
+            case INVENTORY_FRONTIER_V5 -> hash("live-probabilistic-inventory-frontier-v5",original,INVENTORY_FRONTIER_VERSION);
             default -> throw new IllegalArgumentException("An explicit opt-in revision is required");
         };
     }
@@ -104,7 +120,8 @@ public enum BPolicy {
         if(source.engine()!=TrackerMode.PROBABILISTIC)return EXACT_DEFAULT;
         String version=adaptiveVersion(source.parameterHash());
         return VERSION.equals(version)?ADAPTIVE_MULTIMODAL_V1:CURRENT_VERSION.equals(version)?ADAPTIVE_MULTIMODAL_V2:
-                DENSE_ADMISSION_VERSION.equals(version)?DENSE_ADMITTED_V3:INVENTORY_PREP_VERSION.equals(version)?INVENTORY_PREP_V4:EXACT_DEFAULT;
+                DENSE_ADMISSION_VERSION.equals(version)?DENSE_ADMITTED_V3:INVENTORY_PREP_VERSION.equals(version)?INVENTORY_PREP_V4:
+                INVENTORY_FRONTIER_VERSION.equals(version)?INVENTORY_FRONTIER_V5:EXACT_DEFAULT;
     }
     public static boolean isAdaptiveHash(String hash) { return adaptiveVersion(hash)!=null; }
     public static String adaptiveVersion(String hash) {
@@ -115,9 +132,11 @@ public enum BPolicy {
                 ||adaptiveParameterHash(visibleExactParameterHash(),DENSE_ADMITTED_V3).equals(hash))return DENSE_ADMISSION_VERSION;
         if(adaptiveParameterHash(INVENTORY_PREP_V4).equals(hash)
                 ||adaptiveParameterHash(visibleExactParameterHash(),INVENTORY_PREP_V4).equals(hash))return INVENTORY_PREP_VERSION;
+        if(adaptiveParameterHash(INVENTORY_FRONTIER_V5).equals(hash)
+                ||adaptiveParameterHash(visibleExactParameterHash(),INVENTORY_FRONTIER_V5).equals(hash))return INVENTORY_FRONTIER_VERSION;
         return null;
     }
-    static boolean isAdaptiveVersion(String version) { return VERSION.equals(version)||CURRENT_VERSION.equals(version)||COMPACT_EXECUTION_VERSION.equals(version)||INVENTORY_COMPACT_VERSION.equals(version); }
+    static boolean isAdaptiveVersion(String version) { return VERSION.equals(version)||CURRENT_VERSION.equals(version)||COMPACT_EXECUTION_VERSION.equals(version)||INVENTORY_COMPACT_VERSION.equals(version)||FRONTIER_RETENTION_VERSION.equals(version)||FRONTIER_COMPACT_VERSION.equals(version); }
     static String hash(String... values) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");

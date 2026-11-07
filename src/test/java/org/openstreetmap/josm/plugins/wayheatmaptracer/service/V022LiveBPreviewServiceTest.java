@@ -601,6 +601,16 @@ class V022LiveBPreviewServiceTest {
 
     @Test
     void ordinaryComputeUsesOneFrozenBatchForTwoManualJunctionIslands() throws Exception {
+        assertOneFrozenBatchForManualIslands(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_PREP_V4);
+    }
+
+    @Test
+    void optInFrontierUsesOneFrozenBatchForTwoManualJunctionIslands() throws Exception {
+        assertOneFrozenBatchForManualIslands(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_FRONTIER_V5);
+    }
+
+    private void assertOneFrozenBatchForManualIslands(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy policy) throws Exception {
         DataSet dataSet = new DataSet();
         java.util.ArrayList<Node> nodes = new java.util.ArrayList<>();
         for (int i = 0; i <= 30; i++) {
@@ -634,6 +644,17 @@ class V022LiveBPreviewServiceTest {
         SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(dataSet, selection,
                 wideFlatRaster(), config(TrackerMode.PROBABILISTIC)));
 
+        // Opt in through the typed known-source selector; ordinary capture remains V4 in stage 1.
+        var c = captured[0];
+        captured[0] = new LiveBPreviewService.Captured(c.raster(), c.managedRaster(), c.specification(),
+                c.network(), c.sourceGeographic(), c.sourceMetric(), c.outputGrid(), c.palette(),
+                c.searchRadiusMeters(), c.sampleStepMeters(), c.settingsHash(),
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.newCaptureParameterHash(
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.visibleExactParameterHash(), policy),
+                c.cleanup(), c.geometryMode(), c.engine(), c.projectionCode(), c.junctionDecision(),
+                c.intervalPartition(), c.intensityMode(), c.sourceRasters(), c.sourceOwner(),
+                c.alternativeMappings(), c.disconnectionSource());
+
         LiveBPreviewService.Computed computed = service.compute(captured[0], CancellationProbe.NONE);
 
         assertTrue(computed.partitioned());
@@ -642,6 +663,7 @@ class V022LiveBPreviewServiceTest {
                 computed.intervalBatch().partition().toString());
         assertEquals(3, computed.intervalBatch().runs().size());
         assertSame(captured[0].network(), computed.intervalBatch().network());
+        assertEquals(policy, org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.recorded(computed.request()));
         assertEquals(captured[0].network().canonicalHash(),
                 computed.intervalBatch().network().canonicalHash());
         var actualBatch=computed.intervalBatch();

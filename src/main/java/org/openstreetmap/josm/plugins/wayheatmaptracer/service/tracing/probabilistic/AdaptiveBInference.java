@@ -17,6 +17,8 @@ final class AdaptiveBInference {
             .getBytes(StandardCharsets.UTF_8);
     private static final byte[] HASH_DOMAIN_V2 = (BPolicy.CURRENT_VERSION + "/original-cell-indices-v1")
             .getBytes(StandardCharsets.UTF_8);
+    private static final byte[] HASH_DOMAIN_V5 = (BPolicy.FRONTIER_RETENTION_VERSION + "/original-cell-indices-v1")
+            .getBytes(StandardCharsets.UTF_8);
     record Result(ProbabilisticInferenceResult inference, List<InferenceProfile> profiles,
             int refinements, long firstScores, long secondScores, String provenanceHash) { }
     Result solve(List<ProbabilisticProfile> sampled, List<InferenceProfile> dense,
@@ -46,9 +48,10 @@ final class AdaptiveBInference {
             CancellationProbe cancellation, AttemptMemoryLedger.Owner owner, AdaptiveBObserver observer,
             ProbabilisticInference.WorkProgress progress,BPolicy policy) {
         cancellation.checkpoint();
-        if(policy!=BPolicy.ADAPTIVE_MULTIMODAL_V1&&policy!=BPolicy.ADAPTIVE_MULTIMODAL_V2)
+        if(policy!=BPolicy.ADAPTIVE_MULTIMODAL_V1&&policy!=BPolicy.ADAPTIVE_MULTIMODAL_V2
+                &&policy!=BPolicy.INVENTORY_FRONTIER_V5)
             throw new IllegalArgumentException("An existing adaptive revision is required");
-        String version=policy.version();
+        String version=policy==BPolicy.INVENTORY_FRONTIER_V5?BPolicy.FRONTIER_RETENTION_VERSION:policy.version();
         if (sampled.size() != dense.size() || dense.size() != lattices.size()
                 || continuation.length != dense.size() || observer == null)
             throw new IllegalArgumentException("Adaptive evidence rows disagree");
@@ -56,11 +59,12 @@ final class AdaptiveBInference {
         for (int row = 0; row < dense.size(); row++) {
             cancellation.checkpoint();
             views.add(AdaptiveSolverView.initial(sampled.get(row),dense.get(row),
-                    lattices.get(row).components(),continuation[row],cancellation,owner));
+                    lattices.get(row).components(),continuation[row],cancellation,owner,policy));
         }
         var profiles = profiles(views,owner);
         MessageDigest hash = ProbabilisticInference.allocated(owner,512,"adaptive provenance",AdaptiveBInference::digest);
-        hash.update(policy==BPolicy.ADAPTIVE_MULTIMODAL_V1?HASH_DOMAIN:HASH_DOMAIN_V2);
+        hash.update(policy==BPolicy.ADAPTIVE_MULTIMODAL_V1?HASH_DOMAIN:
+                policy==BPolicy.INVENTORY_FRONTIER_V5?HASH_DOMAIN_V5:HASH_DOMAIN_V2);
         provenance(hash,views,0,cancellation,observer);
         ModernDiagnosticCounters.record("b.adaptive.denseStates", states(dense));
         ModernDiagnosticCounters.record("b.adaptive.initialStates", states(profiles));
@@ -68,7 +72,7 @@ final class AdaptiveBInference {
         long passStarted=System.nanoTime();
         var first = new ProbabilisticInference().solveCachedVersion(profiles,parameters,budgets,region,cancellation,owner,
                 policy.solverMode(),progress);
-        if(policy==BPolicy.ADAPTIVE_MULTIMODAL_V2) recordPass(0,System.nanoTime()-passStarted,owner);
+        if(policy!=BPolicy.ADAPTIVE_MULTIMODAL_V1) recordPass(0,System.nanoTime()-passStarted,owner);
         long firstScores = first.evaluatedTransitions(), secondScores = 0;
         var work = first.workAccounting().orElseThrow();
         long pairs = first.evaluatedPairVisits();
@@ -125,7 +129,7 @@ final class AdaptiveBInference {
                 passStarted=System.nanoTime();
                 result = new ProbabilisticInference().solveCachedVersion(profiles,parameters,remaining,region,cancellation,owner,
                         policy.solverMode(),cumulativeProgress);
-                if(policy==BPolicy.ADAPTIVE_MULTIMODAL_V2) recordPass(1,System.nanoTime()-passStarted,owner);
+                if(policy!=BPolicy.ADAPTIVE_MULTIMODAL_V1) recordPass(1,System.nanoTime()-passStarted,owner);
                 secondScores = result.evaluatedTransitions(); pairs = Math.addExact(pairs,result.evaluatedPairVisits());
                 var second = result.workAccounting().orElseThrow();
                 work = new InferenceWorkAccounting(version,

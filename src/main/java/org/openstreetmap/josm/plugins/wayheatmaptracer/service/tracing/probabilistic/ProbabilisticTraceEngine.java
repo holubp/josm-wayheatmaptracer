@@ -278,7 +278,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
                     "refinement reference points", () -> new ArrayList<>(reference.section().reference()));
         boolean fixedEndpoints = reference != null || request.permissions().junctionPolicy() == JunctionPolicy.FIXED;
         long profileSamplingStarted = System.nanoTime();
-        List<ProbabilisticProfile> profiles = recordedPolicy==BPolicy.INVENTORY_PREP_V4
+        List<ProbabilisticProfile> profiles = recordedPolicy==BPolicy.INVENTORY_PREP_V4||recordedPolicy==BPolicy.INVENTORY_FRONTIER_V5
             ? new ProbabilisticProfileFactory().createWithInventory(source,request.profileChainage(),
                 request.permissions().ordinaryRadiusMeters(),fixedEndpoints,evidence,field,parameters,cancellation,workingOwner)
             : new ProbabilisticProfileFactory().create(source,
@@ -353,8 +353,8 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
         BQualityProbe.dense(profiles,evaluated,request.budgets());
         ProbabilisticInferenceResult inference;
         if(BQualityProbe.fullOracle()) {
-            if(reference!=null||recordedPolicy!=BPolicy.INVENTORY_PREP_V4)
-                throw new IllegalArgumentException("Full-lattice numerical oracle requires an explicit standalone V4 public fixture");
+            if(reference!=null||recordedPolicy!=BPolicy.INVENTORY_PREP_V4&&recordedPolicy!=BPolicy.INVENTORY_FRONTIER_V5)
+                throw new IllegalArgumentException("Full-lattice numerical oracle requires an explicit standalone V4/V5 public fixture");
             var progress=ProbabilisticInference.allocated(workingOwner,AttemptMemoryLedger.objectBytes(8),"oracle native progress",
                     ()->(ProbabilisticInference.WorkProgress)(pairs,scores)->{work.pairVisits=pairs;work.transitions=scores;});
             inference=new ProbabilisticInference().solveCachedVersion(evaluated,parameters,request.budgets(),evidence.decisionRegion(),
@@ -367,7 +367,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
                         org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
                                 "b.adaptive.availableScores",scores);
                     });
-            var adaptiveRun = recordedPolicy==BPolicy.DENSE_ADMITTED_V3||recordedPolicy==BPolicy.INVENTORY_PREP_V4
+            var adaptiveRun = recordedPolicy==BPolicy.DENSE_ADMITTED_V3||recordedPolicy==BPolicy.INVENTORY_PREP_V4||recordedPolicy==BPolicy.INVENTORY_FRONTIER_V5
                 ? new AdmittedBInference().solve(profiles,evaluated,adaptiveLattices,continuationOffsets,parameters,
                     request.budgets(),evidence.decisionRegion(),cancellation,workingOwner,AdaptiveBObserver.current(),progress,recordedPolicy)
                 : new AdaptiveBInference().solve(profiles, evaluated, adaptiveLattices,

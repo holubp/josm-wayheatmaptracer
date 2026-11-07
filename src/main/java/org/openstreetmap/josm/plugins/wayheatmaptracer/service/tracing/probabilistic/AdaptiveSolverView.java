@@ -20,9 +20,19 @@ final class AdaptiveSolverView {
     static AdaptiveSolverView initial(ProbabilisticProfile sampled, InferenceProfile dense,
             List<ObservationComponent> components, double continuation,
             CancellationProbe cancellation, AttemptMemoryLedger.Owner owner) {
+        return initial(sampled, dense, components, continuation, cancellation, owner,
+                BPolicy.ADAPTIVE_MULTIMODAL_V2);
+    }
+    /** V5 retains one source-pitch neighborhood of the unchanged original fine mask. */
+    static AdaptiveSolverView initial(ProbabilisticProfile sampled, InferenceProfile dense,
+            List<ObservationComponent> components, double continuation,
+            CancellationProbe cancellation, AttemptMemoryLedger.Owner owner, BPolicy policy) {
         cancellation.checkpoint();
         if (sampled == null || dense == null || components == null || owner == null)
             throw new IllegalArgumentException("Complete original evidence and owner are required");
+        if (policy != BPolicy.ADAPTIVE_MULTIMODAL_V1 && policy != BPolicy.ADAPTIVE_MULTIMODAL_V2
+                && policy != BPolicy.INVENTORY_FRONTIER_V5)
+            throw new IllegalArgumentException("An explicit retained-graph revision is required");
         try (var scratch = owner.child("adaptive-retention-mask")) {
             int n = dense.cells().size();
             boolean[] keep = mask(n, scratch), fine = mask(n, scratch);
@@ -37,6 +47,17 @@ final class AdaptiveSolverView {
                     if (cell.offsetMeters() >= mode.coreMinimumMeters() - 0.5 * sampled.sourcePitchMeters()
                             && cell.offsetMeters() <= mode.coreMaximumMeters() + 0.5 * sampled.sourcePitchMeters()) {
                         keep[i] = true; fine[i] = true;
+                    }
+                }
+            }
+            if (policy == BPolicy.INVENTORY_FRONTIER_V5) {
+                // fine is complete and never mutated below: added cells cannot seed a cascade.
+                for (int i = 0; i < n; i++) if (fine[i]) {
+                    double center = dense.cells().get(i).offsetMeters();
+                    for (int j = 0; j < n; j++) {
+                        cancellation.checkpoint();
+                        if (Math.abs(dense.cells().get(j).offsetMeters() - center) <= sampled.sourcePitchMeters())
+                            keep[j] = true;
                     }
                 }
             }

@@ -12,6 +12,14 @@ class V022ProductionBQualityOracleTest {
     @ParameterizedTest
     @ValueSource(strings={"impulse","three-strand","faint-apex","gap"})
     void defaultProductionBPreservesTheOriginalPhysicalQualityOracles(String scenario) {
+        assertPhysicalQuality(scenario, null);
+    }
+    @ParameterizedTest
+    @ValueSource(strings={"impulse","three-strand","faint-apex","gap"})
+    void optInSourceFrontierPreservesTheOriginalPhysicalQualityOracles(String scenario) {
+        assertPhysicalQuality(scenario, BPolicy.INVENTORY_FRONTIER_V5);
+    }
+    private static void assertPhysicalQuality(String scenario, BPolicy policy) {
         var evidence=V022LocalizationEvidenceTest.snapshot((x,y)->switch(scenario) {
             case "impulse" -> Math.min(1,.02+.08*gaussian(y,26,.9)+(x==60&&y==28?.9:0));
             case "three-strand" -> {
@@ -41,8 +49,9 @@ class V022ProductionBQualityOracleTest {
                 primitives,V022SnapshotFixtures.closedWorldReferrerWatches(primitives));
         var request=new TraceRequest(way,new OccurrenceRange(0,1),TrackerMode.PROBABILISTIC,AlignmentMode.PRECISE_SHAPE,
                 RecoveryPermissions.disabled(7.01),TraceBudgets.defaults(),evidence.snapshotId(),evidence.canonicalHash(),
-                network.snapshotId(),network.canonicalHash(),"settings","parameters","sampler",step,
+                network.snapshotId(),network.canonicalHash(),"settings",policy==null?"parameters":BPolicy.exactParameterHash(),"sampler",step,
                 new ProbabilisticProfileFactory().profileChainage(source,step),evidence.resolution());
+        if(policy!=null)request=BPolicy.adaptiveRequest(request,policy);
         var ledger=AttemptMemoryLedger.production();
         try(var owner=ledger.rootOwner()) {
             var run=new ProbabilisticTraceEngine("scalar").traceWithUsage(request,evidence,network,CancellationProbe.NONE,owner);
@@ -50,7 +59,9 @@ class V022ProductionBQualityOracleTest {
             assertTrue(result.status()==TraceHypothesisSet.Status.COMPLETE||result.status()==TraceHypothesisSet.Status.AMBIGUOUS,
                     result.status()+": "+result.explanation());
             assertFalse(result.hypotheses().isEmpty());
-            assertTrue(result.workAccounting().orElseThrow().hasPolicy("terminal-path-count-scored-work-v2"));
+            var receipt=result.workAccounting().orElseThrow();
+            assertTrue(policy==null?receipt.hasPolicy("terminal-path-count-scored-work-v2"):
+                    receipt.hasPolicy(BPolicy.FRONTIER_FULL_VERSION)||receipt.hasPolicy(BPolicy.FRONTIER_COMPACT_VERSION));
             assertTrue(run.value().usage().transitions()>0);
             assertTrue(run.value().usage().transitions()<=request.budgets().maximumTransitions());
             var points=result.hypotheses().get(0).points();
