@@ -22,6 +22,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 
 /** Samples full scalar cross-sections and extracts deterministic finite observation hypotheses. */
 public final class ProbabilisticProfileFactory {
+    public static final String OWNED_INVENTORY_VERSION="owned-region-edge-inventory-v1";
     /** Exact source-only geometry from the same resampling arithmetic used by native B. */
     public record SourceSamplingGeometry(List<MetricPoint> points, List<Double> chainageMeters) {
         public SourceSamplingGeometry {
@@ -97,6 +98,15 @@ public final class ProbabilisticProfileFactory {
         EvidenceSnapshot evidence, ScalarEvidenceField field, EvidenceModelParameters parameters,
         CancellationProbe cancellation, boolean directLongitudinalReliability,
         double sourceOriginGroundMeters, AttemptMemoryLedger.Owner owner) {
+        return create(sourcePolyline,configuredStepMeters,searchHalfWidthMeters,fixedEndpoints,evidence,field,
+                parameters,cancellation,directLongitudinalReliability,sourceOriginGroundMeters,owner,false);
+    }
+
+    private List<ProbabilisticProfile> create(List<MetricPoint> sourcePolyline,
+        double configuredStepMeters,double searchHalfWidthMeters,boolean fixedEndpoints,
+        EvidenceSnapshot evidence,ScalarEvidenceField field,EvidenceModelParameters parameters,
+        CancellationProbe cancellation,boolean directLongitudinalReliability,double sourceOriginGroundMeters,
+        AttemptMemoryLedger.Owner owner,boolean inventoryPreparation) {
         if (sourcePolyline == null || sourcePolyline.size() < 2 || !positive(configuredStepMeters)
             || !positive(searchHalfWidthMeters) || evidence == null || field == null
             || parameters == null || cancellation == null
@@ -115,11 +125,13 @@ public final class ProbabilisticProfileFactory {
         RasterIntervalEvidence interval = null;
         try {
         if (directLongitudinalReliability) {
+            if(inventoryPreparation)org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record("b.prep.inventoryVersion",1L);
             interval = intervalOwner == null
                     ? new RasterIntervalEvidence(evidence, field, parameters.localization(), null)
-                    : ProbabilisticInference.allocated(intervalOwner, AttemptMemoryLedger.objectBytes(80),
-                            "sampled profiles", () -> new RasterIntervalEvidence(
-                                evidence, field, parameters.localization(), intervalOwner));
+                    : ProbabilisticInference.allocated(intervalOwner, AttemptMemoryLedger.objectBytes(inventoryPreparation?88:80),
+                            "sampled profiles", () -> inventoryPreparation
+                                ? new InventoriedRasterIntervalEvidence(evidence,field,parameters.localization(),intervalOwner)
+                                : new RasterIntervalEvidence(evidence, field, parameters.localization(), intervalOwner));
         }
         RasterIntervalEvidence sharedInterval = interval;
         ResampledCurve curve = resample(sourcePolyline, configuredStepMeters, samplingOwner);
@@ -261,6 +273,7 @@ public final class ProbabilisticProfileFactory {
         return copied;
         } finally {
             if (interval != null) {
+                interval.recordPreparationCounters();
                 org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
                         "reliability.bridgeQueries", interval.queries);
                 org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
@@ -620,13 +633,31 @@ public final class ProbabilisticProfileFactory {
         double searchHalfWidthMeters, boolean fixedEndpoints, EvidenceSnapshot evidence,
         ScalarEvidenceField field, EvidenceModelParameters parameters, CancellationProbe cancellation,
         boolean directLongitudinalReliability, AttemptMemoryLedger.Owner owner) {
+        return createOwned(sourcePolyline,profileChainage,searchHalfWidthMeters,fixedEndpoints,evidence,field,
+                parameters,cancellation,directLongitudinalReliability,owner,false);
+    }
+
+    /** Explicit owned preparation revision; no historical or unowned entry point enables it. */
+    public List<ProbabilisticProfile> createWithInventory(List<MetricPoint> sourcePolyline,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage profileChainage,
+        double searchHalfWidthMeters,boolean fixedEndpoints,EvidenceSnapshot evidence,ScalarEvidenceField field,
+        EvidenceModelParameters parameters,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner) {
+        return createOwned(sourcePolyline,profileChainage,searchHalfWidthMeters,fixedEndpoints,evidence,field,
+                parameters,cancellation,true,owner,true);
+    }
+
+    private List<ProbabilisticProfile> createOwned(List<MetricPoint> sourcePolyline,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage profileChainage,
+        double searchHalfWidthMeters,boolean fixedEndpoints,EvidenceSnapshot evidence,ScalarEvidenceField field,
+        EvidenceModelParameters parameters,CancellationProbe cancellation,boolean directLongitudinalReliability,
+        AttemptMemoryLedger.Owner owner,boolean inventoryPreparation) {
         if (profileChainage == null || owner == null) {
             throw new IllegalArgumentException("Measured profile chainage and memory owner are required");
         }
         List<ProbabilisticProfile> result = create(sourcePolyline,
                 profileChainage.configuredStepMeters(), searchHalfWidthMeters, fixedEndpoints,
                 evidence, field, parameters, cancellation, directLongitudinalReliability,
-                profileChainage.sourceOriginGroundMeters(), owner);
+                profileChainage.sourceOriginGroundMeters(), owner,inventoryPreparation);
         if (result.size() != profileChainage.cumulativeGroundMeters().size()) {
             throw new IllegalArgumentException("Request chainage does not match deterministic profile sampling");
         }
@@ -1319,7 +1350,7 @@ public final class ProbabilisticProfileFactory {
      * frame; original profile confidence remains independently represented in mode reliability.
      * A bridge losing its shoulders or agreed center approaches zero continuation continuously.</p>
      */
-    static final class RasterIntervalEvidence
+    static class RasterIntervalEvidence
             implements LongitudinalModeReliability.DirectIntervalEvidence, LongConsumer {
         // Preserve the pre-existing scalar/crossed-cell admission cap. Feature work is separate.
         private static final long MAXIMUM_SAMPLING_UNITS = 2_000_000L;
@@ -1343,10 +1374,10 @@ public final class ProbabilisticProfileFactory {
             AttemptMemoryLedger.Owner preparation = owner == null ? null : owner.child("bridge-region-membership");
             boolean complete = false;
             try {
-                var decision = evidence.decisionRegion().prepareYMembership(cancellation, this, preparation);
+                var decision = prepareRegionIndex(evidence.decisionRegion(),cancellation,preparation);
                 cancellation.checkpoint(); chargeFeatures(1L);
                 var captured = evidence.decisionRegion() == evidence.evidenceRegion() ? decision
-                        : evidence.evidenceRegion().prepareYMembership(cancellation, this, preparation);
+                        : prepareRegionIndex(evidence.evidenceRegion(),cancellation,preparation);
                 decisionYIndex = decision; capturedYIndex = captured;
                 complete = true;
             } finally {
@@ -1361,6 +1392,16 @@ public final class ProbabilisticProfileFactory {
             this.field = field;
             this.localization = localization;
             this.owner = owner;
+        }
+
+        MetricRegion.YMembershipIndex prepareRegionIndex(MetricRegion region,CancellationProbe cancellation,
+                AttemptMemoryLedger.Owner preparation) {
+            return region.prepareYMembership(cancellation,this,preparation);
+        }
+        void recordPreparationCounters() { }
+        final long inventoryReads() {
+            return Math.addExact(MetricRegion.preparedInventoryReads(decisionYIndex),
+                    decisionYIndex==capturedYIndex?0:MetricRegion.preparedInventoryReads(capturedYIndex));
         }
 
         @Override
@@ -1963,6 +2004,24 @@ public final class ProbabilisticProfileFactory {
                 }
             }
             return maximum;
+        }
+    }
+
+    /** New layout/work only; the historical raster interval object's inventory remains unchanged. */
+    private static final class InventoriedRasterIntervalEvidence extends RasterIntervalEvidence {
+        private long builds;
+        InventoriedRasterIntervalEvidence(EvidenceSnapshot evidence,ScalarEvidenceField field,
+                EvidenceModelParameters.Localization localization,AttemptMemoryLedger.Owner owner) {
+            super(evidence,field,localization,owner);
+        }
+        @Override MetricRegion.YMembershipIndex prepareRegionIndex(MetricRegion region,CancellationProbe cancellation,
+                AttemptMemoryLedger.Owner preparation) {
+            var index=region.prepareYMembershipWithInventory(cancellation,this,preparation);
+            builds=Math.addExact(builds,1);return index;
+        }
+        @Override void recordPreparationCounters() {
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record("b.prep.inventoryBuilds",builds);
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record("b.prep.inventoryHits",inventoryReads());
         }
     }
 

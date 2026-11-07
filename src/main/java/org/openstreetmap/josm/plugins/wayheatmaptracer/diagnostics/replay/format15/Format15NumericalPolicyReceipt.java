@@ -161,10 +161,13 @@ final class Format15NumericalPolicyReceipt {
         return engine == TrackerMode.PROBABILISTIC && adaptive!=null ? adaptive : ProbabilisticExecutionPolicy.CURRENT_VERSION;
     }
     private static boolean matchesPolicy(ExecutionWorkReceipt receipt,String expected) {
-        if(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.DENSE_ADMISSION_VERSION.equals(expected)) {
+        if(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.DENSE_ADMISSION_VERSION.equals(expected)
+                ||org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_PREP_VERSION.equals(expected)) {
+            var selected=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.DENSE_ADMISSION_VERSION.equals(expected)
+                    ?org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.DENSE_ADMITTED_V3
+                    :org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_PREP_V4;
             return receipt.bStages().size()==1&&receipt.otherEngineTransitions()==0
-                    &&(receipt.hasPolicy(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.FULL_EXECUTION_VERSION)
-                    ||receipt.hasPolicy(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.COMPACT_EXECUTION_VERSION));
+                    &&(receipt.hasPolicy(selected.fullExecutionVersion())||receipt.hasPolicy(selected.compactExecutionVersion()));
         }
         return receipt.hasPolicy(expected);
     }

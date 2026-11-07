@@ -12,6 +12,13 @@ final class AdmittedBInference {
             List<ProbabilisticStateLattice> lattices,double[] continuation,EvidenceModelParameters parameters,
             TraceBudgets budgets,MetricRegion region,CancellationProbe cancel,AttemptMemoryLedger.Owner owner,
             AdaptiveBObserver observer,ProbabilisticInference.WorkProgress progress) {
+        return solve(sampled,dense,lattices,continuation,parameters,budgets,region,cancel,owner,observer,progress,BPolicy.DENSE_ADMITTED_V3);
+    }
+    AdaptiveBInference.Result solve(List<ProbabilisticProfile> sampled,List<InferenceProfile> dense,
+            List<ProbabilisticStateLattice> lattices,double[] continuation,EvidenceModelParameters parameters,
+            TraceBudgets budgets,MetricRegion region,CancellationProbe cancel,AttemptMemoryLedger.Owner owner,
+            AdaptiveBObserver observer,ProbabilisticInference.WorkProgress progress,BPolicy policy) {
+        String fullVersion=policy.fullExecutionVersion(),compactVersion=policy.compactExecutionVersion();
         Progress actual=null;
         try(var scope=owner.child("dense-admission-policy")) {
             actual=ProbabilisticInference.allocated(scope,AttemptMemoryLedger.objectBytes(32),"admitted work progress",()->new Progress(progress));
@@ -20,7 +27,7 @@ final class AdmittedBInference {
             AdaptiveBInference.Result run;
             if(bound.admitted()) {
                 var hash=ProbabilisticInference.allocated(scope,1024,"full dense provenance",AdmittedBInference::digest);
-                hash.update(BPolicy.FULL_EXECUTION_VERSION.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                hash.update(fullVersion.getBytes(java.nio.charset.StandardCharsets.UTF_8));
                 for(int row=0;row<dense.size();row++) {
                     integer(hash,row);integer(hash,dense.get(row).cells().size());
                     for(int state=0;state<dense.get(row).cells().size();state++) {
@@ -41,7 +48,7 @@ final class AdmittedBInference {
                     AttemptMemoryLedger.objectBytes(24)+AttemptMemoryLedger.arrayBytes(Math.addExact(witness.length()+128,run.inference().explanation().length()),2),
                     "admitted explanation",()->witness+"\noriginalIndexHash="+run.provenanceHash()+"; "+run.inference().explanation());
             var inference=run.inference().withExecutionIdentity(explanation,
-                    bound.admitted()?BPolicy.FULL_EXECUTION_VERSION:BPolicy.COMPACT_EXECUTION_VERSION,scope);
+                    bound.admitted()?fullVersion:compactVersion,scope);
             var source=run;
             var result=ProbabilisticInference.allocated(scope,AttemptMemoryLedger.objectBytes(48),"admitted run result",
                     ()->new AdaptiveBInference.Result(inference,source.profiles(),source.refinements(),source.firstScores(),source.secondScores(),source.provenanceHash()));

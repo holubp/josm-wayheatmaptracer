@@ -21,12 +21,28 @@ public final class MetricRegion {
     private final List<List<MetricPoint>> polygons;
 
     /** Immutable bounds borrowed only while their creating attempt owner remains alive. */
-    public static final class YMembershipIndex {
+    public static class YMembershipIndex {
         private final MetricRegion region;
         private final double[] lower, upper;
         private YMembershipIndex(MetricRegion region, double[] lower, double[] upper) {
             this.region = region; this.lower = lower; this.upper = upper;
         }
+    }
+
+    /** Separate layout: historical indices retain exactly their original fields and charge. */
+    private static final class InventoriedYMembershipIndex extends YMembershipIndex {
+        private final long edges;
+        private final AttemptMemoryLedger.Owner owner;
+        private long reads;
+        private InventoriedYMembershipIndex(MetricRegion region,double[] lower,double[] upper,long edges,
+                AttemptMemoryLedger.Owner owner) {
+            super(region,lower,upper);this.edges=edges;this.owner=owner;
+        }
+    }
+
+    /** Diagnostic reads only; this public value never supplies geometric inventory authority. */
+    public static long preparedInventoryReads(YMembershipIndex index) {
+        return index instanceof InventoriedYMembershipIndex inventory?inventory.reads:0;
     }
 
     /** Prepares owned point bounds; segment edge events always remain complete. */
@@ -64,6 +80,40 @@ public final class MetricRegion {
         } finally {
             if (!complete && inventory != null) inventory.close();
         }
+    }
+
+    /** Explicit preparation revision; historical callers keep their original membership inventory work. */
+    public YMembershipIndex prepareYMembershipWithInventory(CancellationProbe cancellation,
+            LongConsumer admission,AttemptMemoryLedger.Owner owner) {
+        if(owner==null)return prepareYMembership(cancellation,admission,null);
+        if(cancellation==null||admission==null)throw new IllegalArgumentException("Membership work controls are required");
+        cancellation.checkpoint();admission.accept(1L);
+        var inventory=owner.child("region-y-membership-edge-inventory");boolean complete=false;
+        try {
+            cancellation.checkpoint();admission.accept(Math.addExact(Math.multiplyExact(2L,polygons.size()),1L));
+            inventory.reserve(Math.addExact(AttemptMemoryLedger.objectBytes(48),
+                    Math.multiplyExact(2L,AttemptMemoryLedger.arrayBytes(polygons.size(),Double.BYTES))));
+            double[] lower=new double[polygons.size()],upper=new double[polygons.size()];long edges=0;
+            for(int index=0;index<polygons.size();index++) {
+                cancellation.checkpoint();admission.accept(1L);var polygon=polygons.get(index);
+                admission.accept(1L);edges=addInventoryEdges(edges,polygon.size());
+                double minimum=Double.POSITIVE_INFINITY,maximum=Double.NEGATIVE_INFINITY;
+                for(int vertex=0;vertex<polygon.size();vertex++) {
+                    cancellation.checkpoint();admission.accept(1L);double y=polygon.get(vertex).yMeters();
+                    minimum=Math.min(minimum,y);maximum=Math.max(maximum,y);
+                }
+                lower[index]=minimum-1e-9;upper[index]=maximum+1e-9;
+            }
+            admission.accept(1L); // The immutable edge-count store, separate from array/index construction.
+            var result=new InventoriedYMembershipIndex(this,lower,upper,edges,inventory);complete=true;return result;
+        }finally{if(!complete)inventory.close();}
+    }
+
+    static long addInventoryEdges(long total,long size){return Math.addExact(total,size);}
+    static long checkedSegmentEventBound(long edges) {
+        long bound=Math.addExact(2L,Math.multiplyExact(2L,edges));
+        if(bound>Integer.MAX_VALUE)throw new IllegalArgumentException("Segment authority inventory is too large");
+        return bound;
     }
 
     /** Creates a union from nondegenerate simple polygons with at least three vertices each. */
@@ -147,15 +197,18 @@ public final class MetricRegion {
         }
         cancellation.checkpoint();
         long edges = 0L;
-        for (List<MetricPoint> polygon : polygons) {
-            cancellation.checkpoint();
-            admission.accept(1L);
-            edges = Math.addExact(edges, polygon.size());
+        if(membershipIndex instanceof InventoriedYMembershipIndex inventory&&inventory.owner.isClosed())membershipIndex=null;
+        if(boundedEvents&&owner!=null&&membershipIndex instanceof InventoriedYMembershipIndex inventory
+                &&((YMembershipIndex)inventory).region==this) {
+            admission.accept(1L);edges=inventory.edges;inventory.reads=Math.addExact(inventory.reads,1);
+        }else {
+            for (List<MetricPoint> polygon : polygons) {
+                cancellation.checkpoint();
+                admission.accept(1L);
+                edges = Math.addExact(edges, polygon.size());
+            }
         }
-        long eventBound = Math.addExact(2L, Math.multiplyExact(2L, edges));
-        if (eventBound > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException("Segment authority inventory is too large");
-        }
+        long eventBound=checkedSegmentEventBound(edges);
         AttemptMemoryLedger.Owner scratch = owner == null ? null : owner.child("segment-authority");
         try {
         // Bounded storage also needs one live deduplication iterator (three ints and

@@ -277,7 +277,10 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
                     "refinement reference points", () -> new ArrayList<>(reference.section().reference()));
         boolean fixedEndpoints = reference != null || request.permissions().junctionPolicy() == JunctionPolicy.FIXED;
         long profileSamplingStarted = System.nanoTime();
-        List<ProbabilisticProfile> profiles = new ProbabilisticProfileFactory().create(source,
+        List<ProbabilisticProfile> profiles = recordedPolicy==BPolicy.INVENTORY_PREP_V4
+            ? new ProbabilisticProfileFactory().createWithInventory(source,request.profileChainage(),
+                request.permissions().ordinaryRadiusMeters(),fixedEndpoints,evidence,field,parameters,cancellation,workingOwner)
+            : new ProbabilisticProfileFactory().create(source,
             request.profileChainage(), request.permissions().ordinaryRadiusMeters(), fixedEndpoints,
             evidence, field, parameters, cancellation,
             reliabilityPolicy == ReliabilityPolicy.DIRECT_LONGITUDINAL_V2, workingOwner);
@@ -354,9 +357,9 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
                         org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
                                 "b.adaptive.availableScores",scores);
                     });
-            var adaptiveRun = recordedPolicy==BPolicy.DENSE_ADMITTED_V3
+            var adaptiveRun = recordedPolicy==BPolicy.DENSE_ADMITTED_V3||recordedPolicy==BPolicy.INVENTORY_PREP_V4
                 ? new AdmittedBInference().solve(profiles,evaluated,adaptiveLattices,continuationOffsets,parameters,
-                    request.budgets(),evidence.decisionRegion(),cancellation,workingOwner,AdaptiveBObserver.current(),progress)
+                    request.budgets(),evidence.decisionRegion(),cancellation,workingOwner,AdaptiveBObserver.current(),progress,recordedPolicy)
                 : new AdaptiveBInference().solve(profiles, evaluated, adaptiveLattices,
                     continuationOffsets, parameters, request.budgets(), evidence.decisionRegion(), cancellation,
                     workingOwner, AdaptiveBObserver.current(),progress,recordedPolicy);

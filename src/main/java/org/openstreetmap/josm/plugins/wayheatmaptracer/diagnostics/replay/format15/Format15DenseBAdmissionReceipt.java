@@ -11,7 +11,7 @@ final class Format15DenseBAdmissionReceipt {
     private static final int MAX_BYTES=8*1024*1024;
     private static final Set<String> KEYS=Set.of("schema","sourceIdentityHash","inputHash","parameterHash","executionWorkHash","witness");
     private Format15DenseBAdmissionReceipt() { }
-    static boolean required(String parameterHash){return BPolicy.DENSE_ADMISSION_VERSION.equals(BPolicy.adaptiveVersion(parameterHash));}
+    static boolean required(String parameterHash){String policy=BPolicy.adaptiveVersion(parameterHash);return BPolicy.DENSE_ADMISSION_VERSION.equals(policy)||BPolicy.INVENTORY_PREP_VERSION.equals(policy);}
     static Format15Artifact artifact(Format15Bundle bundle,FrozenReplayInput input,TraceHypothesisSet run) {
         String witness=DenseBAdmission.witnessFromExplanation(run.explanation());
         requireWork(witness,input,run.workAccounting().orElseThrow());
@@ -53,7 +53,8 @@ final class Format15DenseBAdmissionReceipt {
     }
     private static void requireWork(String witness,FrozenReplayInput input,ExecutionWorkReceipt work) {
         var bounds=DenseBAdmission.validateWitness(witness,input.request().budgets(),input.request().profileChainage().cumulativeGroundMeters().size());
-        String expected=bounds.admitted()?BPolicy.FULL_EXECUTION_VERSION:BPolicy.COMPACT_EXECUTION_VERSION;
+        var policy=BPolicy.recorded(input.request());
+        String expected=bounds.admitted()?policy.fullExecutionVersion():policy.compactExecutionVersion();
         if(work.bStages().size()!=1||work.otherEngineTransitions()!=0||!work.hasPolicy(expected)
                 ||bounds.admitted()&&(work.computedTransitions()>bounds.scoreUpper()||work.bStages().get(0).refusedScoreAttempts()!=0))
             throw new IllegalArgumentException("selected backend work differs");
