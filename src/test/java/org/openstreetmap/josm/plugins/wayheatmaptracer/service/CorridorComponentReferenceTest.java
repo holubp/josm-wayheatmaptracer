@@ -95,7 +95,7 @@ class CorridorComponentReferenceTest {
             profiles.add(new CorridorProfile(i,source,List.of(band),.8,.02,.78,true));observations.add(call(builder,"observation",new CorridorTrackPoint(i,band,false),profiles.get(i),distances,1.0,Map.of()));
         }
         var fits=new ArrayList<CorridorTubeBuilder.WorldFitDiagnostic>();
-        var miss=assertThrows(InvocationTargetException.class,()->call(builder,"worldRegression",observations,1,"off-normal",profiles,distances,1.0,profiles.get(1).bands().get(0),fits));assertInstanceOf(IllegalArgumentException.class,miss.getCause());assertTrue(fits.get(0).projectionMissMeters()>1);
+        assertDoesNotThrow(()->call(builder,"worldRegression",observations,1,"off-normal",profiles,distances,1.0,profiles.get(1).bands().get(0),fits));assertTrue(fits.get(0).projectionMissMeters()>1);assertTrue(fits.get(0).requiredForStoredFields());assertFalse(fits.get(0).projectionPasses());
         var shortWindow=assertThrows(InvocationTargetException.class,()->call(builder,"worldRegression",observations.subList(0,1),1,"short",profiles,distances,1.0,profiles.get(1).bands().get(0),new ArrayList<>()));assertInstanceOf(IllegalArgumentException.class,shortWindow.getCause());
         var singular=assertThrows(InvocationTargetException.class,()->call(builder,"weightedWorld",List.of(observations.get(0),observations.get(0)),new double[]{1,1},new double[]{0,1},new double[]{0,1},0.0));assertInstanceOf(IllegalArgumentException.class,singular.getCause());
     }
