@@ -11,10 +11,16 @@ final class WideCompactScenes {
     static final String SPEC="wide-compact-v1;p=1.556065358178362;extent=62p,faint100.5m;radius=25;step=p;K32/8;defaults;cleanupOff;extentAdjustments=1;gaussianDrift=.9/.08,sigma=.55p;hairpinR=4p,rough=.3p;faint=.08,sigma=.65,apexX50,height3/base12;parallel=.35+/-.035,sep8p,sigma.55p,noiseSeed13579;diffuse=.06x3,amplitude2.5,wavelength24,sigma.65";
     record Scene(String id,FrozenReplayInput input,List<MetricPoint> analytic,boolean strong,boolean hairpin,double length) { }
     static Scene scene(String id){return scene(id,id.equals("faint-apex")?100.5:L,false);}
+    static Scene scene(String id,BPolicy policy){return scene(id,id.equals("faint-apex")?100.5:L,false,policy);}
     static Scene tiny(){return scene("tiny",2.5*P,true);}
     /** Eight physical rows retain a nontrivial K32 full-work bound, with the same native +/-25 m evidence. */
     static Scene tinyRetention(){return scene("tiny",6.5*P,true);}
     private static Scene scene(String id,double length,boolean tiny) {
+        return scene(id,length,tiny,BPolicy.INVENTORY_PREP_V4);
+    }
+    private static Scene scene(String id,double length,boolean tiny,BPolicy policy) {
+        if(policy!=BPolicy.INVENTORY_PREP_V4&&policy!=BPolicy.INVENTORY_FRONTIER_V5)
+            throw new IllegalArgumentException("An explicit V4/V5 inventory fixture policy is required");
         boolean hairpin=id.equals("thin-hairpin"),reverse=id.endsWith("reversed");
         var source=new ArrayList<MetricPoint>();
         if(hairpin) {
@@ -60,7 +66,7 @@ final class WideCompactScenes {
         var exact=new TraceRequest(way,new OccurrenceRange(0,nodes.size()-1),TrackerMode.PROBABILISTIC,AlignmentMode.PRECISE_SHAPE,
                 RecoveryPermissions.disabled(25),TraceBudgets.defaults(),evidence.snapshotId(),evidence.canonicalHash(),network.snapshotId(),network.canonicalHash(),
                 "public-wide-v1",BPolicy.visibleExactParameterHash(),"public-native-pitch",P,new ProbabilisticProfileFactory().profileChainage(factualSource,P),resolution);
-        var request=BPolicy.adaptiveRequest(exact,BPolicy.INVENTORY_PREP_V4);
+        var request=BPolicy.adaptiveRequest(exact,policy);
         var input=new FrozenReplayInput(request,evidence,network,new ModernTracePipeline.Options("scalar",GeometryCleanupConfig.disabled(),"synthetic",0),25,null);
         return new Scene(id,input,analytic(id,length),id.startsWith("remote-drift")||hairpin,hairpin,length);
     }
