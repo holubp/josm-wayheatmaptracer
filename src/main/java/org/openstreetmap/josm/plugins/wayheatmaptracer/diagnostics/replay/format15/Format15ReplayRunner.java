@@ -220,6 +220,8 @@ public final class Format15ReplayRunner {
                 fixedOccurrences.add(interval.endBoundary().occurrenceIndex());
             }
             ModernTracePipeline.PipelineRun production;
+            if (request.corridorInput().filter(c -> c.boundedBridgePolicy()).isPresent())
+                fixedOccurrences = request.corridorInput().orElseThrow().additionalFixedOccurrences();
             try {
                 production = pipeline.runWithUsage(request, shared.evidence(), shared.network(),
                         shared.options(), CancellationProbe.NONE, fixedOccurrences);

@@ -88,10 +88,16 @@ public final class IntervalTraceRequestFactory {
         }
         ProfileChainage fullChainage = new ProbabilisticProfileFactory().profileChainage(metric,
                 fullRequest.configuredSampleStepMeters());
+        if (fullRequest.corridorInput().filter(c -> c.boundedBridgePolicy()).isPresent())
+            fullChainage = fullChainage.withSourceOrigin(fullRequest.profileChainage().sourceOriginGroundMeters());
         Optional<CorridorTraceInput> fullCorridor = fullRequest.engine() == TrackerMode.CORRIDOR_AWARE
                 || fullRequest.engine() == TrackerMode.HYBRID
                 ? Optional.of(corridorForAnchors(fullChainage, metric, geographic, evidence))
                 : Optional.empty();
+        if (fullCorridor.isPresent() && fullRequest.corridorInput().isPresent()) {
+            var frozen = fullRequest.corridorInput().get();
+            fullCorridor = Optional.of(fullCorridor.get().withPolicy(frozen.executionPolicy(), frozen.additionalFixedOccurrences()));
+        }
         if (!fullChainage.equals(fullRequest.profileChainage())
                 || !fullCorridor.equals(fullRequest.corridorInput())) {
             throw new IllegalArgumentException("Detached full-source anchors differ from the request");
@@ -183,6 +189,17 @@ public final class IntervalTraceRequestFactory {
         if (fullRequest.engine() == TrackerMode.CORRIDOR_AWARE
                 || fullRequest.engine() == TrackerMode.HYBRID) {
             corridor = Optional.of(corridorForAnchors(chainage, metric, geographic, evidence));
+            var frozen = fullRequest.corridorInput().orElseThrow();
+            if (frozen.boundedBridgePolicy()) {
+                var fixed = new java.util.TreeSet<Integer>();
+                for (int occurrence : frozen.additionalFixedOccurrences())
+                    if (occurrence >= trace.firstIndex() && occurrence <= trace.lastIndex()) fixed.add(occurrence);
+                if (interval.startBoundary().kind() == SelectedWayIntervalPartitioner.BoundaryKind.FIXED_ISLAND)
+                    fixed.add(interval.startBoundary().occurrenceIndex());
+                if (interval.endBoundary().kind() == SelectedWayIntervalPartitioner.BoundaryKind.FIXED_ISLAND)
+                    fixed.add(interval.endBoundary().occurrenceIndex());
+                corridor = Optional.of(corridor.get().withPolicy(frozen.executionPolicy(), fixed));
+            }
         }
         return new TraceRequest(fullRequest.selectedWayKey(), trace, fullRequest.engine(),
                 fullRequest.geometryMode(), fullRequest.permissions(), remainingBudgets,

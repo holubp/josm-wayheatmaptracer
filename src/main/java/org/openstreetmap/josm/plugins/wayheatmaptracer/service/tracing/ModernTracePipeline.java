@@ -144,7 +144,18 @@ public final class ModernTracePipeline {
      */
     public Result run(TraceRequest request, EvidenceSnapshot evidence, NetworkSnapshot network,
             Options options, CancellationProbe cancellation) {
-        return run(request, evidence, network, options, cancellation, Set.of());
+        return run(request, evidence, network, options, cancellation, frozenFixedOccurrences(request));
+    }
+
+    private static Set<Integer> frozenFixedOccurrences(TraceRequest request) {
+        return request == null ? Set.of() : request.corridorInput().filter(c -> c.boundedBridgePolicy())
+            .map(c -> c.additionalFixedOccurrences()).orElse(Set.of());
+    }
+
+    /** Uses explicit frozen A authority, retaining empty historical convenience authority. */
+    public PipelineRun runWithUsage(TraceRequest request, EvidenceSnapshot evidence,
+            NetworkSnapshot network, Options options, CancellationProbe cancellation) {
+        return runWithUsage(request, evidence, network, options, cancellation, frozenFixedOccurrences(request));
     }
 
     /** Runs production inference with additional original occurrences held as exact trace anchors. */
@@ -166,6 +177,9 @@ public final class ModernTracePipeline {
             throw new IllegalArgumentException("Modern pipeline inputs are incomplete");
         }
         Set<Integer> exactFixed = Set.copyOf(fixedOccurrences);
+        if (request.corridorInput().filter(c -> c.boundedBridgePolicy()).isPresent()
+                && !exactFixed.equals(frozenFixedOccurrences(request)))
+            throw new IllegalArgumentException("Pipeline fixed occurrences differ from frozen A authority");
         var disconnections = SharedNodeDisconnectionPlanner.forRequest(request, network);
         if (!exactFixed.isEmpty()) {
             DetachedPrimitive selected = network.primitives().get(request.selectedWayKey());
@@ -376,26 +390,18 @@ public final class ModernTracePipeline {
                     new GeneratedCandidatePoint(source.id(), index), source.points().get(index),
                     source.support().get(index), false, false));
         }
-        Set<PrimitiveKey> movable = network.closure().movableExistingNodeKeys();
-        Set<PrimitiveKey> removable = network.closure().removableExistingNodeKeys();
-        Set<PrimitiveKey> protectedNodes = network.closure().protectedExistingNodeKeys();
         for (int local = 0; local < existingIds.size(); local++) {
             ExistingWayNodeOccurrence id = existingIds.get(local);
             PrimitiveKey nodeKey = id.nodeKey();
-            boolean replacement = disconnections.mayPosition(id.originalOccurrenceIndex());
-            boolean protectedCoordinate = protectedNodes.contains(nodeKey) && !replacement;
-            boolean movableCoordinate = movable.contains(nodeKey) || replacement;
-            boolean removableIdentity = removable.contains(nodeKey);
-            if (!protectedCoordinate && !removableIdentity && !movableCoordinate) {
-                throw new IllegalArgumentException(
-                        "Selected existing occurrence lacks movement, protection or removal authority");
-            }
             double fraction = sourceFractions[local];
             int exactCandidate = exactFractionIndex(candidateFractions, fraction);
             boolean ambiguousMapping = exactCandidate == -2
                     || fractionMultiplicity(sourceFractions, fraction) > 1;
-            boolean fixedCoordinate = protectedCoordinate || !movableCoordinate || ambiguousMapping
-                    || fixedOccurrences.contains(id.originalOccurrenceIndex());
+            var permission = CorridorSourceProtection.permission(network, nodeKey,
+                disconnections.mayPosition(id.originalOccurrenceIndex()),
+                fixedOccurrences.contains(id.originalOccurrenceIndex()), ambiguousMapping);
+            boolean removableIdentity = permission.removable();
+            boolean fixedCoordinate = permission.fixed();
             MetricPoint assignment = fixedCoordinate ? selectedPoints.get(local)
                     : interpolateAt(source.points(), candidateFractions, fraction);
             ObservationOwnership ownership = fixedCoordinate
@@ -441,7 +447,7 @@ public final class ModernTracePipeline {
                 Map.copyOf(assignments), Map.copyOf(ownership));
     }
 
-    private static void validateSelectedOccurrenceIdentity(DetachedWay selected,
+    static void validateSelectedOccurrenceIdentity(DetachedWay selected,
             TraceRequest request) {
         Map<PrimitiveKey, Integer> occurrenceCounts = new LinkedHashMap<>();
         for (PrimitiveKey node : selected.nodeKeys()) {
@@ -457,7 +463,7 @@ public final class ModernTracePipeline {
         }
     }
 
-    private static double[] normalizedChainage(List<MetricPoint> points, String description) {
+    static double[] normalizedChainage(List<MetricPoint> points, String description) {
         double[] chainage = new double[points.size()];
         for (int index = 1; index < points.size(); index++) {
             double segment = points.get(index - 1).distanceTo(points.get(index));
@@ -497,7 +503,7 @@ public final class ModernTracePipeline {
         return last == first ? -1 : last == first + 1 ? first : -2;
     }
 
-    private static int fractionMultiplicity(double[] fractions, double target) {
+    static int fractionMultiplicity(double[] fractions, double target) {
         return upperBound(fractions, target + FRACTION_TOLERANCE)
                 - lowerBound(fractions, target - FRACTION_TOLERANCE);
     }

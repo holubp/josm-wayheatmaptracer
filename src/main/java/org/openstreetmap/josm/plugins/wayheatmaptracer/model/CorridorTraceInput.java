@@ -3,6 +3,9 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.Collections;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.DetachedProfileSamplingLocation;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.DetachedValueVerifier;
@@ -10,17 +13,38 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Detached
 /** Frozen profile locations and physical lateral sampling step for corridor-aware Engine A. */
 public record CorridorTraceInput(
     List<DetachedProfileSamplingLocation> profileLocations,
-    double lateralStepMeters
+    double lateralStepMeters,
+    ExecutionPolicy executionPolicy,
+    Set<Integer> additionalFixedOccurrences
 ) {
+    /** Versioned frozen A behavior; historical inputs never opt in implicitly. */
+    public enum ExecutionPolicy { HISTORICAL_V1, R3_OWNED_BOUNDED_BRIDGE_V1 }
+
+    /** Preserves historical constructors, behavior and wire encoding. */
+    public CorridorTraceInput(List<DetachedProfileSamplingLocation> profileLocations, double lateralStepMeters) {
+        this(profileLocations, lateralStepMeters, ExecutionPolicy.HISTORICAL_V1, Set.of());
+    }
+
     /** Copies and validates detached sampling input without reconstructing locations from chainage. */
     public CorridorTraceInput {
         if (profileLocations == null || profileLocations.size() < 2
-            || !Double.isFinite(lateralStepMeters) || lateralStepMeters <= 0.0) {
+            || !Double.isFinite(lateralStepMeters) || lateralStepMeters <= 0.0
+            || executionPolicy == null || additionalFixedOccurrences == null
+            || additionalFixedOccurrences.stream().anyMatch(i -> i == null || i < 0)
+            || executionPolicy == ExecutionPolicy.HISTORICAL_V1 && !additionalFixedOccurrences.isEmpty()) {
             throw new IllegalArgumentException("Corridor trace input is incomplete");
         }
         profileLocations = List.copyOf(profileLocations);
+        additionalFixedOccurrences = Collections.unmodifiableSet(new TreeSet<>(additionalFixedOccurrences));
         DetachedValueVerifier.verify(profileLocations);
     }
+
+    /** Explicitly freezes policy and original occurrence authority without changing sampling locations. */
+    public CorridorTraceInput withPolicy(ExecutionPolicy policy, Set<Integer> fixedOccurrences) {
+        return new CorridorTraceInput(profileLocations, lateralStepMeters, policy, fixedOccurrences);
+    }
+
+    public boolean boundedBridgePolicy() { return executionPolicy == ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1; }
 
 
     /**

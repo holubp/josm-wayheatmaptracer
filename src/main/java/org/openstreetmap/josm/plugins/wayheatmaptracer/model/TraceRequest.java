@@ -53,6 +53,13 @@ public record TraceRequest(
         }
         DetachedValueVerifier.verify(java.util.List.of(selectedWayKey, selectedRange, engine, geometryMode,
             permissions, budgets, profileChainage, evidenceResolution, corridorInput));
+        if (corridorInput.isPresent()) {
+            var corridor = corridorInput.get();
+            if (corridor.boundedBridgePolicy() && engine != TrackerMode.CORRIDOR_AWARE
+                    || corridor.additionalFixedOccurrences().stream().anyMatch(i ->
+                        i < selectedRange.firstIndex() || i > selectedRange.lastIndex()))
+                throw new IllegalArgumentException("Frozen A policy or fixed occurrence range differs");
+        }
         if (!permissions.sharedNodeDisconnectionIntent().isEmpty()) {
             var intent = permissions.sharedNodeDisconnectionIntent();
             if (!intent.selectedWayKey().equals(selectedWayKey)
