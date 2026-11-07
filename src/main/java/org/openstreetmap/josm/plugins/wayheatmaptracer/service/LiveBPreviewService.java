@@ -1813,6 +1813,8 @@ public final class LiveBPreviewService {
                         == SelectedWayIntervalPartitioner.BoundaryKind.FIXED_ISLAND) {
                     fixedOccurrences.add(interval.endBoundary().occurrenceIndex());
                 }
+                if (request.corridorInput().filter(c -> c.boundedBridgePolicy()).isPresent())
+                    fixedOccurrences = request.corridorInput().orElseThrow().additionalFixedOccurrences();
                 ModernTracePipeline.PipelineRun production = pipeline.runWithUsage(request, evidence,
                         captured.network(), options, cancellation, fixedOccurrences);
                 cancellation.checkpoint();

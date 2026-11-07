@@ -31,6 +31,41 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 /** Actual live capture, production inference and immutable plan authority regressions. */
 class V022SharedNodeDisconnectionPlannerTest {
+    @Test void sealedSourceCertificateUsesNativeReplacementButAdditionalFixedWins() throws Exception {
+        var f=fixture(false);var service=new LiveBPreviewService();var config=config(AlignmentMode.PRECISE_SHAPE);
+        var raster=raster(50,4);
+        var original=onEdt(()->service.capture(f.data(),f.selection(),raster,config,false,RecoveryPermissions.disabled(7.01)));
+        var intent=new SharedNodeDisconnectionIntent(key(f.way()),original.specification().selectedRange(),
+            Map.of(1,key(f.nodes().get(1))),original.disconnectionSource().canonicalHash());
+        var permissions=new RecoveryPermissions(false,7.01,7.01,JunctionPolicy.FIXED,false,intent);
+        var capture=onEdt(()->service.capture(f.data(),f.selection(),raster,config,false,permissions));
+        var computed=service.compute(capture,CancellationProbe.NONE);var evidence=computed.evidence();
+        var chainage=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory()
+            .profileChainage(capture.sourceMetric(),capture.sampleStepMeters());
+        var input=IntervalTraceRequestFactory.corridorForAnchors(chainage,capture.sourceMetric(),capture.sourceGeographic(),evidence);
+        var policy=CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1;
+        java.util.function.Function<Set<Integer>,TraceRequest> request=fixed->new TraceRequest(key(f.way()),capture.specification().selectedRange(),
+            TrackerMode.CORRIDOR_AWARE,AlignmentMode.PRECISE_SHAPE,permissions,TraceBudgets.defaults(),evidence.snapshotId(),evidence.canonicalHash(),
+            capture.network().snapshotId(),capture.network().canonicalHash(),capture.settingsHash(),capture.parameterHash(),"source-certificate-test",capture.sampleStepMeters(),
+            chainage,evidence.resolution(),Optional.of(input.withPolicy(policy,fixed)),capture.disconnectionSource());
+        var movable=CorridorSourceProtection.inspect(request.apply(Set.of()),evidence,capture.network(),"selected-visible-source",CancellationProbe.NONE);
+        var fixed=CorridorSourceProtection.inspect(request.apply(Set.of(1)),evidence,capture.network(),"selected-visible-source",CancellationProbe.NONE);
+        assertTrue(movable.available(),movable.status());assertTrue(fixed.available(),fixed.status());
+        assertTrue(movable.occurrences().get(1).replacementAuthorized());
+        assertFalse(movable.occurrences().get(1).fixedCoordinate());
+        assertTrue(fixed.occurrences().get(1).replacementAuthorized());
+        assertTrue(fixed.occurrences().get(1).fixedCoordinate());
+        assertEquals(original.disconnectionSource().canonicalHash(),capture.disconnectionSource().canonicalHash());
+        assertNotEquals(movable.identity(),fixed.identity());
+        var frozen=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput(
+            request.apply(Set.of(1)),evidence,capture.network(),computed.options());
+        var decoded=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec.decode(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec.encode(frozen));
+        var replayed=CorridorSourceProtection.inspect(decoded.request(),decoded.evidence(),decoded.network(),"selected-visible-source",CancellationProbe.NONE);
+        assertTrue(replayed.available(),replayed.status());assertEquals(fixed.identity(),replayed.identity());
+        assertEquals(fixed.occurrences(),replayed.occurrences());
+    }
+
     @BeforeAll static void configure() {
         Config.setPreferencesInstance(new MemoryPreferences());
         ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));

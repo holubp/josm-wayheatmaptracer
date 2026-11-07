@@ -67,7 +67,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Selected
  * serialization is used.
  */
 public final class FrozenReplayCodec {
-    public static final int VERSION = 8;
+    public static final int VERSION = 9;
     private static final int REQUEST_MAGIC = 0x57544452;
     private static final int AUTHORITY_MAGIC = 0x57544155;
     private static final int AUTHORITY_VERSION = 2;
@@ -119,12 +119,13 @@ public final class FrozenReplayCodec {
                 out.writeInt(0x57545250);
                 boolean explicit = !input.request().permissions().sharedNodeDisconnectionIntent().isEmpty();
                 boolean hasLegacy = input.legacyB() != null;
+                boolean aPolicy = hasFrozenAPolicy(input.request());
                 boolean payloadFact = hasPayloadCompletenessFact(input.network())
                         || hasPayloadCompletenessFact(input.request().disconnectionSource());
-                boolean extended = payloadFact || hasLegacy || explicit || input.planSearchRadiusMeters()
+                boolean extended = aPolicy || payloadFact || hasLegacy || explicit || input.planSearchRadiusMeters()
                         != input.request().permissions().ordinaryRadiusMeters();
                 boolean semantic = extended || input.network().semanticWitness() != null;
-                int version = payloadFact ? 8 : hasLegacy ? input.legacyB().parentPolicy().isPresent() ? 7 : 6
+                int version = aPolicy ? 9 : payloadFact ? 8 : hasLegacy ? input.legacyB().parentPolicy().isPresent() ? 7 : 6
                         : extended ? 5 : semantic ? 4
                         : input.evidence().coordinateFrame().hasCompleteNumericalIdentity() ? 3 : 2;
                 out.writeInt(version);
@@ -162,6 +163,8 @@ public final class FrozenReplayCodec {
             int evidenceVersion = version >= 4 ? in.readBoolean() ? 3 : 2 : version;
             EvidenceSnapshot evidence = evidence(in, evidenceVersion);
             TraceRequest request = request(in, evidence.coordinateFrame(), evidence.transform());
+            if ((version == 9) != hasFrozenAPolicy(request))
+                throw new IllegalArgumentException("Frozen A policy version differs from request schema");
             if (version < 5 && !request.permissions().sharedNodeDisconnectionIntent().isEmpty())
                 throw new IllegalArgumentException("Legacy frozen schema cannot carry disconnection authority");
             NetworkSnapshot network = network(in, version >= 4, version >= 5, version >= 8);
@@ -201,6 +204,15 @@ public final class FrozenReplayCodec {
     /** Same request wire fields for a bounded streaming hash without a payload copy. */
     static void writeRequestOnly(DataOutputStream out, TraceRequest value) throws IOException {
         request(out, value, hasPayloadCompletenessFact(value.disconnectionSource()));
+    }
+
+    /** Canonical request identity using the same bounded wire fields as native final/replay bindings. */
+    public static String canonicalRequestHash(TraceRequest request) {
+        return FinalOutputComponentsCodec.requestHash(request);
+    }
+
+    private static boolean hasFrozenAPolicy(TraceRequest request) {
+        return request.corridorInput().map(CorridorTraceInput::boundedBridgePolicy).orElse(false);
     }
 
     /** Decodes one request against the sole shared evidence frame. */
@@ -556,7 +568,11 @@ public final class FrozenReplayCodec {
 
     private static void request(DataOutputStream out, TraceRequest r, boolean payloadFactSchema) throws IOException {
         boolean explicit = !r.permissions().sharedNodeDisconnectionIntent().isEmpty();
-        if (explicit) { out.writeInt(REQUEST_MAGIC); out.writeInt(payloadFactSchema ? 2 : 1); }
+        boolean aPolicy = hasFrozenAPolicy(r);
+        if (aPolicy) {
+            out.writeInt(REQUEST_MAGIC); out.writeInt(3);
+            out.writeBoolean(payloadFactSchema); out.writeBoolean(explicit);
+        } else if (explicit) { out.writeInt(REQUEST_MAGIC); out.writeInt(payloadFactSchema ? 2 : 1); }
         key(out, r.selectedWayKey());
         range(out, r.selectedRange());
         en(out, r.engine());
@@ -580,6 +596,7 @@ public final class FrozenReplayCodec {
         str(out, r.samplerId());
         out.writeDouble(r.configuredSampleStepMeters());
         chainage(out, r.profileChainage());
+        if (aPolicy) out.writeDouble(r.profileChainage().sourceOriginGroundMeters());
         resolution(out, r.evidenceResolution());
         out.writeBoolean(r.corridorInput().isPresent());
         if (r.corridorInput().isPresent()) {
@@ -589,6 +606,11 @@ public final class FrozenReplayCodec {
             for (DetachedProfileSamplingLocation l : c.profileLocations()) {
                 geo(out, l.geographicPoint());
                 out.writeDouble(l.cumulativeGroundDistanceMeters());
+            }
+            if (aPolicy) {
+                en(out, c.executionPolicy());
+                count(out, c.additionalFixedOccurrences().size());
+                for (int occurrence : c.additionalFixedOccurrences()) out.writeInt(occurrence);
             }
         }
         if (explicit) {
@@ -601,10 +623,13 @@ public final class FrozenReplayCodec {
         in.mark(8);
         boolean explicit = in.readInt() == REQUEST_MAGIC;
         boolean payloadFactSchema = false;
+        boolean aPolicy = false;
         if (explicit) {
             int schema = in.readInt();
-            if (schema < 1 || schema > 2) throw new IllegalArgumentException("Unsupported disconnection request schema");
-            payloadFactSchema = schema >= 2;
+            if (schema < 1 || schema > 3) throw new IllegalArgumentException("Unsupported frozen request schema");
+            aPolicy = schema == 3;
+            if (aPolicy) { payloadFactSchema = in.readBoolean(); explicit = in.readBoolean(); }
+            else payloadFactSchema = schema >= 2;
         } else in.reset();
         PrimitiveKey way = key(in);
         OccurrenceRange range = range(in);
@@ -618,6 +643,7 @@ public final class FrozenReplayCodec {
                networkHash = str(in), settings = str(in), parameters = str(in), sampler = str(in);
         double step = in.readDouble();
         ProfileChainage chainage = chainage(in);
+        if (aPolicy) chainage = chainage.withSourceOrigin(in.readDouble());
         EvidenceResolution resolution = resolution(in);
         Optional<CorridorTraceInput> corridor = Optional.empty();
         if (in.readBoolean()) {
@@ -628,8 +654,17 @@ public final class FrozenReplayCodec {
                 locations.add(DetachedProfileSamplingLocation.at(
                         geo(in), frame, transform, in.readDouble()));
             }
-            corridor = Optional.of(new CorridorTraceInput(locations, lateral));
+            if (aPolicy) {
+                var policy = en(in, CorridorTraceInput.ExecutionPolicy.class);
+                if (policy != CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1)
+                    throw new IllegalArgumentException("Explicit new A request requires its versioned policy");
+                int fixedCount = count(in); var fixed = new java.util.TreeSet<Integer>();
+                for (int i = 0; i < fixedCount; i++) if (!fixed.add(in.readInt()))
+                    throw new IllegalArgumentException("Duplicate frozen fixed occurrence");
+                corridor = Optional.of(new CorridorTraceInput(locations, lateral, policy, fixed));
+            } else corridor = Optional.of(new CorridorTraceInput(locations, lateral));
         }
+        if (aPolicy && corridor.isEmpty()) throw new IllegalArgumentException("Missing frozen A policy input");
         NetworkSnapshot source = null;
         if (explicit) {
             permissions = withIntent(permissions, intent(in));
@@ -1470,8 +1505,10 @@ public final class FrozenReplayCodec {
         admitMetadata(request.parameterHash(), admission);
         admitMetadata(request.samplerId(), admission);
         admission.entries(request.profileChainage().cumulativeGroundMeters().size());
-        request.corridorInput().ifPresent(
-                corridor -> admission.entries(corridor.profileLocations().size()));
+        request.corridorInput().ifPresent(corridor -> {
+            admission.entries(corridor.profileLocations().size());
+            admission.entries(corridor.additionalFixedOccurrences().size());
+        });
         admission.entries(evidence.resolution().spatialPitchSamples().size());
         admission.entries(input.request().evidenceResolution().spatialPitchSamples().size());
         admitRegion(evidence.decisionRegion(), admission);
