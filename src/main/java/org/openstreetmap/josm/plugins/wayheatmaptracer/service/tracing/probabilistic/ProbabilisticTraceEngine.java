@@ -278,7 +278,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
                     "refinement reference points", () -> new ArrayList<>(reference.section().reference()));
         boolean fixedEndpoints = reference != null || request.permissions().junctionPolicy() == JunctionPolicy.FIXED;
         long profileSamplingStarted = System.nanoTime();
-        List<ProbabilisticProfile> profiles = recordedPolicy==BPolicy.INVENTORY_PREP_V4||recordedPolicy==BPolicy.INVENTORY_FRONTIER_V5
+        List<ProbabilisticProfile> profiles = recordedPolicy==BPolicy.INVENTORY_PREP_V4||recordedPolicy==BPolicy.INVENTORY_FRONTIER_V5||recordedPolicy==BPolicy.INVENTORY_FRONTIER_BUDGETED_V6
             ? new ProbabilisticProfileFactory().createWithInventory(source,request.profileChainage(),
                 request.permissions().ordinaryRadiusMeters(),fixedEndpoints,evidence,field,parameters,cancellation,workingOwner)
             : new ProbabilisticProfileFactory().create(source,
@@ -353,7 +353,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
         BQualityProbe.dense(profiles,evaluated,request.budgets());
         ProbabilisticInferenceResult inference;
         if(BQualityProbe.fullOracle()) {
-            if(reference!=null||recordedPolicy!=BPolicy.INVENTORY_PREP_V4&&recordedPolicy!=BPolicy.INVENTORY_FRONTIER_V5)
+            if(reference!=null||recordedPolicy!=BPolicy.INVENTORY_PREP_V4&&recordedPolicy!=BPolicy.INVENTORY_FRONTIER_V5&&recordedPolicy!=BPolicy.INVENTORY_FRONTIER_BUDGETED_V6)
                 throw new IllegalArgumentException("Full-lattice numerical oracle requires an explicit standalone V4/V5 public fixture");
             var progress=ProbabilisticInference.allocated(workingOwner,AttemptMemoryLedger.objectBytes(8),"oracle native progress",
                     ()->(ProbabilisticInference.WorkProgress)(pairs,scores)->{work.pairVisits=pairs;work.transitions=scores;});
@@ -367,7 +367,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
                         org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
                                 "b.adaptive.availableScores",scores);
                     });
-            var adaptiveRun = recordedPolicy==BPolicy.DENSE_ADMITTED_V3||recordedPolicy==BPolicy.INVENTORY_PREP_V4||recordedPolicy==BPolicy.INVENTORY_FRONTIER_V5
+            var adaptiveRun = recordedPolicy==BPolicy.DENSE_ADMITTED_V3||recordedPolicy==BPolicy.INVENTORY_PREP_V4||recordedPolicy==BPolicy.INVENTORY_FRONTIER_V5||recordedPolicy==BPolicy.INVENTORY_FRONTIER_BUDGETED_V6
                 ? new AdmittedBInference().solve(profiles,evaluated,adaptiveLattices,continuationOffsets,parameters,
                     request.budgets(),evidence.decisionRegion(),cancellation,workingOwner,AdaptiveBObserver.current(),progress,recordedPolicy)
                 : new AdaptiveBInference().solve(profiles, evaluated, adaptiveLattices,
@@ -480,7 +480,9 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
             AttemptMemoryLedger.Owner resultOwner, AttemptMemoryLedger.Owner workingOwner) {
         int hypothesisCount = inference.distinctPaths().size();
         boolean adaptive = inference.workAccounting().map(work -> BPolicy.isAdaptiveVersion(work.executionPolicy())).orElse(false);
-        int diagnosticCount = adaptive ? 17 : 15;
+        boolean budgetedFallback = inference.explanation().contains(
+                "\nb-refinement-budget-v1|outcome=FIRST_GRAPH_PROVEN_UNAFFORDABLE|");
+        int diagnosticCount = (adaptive ? 17 : 15) + (budgetedFallback ? 1 : 0);
         long outputBytes = ProbabilisticInference.listBytes(hypothesisCount);
         long temporaryBytes = ProbabilisticInference.listBytes(hypothesisCount) * 3L
                 + mapBytes(hypothesisCount);
@@ -601,6 +603,8 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
             diagnostics.put("orientationWeight", parameters.orientationWeight());
             var completion = inference.completion().orElseThrow();
             diagnostics.put("bTerminalCompletionPolicyV1", 1.0);
+            if (inference.explanation().contains("\nb-refinement-budget-v1|outcome=FIRST_GRAPH_PROVEN_UNAFFORDABLE|"))
+                diagnostics.put("bBudgetedFirstGraphV1",1.0);
             diagnostics.put("effectiveRawAlternativeLimit", (double) completion.effectiveRawLimit());
             diagnostics.put("effectiveDistinctAlternativeLimit", (double) completion.effectiveDistinctLimit());
             diagnostics.put("completePathsAtSaturation", (double) completion.completePathsAtSaturation());

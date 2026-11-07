@@ -31,7 +31,7 @@ final class AdaptiveSolverView {
         if (sampled == null || dense == null || components == null || owner == null)
             throw new IllegalArgumentException("Complete original evidence and owner are required");
         if (policy != BPolicy.ADAPTIVE_MULTIMODAL_V1 && policy != BPolicy.ADAPTIVE_MULTIMODAL_V2
-                && policy != BPolicy.INVENTORY_FRONTIER_V5)
+                && policy != BPolicy.INVENTORY_FRONTIER_V5 && policy != BPolicy.INVENTORY_FRONTIER_BUDGETED_V6)
             throw new IllegalArgumentException("An explicit retained-graph revision is required");
         try (var scratch = owner.child("adaptive-retention-mask")) {
             int n = dense.cells().size();
@@ -50,7 +50,7 @@ final class AdaptiveSolverView {
                     }
                 }
             }
-            if (policy == BPolicy.INVENTORY_FRONTIER_V5) {
+            if (policy == BPolicy.INVENTORY_FRONTIER_V5 || policy == BPolicy.INVENTORY_FRONTIER_BUDGETED_V6) {
                 // fine is complete and never mutated below: added cells cannot seed a cascade.
                 for (int i = 0; i < n; i++) if (fine[i]) {
                     double center = dense.cells().get(i).offsetMeters();

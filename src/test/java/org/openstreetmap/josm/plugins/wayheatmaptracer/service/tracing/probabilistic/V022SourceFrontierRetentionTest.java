@@ -215,6 +215,31 @@ class V022SourceFrontierRetentionTest {
     }
 
     private static BPolicy requestedPolicy() { return BPolicy.INVENTORY_FRONTIER_V5; }
+    @Test void refinedViewPreservesEveryOldCellAndCostBit() {
+        for(boolean anchor:new boolean[]{false,true})for(boolean missing:new boolean[]{false,true}) {
+            var p=sampled(0,-6,6,List.of(mode(-3,-3),mode(3,3)),anchor);
+            var d=dense(p,anchor?List.of(0.):grid(-6,6),anchor,missing);
+            var ledger=AttemptMemoryLedger.production();
+            try(var owner=ledger.rootOwner()) {
+                var old=AdaptiveSolverView.initial(p,d,List.of(COMPONENT),Double.NaN,CancellationProbe.NONE,owner,BPolicy.INVENTORY_FRONTIER_V5);
+                var v6=AdaptiveSolverView.initial(p,d,List.of(COMPONENT),Double.NaN,CancellationProbe.NONE,owner,BPolicy.INVENTORY_FRONTIER_BUDGETED_V6);
+                assertArrayEquals(old.copySourceIndices(owner),v6.copySourceIndices(owner));
+                boolean[] centers=new boolean[v6.size()];Arrays.fill(centers,true);
+                var refined=AdaptiveSolverView.refined(p,d,v6,centers,CancellationProbe.NONE,owner);
+                assertOriginalEvidence(d,refined);
+                var indices=Arrays.stream(refined.copySourceIndices(owner)).boxed().toList();
+                for(int index:old.copySourceIndices(owner))assertTrue(indices.contains(index));
+                for(int i=0;i<v6.size();i++) {
+                    int next=indices.indexOf(v6.sourceIndexAt(i));
+                    assertSame(v6.profile().cells().get(i),refined.profile().cells().get(next));
+                    assertEquals(v6.profile().point(i),refined.profile().point(next));
+                }
+                assertEquals(v6.components(),refined.components());
+                assertEquals(v6.profile().ownership(),refined.profile().ownership());
+            }
+            assertEquals(0,ledger.currentBytes());
+        }
+    }
     private static double[] noContinuation(int rows) {
         var values = new double[rows]; Arrays.fill(values, Double.NaN); return values;
     }

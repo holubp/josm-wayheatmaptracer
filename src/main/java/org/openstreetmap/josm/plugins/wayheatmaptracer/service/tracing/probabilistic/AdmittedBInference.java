@@ -42,16 +42,26 @@ final class AdmittedBInference {
                         ()->new AdaptiveBInference.Result(inference,dense,0,inference.evaluatedTransitions(),0,provenance));
             } else {
                 run=new AdaptiveBInference().solve(sampled,dense,lattices,continuation,parameters,budgets,region,cancel,scope,
-                        observer,actual,policy==BPolicy.INVENTORY_FRONTIER_V5?policy:BPolicy.ADAPTIVE_MULTIMODAL_V2);
+                        observer,actual,policy==BPolicy.INVENTORY_FRONTIER_V5||policy==BPolicy.INVENTORY_FRONTIER_BUDGETED_V6?policy:BPolicy.ADAPTIVE_MULTIMODAL_V2);
             }
             String explanation=ProbabilisticInference.allocated(scope,
                     AttemptMemoryLedger.objectBytes(24)+AttemptMemoryLedger.arrayBytes(Math.addExact(witness.length()+128,run.inference().explanation().length()),2),
                     "admitted explanation",()->witness+"\noriginalIndexHash="+run.provenanceHash()+"; "+run.inference().explanation());
+            if(policy==BPolicy.INVENTORY_FRONTIER_BUDGETED_V6&&bound.admitted()
+                    &&!run.inference().rawPaths().isEmpty()) {
+                var completedRun=run;String oldExplanation=explanation;
+                explanation=ProbabilisticInference.allocated(scope,8192,"dense refinement witness",
+                        ()->oldExplanation+"\n"+new BRefinementBudget.Witness(BRefinementBudget.Outcome.DENSE,
+                            java.util.Optional.empty(),java.util.OptionalLong.empty(),java.util.OptionalLong.empty(),
+                            completedRun.provenanceHash()).canonical());
+            }
+            cancel.checkpoint();
             var inference=run.inference().withExecutionIdentity(explanation,
                     bound.admitted()?fullVersion:compactVersion,scope);
             var source=run;
             var result=ProbabilisticInference.allocated(scope,AttemptMemoryLedger.objectBytes(48),"admitted run result",
                     ()->new AdaptiveBInference.Result(inference,source.profiles(),source.refinements(),source.firstScores(),source.secondScores(),source.provenanceHash()));
+            cancel.checkpoint();
             scope.transferTo(owner);return result;
         } catch(TraceMemoryLimitException failure) {
             throw new TraceMemoryLimitException("dense admission policy",Math.max(failure.pairVisits(),actual==null?0:actual.pairs),

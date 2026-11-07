@@ -49,7 +49,7 @@ final class AdaptiveBInference {
             ProbabilisticInference.WorkProgress progress,BPolicy policy) {
         cancellation.checkpoint();
         if(policy!=BPolicy.ADAPTIVE_MULTIMODAL_V1&&policy!=BPolicy.ADAPTIVE_MULTIMODAL_V2
-                &&policy!=BPolicy.INVENTORY_FRONTIER_V5)
+                &&policy!=BPolicy.INVENTORY_FRONTIER_V5&&policy!=BPolicy.INVENTORY_FRONTIER_BUDGETED_V6)
             throw new IllegalArgumentException("An existing adaptive revision is required");
         String version=policy==BPolicy.INVENTORY_FRONTIER_V5?BPolicy.FRONTIER_RETENTION_VERSION:policy.version();
         if (sampled.size() != dense.size() || dense.size() != lattices.size()
@@ -64,20 +64,30 @@ final class AdaptiveBInference {
         var profiles = profiles(views,owner);
         MessageDigest hash = ProbabilisticInference.allocated(owner,512,"adaptive provenance",AdaptiveBInference::digest);
         hash.update(policy==BPolicy.ADAPTIVE_MULTIMODAL_V1?HASH_DOMAIN:
-                policy==BPolicy.INVENTORY_FRONTIER_V5?HASH_DOMAIN_V5:HASH_DOMAIN_V2);
+                policy==BPolicy.INVENTORY_FRONTIER_V5||policy==BPolicy.INVENTORY_FRONTIER_BUDGETED_V6?HASH_DOMAIN_V5:HASH_DOMAIN_V2);
         provenance(hash,views,0,cancellation,observer);
         ModernDiagnosticCounters.record("b.adaptive.denseStates", states(dense));
         ModernDiagnosticCounters.record("b.adaptive.initialStates", states(profiles));
         ModernDiagnosticCounters.record("b.adaptive.activePass",0);
         long passStarted=System.nanoTime();
-        var first = new ProbabilisticInference().solveCachedVersion(profiles,parameters,budgets,region,cancellation,owner,
-                policy.solverMode(),progress);
+        boolean budgeted=policy==BPolicy.INVENTORY_FRONTIER_BUDGETED_V6;
+        CompletedBPassWork[] completed=budgeted?ProbabilisticInference.allocated(owner,
+                AttemptMemoryLedger.referenceArrayBytes(1),"completed first pass holder",()->new CompletedBPassWork[1]):null;
+        ProbabilisticInference.CompletedPassObserver completedObserver=budgeted?ProbabilisticInference.allocated(owner,
+                AttemptMemoryLedger.objectBytes(8),"completed first pass observer",()->workDone->completed[0]=workDone):null;
+        var first = budgeted
+                ?new ProbabilisticInference().solveCachedVersion(profiles,parameters,budgets,region,cancellation,owner,
+                    policy.solverMode(),progress,completedObserver)
+                :new ProbabilisticInference().solveCachedVersion(profiles,parameters,budgets,region,cancellation,owner,
+                    policy.solverMode(),progress);
+        if(budgeted)cancellation.checkpoint();
         if(policy!=BPolicy.ADAPTIVE_MULTIMODAL_V1) recordPass(0,System.nanoTime()-passStarted,owner);
         long firstScores = first.evaluatedTransitions(), secondScores = 0;
         var work = first.workAccounting().orElseThrow();
         long pairs = first.evaluatedPairVisits();
         int refinements = 0;
         var result = first;
+        BRefinementBudget.Outcome outcome=BRefinementBudget.Outcome.NOT_NEEDED;
         try (var scratch = owner.child("all-rival-refinement-plan")) {
             int rowCount = views.size();
             boolean[][] centers = ProbabilisticInference.allocated(scratch,
@@ -107,10 +117,20 @@ final class AdaptiveBInference {
             if (refine) {
                 long remainingScores = budgets.maximumTransitions() - firstScores;
                 long remainingPairs = budgets.maximumPairVisits() - pairs;
+                if(budgeted)cancellation.checkpoint();
+                if(budgeted&&completed[0]!=null
+                        &&BRefinementBudget.assess(completed[0],remainingScores)==BRefinementBudget.Decision.PROVEN_UNAFFORDABLE) {
+                    cancellation.checkpoint();
+                    var finished=finish(first,profiles,0,firstScores,0,hash,work,pairs,first.explanation(),owner,version,
+                            completed[0],remainingScores,BRefinementBudget.Outcome.FIRST_GRAPH_PROVEN_UNAFFORDABLE,cancellation);
+                    cancellation.checkpoint();
+                    return finished;
+                }
                 if (remainingScores <= 0 || remainingPairs <= 0) {
                     return finish(first,profiles,0,firstScores,0,hash,work,pairs,
                             "refinement-budget-exhausted",owner,version);
                 }
+                outcome=BRefinementBudget.Outcome.ORIGINAL_REFINEMENT;
                 var refined = list(views.size(),owner);
                 for (int row = 0; row < views.size(); row++) {
                     cancellation.checkpoint();
@@ -139,13 +159,24 @@ final class AdaptiveBInference {
                         Math.addExact(work.refusedScoreAttempts(),second.refusedScoreAttempts()));
             }
         }
-        return finish(result,profiles,refinements,firstScores,secondScores,hash,work,pairs,
-                result.explanation(),owner,version);
+        if(budgeted)cancellation.checkpoint();
+        var finished=finish(result,profiles,refinements,firstScores,secondScores,hash,work,pairs,
+                result.explanation(),owner,version,budgeted?completed[0]:null,
+                budgets.maximumTransitions()-firstScores,outcome,budgeted?cancellation:CancellationProbe.NONE);
+        if(budgeted)cancellation.checkpoint();
+        return finished;
     }
 
     private static Result finish(ProbabilisticInferenceResult result,List<InferenceProfile> profiles,
             int refinements,long first,long second,MessageDigest digest,InferenceWorkAccounting work,
             long pairs,String reason,AttemptMemoryLedger.Owner owner,String version) {
+        return finish(result,profiles,refinements,first,second,digest,work,pairs,reason,owner,version,null,0,null,CancellationProbe.NONE);
+    }
+    private static Result finish(ProbabilisticInferenceResult result,List<InferenceProfile> profiles,
+            int refinements,long first,long second,MessageDigest digest,InferenceWorkAccounting work,
+            long pairs,String reason,AttemptMemoryLedger.Owner owner,String version,
+            CompletedBPassWork completed,long remaining,BRefinementBudget.Outcome outcome,CancellationProbe cancellation) {
+        cancellation.checkpoint();
         String hash = HexFormat.of().formatHex(digest.digest());
         var cumulative = new InferenceWorkAccounting(version,work.forwardBackwardScores(),
                 work.kBestScores(),work.logicalKBestExtensions(),work.refusedScoreAttempts());
@@ -153,7 +184,18 @@ final class AdaptiveBInference {
                 : usable(result) ? ProbabilisticInferenceResult.Status.REVIEW_REQUIRED : result.status();
         String explanation = version + "; posterior=conditional-retained-subgraph; refinements="
                 + refinements + "; originalIndexHash=" + hash + "; " + reason;
+        if(completed!=null&&usable(result)) {
+            var witness=ProbabilisticInference.allocated(owner,AttemptMemoryLedger.objectBytes(48)
+                    +AttemptMemoryLedger.objectBytes(8)+2*AttemptMemoryLedger.objectBytes(16),
+                    "refinement decision witness",()->new BRefinementBudget.Witness(outcome,java.util.Optional.of(completed),
+                        java.util.OptionalLong.of(remaining),java.util.OptionalLong.of(Math.addExact(
+                            completed.forwardBackwardScores(),completed.kBestHeadScores())),hash));
+            String oldExplanation=explanation;
+            explanation=ProbabilisticInference.allocated(owner,8192,"refinement explanation",
+                    ()->oldExplanation+"\n"+witness.canonical());
+        }
         var conditional = result.conditionalReview(status,explanation,cumulative,pairs,owner);
+        cancellation.checkpoint();
         ModernDiagnosticCounters.record("b.adaptive.refinements",refinements);
         ModernDiagnosticCounters.record("b.adaptive.firstScores",first);
         ModernDiagnosticCounters.record("b.adaptive.secondScores",second);

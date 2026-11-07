@@ -51,4 +51,14 @@ class V022CompletedBPassWorkTest {
         }
         assertEquals(0,ledger.currentBytes());
     }
+    @Test void cancellationAfterCompleteNativeWorkCannotReturnThePass() {
+        var ledger=AttemptMemoryLedger.production();boolean[] completed={false};
+        try(var owner=ledger.rootOwner()) {
+            assertThrows(java.util.concurrent.CancellationException.class,()->new ProbabilisticInference().solveCachedVersion(
+                graph(2,2,2),DATA,TraceBudgets.defaults(),null,()->completed[0],owner,
+                ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V4,null,work->completed[0]=true));
+            assertTrue(completed[0]);
+        }
+        assertEquals(0,ledger.currentBytes());
+    }
 }
