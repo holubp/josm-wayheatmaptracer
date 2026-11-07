@@ -175,33 +175,67 @@ public final class WideCompactQualityMain {
         Config.setPreferencesInstance(new MemoryPreferences());
         if(args.length==2&&args[0].equals("--manifest")){Files.writeString(Path.of(args[1]),manifest(),StandardOpenOption.CREATE_NEW);return;}
         var invocation=invocation(args);boolean diagnostic=invocation.diagnostic();Path out=invocation.output();Files.createDirectories(out);require(!Files.exists(out.resolve("summary.json")),"Existing evidence must not be overwritten");
-        var status=new LinkedHashMap<String,String>();for(String id:WideCompactScenes.IDS)status.put(id,"NOT_RUN");
-        Throwable failure=null;List<MetricPoint> drift=null;String stage="fixed-input-preflight",firstQualityFailure=null;
+        var report=new WideCompactDiagnosticFlow.Report();for(String id:WideCompactScenes.IDS)report.ensureScene(id);
+        Throwable failure=null;var drift=new AtomicReference<List<MetricPoint>>();String[] currentStage={"fixed-input-preflight"};
         try {
             write(out,"runtime.txt","sourceCommit="+System.getenv().getOrDefault("GITHUB_SHA","unavailable-local")+"\njavaVersion="+System.getProperty("java.version")+"\nnumericalParameters="+EvidenceModelParameters.defaults().version()+"\nsceneSpecification="+WideCompactScenes.SPEC+"\ndiagnosticOnly="+diagnostic+"\nreleaseQualified=false\n");
             var expected=new Properties();try(var in=WideCompactQualityMain.class.getResourceAsStream(MANIFEST)){require(in!=null,"Missing frozen public scene hashes");expected.load(in);}
             require(WideCompactScenes.SPEC.equals(expected.getProperty("spec")),"Scene specification changed after freeze");
             for(String id:WideCompactScenes.IDS)require(WideCompactScenes.scene(id).input().canonicalHash().equals(expected.getProperty(id)),"Frozen scene hash changed: "+id);
             for(String id:WideCompactScenes.IDS) {
-                status.put(id,"FAILED");var scene=WideCompactScenes.scene(id);var dir=out.resolve(id);Files.createDirectories(dir);
-                final Run[] referenceBox={null},candidateBox={null};final var driftBox=new AtomicReference<>(drift);final String[] currentStage={id+":reference-execution"};final List<String> sceneFailures=new ArrayList<>();
-                var flow=WideCompactDiagnosticFlow.run(diagnostic,
-                        ()->{currentStage[0]=id+":reference-execution";Run r=execute(scene,historical(scene.input()),false,false,dir.resolve("historical-full"));if(r.pipeline().result().inference().status()==TraceHypothesisSet.Status.RESOURCE_LIMIT)r=execute(scene,scene.input(),true,false,dir.resolve("full-cached-v4-oracle"));referenceBox[0]=r;},
-                        ()->{currentStage[0]=id+":reference-suitability";Run r=referenceBox[0];require(!r.pipeline().result().routes().isEmpty(),"Completed full reference unavailable");var inf=r.pipeline().result().inference();require((inf.status()==TraceHypothesisSet.Status.COMPLETE||inf.status()==TraceHypothesisSet.Status.AMBIGUOUS)&&r.capture().posteriorUsable&&r.capture().retained.isEmpty(),"Full reference is incomplete/conditional/sparse");require(inf.workAccounting().orElseThrow().bStages().stream().allMatch(s->s.refusedScoreAttempts()==0),"Full reference has a refused score attempt");require(r.capture().closedBytes==0&&r.capture().inferredCalls==1,"Reference execution/ownership missing");require(r.capture().bound!=null&&!r.capture().bound.admitted()&&r.capture().bound.scoresExceeded(),"Frozen wide scene does not naturally exercise compact admission");safety(r,scene,dir.resolve("reference-safety"));analytic(r,scene,dir.resolve("reference-analytic"));},
-                        ()->{currentStage[0]=id+":candidate-execution";candidateBox[0]=execute(scene,scene.input(),false,true,dir.resolve("candidate"));},
-                        ()->{currentStage[0]=id+":candidate-quality";Run c=candidateBox[0];candidateProof(c,scene);safety(c,scene,dir.resolve("candidate-safety"));analytic(c,scene,dir.resolve("candidate-analytic"));},
-                        ()->{currentStage[0]=id+":reference-physical-comparison";Run c=candidateBox[0],r=referenceBox[0];var raw=c.pipeline().result().routes().get(0).rawHypothesis().points();var oldRaw=r.pipeline().result().routes().get(0).rawHypothesis().points();require(raw.size()==oldRaw.size(),"Raw physical profile rows differ");double[] distances=new double[raw.size()];for(int i=0;i<raw.size();i++)distances[i]=Math.hypot(raw.get(i).xMeters()-oldRaw.get(i).xMeters(),raw.get(i).yMeters()-oldRaw.get(i).yMeters());Arrays.sort(distances);double p95=distances[(int)Math.ceil(.95*distances.length)-1],maximum=distances[distances.length-1];double p95Limit=(scene.strong()?.25:.5)*P,maxLimit=(scene.strong()?.5:1)*P;var finalPoints=c.pipeline().result().routes().get(0).hypothesis().points();var comparison=compare(finalPoints,r.pipeline().result().routes().get(0).hypothesis().points(),0);write(dir,"reference-comparison.txt","rawP95="+p95+"\nrawMaximum="+maximum+"\nfinal="+comparison+"\np95Limit="+p95Limit+"\nmaximumLimit="+maxLimit+"\n");qualityRequire(p95<=p95Limit&&maximum<=maxLimit&&comparison.p95()<=p95Limit&&comparison.certifiedMaximum()<=maxLimit,"Compact quality loss exceeds fixed physical bounds: "+id);if(id.equals("remote-drift"))driftBox.set(finalPoints);if(id.equals("remote-drift-reversed")){var reversal=compare(finalPoints,driftBox.get(),0);write(dir,"reversal-comparison.txt",reversal+"\n");qualityRequire(reversal.p95()<=.25*P&&reversal.certifiedMaximum()<=.5*P,"Physical drift reversal changed corridor");}});
-                stage=currentStage[0];drift=driftBox.get();
-                if(!flow.failures().isEmpty()) {stage=id+":"+flow.failures().get(0).stage();for(var f:flow.failures())sceneFailures.add(f.stage()+": "+f.message());if(firstQualityFailure==null)firstQualityFailure=id+":"+flow.failures().get(0).stage()+": "+flow.failures().get(0).message();write(dir,"diagnostic-assessments.txt",String.join("\n",sceneFailures)+"\n");status.put(id,"FAILED");if(!diagnostic){failure=new QualityFailure(sceneFailures.get(0));break;}continue;}
-                status.put(id,"PASS");
+                var scene=WideCompactScenes.scene(id);var dir=out.resolve(id);Files.createDirectories(dir);
+                final Run[] reference={null},candidate={null};final boolean[] referenceAnalyticFailed={false},candidateAnalyticFailed={false};
+                currentStage[0]=id+":reference-execution";
+                WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.REFERENCE,currentStage[0],diagnostic,false,false,()->{
+                    Run r=execute(scene,historical(scene.input()),false,false,dir.resolve("historical-full"));if(r.pipeline().result().inference().status()==TraceHypothesisSet.Status.RESOURCE_LIMIT)r=execute(scene,scene.input(),true,false,dir.resolve("full-cached-v4-oracle"));reference[0]=r;
+                    var inf=r.pipeline().result().inference();
+                    if(r.pipeline().result().routes().isEmpty()){report.markUnavailable(id,WideCompactDiagnosticFlow.Assessment.COMPARISON);throw new IllegalStateException("Completed full reference unavailable");}
+                    require((inf.status()==TraceHypothesisSet.Status.COMPLETE||inf.status()==TraceHypothesisSet.Status.AMBIGUOUS)&&r.capture().posteriorUsable&&r.capture().retained.isEmpty(),"Full reference is incomplete/conditional/sparse");
+                    require(inf.workAccounting().orElseThrow().bStages().stream().allMatch(x->x.refusedScoreAttempts()==0),"Full reference has a refused score attempt");
+                    require(r.capture().closedBytes==0&&r.capture().inferredCalls==1,"Reference execution/ownership missing");
+                    require(r.capture().bound!=null&&!r.capture().bound.admitted()&&r.capture().bound.scoresExceeded(),"Frozen wide scene does not naturally exercise compact admission");
+                });
+                currentStage[0]=id+":reference-safety";
+                WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.REFERENCE_SAFETY,currentStage[0],diagnostic,false,false,()->safety(reference[0],scene,dir.resolve("reference-safety")));
+                currentStage[0]=id+":reference-analytic";
+                referenceAnalyticFailed[0]=!WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.REFERENCE_ANALYTIC,currentStage[0],diagnostic,true,false,()->analytic(reference[0],scene,dir.resolve("reference-analytic")));
+                currentStage[0]=id+":candidate-execution";
+                WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.CANDIDATE,currentStage[0],diagnostic,false,false,()->candidate[0]=execute(scene,scene.input(),false,true,dir.resolve("candidate")));
+                currentStage[0]=id+":candidate-branch-proof";
+                WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.CANDIDATE_BRANCH,currentStage[0],diagnostic,false,false,()->candidateProof(candidate[0],scene));
+                currentStage[0]=id+":candidate-safety";
+                WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.CANDIDATE_SAFETY,currentStage[0],diagnostic,false,false,()->{
+                    safety(candidate[0],scene,dir.resolve("candidate-safety"));
+                    if(id.equals("remote-drift"))drift.set(candidate[0].pipeline().result().routes().get(0).hypothesis().points());
+                });
+                currentStage[0]=id+":candidate-analytic";
+                candidateAnalyticFailed[0]=!WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.CANDIDATE_ANALYTIC,currentStage[0],diagnostic,true,false,()->analytic(candidate[0],scene,dir.resolve("candidate-analytic")));
+                currentStage[0]=id+":reference-physical-comparison";
+                boolean comparisonDiagnostic=referenceAnalyticFailed[0]||candidateAnalyticFailed[0];
+                if(reference[0]==null||reference[0].pipeline().result().routes().isEmpty())report.markUnavailable(id,WideCompactDiagnosticFlow.Assessment.COMPARISON);
+                else WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.COMPARISON,currentStage[0],diagnostic,true,comparisonDiagnostic,()->{
+                    Run c=candidate[0],r=reference[0];var raw=c.pipeline().result().routes().get(0).rawHypothesis().points();var oldRaw=r.pipeline().result().routes().get(0).rawHypothesis().points();require(raw.size()==oldRaw.size(),"Raw physical profile rows differ");
+                    double[] distances=new double[raw.size()];for(int i=0;i<raw.size();i++)distances[i]=Math.hypot(raw.get(i).xMeters()-oldRaw.get(i).xMeters(),raw.get(i).yMeters()-oldRaw.get(i).yMeters());Arrays.sort(distances);
+                    double p95=distances[(int)Math.ceil(.95*distances.length)-1],maximum=distances[distances.length-1];double p95Limit=(scene.strong()?.25:.5)*P,maxLimit=(scene.strong()?.5:1)*P;
+                    var finalPoints=c.pipeline().result().routes().get(0).hypothesis().points();var comparison=compare(finalPoints,r.pipeline().result().routes().get(0).hypothesis().points(),0);
+                    write(dir,"reference-comparison.txt","rawP95="+p95+"\nrawMaximum="+maximum+"\nfinal="+comparison+"\np95Limit="+p95Limit+"\nmaximumLimit="+maxLimit+"\ncomparisonBaseline="+(comparisonDiagnostic?"DIAGNOSTIC_ONLY":"VALID_REFERENCE")+"\n");
+                    qualityRequire(p95<=p95Limit&&maximum<=maxLimit&&comparison.p95()<=p95Limit&&comparison.certifiedMaximum()<=maxLimit,"Compact quality loss exceeds fixed physical bounds: "+id);
+                });
+                if(id.equals("remote-drift-reversed")) {
+                    currentStage[0]=id+":physical-reversal-comparison";
+                    WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.REVERSAL,currentStage[0],diagnostic,true,comparisonDiagnostic,()->{
+                        var finalPoints=candidate[0].pipeline().result().routes().get(0).hypothesis().points();require(drift.get()!=null,"Forward drift comparison unavailable");var reversal=compare(finalPoints,drift.get(),0);
+                        write(dir,"reversal-comparison.txt",reversal+"\n");qualityRequire(reversal.p95()<=.25*P&&reversal.certifiedMaximum()<=.5*P,"Physical drift reversal changed corridor");
+                    });
+                }
             }
-        }catch(Throwable caught){failure=caught;}
-        finally {
-            boolean failed=failure!=null||status.values().stream().anyMatch("FAILED"::equals);
-            var json=new StringBuilder(diagnostic?"{\"schema\":2,\"diagnosticOnly\":true,\"releaseQualified\":false,\"status\":\"":"{\"schema\":1,\"status\":\"").append(failed?"FAILED":"PASS").append("\",\"lastStage\":\"").append(stage).append("\",\"requiredScenes\":6,\"completedScenes\":").append(status.values().stream().filter("PASS"::equals).count()).append(",\"extentAdjustments\":1,\"scenes\":{");boolean comma=false;for(var e:status.entrySet()){if(comma)json.append(',');comma=true;json.append('"').append(e.getKey()).append("\":\"").append(e.getValue()).append('"');}write(out,"summary.json",json.append("}}\n").toString());
-            if(failed)write(out,"first-failure.txt",Objects.toString(firstQualityFailure,failure==null?stage:failure.toString())+"\n");
+        } catch(Throwable caught) {
+            failure=caught;
+            if(report.firstFailure()==null)report.preserve("driver",WideCompactDiagnosticFlow.Assessment.REFERENCE,currentStage[0],caught);
+        } finally {
+            report.write(out,diagnostic);
         }
-        if(failure!=null||status.values().stream().anyMatch("FAILED"::equals))throw new AssertionError(diagnostic?"Diagnostic-only wide compact assessment failed; release remains unqualified":"Public wide compact qualification stopped; preserved first failure",failure);
+        if(WideCompactDiagnosticFlow.exitFailed(report))throw new AssertionError(diagnostic?"Diagnostic-only wide compact assessment failed; release remains unqualified":"Public wide compact qualification stopped; preserved first failure",failure);
     }
     private WideCompactQualityMain() { }
 }
