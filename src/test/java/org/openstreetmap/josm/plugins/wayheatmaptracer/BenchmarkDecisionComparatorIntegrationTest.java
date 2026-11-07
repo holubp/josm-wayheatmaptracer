@@ -78,6 +78,7 @@ class BenchmarkDecisionComparatorIntegrationTest {
     private static NativeFixture partial;
     private static NativeFixture moveFull;
     private static NativeFixture movePartial;
+    private static NativeFixture rc10;
 
     @BeforeAll
     static void produceActualManagedFixedPlan() throws Exception {
@@ -88,6 +89,7 @@ class BenchmarkDecisionComparatorIntegrationTest {
         partial = produceFixture(true);
         moveFull = produceFixture(false, true);
         movePartial = produceFixture(true, true);
+        rc10 = produceFixture(false, false, true, true);
     }
 
     private static NativeFixture produceFixture(boolean partial) throws Exception {
@@ -99,6 +101,11 @@ class BenchmarkDecisionComparatorIntegrationTest {
     }
 
     private static NativeFixture produceFixture(boolean partial, boolean move, boolean inheritedContact) throws Exception {
+        return produceFixture(partial, move, inheritedContact, false);
+    }
+
+    private static NativeFixture produceFixture(boolean partial, boolean move, boolean inheritedContact,
+            boolean rc10Benchmark) throws Exception {
         DataSet original = new DataSet();
         Node west = node(1, -8, 0), east = node(2, 8, 0);
         Node south = node(33, 0.17345, -10), north = node(34, 0.17345, 10);
@@ -133,9 +140,14 @@ class BenchmarkDecisionComparatorIntegrationTest {
         PluginPreferences.saveTracingSettings(new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
                 TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false, AlignmentSourceMode.MANAGED_TILES));
         PluginPreferences.saveGeometryCleanup(GeometryCleanupConfig.disabled());
-        var seed = BenchmarkHostMain.onEventThread(() -> new LiveBPreviewService().captureManagedSeed(original,
-                SelectionResolver.resolve(original, false),
-                new AlignmentConfig(PluginPreferences.load(), GeometryCleanupConfig.disabled()), fixture.sourceIdentity()));
+        var seed = BenchmarkHostMain.onEventThread(() -> {
+            var service = new LiveBPreviewService();
+            var selection = SelectionResolver.resolve(original, false);
+            var config = new AlignmentConfig(PluginPreferences.load(), GeometryCleanupConfig.disabled());
+            return rc10Benchmark ? service.captureManagedSeedForRc10Benchmark(original, selection, config,
+                    fixture.sourceIdentity(), org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions.disabled(7.01))
+                    : service.captureManagedSeed(original, selection, config, fixture.sourceIdentity());
+        });
         BufferedImage image = new BufferedImage(600, 600, BufferedImage.TYPE_INT_ARGB);
         for (int y = 0; y < 600; y++) {
             // A narrow, centered ridge has measured below-threshold brackets inside the
@@ -159,6 +171,90 @@ class BenchmarkDecisionComparatorIntegrationTest {
             assertTrue(plan.validation().findingCodes().contains("inherited-nontransport-contact-review-required"));
         }
         return new NativeFixture(original, computed, plan);
+    }
+
+    @Test
+    void namedRc10CaptureExecutesTheHistoricalBackendWhileOrdinaryCaptureRemainsCurrent() throws Exception {
+        assertEquals(BenchmarkComparisonContract.RC10_B_PARAMETERS, rc10.computed().request().parameterHash());
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.EXACT_DEFAULT,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.recorded(rc10.computed().request()));
+        assertTrue(rc10.computed().pipeline().inference().workAccounting().orElseThrow()
+                .hasPolicy("terminal-path-count-scored-work-v2"));
+        assertTrue(rc10.computed().pipeline().inference().workAccounting().orElseThrow().computedTransitions() > 0);
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_PREP_V4,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.recorded(computed.request()));
+        assertEquals(computed.request().settingsHash(), rc10.computed().request().settingsHash());
+        assertEquals(computed.request().profileChainage(), rc10.computed().request().profileChainage());
+        assertEquals(computed.request().permissions(), rc10.computed().request().permissions());
+        var fixture = BenchmarkHostMain.fixtureSource(37);
+        PluginPreferences.save(fixture.config()); fixture.saveCacheGenerationPreference();
+        var seeds = BenchmarkHostMain.onEventThread(() -> {
+            var service = new LiveBPreviewService();
+            var selection = SelectionResolver.resolve(original, false);
+            var config = new AlignmentConfig(PluginPreferences.load(), GeometryCleanupConfig.disabled());
+            return List.of(service.captureManagedSeed(original, selection, config, fixture.sourceIdentity()),
+                    service.captureManagedSeedForRc10Benchmark(original, selection, config, fixture.sourceIdentity(),
+                            org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions.disabled(7.01)));
+        });
+        assertEquals(recordWith(seeds.get(0), "parameterHash", BenchmarkComparisonContract.RC10_B_PARAMETERS),
+                seeds.get(1), "every non-policy capture authority/source/frame field must be unchanged");
+    }
+
+    @Test
+    void namedRc10CaptureRefusesOtherEnginesNonmanagedSourcesAndPolicyDrift() throws Exception {
+        var fixture = BenchmarkHostMain.fixtureSource(37);
+        BenchmarkHostMain.onEventThread(() -> {
+            var service = new LiveBPreviewService();
+            var selection = SelectionResolver.resolve(original, false);
+            var permissions = org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions.disabled(7.01);
+            var wrongEngine = new AlignmentConfig(fixture.config().withTrackerMode(TrackerMode.CORRIDOR_AWARE),
+                    GeometryCleanupConfig.disabled());
+            assertEquals("RC10 benchmark capture requires managed Probabilistic B", assertThrows(IllegalArgumentException.class,
+                    () -> service.captureManagedSeedForRc10Benchmark(original, selection, wrongEngine,
+                            fixture.sourceIdentity(), permissions)).getMessage());
+            var nonmanaged = new AlignmentConfig(recordWith(fixture.config().withTrackerMode(TrackerMode.PROBABILISTIC),
+                    "keyPairId", ""), GeometryCleanupConfig.disabled());
+            assertEquals("Managed preview requires configured managed source access", assertThrows(IllegalArgumentException.class,
+                    () -> service.captureManagedSeedForRc10Benchmark(original, selection, nonmanaged,
+                            fixture.sourceIdentity(), permissions)).getMessage());
+            return null;
+        });
+        Method guard = LiveBPreviewService.class.getDeclaredMethod("requireRc10BenchmarkParameterHash", String.class);
+        guard.setAccessible(true);
+        assertEquals(BenchmarkComparisonContract.RC10_B_PARAMETERS,
+                guard.invoke(null, BenchmarkComparisonContract.RC10_B_PARAMETERS));
+        var refused = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                () -> guard.invoke(null, "f".repeat(64)));
+        assertEquals("Supported exact B policy differs from the pinned RC10 contract", refused.getCause().getMessage());
+        assertThrows(IllegalArgumentException.class, () -> BenchmarkComparisonContract.parse("unapproved-v4"));
+    }
+
+    @Test
+    void approvedContractRejectsCurrentV4AndCannotRelabelItsActualWork(@TempDir Path directory) throws Exception {
+        Pair pair = archives(directory, "none");
+        Files.writeString(pair.osm(), osm("none"));
+        assertEquals("Unapproved B numerical parameter identity", assertThrows(IllegalStateException.class,
+                () -> BenchmarkDecisionComparatorMain.main(new String[] {pair.baseline().toString(),
+                        pair.candidate().toString(), pair.osm().toString(), sha256(pair.osm()),
+                        "rc10-approved-numerical-readonly-v1"})).getMessage());
+        var forged = new FrozenReplayInput(recordWith(computed.request(), "parameterHash", BenchmarkComparisonContract.RC10_B_PARAMETERS),
+                computed.evidence(), computed.captured().network(), computed.options());
+        var bundle = Format15ProductionBundleFactory.createLive("forged-old-policy", forged, computed.pipeline(),
+                "review-required", computed.captured().managedRaster().sourceIdentity(), 0, null, false, false);
+        var diagnostic = Format15ProductionBundleFactory.withCurrentNumericalPolicy(bundle,
+                forged, TrackerMode.PROBABILISTIC, List.of(computed.pipeline().inference()));
+        assertTrue(new String(diagnostic.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8)
+                .contains("\"declaration\":\"execution-unattested\""),
+                "mismatched native work remains exportable without claiming attestation");
+        Path forgedPath = directory.resolve("forged-old-policy.zip");
+        Format15BundleWriter.write(diagnostic, forgedPath);
+        var archive = Format15ArchiveReader.read(forgedPath);
+        assertEquals("numerical-policy-invalid", assertThrows(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.ReplayMismatchException.class,
+                () -> org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.BenchmarkIntervalDecisionComparison
+                        .verifyNativePublication(archive, forged, true, original,
+                                computed.captured().searchRadiusMeters())).getMessage(),
+                "native V4 work must be rejected before any exact-policy replay");
     }
 
     @Test
@@ -344,7 +440,7 @@ class BenchmarkDecisionComparatorIntegrationTest {
 
     @Test
     void approvedContractKeepsEachNativeEnvelopeAndOriginalPin(@TempDir Path directory) throws Exception {
-        Pair pair = archives(directory, "none");
+        Pair pair = archives(directory, "none", rc10.computed(), rc10.plan());
         Files.writeString(pair.osm(), osm("none"));
         org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> BenchmarkDecisionComparatorMain.main(new String[] {
                 pair.baseline().toString(), pair.candidate().toString(), pair.osm().toString(),
@@ -353,7 +449,7 @@ class BenchmarkDecisionComparatorIntegrationTest {
 
     @Test
     void approvedContractRejectsErasedNativeValidationEvidence(@TempDir Path directory) throws Exception {
-        Pair pair = archives(directory, "erased-validation");
+        Pair pair = archives(directory, "erased-validation", rc10.computed(), rc10.plan());
         Files.writeString(pair.osm(), osm("none"));
         assertThrows(Exception.class, () -> BenchmarkDecisionComparatorMain.main(new String[] {
                 pair.baseline().toString(), pair.candidate().toString(), pair.osm().toString(), sha256(pair.osm()),
@@ -393,7 +489,7 @@ class BenchmarkDecisionComparatorIntegrationTest {
     @ValueSource(strings = {"wrong-sha", "context-node", "context-way", "context-relation", "core", "config",
             "missing-companion", "forged-plan", "missing-plan", "after-context-node", "missing-policy", "forged-work-binding"})
     void approvedContractRetainsOriginalAndNativeBindingRefusals(String failure, @TempDir Path directory) throws Exception {
-        Pair pair = archives(directory, failure);
+        Pair pair = archives(directory, failure, rc10.computed(), rc10.plan());
         Files.writeString(pair.osm(), osm(failure));
         String pinned = failure.equals("wrong-sha") ? "0".repeat(64) : sha256(pair.osm());
         byte[] baseline = Files.readAllBytes(pair.baseline()), candidate = Files.readAllBytes(pair.candidate());
@@ -407,7 +503,7 @@ class BenchmarkDecisionComparatorIntegrationTest {
     @ParameterizedTest
     @ValueSource(strings = {"selectedRange", "settingsHash", "permissions", "budgets", "parameterHash"})
     void approvedContractRefusesUnapprovedRequestChanges(String field) throws Exception {
-        TraceRequest r = computed.request();
+        TraceRequest r = rc10.computed().request();
         Object changed = switch (field) {
             case "selectedRange" -> new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(0, 0);
             case "settingsHash", "parameterHash" -> "f".repeat(64);
@@ -420,7 +516,7 @@ class BenchmarkDecisionComparatorIntegrationTest {
 
     @Test
     void onlyPinnedNumericalChangeIsAcceptedAndStrictRequestsStillRejectIt() throws Exception {
-        TraceRequest current = computed.request();
+        TraceRequest current = rc10.computed().request();
         assertEquals(BenchmarkComparisonContract.RC10_B_PARAMETERS, current.parameterHash());
         TraceRequest old = recordWith(current, "parameterHash", BenchmarkComparisonContract.RC6_B_PARAMETERS);
         org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> BenchmarkComparisonContract.requireRequests(old, current));
@@ -603,11 +699,19 @@ class BenchmarkDecisionComparatorIntegrationTest {
         var fixture = BenchmarkHostMain.fixtureSource(37);
         PluginPreferences.save(fixture.config()); fixture.saveCacheGenerationPreference();
         PluginPreferences.saveGeometryCleanup(GeometryCleanupConfig.disabled());
-        var seed = BenchmarkHostMain.onEventThread(() -> new LiveBPreviewService().captureManagedSeed(original,
-                SelectionResolver.resolve(original, false),
-                new AlignmentConfig(PluginPreferences.load(), GeometryCleanupConfig.disabled()), fixture.sourceIdentity()));
-        var input = new FrozenReplayInput(computed.request(), computed.evidence(), computed.captured().network(), computed.options());
+        var seed = BenchmarkHostMain.onEventThread(() -> new LiveBPreviewService().captureManagedSeedForRc10Benchmark(rc10.original(),
+                SelectionResolver.resolve(rc10.original(), false),
+                new AlignmentConfig(PluginPreferences.load(), GeometryCleanupConfig.disabled()), fixture.sourceIdentity(),
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions.disabled(7.01)));
+        var actual = rc10.computed();
+        var input = new FrozenReplayInput(actual.request(), actual.evidence(), actual.captured().network(), actual.options());
         BenchmarkHostMain.requireNativeBaselineCapture(input, seed);
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() ->
+                BenchmarkHostMain.requireOrdinaryActionContract(BenchmarkComparisonContract.STRICT));
+        assertEquals("Current ordinary B action requires a separately approved benchmark contract",
+                assertThrows(IllegalStateException.class, () ->
+                        BenchmarkHostMain.requireOrdinaryActionContract(BenchmarkComparisonContract.RC10_APPROVED)).getMessage(),
+                "a valid historical preflight cannot change the later ordinary V4 action");
         var changed = recordWith(seed, "settingsHash", "unapproved-config");
         assertEquals("Original capture frame or effective settings differ", assertThrows(IllegalStateException.class,
                 () -> BenchmarkHostMain.requireNativeBaselineCapture(input, changed)).getMessage());
@@ -689,6 +793,11 @@ class BenchmarkDecisionComparatorIntegrationTest {
     }
 
     private static NativeIntervalFixture produceNativeIntervalFixture(boolean nearFootprintBoundary) throws Exception {
+        return produceNativeIntervalFixture(nearFootprintBoundary, false);
+    }
+
+    private static NativeIntervalFixture produceNativeIntervalFixture(boolean nearFootprintBoundary,
+            boolean rc10Benchmark) throws Exception {
         DataSet dataSet = new DataSet();
         List<Node> nodes = new ArrayList<>();
         for (int i = 0; i < 9; i++) {
@@ -713,14 +822,32 @@ class BenchmarkDecisionComparatorIntegrationTest {
                 TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false, AlignmentSourceMode.MANAGED_TILES));
         PluginPreferences.saveGeometryCleanup(GeometryCleanupConfig.disabled());
         var service = new LiveBPreviewService();
-        var seed = BenchmarkHostMain.onEventThread(() -> service.captureManagedSeed(dataSet,
-                SelectionResolver.resolve(dataSet, false),
-                new AlignmentConfig(PluginPreferences.load(), GeometryCleanupConfig.disabled()), fixture.sourceIdentity()));
+        var seed = BenchmarkHostMain.onEventThread(() -> {
+            var selection = SelectionResolver.resolve(dataSet, false);
+            var config = new AlignmentConfig(PluginPreferences.load(), GeometryCleanupConfig.disabled());
+            var ordinary = service.captureManagedSeed(dataSet, selection, config, fixture.sourceIdentity());
+            if (!rc10Benchmark) return ordinary;
+            var historical = service.captureManagedSeedForRc10Benchmark(dataSet, selection, config,
+                    fixture.sourceIdentity(), org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions.disabled(7.01));
+            assertEquals(recordWith(ordinary, "parameterHash", BenchmarkComparisonContract.RC10_B_PARAMETERS), historical,
+                    "interval capture must change only the numerical policy");
+            return historical;
+        });
         assertFalse(seed.intervalPartition().fixedIslands().isEmpty());
         var raster = computed.captured().managedRaster();
         var captured = service.attachManagedRaster(seed, raster);
         var owner = service.compute(captured, CancellationProbe.NONE);
         var batch = owner.intervalBatch();
+        if (rc10Benchmark) {
+            assertEquals(BenchmarkComparisonContract.RC10_B_PARAMETERS, batch.fullRequest().parameterHash());
+            assertFalse(batch.runs().isEmpty());
+            for (var run : batch.runs()) {
+                assertEquals(BenchmarkComparisonContract.RC10_B_PARAMETERS, run.request().parameterHash());
+                assertTrue(run.result().inference().workAccounting().orElseThrow()
+                        .hasPolicy("terminal-path-count-scored-work-v2"));
+                assertTrue(run.result().inference().workAccounting().orElseThrow().computedTransitions() > 0);
+            }
+        }
         var assessment = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer()
                 .compose(batch, Map.of());
         assertTrue(assessment.applyAvailable(), assessment.intervals().toString());
@@ -729,11 +856,10 @@ class BenchmarkDecisionComparatorIntegrationTest {
         String previous = System.getProperty("wayheatmaptracer.benchmark.receipt");
         System.setProperty("wayheatmaptracer.benchmark.receipt", "native-contract-test");
         try {
-            bundle = Format15ProductionBundleFactory.withCurrentNumericalPolicy(
+            bundle = Format15ProductionBundleFactory.withActualBAdmissions(
                 Format15ProductionBundleFactory.createLiveIntervals("native-current-interval", batch, assessment, Map.of(),
                         new Format15ProductionBundleFactory.ManagedTileSourceReceipt(37, 15, "a".repeat(64)),
-                        Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null), input,
-                input.request().engine(), batch.runs().stream().map(run -> run.result().inference()).toList());
+                        Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null),batch);
         } finally {
             if (previous == null) System.clearProperty("wayheatmaptracer.benchmark.receipt");
             else System.setProperty("wayheatmaptracer.benchmark.receipt", previous);
@@ -792,7 +918,7 @@ class BenchmarkDecisionComparatorIntegrationTest {
 
     @Test
     void approvedMainAdmitsIndependentSingleAndFactualIntervalCompatibilityOutputs(@TempDir Path directory) throws Exception {
-        var fixture = produceNativeIntervalFixture();
+        var fixture = produceNativeIntervalFixture(false, true);
         Path baseline = directory.resolve("single.zip"), candidate = directory.resolve("interval.zip"), osm = directory.resolve("original.osm");
         Format15BundleWriter.write(fixture.originalBundle(), baseline);
         Format15BundleWriter.write(fixture.bundle(), candidate);
@@ -806,7 +932,7 @@ class BenchmarkDecisionComparatorIntegrationTest {
     @ParameterizedTest
     @ValueSource(strings = {"mayCreateNodes", "permissions"})
     void nativeIntervalAuthorityChangesFailClosedAtAssemblyOrComparator(String field, @TempDir Path directory) throws Exception {
-        var fixture = produceNativeIntervalFixture();
+        var fixture = produceNativeIntervalFixture(false, true);
         var batch = fixture.owner().intervalBatch();
         Object changed = field.equals("mayCreateNodes") ? false
                 : new org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions(true, 7.01, 8.0,
@@ -827,11 +953,10 @@ class BenchmarkDecisionComparatorIntegrationTest {
         System.setProperty("wayheatmaptracer.benchmark.receipt", "native-contract-test");
         Format15Bundle forged;
         try {
-            forged = Format15ProductionBundleFactory.withCurrentNumericalPolicy(
+            forged = Format15ProductionBundleFactory.withActualBAdmissions(
                     Format15ProductionBundleFactory.createLiveIntervals("native-forged-authority", forgedBatch, assessment, Map.of(),
                             new Format15ProductionBundleFactory.ManagedTileSourceReceipt(37, 15, "a".repeat(64)),
-                            Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null), fixture.input(),
-                    fixture.input().request().engine(), batch.runs().stream().map(run -> run.result().inference()).toList());
+                            Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null),forgedBatch);
         } finally {
             if (previous == null) System.clearProperty("wayheatmaptracer.benchmark.receipt");
             else System.setProperty("wayheatmaptracer.benchmark.receipt", previous);
@@ -845,7 +970,7 @@ class BenchmarkDecisionComparatorIntegrationTest {
 
     @Test
     void approvedMainRejectsInternallyConsistentExtraFreezeFromChangedAuthorityFrame(@TempDir Path directory) throws Exception {
-        var fixture = produceNativeIntervalFixture(true);
+        var fixture = produceNativeIntervalFixture(true, true);
         var source = fixture.owner().intervalBatch();
         var frame = org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame.certifiedEquirectangular(
                 new org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint(1, 0),
@@ -865,11 +990,10 @@ class BenchmarkDecisionComparatorIntegrationTest {
         System.setProperty("wayheatmaptracer.benchmark.receipt", "native-contract-test");
         Format15Bundle forged;
         try {
-            forged = Format15ProductionBundleFactory.withCurrentNumericalPolicy(
+            forged = Format15ProductionBundleFactory.withActualBAdmissions(
                     Format15ProductionBundleFactory.createLiveIntervals("native-counterfactual-freeze", batch, assessment, Map.of(),
                             new Format15ProductionBundleFactory.ManagedTileSourceReceipt(37, 15, "a".repeat(64)),
-                            Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null), fixture.input(),
-                    fixture.input().request().engine(), batch.runs().stream().map(run -> run.result().inference()).toList());
+                            Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null),batch);
         } finally {
             if (previous == null) System.clearProperty("wayheatmaptracer.benchmark.receipt");
             else System.setProperty("wayheatmaptracer.benchmark.receipt", previous);

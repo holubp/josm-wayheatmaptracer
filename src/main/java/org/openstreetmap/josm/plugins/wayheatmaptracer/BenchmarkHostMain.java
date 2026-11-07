@@ -44,6 +44,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileAddress;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileCache;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
@@ -174,6 +175,7 @@ public final class BenchmarkHostMain {
         var frozen = historical.network();
         BenchmarkComparisonContract contract = BenchmarkComparisonContract.parse(System.getProperty(
                 "wayheatmaptracer.benchmark.comparisonContract", BenchmarkComparisonContract.STRICT.identity()));
+        requireOrdinaryActionContract(contract);
         if (contract == BenchmarkComparisonContract.RC10_APPROVED) {
             var reference = readBaselineReference(historical, args[6].split(":", 2)[0]);
             requireNativeBaselineCapture(reference, seed);
@@ -234,6 +236,15 @@ public final class BenchmarkHostMain {
             TimeUnit.SECONDS.sleep(1);
         }
         throw new IllegalStateException("Real preview did not publish within host deadline");
+    }
+
+    /** The later registered action constructs its own ordinary seed; a compatibility preflight cannot override it. */
+    static void requireOrdinaryActionContract(BenchmarkComparisonContract contract) {
+        if (contract == BenchmarkComparisonContract.RC10_APPROVED
+                && !BenchmarkComparisonContract.RC10_B_PARAMETERS.equals(
+                        BPolicy.newCaptureParameterHash(BPolicy.exactParameterHash()))) {
+            throw new IllegalStateException("Current ordinary B action requires a separately approved benchmark contract");
+        }
     }
 
     static void requireNativeBaselineCapture(

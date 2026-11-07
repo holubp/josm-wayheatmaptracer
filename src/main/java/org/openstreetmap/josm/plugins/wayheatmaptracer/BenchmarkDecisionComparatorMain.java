@@ -57,7 +57,8 @@ public final class BenchmarkDecisionComparatorMain {
             }
             var first = BenchmarkIntervalDecisionComparison.sharedInput(firstArchive);
             var second = BenchmarkIntervalDecisionComparison.sharedInput(secondArchive);
-            VerifiedOriginal original = verifyOriginal(Path.of(args[2]), args[3], second);
+            VerifiedOriginal original = verifyOriginal(Path.of(args[2]), args[3], second,
+                    BenchmarkComparisonContract.RC10_APPROVED);
             var partition = BenchmarkIntervalDecisionComparison.requireFreshCapture(secondArchive,
                     original.authority(), original.partition());
             var frozen = BenchmarkComparisonContract.frozenKeys(partition);
@@ -106,7 +107,7 @@ public final class BenchmarkDecisionComparatorMain {
         VerifiedOriginal original = null;
         if (proof) {
             if (args.length != 4) throw new IllegalStateException("Inherited plan admission requires pinned original OSM");
-            original = verifyOriginal(Path.of(args[2]), args[3], second);
+            original = verifyOriginal(Path.of(args[2]), args[3], second, BenchmarkComparisonContract.STRICT);
         }
         VerifiedOriginal bound = original;
         BenchmarkHostMain.onEventThread(() -> {
@@ -215,7 +216,11 @@ public final class BenchmarkDecisionComparatorMain {
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner.Partition partition) { }
 
     private static VerifiedOriginal verifyOriginal(Path osm, String expectedSha256,
-            FrozenReplayInput candidate) throws Exception {
+            FrozenReplayInput candidate, BenchmarkComparisonContract contract) throws Exception {
+        if (contract == BenchmarkComparisonContract.RC10_APPROVED) {
+            BenchmarkComparisonContract.requireApprovedParameters(candidate.request().parameterHash(),
+                    candidate.request().parameterHash());
+        }
         if (expectedSha256 == null || !expectedSha256.matches("[0-9a-f]{64}")
                 || !Files.isRegularFile(osm)) throw new IllegalArgumentException("Pinned original OSM is required");
         MessageDigest hash = MessageDigest.getInstance("SHA-256");
@@ -262,8 +267,13 @@ public final class BenchmarkDecisionComparatorMain {
             if (resolved.startIndex() != range.firstIndex() || resolved.endIndex() != range.lastIndex()) {
                 throw new IllegalStateException("Original selected occurrence range differs");
             }
-            var seed = new LiveBPreviewService().captureManagedSeed(dataSet, resolved,
-                    new AlignmentConfig(PluginPreferences.load(), GeometryCleanupConfig.disabled()), fixture.sourceIdentity());
+            var service = new LiveBPreviewService();
+            var config = new AlignmentConfig(PluginPreferences.load(), GeometryCleanupConfig.disabled());
+            var seed = contract == BenchmarkComparisonContract.RC10_APPROVED
+                    ? service.captureManagedSeedForRc10Benchmark(dataSet, resolved, config, fixture.sourceIdentity(),
+                            org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions.disabled(
+                                    config.heatmap().searchHalfWidthMeters()))
+                    : service.captureManagedSeed(dataSet, resolved, config, fixture.sourceIdentity());
             requireSameNetwork(candidate.network(), seed.network());
             if (!candidate.evidence().coordinateFrame().equals(seed.frame())
                     || candidate.request().engine() != seed.engine()

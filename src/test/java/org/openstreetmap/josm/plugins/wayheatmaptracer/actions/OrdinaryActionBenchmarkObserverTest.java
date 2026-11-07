@@ -70,11 +70,11 @@ class OrdinaryActionBenchmarkObserverTest {
             assertTrue(assessment.plan().isEmpty()); assertFalse(assessment.applyAvailable());
             var owner = fixture.computed(); var batch = owner.intervalBatch();
             var input = new FrozenReplayInput(owner.request(), owner.evidence(), owner.captured().network(), owner.options());
-            DiagnosticsRegistry.setLastModernBundle(Format15ProductionBundleFactory.withCurrentNumericalPolicy(
+            DiagnosticsRegistry.setLastModernBundle(Format15ProductionBundleFactory.withActualBAdmissions(
                     Format15ProductionBundleFactory.createLiveIntervals("native-planless-observer", batch, assessment,
                             Map.of(), new Format15ProductionBundleFactory.ManagedTileSourceReceipt(0, 15, "a".repeat(64)),
                             Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null),
-                    input, input.request().engine(), batch.runs().stream().map(run -> run.result().inference()).toList()));
+                    batch));
             var entry = OrdinaryActionBenchmarkObserver.class.getDeclaredMethod("previewReadyInterval",
                     LiveBPreviewService.Computed.class, java.util.function.Supplier.class);
             entry.setAccessible(true);

@@ -1207,10 +1207,12 @@ class V022ModernSingleWayEditPlanAdapterTest {
         var diagnostic = Format15ProductionBundleFactory.createLiveIntervals("test", batch, composed, Map.of(),
                 sourceReceipt,
                 Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null);
-        diagnostic = Format15ProductionBundleFactory.withCurrentNumericalPolicy(diagnostic,
-                new FrozenReplayInput(computed.request(), computed.evidence(), captured[0].network(),
-                        computed.options()), engine,
-                batch.runs().stream().map(run -> run.result().inference()).toList());
+        diagnostic = Format15ProductionBundleFactory.withActualBAdmissions(diagnostic,batch);
+        if(engine==TrackerMode.PROBABILISTIC) {
+            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_PREP_V4,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.recorded(batch.fullRequest()));
+            assertTrue(diagnostic.artifactNames().contains("b-run-admissions.bin"),"Current B Apply must export actual interval admissions");
+        }
         Path archivePath = directory.resolve("fixed-policy-preview.zip");
         org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15BundleWriter
                 .write(diagnostic, archivePath);
@@ -1818,12 +1820,10 @@ class V022ModernSingleWayEditPlanAdapterTest {
                     Format15ProductionBundleFactory.VisibleLayerSourceReceipt.unavailable(),
                     Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW,
                     null, null);
-            // The live action explicitly attests freshly computed runtime policy after
-            // assembling the interval artifact; the generic artifact factory never infers it.
-            diagnostic = Format15ProductionBundleFactory.withCurrentNumericalPolicy(diagnostic,
-                    new FrozenReplayInput(computed.request(), computed.evidence(),
-                            computed.captured().network(), computed.options()), engine,
-                    computed.intervalBatch().runs().stream().map(run -> run.result().inference()).toList());
+            // Match the live action: bind the actual ordered interval requests, not a full-way proxy.
+            diagnostic = Format15ProductionBundleFactory.withActualBAdmissions(diagnostic,computed.intervalBatch());
+            if(engine==TrackerMode.PROBABILISTIC)assertTrue(diagnostic.artifactNames().contains("b-run-admissions.bin"),
+                    "Current B relation/junction Apply must retain actual interval admissions");
             Path archivePath = directory.resolve("fixed-relation-preview.zip");
             org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
                     .Format15BundleWriter.write(diagnostic, archivePath);

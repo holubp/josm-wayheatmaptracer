@@ -140,6 +140,9 @@ approved RC10 mode allows the reviewed fitting and junction-protection changes
 while retaining source, repeatability, native-plan, cancellation and 2× speed
 checks. See [the benchmark host guide](scripts/v022-benchmark-host.md) for the
 manifest choice and recorded differences.
+Current ordinary V4 B captures require a separately approved benchmark contract;
+the named RC10 compatibility capture is only for historical exact-policy
+construction and fresh original-OSM verification, not an ordinary-action override.
 
 ### Plugin jar
 

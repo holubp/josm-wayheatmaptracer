@@ -77,6 +77,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWork
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.MetricCorridorRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticTraceEngine;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
@@ -1138,9 +1139,27 @@ public final class LiveBPreviewService {
                 RecoveryPermissions.disabled(config.heatmap().searchHalfWidthMeters()));
     }
 
+    /**
+     * Constructs the pinned historical managed B policy before inference for RC10 comparison.
+     * This is not an ordinary action or timing override. Source authority is captured identically
+     * to an ordinary managed attempt; neither callers nor preferences can supply a policy hash.
+     */
+    public ManagedCaptureSeed captureManagedSeedForRc10Benchmark(DataSet dataSet, SelectionContext selection,
+            AlignmentConfig config, String sourceIdentity, RecoveryPermissions permissions) {
+        if (config == null || config.heatmap().trackerMode() != TrackerMode.PROBABILISTIC) {
+            throw new IllegalArgumentException("RC10 benchmark capture requires managed Probabilistic B");
+        }
+        return captureManagedSeed(dataSet, selection, config, sourceIdentity, permissions, true);
+    }
+
     /** Captures a managed seed with the frozen recovery and junction permissions. */
     public ManagedCaptureSeed captureManagedSeed(DataSet dataSet, SelectionContext selection,
             AlignmentConfig config, String sourceIdentity, RecoveryPermissions permissions) {
+        return captureManagedSeed(dataSet, selection, config, sourceIdentity, permissions, false);
+    }
+
+    private ManagedCaptureSeed captureManagedSeed(DataSet dataSet, SelectionContext selection,
+            AlignmentConfig config, String sourceIdentity, RecoveryPermissions permissions, boolean rc10Benchmark) {
         if (!SwingUtilities.isEventDispatchThread()) {
             throw new IllegalStateException("Managed preview seed capture must execute on the EDT");
         }
@@ -1148,6 +1167,9 @@ public final class LiveBPreviewService {
             throw new IllegalArgumentException("Managed preview recovery permissions are required");
         }
         requireManagedSupported(selection, config);
+        String parameterHash = rc10Benchmark
+                ? requireRc10BenchmarkParameterHash(BPolicy.exactParameterHash())
+                : newCaptureParameterHash(config.heatmap().trackerMode(), true);
         List<GeographicPoint> source = selection.segmentNodes().stream()
                 .map(LiveBPreviewService::geographic).toList();
         LocalMetricFrame frame = ManagedModernPreviewSource.managedFrame(source,
@@ -1209,7 +1231,7 @@ public final class LiveBPreviewService {
             }
             return new ManagedCaptureSeed(specification, network, source, metric, frame,
                     config.heatmap().color(), radius, config.heatmap().sampleStepMeters(),
-                    settingsHash, newCaptureParameterHash(config.heatmap().trackerMode(),true),
+                    settingsHash, parameterHash,
                     config.cleanup(), config.heatmap().alignmentMode(),
                     config.heatmap().trackerMode(), sourceIdentity,
                     ProjectionRegistry.getProjection().toCode(), null, intervalPartition,
@@ -1237,13 +1259,21 @@ public final class LiveBPreviewService {
         return new ManagedCaptureSeed(specification, network,
                 source, metric, frame, config.heatmap().color(), radius,
                 config.heatmap().sampleStepMeters(), settingsHash,
-                newCaptureParameterHash(config.heatmap().trackerMode(),true),
+                parameterHash,
                 config.cleanup(), config.heatmap().alignmentMode(),
                 config.heatmap().trackerMode(), sourceIdentity,
                 ProjectionRegistry.getProjection().toCode(), junction, null,
                 config.heatmap().intensitySamplingMode(),
                 AlignmentTileSourcePlan.from(config.heatmap()),
                 requestedAlternativeMappings(config.heatmap())).withInitialSource(initialSource);
+    }
+
+    private static String requireRc10BenchmarkParameterHash(String supportedExactHash) {
+        // Immutable historical contract: future exact semantics must not silently inherit RC10.
+        if (!"9814307c79fae2c8ec105c755c7373694d3c4e893be78a747062511361241b35".equals(supportedExactHash)) {
+            throw new IllegalStateException("Supported exact B policy differs from the pinned RC10 contract");
+        }
+        return supportedExactHash;
     }
 
     private static List<String> requestedAlternativeMappings(
