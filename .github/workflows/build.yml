@@ -60,7 +60,7 @@ jobs:
           if-no-files-found: error
           retention-days: 5
 
-  public-wide-compact-quality:
+  public-wide-compact-retention:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -76,15 +76,15 @@ jobs:
         run: |
           python3 scripts/prepare-ci-josm19555.py --output-dir "$RUNNER_TEMP/josm19555-host"
           echo "ORG_GRADLE_PROJECT_josm19555HostJar=$RUNNER_TEMP/josm19555-host/JOSM-Linux-java11-19555.jar" >> "$GITHUB_ENV"
-      - name: Run required six-scene wide compact qualification
-        run: timeout 4800s sh gradlew --no-daemon --max-workers=1 v022WideCompactQuality --console=plain
-      - name: Upload public fixed-scene qualification evidence
+      - name: Run required six-scene production-backed performance retention gate
+        run: timeout 4800s sh gradlew --no-daemon --max-workers=1 v022WideCompactRetention --console=plain
+      - name: Upload public performance-retention evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: public-wide-compact-quality
+          name: public-wide-compact-performance-retention
           path: |
-            build/reports/wide-compact-quality/
+            build/reports/wide-compact-retention/
             src/test/resources/public-wide-compact-v1.properties
           if-no-files-found: error
           retention-days: 5
