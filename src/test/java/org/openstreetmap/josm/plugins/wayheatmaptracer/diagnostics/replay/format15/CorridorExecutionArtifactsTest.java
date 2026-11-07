@@ -60,6 +60,24 @@ class CorridorExecutionArtifactsTest {
         assertTrue(csv.contains("\"native_input_binding\",\"UNAVAILABLE\""));assertTrue(csv.contains("\"native_result_binding\",\"UNAVAILABLE\""));
         assertTrue(csv.contains("DIAGNOSTIC_ONLY"));assertFalse(csv.contains("VALIDATED"));
     }
+    @Test void presentIntervalComponentsRequireTheirNativeStrictPayload(){
+        var a=IntervalCases.A;var artifacts=new LinkedHashMap<>(a.bundle().artifacts());
+        var frozen=FrozenIntervalReplayCodec.decode(artifacts.remove(FrozenIntervalReplayCodec.ARTIFACT).bytes());
+        String index=new String(artifacts.get(Format15ProductionBundleFactory.INTERVAL_INDEX_ARTIFACT).bytes(),StandardCharsets.UTF_8)
+            .replace("\"sharedInputHash\":\""+frozen.sharedInputHash()+"\"","\"sharedInputHash\":null")
+            .replace("\"STRICT_INTERVAL_PRODUCTION\":true","\"STRICT_INTERVAL_PRODUCTION\":false");
+        artifacts.put(Format15ProductionBundleFactory.INTERVAL_INDEX_ARTIFACT,Format15Artifact.text(Format15ProductionBundleFactory.INTERVAL_INDEX_ARTIFACT,index));
+        var original=a.bundle().artifact(IntervalFinalOutputComponentsCodec.ARTIFACT);
+        byte[] corrupt=original.bytes();corrupt[0]^=1;
+        var swapped=IntervalCases.B.bundle().artifact(IntervalFinalOutputComponentsCodec.ARTIFACT);
+        assertNotEquals(original.sha256(),swapped.sha256());
+        assertAll(List.of(original,Format15Artifact.binary(original.name(),corrupt),swapped).stream().map(component->()->{
+            var changed=new LinkedHashMap<>(artifacts);changed.put(component.name(),component);
+            var missingAuthority=new Format15Bundle(a.bundle().buildIdentity(),a.bundle().sourceIdentityHash(),a.bundle().parameterHash(),changed);
+            assertThrows(IllegalArgumentException.class,()->CorridorExecutionArtifacts.attachIntervals(missingAuthority,a.batch()),
+                "Present AVAILABLE components cannot be ignored when their native strict input is absent");
+        }));
+    }
     private static byte[] swapFirstTwoRequests(byte[] bytes,IntervalTraceBatch batch)throws Exception{
         var first=requestBlock(batch.runs().get(0).request());var second=requestBlock(batch.runs().get(1).request());
         int a=indexOf(bytes,first),b=indexOf(bytes,second);assertTrue(a>=0&&b>a+first.length);

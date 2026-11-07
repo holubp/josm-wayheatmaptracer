@@ -146,6 +146,8 @@ public final class CorridorExecutionArtifacts {
         var capabilities=(Map<?,?>)index.get("capabilities");
         if(payload==null){
             require(index.get("sharedInputHash")==null&&Boolean.FALSE.equals(capabilities.get("STRICT_INTERVAL_PRODUCTION")));
+            // Native components require their strict input authority; never infer or invent it.
+            require(!bundle.artifacts().containsKey(IntervalFinalOutputComponentsCodec.ARTIFACT));
             return false; // Optional input omitted: this sidecar cannot attest native input/output.
         }
         require(Boolean.TRUE.equals(capabilities.get("STRICT_INTERVAL_PRODUCTION")));
