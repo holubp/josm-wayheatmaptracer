@@ -34,10 +34,29 @@ input. Ordinary replay validates the declaration, child/cumulative budgets and
 witnesses, then compares the ordered companion with actual reconstructed native
 runs. Rebinding checksums alone cannot validate a swapped or foreign request.
 Existing numerical declaration schemas and old result constructors stay readable.
+Both new Hybrid parent bindings and inventory-policy interval payloads require
+schema 3; a historical declaration cannot remove that requirement. Historical
+standalone V4 schema-2 captures remain executable.
 
 Artifact serialization bounds are independent of runtime attempt-memory leases;
 they neither measure the entire heap nor establish owner cleanup. Native execution
 retains its existing checked budgets, cancellation and owner boundaries.
+Replay companion construction has a separate owner/probe path. It reserves
+bounded preflight bookkeeping and a checked conservative bound for actual entry,
+UTF, work-JSON, request-hash scratch and simultaneously live buffer/artifact
+copies before allocating them. The returned artifact keeps its charge through
+the caller's remaining owner lifetime. Requests and serialization checkpoint at
+entries and bounded chunks; metadata denial and cancellation retain their typed
+failure and do not rewrite existing native work. The verified input digest is
+reused from the frozen artifact/index rather than re-encoding source imagery.
+The replay caller translates only a ledger denial from that owned companion
+call, after its existing owner closes, to `TraceMemoryLimitException` with
+stage `b-run-admissions` and the actual completed batch pair/score counts.
+This is metadata capacity refusal, not a solver failure or successful empty run.
+Cancellation and other-stage exceptions retain their original type/identity.
+The package-private test overload creates the owner from its supplied ledger;
+its metadata probe factory runs only at the new-parent boundary after native
+work. Production uses `NONE`; there is no engine selector or global hook.
 
 ## Incomplete attempts
 

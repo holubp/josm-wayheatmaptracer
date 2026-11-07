@@ -114,6 +114,11 @@ final class Format15NumericalPolicyReceipt {
         if (artifact.sizeBytes() > MAX_BYTES) throw new ReplayMismatchException("numerical-policy-invalid");
         try {
             Map<String, Object> declared = Format15ArchiveReader.parseObject(artifact.bytes(), ARTIFACT);
+            boolean actualRunsRequired=Format15BRunAdmissionReceipt.referencePolicy(input.request())
+                    ||Format15BRunAdmissionReceipt.intervalPolicy(input.request())
+                        &&archive.artifact(FrozenIntervalReplayCodec.ARTIFACT).isPresent();
+            if(actualRunsRequired&&!Long.valueOf(3L).equals(declared.get("schema")))
+                throw new ReplayMismatchException("b-run-new-policy-requires-schema3");
             if(Long.valueOf(3L).equals(declared.get("schema"))) {
                 var runs=Format15BRunAdmissionReceipt.validate(archive,input,verifiedInputHash);
                 var admission=archive.artifact(Format15BRunAdmissionReceipt.ARTIFACT).orElseThrow();

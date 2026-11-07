@@ -190,3 +190,36 @@ Scoped B06 source freeze requested by controller while neighboring tests run;
 their results remain PENDING. Supplemental synthetic1024-score resource section
 transport test was added after that invocation compiled and needs focused
 execution afterward. No completion/release claim attaches to this review commit.
+
+B06 review50a10ad5: neighboring621tests/51suites GREEN,0failure/error/skip,
+13m57s. Astra identified two blockers: new-parent declaration downgrade and
+unowned/noncancellable runtime companion copies with redundant full-input encode.
+Corrected behavioral RED3tests confirms allthree intended failures (namespace,
+metadata capacity, metadata cancellation); initial downgrade setup failure from
+an empty old work vector is preserved but not credited as behavioral RED.
+Repairs now require schema3 for both new Hybrid parents and inventory interval
+payloads, retain historical standaloneV4 schema2, and add conservative owned
+metadata construction with chunk cancellation and reused verified input hashes.
+Focused repaired-source GREEN is pending; affected neighboring regressions and
+critical affected re-review remain required. No objective/Legacy/cap changes.
+
+First repaired-source focus24tests:23GREEN; supplemental resource test had an
+incorrect parent32/8 expectation for the guarded child2/2 allocation. Actual
+statusRESOURCE_LIMIT passed, caps/state/pairs/1024scores matched; newtest corrected
+to factual unchanged2/2 with exactone native refusedscore attempt. No native
+status/test-envelope relaxation. Metadata downgrade/capacity/hash-cancel/retained
+lease and old standaloneV4 schema2 checks passed. Additional approved public
+caller boundary RED2 confirms missing metadata-denial/cancellation propagation.
+Caller now snapshotsactualbatchusage, catches only the owned-companion ledger
+denial, closesowner and emits typed b-run-admissions capacity failure with
+factualpostclosebytes/usage/cause. Cancellation/otherstage failures unchanged.
+Same-path package-private ledger→owner/probe-factory seam guarantees ownership;
+productionNONE, historicalparents neverevaluatefactory. Final affected100tests/
+4suites GREEN,0failure/error/skip,4m09s: resource/caller/full+compact+zero6,
+productionreplay79, oldHybridfrozen9, captureownership6. Actualcaller proves
+zero/1024usage, exactcause and postclosebytes; cancellationidentity, outside-call
+ledgerdenial and historicalprobe non-evaluation preserved. Reuse uninvalidated
+23repairchecks and621baseline; no unchanged inference sweep repeated.
+Freeze completea1c-to-head and50a-to-repair diffs/sourcepins/XML/hash guard for
+critical affected re-review. B06 implementation verified locally; independent
+repair review/integration/CI/release remain controller-owned and pending.

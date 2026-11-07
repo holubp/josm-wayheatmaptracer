@@ -25,45 +25,139 @@ final class Format15BRunAdmissionReceipt {
     }
     private Format15BRunAdmissionReceipt() { }
     private static final class BoundedBytes extends ByteArrayOutputStream {
-        BoundedBytes(){super(8192);}
-        @Override public synchronized void write(int value){if(count==MAX_BYTES)throw new IllegalArgumentException("b-run-serialization-budget");super.write(value);}
-        @Override public synchronized void write(byte[] bytes,int offset,int length){if(length>MAX_BYTES-count)throw new IllegalArgumentException("b-run-serialization-budget");super.write(bytes,offset,length);}
+        private final CancellationProbe cancellation;
+        BoundedBytes(CancellationProbe cancellation){super(8192);this.cancellation=cancellation;}
+        @Override public synchronized void write(int value){if(count==MAX_BYTES)throw new IllegalArgumentException("b-run-serialization-budget");if((count&4095)==0)cancellation.checkpoint();super.write(value);}
+        @Override public synchronized void write(byte[] bytes,int offset,int length){
+            if(length>MAX_BYTES-count)throw new IllegalArgumentException("b-run-serialization-budget");
+            for(int copied=0;copied<length;){cancellation.checkpoint();int chunk=Math.min(4096,length-copied);super.write(bytes,offset+copied,chunk);copied+=chunk;}
+        }
     }
     static boolean intervalPolicy(TraceRequest request){return request.engine()==TrackerMode.PROBABILISTIC&&BPolicy.recorded(request)==BPolicy.INVENTORY_PREP_V4;}
     static boolean referencePolicy(TraceRequest request){return request.engine()==TrackerMode.LEGACY_THEN_B&&BReferencePolicyBinding.isNewParentHash(request.parameterHash());}
     static String requestHash(TraceRequest request) {
-        try {var digest=MessageDigest.getInstance("SHA-256");try(var data=new DataOutputStream(new DigestOutputStream(OutputStream.nullOutputStream(),digest))){FrozenReplayCodec.writeRequestOnly(data,request);}return HexFormat.of().formatHex(digest.digest());}
+        return requestHash(request,CancellationProbe.NONE);
+    }
+    private static String requestHash(TraceRequest request,CancellationProbe cancellation) {
+        cancellation.checkpoint();
+        try {var digest=MessageDigest.getInstance("SHA-256");
+            var sink=new OutputStream(){long count;
+                @Override public void write(int value){if((count++&4095)==0)cancellation.checkpoint();digest.update((byte)value);}
+                @Override public void write(byte[] bytes,int offset,int length){for(int copied=0;copied<length;){cancellation.checkpoint();int chunk=Math.min(4096,length-copied);digest.update(bytes,offset+copied,chunk);copied+=chunk;}}
+            };
+            try(var data=new DataOutputStream(sink)){FrozenReplayCodec.writeRequestOnly(data,request);}
+            cancellation.checkpoint();return HexFormat.of().formatHex(digest.digest());}
         catch(IOException|NoSuchAlgorithmException failure){throw new IllegalArgumentException("b-run-request-binding-invalid",failure);}
     }
     private static Entry executed(String id,String reason,TraceRequest request,TraceHypothesisSet inference,TraceWorkUsage usage) {
+        return executed(id,reason,request,inference,usage,CancellationProbe.NONE);
+    }
+    private static Entry executed(String id,String reason,TraceRequest request,TraceHypothesisSet inference,TraceWorkUsage usage,CancellationProbe cancellation) {
+        cancellation.checkpoint();
         String witness=inference.explanation().startsWith(DenseBAdmission.VERSION+"|")?DenseBAdmission.witnessFromExplanation(inference.explanation()):null;
-        return new Entry(id,reason,requestHash(request),request.parameterHash(),request.profileChainage().cumulativeGroundMeters().size(),
+        return new Entry(id,reason,requestHash(request,cancellation),request.parameterHash(),request.profileChainage().cumulativeGroundMeters().size(),
                 request.budgets(),usage,inference.status(),witness,inference.workAccounting());
     }
-    static Format15Artifact intervals(String sourceHash,FrozenReplayInput input,IntervalTraceBatch batch) {
+    static Format15Artifact intervals(String sourceHash,String verifiedInputHash,FrozenReplayInput input,IntervalTraceBatch batch) {
         if(!intervalPolicy(input.request())||!batch.fullRequest().equals(input.request())||!batch.evidence().equals(input.evidence())||!batch.network().equals(input.network()))
             throw new IllegalArgumentException("b-run-interval-owner-mismatch");
         var entries=new ArrayList<Entry>();int ordinal=0;
         for(var run:batch.runs())entries.add(executed("interval-"+ordinal++,"EXECUTED",run.request(),run.result().inference(),run.usage()));
-        return encode(new Decoded(sourceHash,input.canonicalHash(),input.request().parameterHash(),"INTERVAL",entries));
+        return encode(new Decoded(sourceHash,verifiedInputHash,input.request().parameterHash(),"INTERVAL",entries));
     }
-    static Format15Artifact references(String sourceHash,FrozenReplayInput input,LegacyBProductionRunner.Result actual) {
+    static Format15Artifact references(String sourceHash,String verifiedInputHash,FrozenReplayInput input,LegacyBProductionRunner.Result actual) {
+        return references(sourceHash,verifiedInputHash,input,actual,CancellationProbe.NONE);
+    }
+    private static Format15Artifact references(String sourceHash,String verifiedInputHash,FrozenReplayInput input,LegacyBProductionRunner.Result actual,CancellationProbe cancellation) {
         if(!referencePolicy(input.request()))throw new IllegalArgumentException("b-run-parent-policy-mismatch");
+        Format15Safety.requiredHash(verifiedInputHash,"verified input");
+        if(actual.batch().sections().size()>MAX_ENTRIES)throw new IllegalArgumentException("b-run-entry-budget");
         var entries=new ArrayList<Entry>();
         for(var outcome:actual.batch().sections()) {
+            cancellation.checkpoint();
             if(outcome.execution().isEmpty()){entries.add(new Entry(outcome.section().id(),outcome.reason().name(),null,null,0,null,null,null,null,Optional.empty()));continue;}
             var execution=outcome.execution().orElseThrow();var reference=execution.reference().orElseThrow(()->new IllegalArgumentException("b-run-reference-unavailable"));
             if(!reference.originalRequest().equals(input.request())||!reference.originalEvidence().equals(input.evidence())||BReferencePolicyBinding.recordedPolicy(reference)!=BPolicy.INVENTORY_PREP_V4)
                 throw new IllegalArgumentException("b-run-reference-owner-mismatch");
-            entries.add(executed(outcome.section().id(),outcome.reason().name(),reference.request(),execution.run().result(),execution.run().usage()));
+            entries.add(executed(outcome.section().id(),outcome.reason().name(),reference.request(),execution.run().result(),execution.run().usage(),cancellation));
         }
-        return encode(new Decoded(sourceHash,input.canonicalHash(),input.request().parameterHash(),"REFERENCE",entries));
+        return encode(new Decoded(sourceHash,verifiedInputHash,input.request().parameterHash(),"REFERENCE",entries),cancellation);
+    }
+    /** New runtime copies remain charged until the caller closes its existing owner. */
+    static Format15Artifact references(String sourceHash,String verifiedInputHash,FrozenReplayInput input,
+            LegacyBProductionRunner.Result actual,AttemptMemoryLedger.Owner owner,CancellationProbe cancellation) {
+        cancellation.checkpoint();
+        // Preflight uses existing immutable values only; this covers its small iterator/hash/stream bookkeeping.
+        owner.reserve(64L*1024);
+        var reservation=owner.reserve(runtimeCopyUpper(actual,cancellation));
+        var artifact=references(sourceHash,verifiedInputHash,input,actual,cancellation);
+        reservation.adopt(artifact);
+        return artifact;
     }
     static Format15Artifact references(Format15Bundle bundle,FrozenReplayInput input,LiveBPreviewService.LegacyBComputation actual) {
         if(actual.input().request()!=input.request()||actual.input().evidence()!=input.evidence()||actual.input().network()!=input.network())throw new IllegalArgumentException("b-run-reference-owner-mismatch");
-        return references(bundle.sourceIdentityHash(),input,actual.result());
+        return references(bundle.sourceIdentityHash(),Format15ProductionBundleFactory.actualInputHash(bundle),input,actual.result());
+    }
+    /** Conservative wire-specific simultaneous-copy bound, not a measurement of whole JVM heap. */
+    private static long runtimeCopyUpper(LegacyBProductionRunner.Result actual,CancellationProbe cancellation) {
+        int count=actual.batch().sections().size();if(count>MAX_ENTRIES)throw new IllegalArgumentException("b-run-entry-budget");
+        long body=1024,scratch=0;
+        for(var outcome:actual.batch().sections()) {
+            cancellation.checkpoint();String id=outcome.section().id();if(id.length()>1024)throw new IllegalArgumentException("b-run-entry-identity");
+            body=Math.addExact(body,Math.addExact(4096,Math.multiplyExact(4L,id.length())));
+            if(outcome.execution().isEmpty())continue;
+            var execution=outcome.execution().orElseThrow();var reference=execution.reference().orElseThrow();
+            var inference=execution.run().result();String explanation=inference.explanation();
+            if(explanation.length()>2*1024*1024)throw new IllegalArgumentException("b-run-text-budget");
+            body=Math.addExact(body,Math.multiplyExact(4L,explanation.length()));
+            if(inference.workAccounting().isPresent())for(var stage:inference.workAccounting().orElseThrow().bStages())
+                body=Math.addExact(body,Math.addExact(2048,Math.multiplyExact(8L,stage.executionPolicy().length())));
+            scratch=Math.addExact(scratch,requestScratch(reference.request(),cancellation));
+        }
+        // At most2x buffer capacity, toByteArray+immutable artifact copies, UTF bytes/strings,
+        // native work JSON scratch and entry/list storage; retain the conservative reservation.
+        return Math.addExact(scratch,Math.multiplyExact(16L,body));
+    }
+    private static long wireText(String value) {
+        if(value.length()>1_000_000)throw new IllegalArgumentException("b-run-request-text-budget");
+        return Math.addExact(64,Math.multiplyExact(4L,value.length()));
+    }
+    private static long tagScratch(Map<String,String> tags,CancellationProbe cancellation) {
+        long bytes=Math.multiplyExact(128L,tags.size()); // TreeMap wire ordering, including entry/node scratch.
+        for(var e:tags.entrySet()){cancellation.checkpoint();bytes=Math.addExact(bytes,Math.addExact(wireText(e.getKey()),wireText(e.getValue())));}
+        return bytes;
+    }
+    /** Request-only hashing may sort explicit disconnection authority; it never copies source imagery. */
+    private static long requestScratch(TraceRequest request,CancellationProbe cancellation) {
+        long bytes=16*1024;
+        bytes=Math.addExact(bytes,wireText(request.evidenceSnapshotId()));bytes=Math.addExact(bytes,wireText(request.evidenceContentHash()));
+        bytes=Math.addExact(bytes,wireText(request.networkSnapshotId()));bytes=Math.addExact(bytes,wireText(request.networkContentHash()));
+        bytes=Math.addExact(bytes,wireText(request.settingsHash()));bytes=Math.addExact(bytes,wireText(request.parameterHash()));bytes=Math.addExact(bytes,wireText(request.samplerId()));
+        var n=request.disconnectionSource();if(n==null)return bytes;
+        var c=n.closure();long slots=n.primitives().size();
+        slots=Math.addExact(slots,n.incomingReferrerWatches().size());slots=Math.addExact(slots,n.proposedPortReplacements().size());
+        slots=Math.addExact(slots,c.primitiveKeys().size());slots=Math.addExact(slots,c.editableExistingKeys().size());
+        slots=Math.addExact(slots,c.movableExistingNodeKeys().size());slots=Math.addExact(slots,c.protectedExistingNodeKeys().size());
+        slots=Math.addExact(slots,c.removableExistingNodeKeys().size());slots=Math.addExact(slots,c.editableWayOccurrences().size());
+        slots=Math.addExact(slots,request.permissions().sharedNodeDisconnectionIntent().originalNodeKeys().size());
+        bytes=Math.addExact(bytes,wireText(n.snapshotId()));bytes=Math.addExact(bytes,wireText(n.datasetIdentity()));bytes=Math.addExact(bytes,wireText(c.queryVersion()));
+        bytes=Math.addExact(bytes,wireText(request.permissions().sharedNodeDisconnectionIntent().sourceNetworkIdentity()));
+        for(var watches:n.incomingReferrerWatches().values()){cancellation.checkpoint();slots=Math.addExact(slots,watches.size());}
+        for(var primitive:n.primitives().values()) {
+            cancellation.checkpoint();bytes=Math.addExact(bytes,tagScratch(primitive.tags(),cancellation));
+            if(primitive instanceof DetachedRelation relation)for(var member:relation.members()){cancellation.checkpoint();bytes=Math.addExact(bytes,wireText(member.role()));}
+        }
+        var semantic=n.semanticWitness();if(semantic!=null) {
+            bytes=Math.addExact(bytes,wireText(semantic.coreHash()));bytes=Math.addExact(bytes,wireText(semantic.datasetIdentity()));slots=Math.addExact(slots,semantic.relations().size());
+            for(var relation:semantic.relations().values()) {
+                cancellation.checkpoint();slots=Math.addExact(slots,relation.parentWatches().size());bytes=Math.addExact(bytes,tagScratch(relation.tags(),cancellation));
+                for(var member:relation.members()){cancellation.checkpoint();bytes=Math.addExact(bytes,wireText(member.role()));}
+            }
+        }
+        return Math.addExact(bytes,Math.multiplyExact(128L,slots));
     }
     private static void text(DataOutputStream out,String value)throws IOException {
+        if(value.length()>2*1024*1024)throw new IllegalArgumentException("b-run-text-budget");
         byte[] bytes=value.getBytes(StandardCharsets.UTF_8);if(bytes.length>2*1024*1024)throw new IllegalArgumentException("b-run-text-budget");
         out.writeInt(bytes.length);out.write(bytes);
     }
@@ -74,17 +168,22 @@ final class Format15BRunAdmissionReceipt {
     private static void budget(DataOutputStream out,TraceBudgets b)throws IOException {out.writeInt(b.maximumStatesPerProfile());out.writeLong(b.maximumPairVisits());out.writeLong(b.maximumTransitions());out.writeInt(b.maximumRawAlternatives());out.writeInt(b.maximumDistinctAlternatives());}
     private static TraceBudgets budget(DataInputStream in)throws IOException {return new TraceBudgets(in.readInt(),in.readLong(),in.readLong(),in.readInt(),in.readInt());}
     static Format15Artifact encode(Decoded value) {
+        return encode(value,CancellationProbe.NONE);
+    }
+    private static Format15Artifact encode(Decoded value,CancellationProbe cancellation) {
         if(value.entries().size()>MAX_ENTRIES)throw new IllegalArgumentException("b-run-entry-budget");
-        try {var bytes=new BoundedBytes();try(var data=new DataOutputStream(bytes)) {
+        cancellation.checkpoint();
+        try {var bytes=new BoundedBytes(cancellation);try(var data=new DataOutputStream(bytes)) {
             data.writeInt(1);text(data,value.sourceHash());text(data,value.inputHash());text(data,value.parameterHash());text(data,value.kind());data.writeInt(value.entries().size());
             for(var entry:value.entries()) {
+                cancellation.checkpoint();
                 text(data,entry.id());text(data,entry.reason());data.writeBoolean(entry.executed());if(!entry.executed())continue;
                 text(data,entry.requestHash());text(data,entry.parameterHash());data.writeInt(entry.profiles());budget(data,entry.budgets());
                 data.writeLong(entry.usage().pairVisits());data.writeLong(entry.usage().transitions());data.writeInt(entry.usage().rawAlternatives());data.writeInt(entry.usage().distinctAlternatives());text(data,entry.status().name());
                 data.writeBoolean(entry.witness()!=null);if(entry.witness()!=null)text(data,entry.witness());
                 text(data,new String(Format15ExecutionWorkCodec.artifact(List.of(entry.work())).bytes(),StandardCharsets.UTF_8));
             }
-        }return Format15Artifact.binary(ARTIFACT,bytes.toByteArray());}catch(IOException failure){throw new IllegalArgumentException("b-run-serialization-budget",failure);}
+        }cancellation.checkpoint();var artifact=Format15Artifact.binary(ARTIFACT,bytes.toByteArray());cancellation.checkpoint();return artifact;}catch(IOException failure){throw new IllegalArgumentException("b-run-serialization-budget",failure);}
     }
     static Decoded read(Format15Artifact artifact) {
         if(!ARTIFACT.equals(artifact.name())||artifact.sizeBytes()>MAX_BYTES)throw new IllegalArgumentException("b-run-receipt-budget");
@@ -145,8 +244,8 @@ final class Format15BRunAdmissionReceipt {
             return value;
         }catch(ReplayMismatchException failure){throw failure;}catch(RuntimeException failure){throw new ReplayMismatchException("b-run-admission-receipt-invalid");}
     }
-    static void validateActualIntervals(Format15Archive archive,FrozenReplayInput input,IntervalTraceBatch batch) {
-        if(archive.artifact(ARTIFACT).isPresent()&&!intervals(archive.sourceIdentityHash(),input,batch).sha256().equals(archive.artifact(ARTIFACT).orElseThrow().sha256()))
+    static void validateActualIntervals(Format15Archive archive,String verifiedInputHash,FrozenReplayInput input,IntervalTraceBatch batch) {
+        if(archive.artifact(ARTIFACT).isPresent()&&!intervals(archive.sourceIdentityHash(),verifiedInputHash,input,batch).sha256().equals(archive.artifact(ARTIFACT).orElseThrow().sha256()))
             throw new ReplayMismatchException("b-run-actual-interval-mismatch");
     }
     static void validateActualReference(Format15Archive archive,Format15ReplayRunner.Result result) {

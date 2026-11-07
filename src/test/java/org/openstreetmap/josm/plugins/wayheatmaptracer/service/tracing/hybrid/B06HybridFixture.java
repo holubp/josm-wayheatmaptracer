@@ -10,14 +10,15 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format
 public final class B06HybridFixture {
     public record Actual(FrozenReplayInput frozen,LiveBPreviewService.LegacyBComputation computation) { }
     public static Actual run(boolean compact,boolean fixedMiddle,boolean noNative) {
-        return run(compact,fixedMiddle,noNative,null);
+        return run(compact,fixedMiddle,noNative,null,true);
     }
     public static Actual runWithRemainingBudget(TraceBudgets remaining) {
-        return run(true,false,false,remaining);
+        return run(true,false,false,remaining,true);
     }
-    private static Actual run(boolean compact,boolean fixedMiddle,boolean noNative,TraceBudgets explicitRemaining) {
+    public static Actual historicalWithoutNative() {return run(false,false,true,null,false);}
+    private static Actual run(boolean compact,boolean fixedMiddle,boolean noNative,TraceBudgets explicitRemaining,boolean recordedParent) {
         var original=LegacyBProductionRunnerTest.fixture(fixedMiddle,false);var old=original.input();
-        var parent=V022RecordedBChildExecutionTest.parent(old.request(),V022RecordedBChildExecutionTest.newParent(compact));
+        var parent=recordedParent?V022RecordedBChildExecutionTest.parent(old.request(),V022RecordedBChildExecutionTest.newParent(compact)):old.request();
         if(compact) {
             var r=parent;
             // A genuinely wider synthetic child graph; the default cap/K and production policy are unchanged.

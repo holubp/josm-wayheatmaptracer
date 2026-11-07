@@ -56,15 +56,29 @@ class V022BRunAdmissionReplayTest {
         var input=actual.frozen();var replay=Format15ReplayRunner.replay(archive(bundle,out.resolve("zero.zip")),ReplayLevel.SCALAR_INFERENCE,input.canonicalHash(),input.request().parameterHash());
         assertTrue(replay.nativeBExecutionWork().isEmpty());
     }
+    @Test void recognizedNewParentCannotDowngradeToHistoricalDeclarationWithoutActualAdmissions(@TempDir Path out)throws Exception {
+        for(boolean managed:new boolean[]{false,true}) {
+            var actual=B06HybridFixture.run(managed,false,true);var input=actual.frozen();
+            var oldDeclaration=Format15ProductionBundleFactory.withCurrentNumericalPolicy(
+                    Format15ProductionBundleFactory.create("b06-schema-downgrade",input),input,TrackerMode.LEGACY_THEN_B);
+            assertFalse(oldDeclaration.artifactNames().contains(Format15BRunAdmissionReceipt.ARTIFACT));
+            var downgrade=archive(oldDeclaration,out.resolve(managed?"managed-downgraded.zip":"visible-downgraded.zip"));
+            assertThrows(ReplayMismatchException.class,()->Format15NumericalPolicyReceipt.validate(downgrade,input,input.canonicalHash()),
+                    "Only new parent identities require their actual ordered companion; historical schema1 cannot attest this new policy");
+        }
+    }
     @Test void resourceLimitedChildExportsItsActualAllocationStatusAndPositiveWork(@TempDir Path out)throws Exception {
         var remaining=new TraceBudgets(96,8_000_000,1024,32,8);
         var actual=B06HybridFixture.runWithRemainingBudget(remaining);var input=actual.frozen();var bundle=live(actual);
         var data=Format15BRunAdmissionReceipt.read(bundle.artifact(Format15BRunAdmissionReceipt.ARTIFACT));
         var executed=data.entries().stream().filter(Format15BRunAdmissionReceipt.Entry::executed).toList();
         assertEquals(1,executed.size());var entry=executed.get(0);
-        assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT,entry.status());assertEquals(remaining,entry.budgets());
+        assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT,entry.status());
+        // The unchanged guarded Legacy section allocator retains its historical2/2 child limits.
+        assertEquals(new TraceBudgets(96,8_000_000,1024,2,2),entry.budgets());
         assertEquals(1024,entry.usage().transitions());assertEquals(1024,entry.work().orElseThrow().computedTransitions());
         assertTrue(entry.work().orElseThrow().hasPolicy(BPolicy.INVENTORY_COMPACT_VERSION));
+        assertEquals(1,entry.work().orElseThrow().bStages().get(0).refusedScoreAttempts(),"Exactly one native score attempt must be refused at the actual cap");
         assertTrue(Format15BRunAdmissionReceipt.attested(data,input.request()),"Real bounded resource work is reproducible without claiming completion");
         var replay=Format15ReplayRunner.replay(archive(bundle,out.resolve("resource.zip")),ReplayLevel.SCALAR_INFERENCE,input.canonicalHash(),input.request().parameterHash());
         assertEquals(bundle.artifact(Format15BRunAdmissionReceipt.ARTIFACT).sha256(),replay.bRunAdmissions().sha256());
@@ -143,6 +157,78 @@ class V022BRunAdmissionReplayTest {
             assertEquals(0,failure.transitions());assertEquals(0,failure.pairVisits());
         }
         assertEquals(0,ledger.currentBytes());
+    }
+    @Test void actualOwnedCompanionDenialKeepsExistingNativeWorkAndReadableUnattestedExport(@TempDir Path out)throws Exception {
+        var actual=B06HybridFixture.runWithRemainingBudget(new TraceBudgets(96,8_000_000,1024,32,8));var input=actual.frozen();
+        String verified=input.canonicalHash();long scored=actual.computation().result().batch().usage().transitions();assertEquals(1024,scored);
+        var ledger=new AttemptMemoryLedger(64L*1024);
+        try(var owner=ledger.rootOwner()) {
+            var denied=assertThrows(AttemptMemoryLedger.ResourceLimitException.class,()->Format15BRunAdmissionReceipt.references(
+                    verified,verified,input,actual.computation().result(),owner,CancellationProbe.NONE));
+            assertEquals(64L*1024,denied.currentBytes(),"Preflight fits, actual copy reservation must refuse before allocation");
+            assertEquals(scored,actual.computation().result().batch().usage().transitions());
+        }
+        assertEquals(0,ledger.currentBytes());
+        var fallback=LegacyBReplayWork.attach(Format15ProductionBundleFactory.create("b06-metadata-refusal",input),input,actual.computation());
+        assertTrue(fallback.artifactNames().contains(LegacyBReplayWork.ARTIFACT));assertFalse(fallback.artifactNames().contains(Format15BRunAdmissionReceipt.ARTIFACT));
+        var readable=archive(fallback,out.resolve("metadata-refusal.zip"));assertTrue(readable.artifact("frozen-input.bin").isPresent());
+        assertThrows(ReplayMismatchException.class,()->Format15ReplayRunner.replay(readable,ReplayLevel.SCALAR_INFERENCE,verified,input.request().parameterHash()));
+    }
+    @Test void actualOwnedCompanionCancellationReleasesReservationWithoutPublishingAttestation() {
+        var actual=B06HybridFixture.runWithRemainingBudget(new TraceBudgets(96,8_000_000,1024,32,8));var input=actual.frozen();String verified=input.canonicalHash();
+        var ledger=AttemptMemoryLedger.production();var ownedChecks=new java.util.concurrent.atomic.AtomicInteger();
+        try(var owner=ledger.rootOwner()) {
+            assertThrows(java.util.concurrent.CancellationException.class,()->Format15BRunAdmissionReceipt.references(
+                    verified,verified,input,actual.computation().result(),owner,()->owner.currentBytes()>0
+                            &&StackWalker.getInstance().walk(frames->frames.anyMatch(frame->frame.getClassName().equals(Format15BRunAdmissionReceipt.class.getName())
+                                    &&frame.getMethodName().equals("requestHash")))&&ownedChecks.incrementAndGet()>=3));
+            assertTrue(ownedChecks.get()>=3);assertEquals(1024,actual.computation().result().batch().usage().transitions());
+            assertTrue(ledger.currentBytes()>64L*1024,"Copy reservation remains owned until the caller closes");
+        }
+        assertEquals(0,ledger.currentBytes());
+    }
+    @Test void actualOwnedCompanionRetainsItsConservativeChargeUntilOwnerClose() {
+        var actual=B06HybridFixture.runWithRemainingBudget(new TraceBudgets(96,8_000_000,1024,32,8));var input=actual.frozen();String verified=input.canonicalHash();
+        String diagnosticHash=Format15BRunAdmissionReceipt.references(verified,verified,input,actual.computation().result()).sha256();
+        var ledger=AttemptMemoryLedger.production();
+        try(var owner=ledger.rootOwner()) {
+            var owned=Format15BRunAdmissionReceipt.references(verified,verified,input,actual.computation().result(),owner,CancellationProbe.NONE);
+            assertTrue(ledger.currentBytes()>64L*1024,"The returned companion remains owned; output length is not a memory lease");
+            assertEquals(diagnosticHash,owned.sha256());
+            assertEquals(1024,actual.computation().result().batch().usage().transitions());
+        }
+        assertEquals(0,ledger.currentBytes());
+    }
+    @Test void actualReplayCallerMetadataDenialPreservesCompletedUsageAfterOwnerCleanup() {
+        for(boolean noNative:new boolean[]{false,true}) {
+            var actual=noNative?B06HybridFixture.run(false,false,true):B06HybridFixture.runWithRemainingBudget(new TraceBudgets(96,8_000_000,1024,32,8));
+            var input=actual.frozen();String verified=input.canonicalHash();var usage=actual.computation().result().batch().usage();
+            assertEquals(noNative?0:1024,usage.transitions());var ledger=AttemptMemoryLedger.production();
+            var denied=assertThrows(TraceMemoryLimitException.class,()->Format15ReplayRunner.legacyB(input,ReplayLevel.SCALAR_INFERENCE,
+                    TrackerMode.LEGACY_THEN_B,verified,ledger,owner->()->{owner.reserve(ledger.limitBytes()-owner.currentBytes());return false;}));
+            assertEquals("b-run-admissions",denied.stage());assertEquals(usage.pairVisits(),denied.pairVisits());assertEquals(usage.transitions(),denied.transitions());
+            assertEquals(0,denied.currentBytes());assertEquals(ledger.currentBytes(),denied.currentBytes());assertEquals(ledger.peakBytes(),denied.peakBytes());assertEquals(ledger.limitBytes(),denied.limitBytes());
+            var cause=assertInstanceOf(AttemptMemoryLedger.ResourceLimitException.class,denied.getCause());
+            assertEquals(64L*1024,cause.requestedBytes());assertEquals(ledger.limitBytes(),cause.currentBytes());assertEquals(ledger.limitBytes(),cause.limitBytes());
+        }
+    }
+    @Test void actualReplayCallerPreservesMetadataCancellationIdentityAndHistoricalPath() {
+        var actual=B06HybridFixture.runWithRemainingBudget(new TraceBudgets(96,8_000_000,1024,32,8));var input=actual.frozen();String verified=input.canonicalHash();
+        var marker=new java.util.concurrent.CancellationException("synthetic-b06-metadata-cancel");var ledger=AttemptMemoryLedger.production();
+        ModernDiagnosticCounters.begin();
+        try {
+            var cancelled=assertThrows(java.util.concurrent.CancellationException.class,()->Format15ReplayRunner.legacyB(input,ReplayLevel.SCALAR_INFERENCE,
+                    TrackerMode.LEGACY_THEN_B,verified,ledger,owner->()->{assertEquals(1024L,ModernDiagnosticCounters.snapshot().get("b.adaptive.availableScores"));throw marker;}));
+            assertSame(marker,cancelled);assertEquals(0,ledger.currentBytes());
+        }finally{ModernDiagnosticCounters.end();}
+        var outsideLedger=AttemptMemoryLedger.production();
+        var outside=assertThrows(AttemptMemoryLedger.ResourceLimitException.class,()->Format15ReplayRunner.legacyB(input,ReplayLevel.SCALAR_INFERENCE,
+                TrackerMode.LEGACY_THEN_B,verified,outsideLedger,owner->{owner.reserve(outsideLedger.limitBytes()+1);return CancellationProbe.NONE;}));
+        assertEquals(outsideLedger.limitBytes()+1,outside.requestedBytes());assertEquals(0,outsideLedger.currentBytes(),"A denial outside the one companion call must not be relabeled metadata");
+        var old=B06HybridFixture.historicalWithoutNative().frozen();var oldLedger=AttemptMemoryLedger.production();
+        var unchanged=Format15ReplayRunner.legacyB(old,ReplayLevel.SCALAR_INFERENCE,TrackerMode.LEGACY_THEN_B,old.canonicalHash(),oldLedger,
+                owner->{throw new AssertionError("Historical parent must never evaluate the metadata probe factory");});
+        assertNull(unchanged.bRunAdmissions());assertEquals(0,oldLedger.currentBytes());
     }
     @Test void diagnosticSerializationCapsAreIndependentFromRuntimeOwnership() {
         var nativeLedger=AttemptMemoryLedger.production();
