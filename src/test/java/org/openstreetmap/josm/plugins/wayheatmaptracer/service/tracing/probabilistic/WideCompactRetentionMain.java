@@ -33,6 +33,8 @@ public final class WideCompactRetentionMain {
     static PairEvaluation measurePair(WideCompactScenes.Scene scene, FrozenReplayInput referenceInput,
             WideCompactQualityMain.Run reference, String referenceBackend, FrozenReplayInput candidateInput,
             WideCompactQualityMain.Run candidate, WideCompactRetentionFlow.SceneRecord record, Path output) throws IOException {
+        // Preserve factual counters even when a later measurement or filesystem operation fails.
+        record.setFacts(facts(referenceBackend,referenceInput,reference),facts("INVENTORY_COMPACT_CANDIDATE",candidateInput,candidate));
         var refExpected=referenceBackend.equals("CACHED_V4_ORACLE_AFTER_HISTORICAL_RESOURCE_LIMIT")
                 ?scene.input():WideCompactQualityMain.historical(scene.input());
         markIdentity(record,WideCompactRetentionFlow.Stage.REFERENCE_IDENTITY,scene,refExpected,referenceInput,reference,"reference");
@@ -40,15 +42,19 @@ public final class WideCompactRetentionMain {
         verifyReferenceCompletion(reference,referenceInput,referenceBackend,record);
         verifyCandidateExecution(scene,candidate,candidateInput.request().budgets(),record);
         try { WideCompactQualityMain.safety(reference,scene,referenceInput,output.resolve("reference-safety"));record.mark(WideCompactRetentionFlow.Stage.REFERENCE_NATIVE_AUTHORITY,WideCompactRetentionFlow.Status.PASS,"actual native finalization, assignment, authority and topology checks passed"); }
-        catch(Throwable e) { record.mark(WideCompactRetentionFlow.Stage.REFERENCE_NATIVE_AUTHORITY,WideCompactRetentionFlow.Status.FAILED,e.toString()); }
+        catch(Throwable e) { record.fail(WideCompactRetentionFlow.Stage.REFERENCE_NATIVE_AUTHORITY,e); }
         try { WideCompactQualityMain.safety(candidate,scene,candidateInput,output.resolve("candidate-safety"));record.mark(WideCompactRetentionFlow.Stage.CANDIDATE_NATIVE_AUTHORITY,WideCompactRetentionFlow.Status.PASS,"actual native finalization, assignment, authority and topology checks passed");record.mark(WideCompactRetentionFlow.Stage.CANDIDATE_SAFETY,WideCompactRetentionFlow.Status.PASS,"candidate safety passed"); }
-        catch(Throwable e) { record.mark(WideCompactRetentionFlow.Stage.CANDIDATE_NATIVE_AUTHORITY,WideCompactRetentionFlow.Status.FAILED,e.toString());record.mark(WideCompactRetentionFlow.Stage.CANDIDATE_SAFETY,WideCompactRetentionFlow.Status.FAILED,e.toString()); }
+        catch(Throwable e) { record.fail(WideCompactRetentionFlow.Stage.CANDIDATE_NATIVE_AUTHORITY,e);record.fail(WideCompactRetentionFlow.Stage.CANDIDATE_SAFETY,e); }
         Geometry referenceGeometry=geometry(reference,scene,output.resolve("reference-geometry"));
         Geometry candidateGeometry=geometry(candidate,scene,output.resolve("candidate-geometry"));
         record.mark(WideCompactRetentionFlow.Stage.REFERENCE_GEOMETRY,referenceGeometry.measurementStatus(),"analytic geometry measured from actual reference final route");
         record.mark(WideCompactRetentionFlow.Stage.REFERENCE_BRANCH,referenceGeometry.branchStatus(),"independent scene branch and anti-zigzag checks");
         record.mark(WideCompactRetentionFlow.Stage.CANDIDATE_GEOMETRY,candidateGeometry.measurementStatus(),"analytic geometry measured from actual candidate final route");
         record.mark(WideCompactRetentionFlow.Stage.CANDIDATE_BRANCH,candidateGeometry.branchStatus(),"independent scene branch and anti-zigzag checks");
+        if(candidateGeometry.branchStatus()==WideCompactRetentionFlow.Status.FAILED)
+            record.fail(WideCompactRetentionFlow.Stage.CANDIDATE_BRANCH,new AssertionError("candidate branch/anti-zigzag proof failed"));
+        if(candidateGeometry.measurementStatus()==WideCompactRetentionFlow.Status.FAILED)
+            record.fail(WideCompactRetentionFlow.Stage.CANDIDATE_GEOMETRY,new AssertionError("candidate analytic geometry proof failed"));
 
         var distances=distances(referenceInput,candidateInput,reference,candidate);
         boolean supportedBend=scene.id().equals("faint-apex");
@@ -59,7 +65,6 @@ public final class WideCompactRetentionMain {
                 comparisonComplete?"all four raw/final distance metrics measured from in-memory native outputs":"one or more required raw/final comparison metrics unavailable");
         var input=new WideCompactRetentionAssessment.Input(scene.id(),scene.strong()?WideCompactRetentionAssessment.Strength.STRONG:WideCompactRetentionAssessment.Strength.WEAK,
                 record.runnerChecks(),distances,supportedBend,supportedBend,amplitudes,absolute,referenceGeometry.oracle(),candidateGeometry.oracle());
-        record.setFacts(facts(referenceBackend,referenceInput,reference),facts("INVENTORY_COMPACT_CANDIDATE",candidateInput,candidate));
         var result=record.setAssessment(input);
         return new PairEvaluation(input,result,record,reference,candidate);
     }
@@ -99,12 +104,13 @@ public final class WideCompactRetentionMain {
                 &&actual.request().profileChainage().equals(scene.input().request().profileChainage())
                 &&actual.request().evidenceSnapshotId().equals(scene.input().request().evidenceSnapshotId())
                 &&actual.request().networkSnapshotId().equals(scene.input().request().networkSnapshotId());
-        record.mark(stage,okay?WideCompactRetentionFlow.Status.PASS:WideCompactRetentionFlow.Status.FAILED,
-                okay?role+" canonical/input/source identities match the frozen scene":"identity mismatch or missing actual run");
+        if(okay)record.mark(stage,WideCompactRetentionFlow.Status.PASS,role+" canonical/input/source identities match the frozen scene");
+        else if(expected==null||actual==null||run==null)record.unavailable(stage,role+" frozen input or actual run missing");
+        else record.fail(stage,new AssertionError(role+" canonical/input/source identity mismatch"));
     }
 
     private static void verifyReferenceCompletion(WideCompactQualityMain.Run run,FrozenReplayInput input,String backend,WideCompactRetentionFlow.SceneRecord record) {
-        if(run==null) { record.mark(WideCompactRetentionFlow.Stage.REFERENCE_EXECUTION,WideCompactRetentionFlow.Status.UNAVAILABLE,"reference execution missing");record.mark(WideCompactRetentionFlow.Stage.REFERENCE_DENSE_COMPLETE,WideCompactRetentionFlow.Status.UNAVAILABLE,"reference missing");return; }
+        if(run==null) { record.unavailable(WideCompactRetentionFlow.Stage.REFERENCE_EXECUTION,"reference execution missing");record.unavailable(WideCompactRetentionFlow.Stage.REFERENCE_DENSE_COMPLETE,"reference missing");return; }
         var inf=run.pipeline().result().inference();ExecutionWorkReceipt work=inf.workAccounting().orElse(null);
         String expectedPolicy=backend.equals("CACHED_V4_ORACLE_AFTER_HISTORICAL_RESOURCE_LIMIT")?BQualityProbe.ORACLE_VERSION:BPolicy.recorded(input.request()).version();
         boolean complete=!run.pipeline().result().routes().isEmpty()
@@ -112,20 +118,24 @@ public final class WideCompactRetentionMain {
                 &&run.capture().posteriorUsable&&run.capture().retained.isEmpty()&&run.capture().inferredCalls==1
                 &&run.capture().closedBytes==0&&work!=null&&work.bStages().stream().allMatch(w->w.refusedScoreAttempts()==0)
                 &&work.hasPolicy(expectedPolicy);
-        record.mark(WideCompactRetentionFlow.Stage.REFERENCE_EXECUTION,complete?WideCompactRetentionFlow.Status.PASS:WideCompactRetentionFlow.Status.FAILED,
-                complete?"actual complete full reference execution":"reference incomplete, conditional, refused, or retained native work");
-        record.mark(WideCompactRetentionFlow.Stage.REFERENCE_DENSE_COMPLETE,complete?WideCompactRetentionFlow.Status.PASS:WideCompactRetentionFlow.Status.FAILED,
-                complete?"complete dense reference with usable posterior and closed ownership":"full reference completeness proof failed");
+        if(complete) {
+            record.mark(WideCompactRetentionFlow.Stage.REFERENCE_EXECUTION,WideCompactRetentionFlow.Status.PASS,"actual complete full reference execution");
+            record.mark(WideCompactRetentionFlow.Stage.REFERENCE_DENSE_COMPLETE,WideCompactRetentionFlow.Status.PASS,"complete dense reference with usable posterior and closed ownership");
+        } else {
+            var failure=new AssertionError("reference incomplete, conditional, refused, or retained native work");
+            record.fail(WideCompactRetentionFlow.Stage.REFERENCE_EXECUTION,failure);
+            record.fail(WideCompactRetentionFlow.Stage.REFERENCE_DENSE_COMPLETE,failure);
+        }
     }
 
     private static void verifyCandidateExecution(WideCompactScenes.Scene scene,WideCompactQualityMain.Run run,
             TraceBudgets expectedBudgets,WideCompactRetentionFlow.SceneRecord record) {
-        if(run==null) { record.mark(WideCompactRetentionFlow.Stage.CANDIDATE_EXECUTION,WideCompactRetentionFlow.Status.UNAVAILABLE,"candidate execution missing");return; }
+        if(run==null) { record.unavailable(WideCompactRetentionFlow.Stage.CANDIDATE_EXECUTION,"candidate execution missing");return; }
         try {
             if(scene.id().equals("tiny")) WideCompactQualityMain.candidateProofTinyTestOnly(run,scene,expectedBudgets);
             else WideCompactQualityMain.candidateProof(run,scene);
             record.mark(WideCompactRetentionFlow.Stage.CANDIDATE_EXECUTION,WideCompactRetentionFlow.Status.PASS,"actual production compact candidate proof passed");
-        } catch(Throwable e) { record.mark(WideCompactRetentionFlow.Stage.CANDIDATE_EXECUTION,WideCompactRetentionFlow.Status.FAILED,e.toString()); }
+        } catch(Throwable e) { record.fail(WideCompactRetentionFlow.Stage.CANDIDATE_EXECUTION,e); }
     }
 
     private static Geometry geometry(WideCompactQualityMain.Run run,WideCompactScenes.Scene scene,Path out) throws IOException {
@@ -276,24 +286,41 @@ public final class WideCompactRetentionMain {
                 candidate=WideCompactQualityMain.execute(scene,candidateInput,false,true,dir.resolve("candidate"));
                 record.mark(WideCompactRetentionFlow.Stage.CANDIDATE_EXECUTION,WideCompactRetentionFlow.Status.PASS,"native production candidate execution completed");
             } catch(Throwable e) { report.fail(id,WideCompactRetentionFlow.Stage.CANDIDATE_EXECUTION,e); }
-            if(reference!=null&&candidate!=null) {
-                try { measurePair(scene,referenceInput,reference,referenceBackend(scene,reference),candidateInput,candidate,record,dir); }
-                catch(Throwable e) { report.fail(id,WideCompactRetentionFlow.Stage.COMPARISON,e); }
-            } else {
-                record.mark(WideCompactRetentionFlow.Stage.REFERENCE_IDENTITY,WideCompactRetentionFlow.Status.UNAVAILABLE,"reference run unavailable");
-                record.mark(WideCompactRetentionFlow.Stage.CANDIDATE_IDENTITY,WideCompactRetentionFlow.Status.UNAVAILABLE,"candidate run unavailable");
-                record.mark(WideCompactRetentionFlow.Stage.REFERENCE_DENSE_COMPLETE,WideCompactRetentionFlow.Status.UNAVAILABLE,"reference run unavailable");
-                var missing=unavailableInput(id,record.runnerChecks());record.setAssessment(missing);
-                record.setFacts(facts(referenceBackend(scene,reference),referenceInput,reference),facts("INVENTORY_COMPACT_CANDIDATE",candidateInput,candidate));
-                if(record.status()==WideCompactRetentionFlow.Status.UNAVAILABLE)report.unavailable(id,WideCompactRetentionFlow.Stage.COMPARISON,"required actual execution output absent");
-            }
-            if(record.result()!=null&&record.status()!=WideCompactRetentionFlow.Status.PASS&&report.firstFailure()==null) {
-                if(record.status()==WideCompactRetentionFlow.Status.FAILED)report.fail(id,WideCompactRetentionFlow.Stage.COMPARISON,new AssertionError("Retention assessment "+record.result().verdict()));
-                else report.unavailable(id,WideCompactRetentionFlow.Stage.COMPARISON,"Retention assessment "+record.result().verdict());
-            }
+            completeScene(report,scene,referenceInput,reference,candidateInput,candidate,dir);
         }
         report.write(output,commit,manifest);
-        if(WideCompactRetentionFlow.exitFailed(report))throw new AssertionError("Public wide compact performance-retention assessment "+report.status()+"; release remains unqualified");
+        requireAccepted(report);
+    }
+
+    /** Completes one real runner scene, reusing already executed native outputs. */
+    static void completeScene(WideCompactRetentionFlow.Report report,WideCompactScenes.Scene scene,
+            FrozenReplayInput referenceInput,WideCompactQualityMain.Run reference,FrozenReplayInput candidateInput,
+            WideCompactQualityMain.Run candidate,Path dir) {
+        String id=scene.id();var record=report.scene(id);
+        if(reference!=null&&candidate!=null) {
+            try { measurePair(scene,referenceInput,reference,referenceBackend(scene,reference),candidateInput,candidate,record,dir); }
+            catch(Throwable e) { report.fail(id,WideCompactRetentionFlow.Stage.COMPARISON,e); }
+        } else {
+            record.setFacts(facts(referenceBackend(scene,reference),referenceInput,reference),facts("INVENTORY_COMPACT_CANDIDATE",candidateInput,candidate));
+            if(reference==null)record.unavailable(WideCompactRetentionFlow.Stage.REFERENCE_EXECUTION,"reference execution missing");
+            if(candidate==null)record.unavailable(WideCompactRetentionFlow.Stage.CANDIDATE_EXECUTION,"candidate execution missing");
+            record.unavailable(WideCompactRetentionFlow.Stage.REFERENCE_IDENTITY,"reference/candidate pair unavailable");
+            record.unavailable(WideCompactRetentionFlow.Stage.CANDIDATE_IDENTITY,"reference/candidate pair unavailable");
+            record.unavailable(WideCompactRetentionFlow.Stage.REFERENCE_DENSE_COMPLETE,"reference/candidate pair unavailable");
+            record.setAssessment(unavailableInput(id,record.runnerChecks()));
+        }
+        report.captureFirstFailure(record);
+        if(record.result()!=null&&record.status()!=WideCompactRetentionFlow.Status.PASS&&report.firstFailure()==null) {
+            if(record.status()==WideCompactRetentionFlow.Status.FAILED)report.fail(id,WideCompactRetentionFlow.Stage.COMPARISON,new AssertionError("Retention assessment "+record.result().verdict()));
+            else report.unavailable(id,WideCompactRetentionFlow.Stage.COMPARISON,"Retention assessment "+record.result().verdict());
+        }
+    }
+
+    /** The CLI and bounded caller-path regression share the same failing-exit boundary. */
+    static void requireAccepted(WideCompactRetentionFlow.Report report) {
+        if(WideCompactRetentionFlow.exitFailed(report))throw new AssertionError(
+                "Public wide compact performance-retention assessment "+report.status()+"; release remains unqualified",
+                report.firstFailure()==null?null:report.firstFailure().cause());
     }
 
     private static WideCompactRetentionAssessment.Input unavailableInput(String id,WideCompactRetentionAssessment.RunnerChecks checks) {

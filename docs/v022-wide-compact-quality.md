@@ -181,3 +181,11 @@ six frozen scene inputs or execute their numerical gate locally.
 Summary JSON is parsed in regression coverage for faint shared amplitude debt
 and partial/unavailable outcomes. Unmeasured or non-finite metrics serialize as
 `null` with unavailable evidence, and diagnostic text is JSON escaped.
+
+Mandatory runner failures retain their earliest actual stage and original
+exception through scene completion, JSON reporting and the failing CLI exit.
+Missing execution records unavailable evidence with no invented native exception;
+later measurement failures cannot replace that first event. Available native
+work counters remain recorded even when a subsequent measurement fails. The
+accepted analytic baseline/reference debt remains separate from mandatory
+execution, identity and safety failures.

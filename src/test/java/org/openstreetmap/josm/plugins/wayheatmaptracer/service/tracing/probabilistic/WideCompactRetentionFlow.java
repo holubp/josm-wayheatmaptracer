@@ -14,7 +14,7 @@ final class WideCompactRetentionFlow {
     enum Stage { REFERENCE_EXECUTION, REFERENCE_IDENTITY, REFERENCE_NATIVE_AUTHORITY, REFERENCE_DENSE_COMPLETE,
         REFERENCE_GEOMETRY, REFERENCE_BRANCH, CANDIDATE_EXECUTION, CANDIDATE_IDENTITY, CANDIDATE_NATIVE_AUTHORITY,
         CANDIDATE_BRANCH, CANDIDATE_SAFETY, CANDIDATE_GEOMETRY, COMPARISON }
-    record FirstFailure(String scene, Stage stage, Throwable cause, Status status) { }
+    record FirstFailure(String scene, Stage stage, Throwable cause, Status status, String detail) { }
     record RunFacts(String backend, String inputHash, String evidenceHash, String networkHash, String parameterHash,
             String policy, String inferenceStatus, String completion, long computedTransitions, long denseStates,
             int denseCalls, int inferenceCalls, int closedCalls, long ownerClosedBytes, long peakBytes,
@@ -27,11 +27,24 @@ final class WideCompactRetentionFlow {
         private WideCompactRetentionAssessment.Input input;
         private WideCompactRetentionAssessment.Result result;
         private RunFacts referenceFacts, candidateFacts;
+        private FirstFailure firstFailure;
+        private boolean mandatoryFailure;
         SceneRecord(String id) {
             this.id=id;
             for(var stage:Stage.values()) { stages.put(stage,Status.NOT_RUN);details.put(stage,""); }
         }
         void mark(Stage stage,Status status,String detail) { stages.put(stage,status);details.put(stage,detail==null?"":detail); }
+        /** Mandatory events retain their first actual cause; analytic debt uses mark() only. */
+        void fail(Stage stage,Throwable failure) {
+            mark(stage,Status.FAILED,failure.toString());mandatoryFailure=true;
+            if(firstFailure==null)firstFailure=new FirstFailure(id,stage,failure,Status.FAILED,failure.getMessage());
+        }
+        void unavailable(Stage stage,String detail) {
+            if(stages.get(stage)==Status.FAILED)return; // Absence of output cannot erase a known failure.
+            mark(stage,Status.UNAVAILABLE,detail);
+            if(firstFailure==null)firstFailure=new FirstFailure(id,stage,null,Status.UNAVAILABLE,detail);
+        }
+        FirstFailure firstFailure() { return firstFailure; }
         Status stage(Stage stage) { return stages.get(stage); }
         String detail(Stage stage) { return details.get(stage); }
         void setFacts(RunFacts reference,RunFacts candidate) { referenceFacts=reference;candidateFacts=candidate; }
@@ -42,6 +55,7 @@ final class WideCompactRetentionFlow {
             this.result=WideCompactRetentionAssessment.assess(this.input);return result;
         }
         Status status() {
+            if(mandatoryFailure)return Status.FAILED;
             if(result==null)return stages.values().stream().anyMatch(v->v==Status.FAILED)?Status.FAILED:Status.UNAVAILABLE;
             return switch(result.verdict()) {
                 case RETENTION_PASS, RETENTION_PASS_WITH_BASELINE_DEBT -> Status.PASS;
@@ -78,12 +92,13 @@ final class WideCompactRetentionFlow {
         void ensureScene(String id) { scenes.computeIfAbsent(id,SceneRecord::new); }
         SceneRecord scene(String id) { ensureScene(id);return scenes.get(id); }
         void fail(String id,Stage stage,Throwable failure) {
-            var scene=scene(id);scene.mark(stage,Status.FAILED,failure.toString());
-            if(firstFailure==null)firstFailure=new FirstFailure(id,stage,failure,Status.FAILED);
+            var scene=scene(id);scene.fail(stage,failure);captureFirstFailure(scene);
         }
         void unavailable(String id,Stage stage,String detail) {
-            var scene=scene(id);scene.mark(stage,Status.UNAVAILABLE,detail);
-            if(firstFailure==null)firstFailure=new FirstFailure(id,stage,new IllegalStateException(detail),Status.UNAVAILABLE);
+            var scene=scene(id);scene.unavailable(stage,detail);captureFirstFailure(scene);
+        }
+        void captureFirstFailure(SceneRecord scene) {
+            if(firstFailure==null)firstFailure=scene.firstFailure();
         }
         FirstFailure firstFailure() { return firstFailure; }
         Status status() {
@@ -108,9 +123,9 @@ final class WideCompactRetentionFlow {
                     .append(",\"firstFailure\":");
             if(firstFailure==null)out.append("null");
             else out.append("{\"scene\":\"").append(escape(firstFailure.scene())).append("\",\"stage\":\"").append(firstFailure.stage())
-                    .append("\",\"status\":\"").append(firstFailure.status()).append("\",\"type\":\"")
-                    .append(escape(firstFailure.cause().getClass().getName())).append("\",\"message\":\"")
-                    .append(escape(String.valueOf(firstFailure.cause().getMessage()))).append("\"}");
+                    .append("\",\"status\":\"").append(firstFailure.status()).append("\",\"type\":")
+                    .append(firstFailure.cause()==null?"null":"\""+escape(firstFailure.cause().getClass().getName())+"\"")
+                    .append(",\"message\":\"").append(escape(firstFailure.detail())).append("\"}");
             out.append(",\"scenes\":{");boolean first=true;
             for(var entry:scenes.entrySet()) {
                 if(!first)out.append(',');first=false;SceneRecord scene=entry.getValue();

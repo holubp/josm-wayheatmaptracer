@@ -45,6 +45,9 @@ class V022WideCompactRetentionFlowTest {
         report.fail("faint-apex",WideCompactRetentionFlow.Stage.CANDIDATE_SAFETY,new IllegalStateException("later candidate failure"));
         assertSame(first,report.firstFailure().cause());
         assertEquals(WideCompactRetentionFlow.Status.FAILED,report.firstFailure().status());
+        report.unavailable("faint-apex",WideCompactRetentionFlow.Stage.REFERENCE_NATIVE_AUTHORITY,"no output after known failure");
+        assertEquals(WideCompactRetentionFlow.Status.FAILED,report.scene("faint-apex").stage(WideCompactRetentionFlow.Stage.REFERENCE_NATIVE_AUTHORITY));
+        assertSame(first,report.firstFailure().cause());
         assertEquals(WideCompactRetentionFlow.Status.FAILED,report.status());
         assertTrue(WideCompactRetentionFlow.exitFailed(report));
     }
@@ -174,6 +177,49 @@ class V022WideCompactRetentionFlowTest {
                 negative.record().stage(WideCompactRetentionFlow.Stage.CANDIDATE_EXECUTION));
         assertEquals(WideCompactRetentionAssessment.Evidence.FAILED,negative.input().runnerChecks().candidateExecution());
         assertEquals(WideCompactRetentionAssessment.Verdict.FAILED,negative.result().verdict());
+
+        // Exercise the same scene-completion catch/report path used by main. The real
+        // compact proof fails first; a later geometry I/O failure must not replace it.
+        var failureReport=new WideCompactRetentionFlow.Report();
+        Path broken=output.resolve("failure-lineage");Files.createDirectories(broken);
+        Files.writeString(broken.resolve("reference-geometry"),"block later geometry output");
+        WideCompactRetentionMain.completeScene(failureReport,scene,fullInput,pair.referenceRun(),fullInput,pair.referenceRun(),broken);
+        var first=failureReport.firstFailure();assertNotNull(first);
+        assertEquals(WideCompactRetentionFlow.Stage.CANDIDATE_EXECUTION,first.stage());
+        assertInstanceOf(AssertionError.class,first.cause());
+        assertTrue(first.cause().getMessage().contains("bypassed or used full/oracle backend"));
+        var later=new IllegalStateException("later completion exception");
+        failureReport.fail(scene.id(),WideCompactRetentionFlow.Stage.COMPARISON,later);
+        assertSame(first.cause(),failureReport.firstFailure().cause());
+        assertTrue(WideCompactRetentionFlow.exitFailed(failureReport));
+        var failureJson=parseSummary(failureReport.json("actual-tiny-lineage"));
+        var firstJson=(java.util.Map<?,?>)failureJson.get("firstFailure");
+        assertEquals("CANDIDATE_EXECUTION",firstJson.get("stage"));
+        assertEquals("java.lang.AssertionError",firstJson.get("type"));
+        var failedRecord=failureReport.scene(scene.id());
+        assertEquals(pair.record().referenceFacts().computedTransitions(),failedRecord.referenceFacts().computedTransitions());
+        assertEquals(pair.record().referenceFacts().computedTransitions(),failedRecord.candidateFacts().computedTransitions());
+        assertEquals(0,failedRecord.candidateFacts().ownerClosedBytes());
+        assertSame(failedRecord.firstFailure().cause(),first.cause(),"Scene and report retain the original caught proof exception");
+        var exit=assertThrows(AssertionError.class,()->WideCompactRetentionMain.requireAccepted(failureReport));
+        assertSame(first.cause(),exit.getCause());
+
+        var unavailableReport=new WideCompactRetentionFlow.Report();
+        WideCompactRetentionMain.completeScene(unavailableReport,scene,fullInput,null,fullInput,pair.referenceRun(),output.resolve("unavailable-first"));
+        var missingFirst=unavailableReport.firstFailure();
+        assertEquals(WideCompactRetentionFlow.Stage.REFERENCE_EXECUTION,missingFirst.stage());
+        assertEquals(WideCompactRetentionFlow.Status.UNAVAILABLE,missingFirst.status());
+        assertNull(missingFirst.cause(),"Missing execution must not invent a native Throwable");
+        assertEquals(WideCompactRetentionFlow.Status.UNAVAILABLE,unavailableReport.status());
+        assertNull(unavailableReport.scene(scene.id()).referenceFacts());
+        assertEquals(pair.record().referenceFacts().computedTransitions(),unavailableReport.scene(scene.id()).candidateFacts().computedTransitions());
+        unavailableReport.fail(scene.id(),WideCompactRetentionFlow.Stage.COMPARISON,later);
+        assertSame(missingFirst,unavailableReport.firstFailure());
+        assertEquals(WideCompactRetentionFlow.Status.FAILED,unavailableReport.status());
+        assertTrue(WideCompactRetentionFlow.exitFailed(unavailableReport));
+        var unavailableJson=(java.util.Map<?,?>)parseSummary(unavailableReport.json("unavailable-first")).get("firstFailure");
+        assertNull(unavailableJson.get("type"));
+        assertEquals("reference execution missing",unavailableJson.get("message"));
     }
 
     private static WideCompactRetentionAssessment.Input exampleInput(String id) {
