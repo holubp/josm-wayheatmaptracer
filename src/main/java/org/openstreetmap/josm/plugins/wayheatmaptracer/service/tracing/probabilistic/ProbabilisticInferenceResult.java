@@ -149,6 +149,28 @@ public final class ProbabilisticInferenceResult {
 
     double positionMarginalAt(int row, int state) { return positionMarginals.get(row)[state]; }
 
+    /** Shares the same native posterior/output, changing only an explicitly selected wrapper's work identity. */
+    ProbabilisticInferenceResult withExecutionIdentity(String explanation,String policy,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner) {
+        return ProbabilisticInference.allocated(owner,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.objectBytes(136)
+                +org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.objectBytes(40)
+                +org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.objectBytes(8),
+                "admitted execution identity",()->new ProbabilisticInferenceResult(this,explanation,policy));
+    }
+
+    private ProbabilisticInferenceResult(ProbabilisticInferenceResult s,String explanation,String policy) {
+        var w=s.workAccounting.orElseThrow();
+        status=s.status;mapPath=s.mapPath;rawPaths=s.rawPaths;distinctPaths=s.distinctPaths;logPartition=s.logPartition;
+        positionMarginals=s.positionMarginals;componentMarginals=s.componentMarginals;
+        forwardPositionMarginals=s.forwardPositionMarginals;backwardPositionMarginals=s.backwardPositionMarginals;
+        credibleSets=s.credibleSets;posteriorUsable=s.posteriorUsable;alternativeSearchTruncated=s.alternativeSearchTruncated;
+        completion=s.completion;evaluatedPairVisits=s.evaluatedPairVisits;evaluatedTransitions=s.evaluatedTransitions;
+        gapSummary=s.gapSummary;this.explanation=explanation;
+        workAccounting=Optional.of(new InferenceWorkAccounting(policy,w.forwardBackwardScores(),w.kBestScores(),
+                w.logicalKBestExtensions(),w.refusedScoreAttempts()));
+    }
+
     /** Shares immutable retained output with its still-live attempt owner; never asserts full-graph certainty. */
     ProbabilisticInferenceResult conditionalReview(Status status, String explanation,
             InferenceWorkAccounting cumulative, long pairVisits,

@@ -926,3 +926,11 @@ source checks do not paint or fetch tiles while the dataset write lock is held.
 Generic third-party visible imagery still lacks a provider-wide render lease;
 its separate Apply/Redo policy must be resolved before claiming full source
 freshness or release readiness.
+
+### Recorded dense admission for B
+
+`BPolicy.DENSE_ADMITTED_V3` is a separate explicit frozen-request opt-in; live defaults and captured V1/V2 remain unchanged. After original dense observations are prepared, `DenseBAdmission` computes the conservative complete scored-work bound `sum((2+c_i)*S[i-2]*S[i-1]*S[i])`, where `c_i=min(K,product(S[0..i-3]))` and `K=min(32,requestedRawLimit)`. Pair work is the sum of adjacent Cartesian row products, or the single row width for one profile. Initialization and terminal selection charge no transition scores. Backward work includes unreachable preceding states; the first packet deliberately uses no tighter adjacency bound. Saturation/overflow explicitly rejects admission, including Long.MAX_VALUE budgets.
+
+If score, pair and state eligibility all fit unchanged budgets, `AdmittedBInference` runs exactly one cached V4 solve over the original dense cells/unaries/quadrature, preserving native posterior and completion semantics. It creates no sparse views and never retries compact on memory refusal/cancellation. Otherwise it delegates to the unchanged conditional V2 retained graph and at most one existing refinement. That compact branch remains experimentally unqualified after the recorded shorter-control geometric regression; neither full-width discovery nor review confirmation establishes a sparse approximation bound.
+
+The additive `b-dense-admission.json` companion exports original row widths, effective K, bounds/overflow flags and selected branch, binding them to frozen identities and actual named work. Metadata validation recomputes admission against frozen budgets; strict ordinary replay additionally reconstructs and compares actual row census and decision. A self-consistent archive is not factual row authority. Historical exact/V1/V2 captures retain their previous receipt bytes and validation. No Legacy, sampler, command or live-activation change is part of this policy.

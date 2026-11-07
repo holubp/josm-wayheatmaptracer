@@ -10,7 +10,7 @@ import java.util.HexFormat;
 
 /** Explicit recorded B solver policy; historical requests retain the existing exact default. */
 public enum BPolicy {
-    EXACT_DEFAULT, ADAPTIVE_MULTIMODAL_V1, ADAPTIVE_MULTIMODAL_V2;
+    EXACT_DEFAULT, ADAPTIVE_MULTIMODAL_V1, ADAPTIVE_MULTIMODAL_V2, DENSE_ADMITTED_V3;
 
     /** Retained-graph posterior, fixed retention rules and one cumulative-budget refinement. */
     public static final String VERSION = "adaptive-multimodal-retained-density-v1/"
@@ -18,18 +18,22 @@ public enum BPolicy {
     /** Same retained graphs and objective, with exact local predecessor-stream merging. */
     public static final String CURRENT_VERSION = "adaptive-multimodal-retained-density-v2/"
             + "cached-pair-stream-merge-scored-work-v4/one-all-rival-refinement-v1";
+    public static final String DENSE_ADMISSION_VERSION="budget-admitted-dense-or-conditional-v3/"+DenseBAdmission.VERSION;
+    public static final String FULL_EXECUTION_VERSION=DENSE_ADMISSION_VERSION+"/full/cached-pair-stream-merge-scored-work-v4";
+    public static final String COMPACT_EXECUTION_VERSION=DENSE_ADMISSION_VERSION+"/compact/"+CURRENT_VERSION;
 
     public String version() {
         return switch(this) {
             case EXACT_DEFAULT -> ProbabilisticExecutionPolicy.CURRENT_VERSION;
             case ADAPTIVE_MULTIMODAL_V1 -> VERSION;
             case ADAPTIVE_MULTIMODAL_V2 -> CURRENT_VERSION;
+            case DENSE_ADMITTED_V3 -> DENSE_ADMISSION_VERSION;
         };
     }
     ProbabilisticExecutionPolicy.Mode solverMode() {
         return switch(this) {
             case ADAPTIVE_MULTIMODAL_V1 -> ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V3;
-            case ADAPTIVE_MULTIMODAL_V2 -> ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V4;
+            case ADAPTIVE_MULTIMODAL_V2, DENSE_ADMITTED_V3 -> ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V4;
             case EXACT_DEFAULT -> throw new IllegalArgumentException("Exact default is not an adaptive policy");
         };
     }
@@ -54,8 +58,12 @@ public enum BPolicy {
     }
     private static String adaptiveParameterHash(String original,BPolicy policy) {
         if(policy==null||policy==EXACT_DEFAULT) throw new IllegalArgumentException("An explicit adaptive revision is required");
-        return policy==ADAPTIVE_MULTIMODAL_V1 ? adaptiveParameterHash(original)
-                : hash("live-probabilistic-adaptive-v2",original,CURRENT_VERSION);
+        return switch(policy) {
+            case ADAPTIVE_MULTIMODAL_V1 -> adaptiveParameterHash(original);
+            case ADAPTIVE_MULTIMODAL_V2 -> hash("live-probabilistic-adaptive-v2",original,CURRENT_VERSION);
+            case DENSE_ADMITTED_V3 -> hash("live-probabilistic-dense-admitted-v3",original,DENSE_ADMISSION_VERSION);
+            default -> throw new IllegalArgumentException("An explicit opt-in revision is required");
+        };
     }
     public static TraceRequest adaptiveRequest(TraceRequest r) {
         return adaptiveRequest(r,ADAPTIVE_MULTIMODAL_V1);
@@ -74,16 +82,19 @@ public enum BPolicy {
         if (source == null) throw new IllegalArgumentException("Frozen request is required");
         if(source.engine()!=TrackerMode.PROBABILISTIC)return EXACT_DEFAULT;
         String version=adaptiveVersion(source.parameterHash());
-        return VERSION.equals(version)?ADAPTIVE_MULTIMODAL_V1:CURRENT_VERSION.equals(version)?ADAPTIVE_MULTIMODAL_V2:EXACT_DEFAULT;
+        return VERSION.equals(version)?ADAPTIVE_MULTIMODAL_V1:CURRENT_VERSION.equals(version)?ADAPTIVE_MULTIMODAL_V2:
+                DENSE_ADMISSION_VERSION.equals(version)?DENSE_ADMITTED_V3:EXACT_DEFAULT;
     }
     public static boolean isAdaptiveHash(String hash) { return adaptiveVersion(hash)!=null; }
     public static String adaptiveVersion(String hash) {
         if(adaptiveParameterHash().equals(hash)||adaptiveParameterHash(visibleExactParameterHash()).equals(hash))return VERSION;
         if(adaptiveParameterHash(ADAPTIVE_MULTIMODAL_V2).equals(hash)
                 ||adaptiveParameterHash(visibleExactParameterHash(),ADAPTIVE_MULTIMODAL_V2).equals(hash))return CURRENT_VERSION;
+        if(adaptiveParameterHash(DENSE_ADMITTED_V3).equals(hash)
+                ||adaptiveParameterHash(visibleExactParameterHash(),DENSE_ADMITTED_V3).equals(hash))return DENSE_ADMISSION_VERSION;
         return null;
     }
-    static boolean isAdaptiveVersion(String version) { return VERSION.equals(version)||CURRENT_VERSION.equals(version); }
+    static boolean isAdaptiveVersion(String version) { return VERSION.equals(version)||CURRENT_VERSION.equals(version)||COMPACT_EXECUTION_VERSION.equals(version); }
     private static String hash(String... values) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");

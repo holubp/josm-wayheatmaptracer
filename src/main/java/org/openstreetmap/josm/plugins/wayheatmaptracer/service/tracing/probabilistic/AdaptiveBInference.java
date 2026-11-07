@@ -46,7 +46,8 @@ final class AdaptiveBInference {
             CancellationProbe cancellation, AttemptMemoryLedger.Owner owner, AdaptiveBObserver observer,
             ProbabilisticInference.WorkProgress progress,BPolicy policy) {
         cancellation.checkpoint();
-        if(policy==null||policy==BPolicy.EXACT_DEFAULT)throw new IllegalArgumentException("An adaptive policy is required");
+        if(policy!=BPolicy.ADAPTIVE_MULTIMODAL_V1&&policy!=BPolicy.ADAPTIVE_MULTIMODAL_V2)
+            throw new IllegalArgumentException("An existing adaptive revision is required");
         String version=policy.version();
         if (sampled.size() != dense.size() || dense.size() != lattices.size()
                 || continuation.length != dense.size() || observer == null)

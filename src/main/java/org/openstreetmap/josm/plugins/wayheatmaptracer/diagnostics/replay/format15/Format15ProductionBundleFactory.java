@@ -221,6 +221,12 @@ public final class Format15ProductionBundleFactory {
         if (executedRuns != null) {
             artifacts.put(Format15ExecutionWorkCodec.ARTIFACT, Format15ExecutionWorkCodec.artifact(
                     executedRuns.stream().map(TraceHypothesisSet::workAccounting).toList()));
+            if(computedEngine==TrackerMode.PROBABILISTIC&&Format15DenseBAdmissionReceipt.required(input.request().parameterHash())
+                    &&executedRuns.size()==1&&executedRuns.get(0).workAccounting().isPresent()) {
+                var workBundle=new Format15Bundle(bundle.buildIdentity(),bundle.sourceIdentityHash(),bundle.parameterHash(),artifacts);
+                artifacts.put(Format15DenseBAdmissionReceipt.ARTIFACT,
+                        Format15DenseBAdmissionReceipt.artifact(workBundle,input,executedRuns.get(0)));
+            }
         }
         var receipt = executedRuns == null
                 ? Format15NumericalPolicyReceipt.current(bundle.sourceIdentityHash(), inputHash,

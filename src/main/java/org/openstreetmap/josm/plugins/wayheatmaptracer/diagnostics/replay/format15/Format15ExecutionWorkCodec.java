@@ -115,6 +115,8 @@ final class Format15ExecutionWorkCodec {
         if (!ProbabilisticExecutionPolicy.VERSION.equals(policy)
                 && !ProbabilisticExecutionPolicy.CURRENT_VERSION.equals(policy)
                 && !org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.VERSION.equals(policy)
+                && !org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.FULL_EXECUTION_VERSION.equals(policy)
+                && !org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.COMPACT_EXECUTION_VERSION.equals(policy)
                 && !org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.CURRENT_VERSION.equals(policy)) {
             throw new IllegalArgumentException("execution-work-policy-invalid");
         }

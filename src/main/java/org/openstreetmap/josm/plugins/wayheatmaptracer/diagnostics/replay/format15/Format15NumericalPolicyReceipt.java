@@ -35,7 +35,7 @@ final class Format15NumericalPolicyReceipt {
                 + ",\"executionWorkHash\":\"" + Format15ExecutionWorkCodec.artifact(receipts).sha256() + "\"}\n";
         String expectedExecution = executionPolicy(computedEngine, parameterHash);
         if (receipts.stream().anyMatch(receipt -> receipt.isEmpty()
-                || !receipt.orElseThrow().hasPolicy(expectedExecution))) {
+                || !matchesPolicy(receipt.orElseThrow(),expectedExecution))) {
             json = json.replace("explicit-current-computation", "execution-unattested");
         }
         if (json.getBytes(StandardCharsets.UTF_8).length > MAX_BYTES) {
@@ -113,7 +113,7 @@ final class Format15NumericalPolicyReceipt {
                     ? Format15ExecutionWorkCodec.read(workArtifact) : List.of();
             long computed = 0L;
             for (var receipt : receipts) {
-                if (receipt.isEmpty() || !receipt.orElseThrow().hasPolicy(executionPolicy(engine, input.request().parameterHash()))) {
+                if (receipt.isEmpty() || !matchesPolicy(receipt.orElseThrow(),executionPolicy(engine, input.request().parameterHash()))) {
                     throw new IllegalArgumentException("execution-policy-unattested");
                 }
                 computed = Math.addExact(computed, receipt.orElseThrow().computedTransitions());
@@ -121,6 +121,8 @@ final class Format15NumericalPolicyReceipt {
             if (computed > input.request().budgets().maximumTransitions()) {
                 throw new IllegalArgumentException("execution-work-budget");
             }
+            if(engine==TrackerMode.PROBABILISTIC&&Format15DenseBAdmissionReceipt.required(input.request().parameterHash()))
+                Format15DenseBAdmissionReceipt.validate(archive,input,verifiedInputHash);
             Format15Artifact expectedReceipt = scored ? current(archive.sourceIdentityHash(), verifiedInputHash, input.request().parameterHash(),
                     input.request().engine(), engine, receipts)
                     : current(archive.sourceIdentityHash(), verifiedInputHash, input.request().parameterHash(),
@@ -158,6 +160,14 @@ final class Format15NumericalPolicyReceipt {
         String adaptive=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.adaptiveVersion(parameterHash);
         return engine == TrackerMode.PROBABILISTIC && adaptive!=null ? adaptive : ProbabilisticExecutionPolicy.CURRENT_VERSION;
     }
+    private static boolean matchesPolicy(ExecutionWorkReceipt receipt,String expected) {
+        if(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.DENSE_ADMISSION_VERSION.equals(expected)) {
+            return receipt.bStages().size()==1&&receipt.otherEngineTransitions()==0
+                    &&(receipt.hasPolicy(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.FULL_EXECUTION_VERSION)
+                    ||receipt.hasPolicy(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.COMPACT_EXECUTION_VERSION));
+        }
+        return receipt.hasPolicy(expected);
+    }
     private static String inferencePolicy(TrackerMode engine, String parameterHash) {
         String original = inferencePolicy(engine);
         return executionPolicy(engine, parameterHash).equals(ProbabilisticExecutionPolicy.CURRENT_VERSION)
@@ -179,7 +189,7 @@ final class Format15NumericalPolicyReceipt {
 
     static void validateExecuted(TraceHypothesisSet inference, String parameterHash) {
         if (probabilistic(inference.engine()) && (inference.workAccounting().isEmpty()
-                || !inference.workAccounting().orElseThrow().hasPolicy(executionPolicy(inference.engine(), parameterHash)))) {
+                || !matchesPolicy(inference.workAccounting().orElseThrow(),executionPolicy(inference.engine(), parameterHash)))) {
             throw new ReplayMismatchException("numerical-policy-runtime-unattested");
         }
     }
@@ -194,6 +204,7 @@ final class Format15NumericalPolicyReceipt {
             if (!captured.equals(actual.stream().map(TraceHypothesisSet::workAccounting).toList())) {
                 throw new ReplayMismatchException("numerical-policy-runtime-work-mismatch");
             }
+            Format15DenseBAdmissionReceipt.validateActual(archive,actual);
         } catch (Format15ArchiveException | IllegalArgumentException | java.util.NoSuchElementException malformed) {
             throw new ReplayMismatchException("numerical-policy-runtime-work-mismatch");
         }

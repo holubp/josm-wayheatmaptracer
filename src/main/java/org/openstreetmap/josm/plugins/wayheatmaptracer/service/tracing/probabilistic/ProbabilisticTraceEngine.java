@@ -354,7 +354,10 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
                         org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
                                 "b.adaptive.availableScores",scores);
                     });
-            var adaptiveRun = new AdaptiveBInference().solve(profiles, evaluated, adaptiveLattices,
+            var adaptiveRun = recordedPolicy==BPolicy.DENSE_ADMITTED_V3
+                ? new AdmittedBInference().solve(profiles,evaluated,adaptiveLattices,continuationOffsets,parameters,
+                    request.budgets(),evidence.decisionRegion(),cancellation,workingOwner,AdaptiveBObserver.current(),progress)
+                : new AdaptiveBInference().solve(profiles, evaluated, adaptiveLattices,
                     continuationOffsets, parameters, request.budgets(), evidence.decisionRegion(), cancellation,
                     workingOwner, AdaptiveBObserver.current(),progress,recordedPolicy);
             inference = adaptiveRun.inference(); evaluated = adaptiveRun.profiles();
