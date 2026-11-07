@@ -110,3 +110,28 @@ or authorize physical fixture tuning.
 The six-scene numerical gate has not run locally and remains unqualified until
 the corrected dedicated CI job completes. Wide approximation quality, private high
 inference/comparison, GUI, cancellation and repeated latency gates remain open.
+
+## Separate performance-retention assessment
+
+`wide-compact-performance-retention-v1` is a pure, test-side assessment
+contract. Its caller must provide execution, identity, native-authority,
+branch, safety, and measurement evidence that an actual runner independently
+validated. The helper does not establish those facts or qualify a release;
+`releaseQualified` is always false. Missing or invalid measurements remain
+unavailable.
+
+For suitable dense references, strong scenes use p95/max limits of 0.25p/0.5p
+and weak scenes use 0.5p/1p for both raw and final geometry. Supported-bend
+retention compares candidate and reference amplitudes on the same declared
+physical interval and baseline and requires at least 90%. Absolute analytic
+amplitude debt is reported separately and does not rewrite the relative
+retention result.
+
+Only `diffuse-three-strand` can receive `UNSUITABLE_REFERENCE`, and only when
+the reference fails its independent geometry oracle while the candidate passes
+its independent geometry and runner checks. Any measured distance failure
+remains `FAILED` alongside that disposition. The exception never bypasses
+candidate execution, integrity, native authority, branch, or safety checks.
+This assessment does not alter the diagnostic runner's FAILED status, existing
+assertions, or release gates; root-owned runner integration and all other
+performance qualification remain pending.
