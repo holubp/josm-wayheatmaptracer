@@ -68,6 +68,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchStatus;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileReliabilityPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TransportResponse;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayAction;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.*;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
@@ -999,6 +1000,16 @@ class V022LiveBPreviewServiceTest {
                     engine == TrackerMode.DIRECTIONAL_IMAGE));
             var partition = intervalPartition(captured[0]);
             var batch = service.computePartitioned(captured[0], partition, CancellationProbe.NONE);
+            if (engine == TrackerMode.CORRIDOR_AWARE) {
+                var fixed = new java.util.TreeSet<Integer>();
+                for (var island : partition.fixedIslands()) {
+                    for (int occurrence = island.range().firstIndex(); occurrence <= island.range().lastIndex(); occurrence++) {
+                        fixed.add(occurrence);
+                    }
+                }
+                assertFalse(fixed.isEmpty());
+                assertEquals(fixed, batch.fullRequest().corridorInput().orElseThrow().additionalFixedOccurrences());
+            }
             assertEquals(2, batch.runs().size(), engine.toString());
             assertSame(captured[0].network(), batch.network());
             assertEquals(captured[0].network().canonicalHash(), batch.network().canonicalHash());
@@ -1331,6 +1342,11 @@ class V022LiveBPreviewServiceTest {
 
         LiveBPreviewService.Computed result = service.compute(captured[0], CancellationProbe.NONE);
 
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1,
+                result.request().corridorInput().orElseThrow().executionPolicy());
+        assertEquals("corridor-a-r3-owned-bounded-bridge-v1", result.request().samplerId());
+        assertTrue(result.request().corridorInput().orElseThrow().additionalFixedOccurrences().isEmpty());
+
         assertEquals(TrackerMode.CORRIDOR_AWARE, result.pipeline().inference().engine());
         var locations = result.request().corridorInput().orElseThrow().profileLocations();
         assertEquals(result.request().profileChainage().cumulativeGroundMeters(), locations.stream()
@@ -1370,6 +1386,250 @@ class V022LiveBPreviewServiceTest {
                 instanceof ExistingWayNodeOccurrence);
         assertEquals(before, state(fixture.dataSet()));
         SwingUtilities.invokeAndWait(() -> service.requireCurrent(fixture.dataSet(), captured[0]));
+        var assessment = new ModernSingleWayEditPlanAdapter().assess(result, 0);
+        assertTrue(assessment.applyAvailable(), assessment.toString());
+        var plan = assessment.plan().orElseThrow();
+        SwingUtilities.invokeAndWait(() -> {
+            var receipt = org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture
+                    .captureBound(fixture.dataSet(), captured[0].specification());
+            var validator = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator(
+                    receipt, plan, () -> plan.before().sourceGeneration());
+            var command = new org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand(
+                    fixture.dataSet(), plan, validator, "Apply captured A preview");
+            assertTrue(command.executeCommand());
+            command.undoCommand();
+            assertEquals(before, state(fixture.dataSet()));
+            fixture.selection().segmentNodes().get(0).setCoor(new LatLon(latitude(1), longitude(-8)));
+            assertThrows(IllegalStateException.class, () -> service.requireCurrent(fixture.dataSet(), captured[0]));
+            assertThrows(IllegalStateException.class, command::executeCommand);
+        });
+    }
+
+    @Test
+    void corridorPreciseCaptureIdentityDiffersFromHistoricalMoveForBothSources() throws Exception {
+        Fixture fixture = fixture();
+        LiveBPreviewService service = new LiveBPreviewService();
+        var visible = config(TrackerMode.CORRIDOR_AWARE);
+        var managed = managedConfig();
+        var visibleMove = new AlignmentConfig(visible.heatmap().withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES), visible.cleanup());
+        var managedMove = new AlignmentConfig(managed.heatmap().withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES), managed.cleanup());
+        LiveBPreviewService.Captured[] v = new LiveBPreviewService.Captured[2];
+        LiveBPreviewService.ManagedCaptureSeed[] m = new LiveBPreviewService.ManagedCaptureSeed[2];
+        SwingUtilities.invokeAndWait(() -> {
+            v[0] = service.capture(fixture.dataSet(), fixture.selection(), raster(), visible);
+            v[1] = service.capture(fixture.dataSet(), fixture.selection(), raster(), visibleMove);
+            m[0] = service.captureManagedSeed(fixture.dataSet(), fixture.selection(), managed, "synthetic");
+            m[1] = service.captureManagedSeed(fixture.dataSet(), fixture.selection(), managedMove, "synthetic");
+        });
+        assertNotEquals(v[0].parameterHash(), v[1].parameterHash());
+        assertNotEquals(m[0].parameterHash(), m[1].parameterHash());
+    }
+
+    @Test
+    void managedCorridorPreciseExecutesCapturedPolicy() throws Exception {
+        Fixture fixture = fixture();
+        LiveBPreviewService service = new LiveBPreviewService();
+        AlignmentConfig config = managedConfig();
+        LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
+        SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(fixture.dataSet(),
+                fixture.selection(), config, "managed-a-policy"));
+        byte[] tile = colorRoutePng();
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
+                new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png", tile,
+                        null, Duration.ZERO, ""), new ManagedTileCache(managedTileCache, decoder),
+                decoder, TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(config.heatmap().cacheBuster()));
+            var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    seed[0].sourceGeographic(), config.heatmap(), seed[0].sourceIdentity(),
+                    CredentialSnapshot.fromConfig(null), CancellationProbe.NONE);
+            var computed = service.compute(service.attachManagedSources(seed[0], sources, coordinator), CancellationProbe.NONE);
+            assertEquals(seed[0].parameterHash(), computed.request().parameterHash());
+            assertEquals("corridor-a-r3-owned-bounded-bridge-v1", computed.request().samplerId());
+            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1,
+                    computed.request().corridorInput().orElseThrow().executionPolicy());
+            assertTrue(computed.request().corridorInput().orElseThrow().additionalFixedOccurrences().isEmpty());
+        }
+    }
+
+    @Test
+    void liveCapturedAnalyticParabolaAdmitsShortenedNativeCandidate() throws Exception {
+        DataSet dataSet = new DataSet();
+        var nodes = new java.util.ArrayList<Node>();
+        for (int j = -10; j <= 10; j++) {
+            double u = 1.5 * j;
+            Node node = loadedNode(5000 + j + 10, latitude(-9.7 + u * u / 17.0), longitude(u));
+            nodes.add(node);
+            dataSet.addPrimitive(node);
+        }
+        Way way = new Way();
+        way.setNodes(nodes);
+        way.setOsmId(5100, 1);
+        way.setModified(false);
+        dataSet.addPrimitive(way);
+        var selection = new SelectionContext(way, 0, 20, nodes, Set.of(nodes.get(0), nodes.get(20)));
+        var base = config(TrackerMode.CORRIDOR_AWARE).heatmap();
+        var settings = new ManagedHeatmapConfig(base.keyPairId(), base.policy(), base.signature(), base.sessionToken(),
+                base.activity(), base.color(), base.manualLayerName(), base.layerRegex(), base.alignmentMode(), base.trackerMode(),
+                base.verbose(), base.debug(), base.multiColorDetection(), base.aggregateAllColorSchemes(),
+                base.showAggregateIntensityLayer(), base.candidateRatingEnabled(), base.parallelWayAwareness(),
+                base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), base.simplifyEnabled(), 16, 1,
+                base.simplifyTolerancePx(), base.inferenceMode(), base.inferenceZoom(), base.validationZoom(),
+                base.searchHalfWidthMeters(), base.sampleStepMeters(), IntensitySamplingMode.COLOR_MAPPING, base.cacheBuster());
+        var config = new AlignmentConfig(settings, GeometryCleanupConfig.disabled().withMode(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE));
+        var service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(dataSet, selection, rasterAt(300), config));
+        var computed = service.compute(captured[0], CancellationProbe.NONE);
+        var receipt = computed.corridorReceipt().orElseThrow();
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE,
+                computed.options().cleanup().mode());
+        assertTrue(receipt.tracks().values().stream().anyMatch(t -> t.admissionStatus().equals("ADMITTED")),
+                () -> "actual capture admission: " + receipt.tracks());
+        assertFalse(receipt.candidates().isEmpty());
+        assertEquals(receipt.totals().unaryEvaluations(), computed.pipeline().inference().evaluatedStates());
+        assertTrue(receipt.totals().bridgeUnaryEvaluations() > 0);
+        int routeIndex = -1;
+        for (int i = 0; i < computed.pipeline().routes().size(); i++) {
+            var route = computed.pipeline().routes().get(i);
+            var provenance = receipt.candidates().get(route.rawHypothesis().id());
+            if (provenance == null) continue;
+            assertEquals(provenance.mapping().workingCount(), route.rawHypothesis().points().size());
+            assertTrue(provenance.mapping().workingCount() < provenance.mapping().originalCount());
+            assertEquals(route.rawHypothesis().points().size(), route.rawHypothesis().support().size());
+            assertTrue(provenance.cleanupUnavailable());
+            assertEquals(route.pointIds().size(), route.assignments().size());
+            assertEquals(route.pointIds().size(), route.sourceOwnership().size());
+            assertThrows(UnsupportedOperationException.class,
+                    () -> route.assignments().put(route.pointIds().get(0), route.hypothesis().points().get(0)));
+            for (int j = 0; j < route.pointIds().size(); j++)
+                assertEquals(route.hypothesis().points().get(j), route.assignments().get(route.pointIds().get(j)));
+            var rawPoints = route.rawHypothesis().points();
+            assertTrue(route.hypothesis().points().containsAll(rawPoints.subList(1, rawPoints.size() - 1)));
+            assertEquals(captured[0].sourceMetric().get(0), route.hypothesis().points().get(0));
+            assertEquals(captured[0].sourceMetric().get(20),
+                    route.hypothesis().points().get(route.hypothesis().points().size() - 1));
+            if (new ModernSingleWayEditPlanAdapter().assess(computed, i).applyAvailable()) {
+                assertFalse(route.quality().findings().stream().anyMatch(finding ->
+                        finding.severity() == FinalGeometryEvaluator.Severity.HARD_BLOCK));
+                routeIndex = i;
+                break;
+            }
+        }
+        assertTrue(routeIndex >= 0, "an admitted shortened route must have native Apply authority");
+        var plan = new ModernSingleWayEditPlanAdapter().assess(computed, routeIndex).plan().orElseThrow();
+        var before = state(dataSet);
+        SwingUtilities.invokeAndWait(() -> {
+            service.requireCurrent(dataSet, captured[0]);
+            var bound = org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture
+                    .captureBound(dataSet, captured[0].specification());
+            var validator = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator(
+                    bound, plan, () -> plan.before().sourceGeneration());
+            var command = new org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand(
+                    dataSet, plan, validator, "Apply admitted A preview");
+            assertTrue(command.executeCommand());
+            command.undoCommand();
+            assertEquals(before, state(dataSet));
+        });
+        var frozen = new FrozenReplayInput(computed.request(), computed.evidence(), captured[0].network(), computed.options());
+        var bundle = Format15ProductionBundleFactory.createLive("live-a-admitted", frozen, computed.pipeline(),
+                "preview", "synthetic", routeIndex, plan, false, false);
+        bundle = Format15ProductionBundleFactory.withCurrentNumericalPolicy(bundle, frozen,
+                computed.request().engine(), List.of(computed.pipeline().inference()));
+        bundle = CorridorExecutionArtifacts.attach(bundle, frozen, computed.pipeline().inference(), receipt);
+        Path path = java.nio.file.Files.createTempFile("live-a-admitted-", ".zip");
+        try {
+            Format15BundleWriter.write(bundle, path);
+            var archive = Format15ArchiveReader.read(path);
+            assertTrue(archive.artifact("corridor-execution.csv").isPresent());
+            var decoded = FrozenReplayCodec.decode(archive.artifact("frozen-input.bin").orElseThrow().bytes());
+            assertEquals(computed.request(), decoded.request());
+            var scalar = Format15ReplayRunner.replay(archive,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel.SCALAR_INFERENCE,
+                    frozen.canonicalHash(), computed.request().parameterHash());
+            var replay = Format15ReplayRunner.replay(archive,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel.FINAL_GEOMETRY,
+                    frozen.canonicalHash(), computed.request().parameterHash());
+            assertEquals(ScalarReplayFingerprint.sha256(computed.pipeline().inference()),
+                    ScalarReplayFingerprint.sha256(scalar.inference()));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.LiveAReplayAssertions
+                    .assertFinalMatches(computed.pipeline(), replay);
+        } finally {
+            java.nio.file.Files.deleteIfExists(path);
+        }
+    }
+
+    @Test
+    void ordinaryCorridorCaptureRoutesFrozenOriginalIslandOccurrences() throws Exception {
+        DataSet dataSet = new DataSet();
+        var nodes = new java.util.ArrayList<Node>();
+        for (int i = 0; i <= 30; i++) {
+            Node node = loadedNode(3000 + i, latitude(0), longitude((i - 15) * 10.0));
+            nodes.add(node);
+            dataSet.addPrimitive(node);
+        }
+        for (int i : List.of(4, 12, 18, 26)) nodes.get(i).put("note", "fixed island boundary");
+        Way selected = new Way();
+        selected.setNodes(nodes);
+        selected.setOsmId(3100, 1);
+        selected.setModified(false);
+        dataSet.addPrimitive(selected);
+        for (int i : List.of(8, 22)) {
+            Node north = loadedNode(3200 + i, latitude(40), longitude((i - 15) * 10.0));
+            Node south = loadedNode(3300 + i, latitude(-40), longitude((i - 15) * 10.0));
+            dataSet.addPrimitive(north);
+            dataSet.addPrimitive(south);
+            Way crossing = new Way();
+            crossing.setNodes(List.of(south, nodes.get(i), north));
+            crossing.setOsmId(3400 + i, 1);
+            crossing.setModified(false);
+            dataSet.addPrimitive(crossing);
+        }
+        SelectionContext selection = new SelectionContext(selected, 1, 29, nodes.subList(1, 30),
+                Set.of(nodes.get(1), nodes.get(29)));
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(dataSet, selection,
+                wideFlatRaster(), config(TrackerMode.CORRIDOR_AWARE)));
+        var computed = service.compute(captured[0], CancellationProbe.NONE);
+        assertTrue(computed.partitioned());
+        var batch = computed.intervalBatch();
+        var fixed = new java.util.TreeSet<Integer>();
+        for (var island : batch.partition().fixedIslands())
+            for (int i = island.range().firstIndex(); i <= island.range().lastIndex(); i++) fixed.add(i);
+        assertFalse(fixed.isEmpty());
+        assertEquals(fixed, batch.fullRequest().corridorInput().orElseThrow().additionalFixedOccurrences());
+        for (var run : batch.runs()) {
+            var input = run.request().corridorInput().orElseThrow();
+            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1, input.executionPolicy());
+            var expected = new java.util.TreeSet<Integer>();
+            for (int i : fixed) if (i >= run.request().selectedRange().firstIndex()
+                    && i <= run.request().selectedRange().lastIndex()) expected.add(i);
+            assertEquals(expected, input.additionalFixedOccurrences());
+        }
+        var assessment = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer()
+                .compose(batch, java.util.Map.of());
+        var frozen = new FrozenReplayInput(batch.fullRequest(), batch.evidence(), batch.network(), batch.options());
+        var bundle = Format15ProductionBundleFactory.createLiveIntervals("live-a-interval", batch, assessment,
+                java.util.Map.of(), Format15ProductionBundleFactory.VisibleLayerSourceReceipt.unavailable(),
+                Format15ProductionBundleFactory.IntervalArtifactStatus.PRODUCED, null, null);
+        bundle = Format15ProductionBundleFactory.withCurrentNumericalPolicy(bundle, frozen,
+                batch.fullRequest().engine(), batch.runs().stream().map(run -> run.result().inference()).toList());
+        bundle = CorridorExecutionArtifacts.attachIntervals(bundle, batch);
+        Path archivePath = java.nio.file.Files.createTempFile("live-a-interval-", ".zip");
+        try {
+            Format15BundleWriter.write(bundle, archivePath);
+            var archive = Format15ArchiveReader.read(archivePath);
+            assertTrue(archive.artifact("corridor-execution.csv").isPresent());
+            var replay = Format15ReplayRunner.replayIntervals(archive, archive.sourceIdentityHash(), archive.parameterHash());
+            assertEquals(batch.runs().stream().map(run -> run.request()).toList(),
+                    replay.batch().runs().stream().map(run -> run.request()).toList());
+            assertEquals(batch.fullRequest(), replay.batch().fullRequest());
+            assertEquals(assessment.applyAvailable(), replay.assessment().applyAvailable());
+        } finally {
+            java.nio.file.Files.deleteIfExists(archivePath);
+        }
     }
 
     @Test
