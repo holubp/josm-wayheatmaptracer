@@ -24,7 +24,7 @@ public final class CorridorTubeBuilder {
     private final MotionPolicy motionPolicy;
 
     /** Explicit policy identity; historical replay/default construction remains unchanged. */
-    public enum MotionPolicy { HISTORICAL, BOUNDED_SECONDARY_REVERSAL }
+    public enum MotionPolicy { HISTORICAL, BOUNDED_SECONDARY_REVERSAL, TARGET_OWNED_APEX }
 
     /** Creates a stateless tube builder. */
     public CorridorTubeBuilder() {
@@ -84,7 +84,7 @@ public final class CorridorTubeBuilder {
             Regression stability = robustRegression(stabilityWindow, distanceMeters[profileIndex], sourcePixel);
             Regression weakStability = robustRegression(
                 weakStabilityWindow, distanceMeters[profileIndex], sourcePixel);
-            MotionEvidence motion = motionSupport(directStabilityWindow, sourcePixel);
+            MotionEvidence motion = motionSupport(directStabilityWindow, sourcePixel, distanceMeters[profileIndex]);
             double motionSupport = motion.support();
             CorridorBand band = point == null ? null : point.band();
             double prominence = band == null ? 0.0 : Math.max(0.0, band.peakIntensity() - band.noiseFloor());
@@ -251,6 +251,11 @@ public final class CorridorTubeBuilder {
     }
 
     private MotionEvidence motionSupport(List<Observation> observations, double sourcePixel) {
+        return motionSupport(observations, sourcePixel, Double.NaN);
+    }
+
+    private MotionEvidence motionSupport(List<Observation> observations, double sourcePixel,
+            double targetDistanceMeters) {
         if (observations.size() < 5) {
             return new MotionEvidence(0.0, "insufficient-direct-profiles");
         }
@@ -303,15 +308,22 @@ public final class CorridorTubeBuilder {
         boolean boundedApex = !coherentDirection && !supportedApex && signChanges > 1
             && motionPolicy == MotionPolicy.BOUNDED_SECONDARY_REVERSAL
             && !boundedApexWitnesses(observations, sourcePixel, Math.max(sourcePixel, uncertainty)).isEmpty();
-        boolean authorizedApex = supportedApex || boundedApex;
+        List<OwnedTurnWitness> owned = !coherentDirection && !supportedApex && signChanges > 1
+            && motionPolicy == MotionPolicy.TARGET_OWNED_APEX
+            ? ownedTurnWitnesses(observations, sourcePixel, Math.max(sourcePixel, uncertainty), targetDistanceMeters)
+            : List.of();
+        boolean ownedApex = !owned.isEmpty();
+        boolean authorizedApex = supportedApex || boundedApex || ownedApex;
         if (!coherentDirection && !authorizedApex) {
             return new MotionEvidence(0.0, signChanges > 1 ? "reversing-noise" : "incoherent-motion");
         }
         double coherenceScore = authorizedApex ? 1.0 : clamp((coherence - 0.70) / 0.30);
-        double supportedDisplacement = authorizedApex ? motionRange : displacement;
+        double supportedDisplacement = ownedApex
+            ? owned.stream().mapToDouble(OwnedTurnWitness::ownedRangePx).max().orElseThrow()
+            : authorizedApex ? motionRange : displacement;
         double displacementScore = clamp((supportedDisplacement - Math.max(sourcePixel, uncertainty)) / sourcePixel);
         double support = clamp(coherenceScore * displacementScore * centerAgreement * (1.0 - conflictFraction));
-        String reason = boundedApex ? "supported-apex-bounded-reversal"
+        String reason = ownedApex ? "target-owned-apex" : boundedApex ? "supported-apex-bounded-reversal"
             : supportedApex ? "supported-apex" : "coherent-direction";
         if (centerAgreement < 0.75) {
             reason += "+center-disagreement";
@@ -321,6 +333,84 @@ public final class CorridorTubeBuilder {
         }
         return new MotionEvidence(support, reason);
     }
+
+    /** Direct, local turn ownership only; neighboring extrema delimit each completed arm. */
+    private List<OwnedTurnWitness> ownedTurnWitnesses(List<Observation> observations,
+            double sourcePixel, double threshold, double targetDistanceMeters) {
+        if (!Double.isFinite(targetDistanceMeters)) return List.of();
+        List<ObservedTurn> turns = new ArrayList<>();
+        double deadband = 0.15 * sourcePixel;
+        for (int start = 0; start < observations.size();) {
+            int end = start;
+            while (end + 1 < observations.size()
+                    && observations.get(end + 1).profileIndex() == observations.get(end).profileIndex() + 1) end++;
+            int previousSign = 0, previousStep = start;
+            for (int step = start + 1; step <= end; step++) {
+                double delta = observations.get(step).centerOffsetPx() - observations.get(step - 1).centerOffsetPx();
+                int sign = delta > deadband ? 1 : delta < -deadband ? -1 : 0;
+                if (sign == 0) continue;
+                if (previousSign != 0 && sign != previousSign) {
+                    double extreme = previousSign * observations.get(previousStep).centerOffsetPx();
+                    int first = previousStep, last = previousStep;
+                    for (int i = previousStep + 1; i < step; i++) {
+                        double value = previousSign * observations.get(i).centerOffsetPx();
+                        if (value > extreme) { extreme = value; first = i; last = i; }
+                        else if (value == extreme) last = i;
+                    }
+                    double position = (observations.get(first).distanceMeters()
+                        + observations.get(last).distanceMeters()) / 2.0;
+                    turns.add(new ObservedTurn(first, last, previousSign, start, end, position));
+                }
+                previousSign = sign;
+                previousStep = step;
+            }
+            start = end + 1;
+        }
+        double nearest = turns.stream().mapToDouble(t -> Math.abs(t.distanceMeters() - targetDistanceMeters))
+            .min().orElse(Double.POSITIVE_INFINITY);
+        List<OwnedTurnWitness> result = new ArrayList<>();
+        for (int index = 0; index < turns.size(); index++) {
+            ObservedTurn turn = turns.get(index);
+            double distance = Math.abs(turn.distanceMeters() - targetDistanceMeters);
+            if (distance != nearest || distance > LOCAL_HALF_WINDOW_METERS) continue;
+            int left = index > 0 && turns.get(index - 1).segmentStart() == turn.segmentStart()
+                ? turns.get(index - 1).last() : turn.segmentStart();
+            int right = index + 1 < turns.size() && turns.get(index + 1).segmentStart() == turn.segmentStart()
+                ? turns.get(index + 1).first() : turn.segmentEnd();
+            if (observations.get(right).distanceMeters() - observations.get(left).distanceMeters() < 8.0) continue;
+            double peak = turn.sign() * observations.get(turn.first()).centerOffsetPx();
+            double leftExcursion = peak - turn.sign() * observations.get(left).centerOffsetPx();
+            double rightExcursion = peak - turn.sign() * observations.get(right).centerOffsetPx();
+            int rising = 0, falling = 0;
+            double leftViolation = 0, rightViolation = 0, minimum = Double.POSITIVE_INFINITY, maximum = Double.NEGATIVE_INFINITY;
+            for (int i = left; i <= right; i++) {
+                double value = observations.get(i).centerOffsetPx();
+                minimum = Math.min(minimum, value); maximum = Math.max(maximum, value);
+                if (i > left && i <= turn.first() && turn.sign() * (value - observations.get(i - 1).centerOffsetPx()) > deadband) rising++;
+                if (i > turn.last() && turn.sign() * (observations.get(i - 1).centerOffsetPx() - value) > deadband) falling++;
+            }
+            for (int i = left; i <= turn.last(); i++) for (int j = i + 1; j <= turn.last(); j++)
+                leftViolation = Math.max(leftViolation, turn.sign() * (observations.get(i).centerOffsetPx() - observations.get(j).centerOffsetPx()));
+            for (int i = turn.first(); i <= right; i++) for (int j = i + 1; j <= right; j++)
+                rightViolation = Math.max(rightViolation, turn.sign() * (observations.get(j).centerOffsetPx() - observations.get(i).centerOffsetPx()));
+            if (leftExcursion > threshold && rightExcursion > threshold && rising >= 2 && falling >= 2
+                    && leftViolation <= threshold && rightViolation <= threshold) {
+                result.add(new OwnedTurnWitness(turn.sign() > 0 ? "peak" : "valley",
+                    observations.get(left).profileIndex(), observations.get(turn.first()).profileIndex(),
+                    observations.get(turn.last()).profileIndex(), observations.get(right).profileIndex(),
+                    turn.distanceMeters(), rising, falling, leftExcursion, rightExcursion,
+                    leftViolation, rightViolation, threshold, maximum - minimum));
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private record ObservedTurn(int first, int last, int sign, int segmentStart, int segmentEnd,
+        double distanceMeters) { }
+    private record OwnedTurnWitness(String kind, int leftProfile, int firstApexProfile, int lastApexProfile,
+        int rightProfile, double apexDistanceMeters, int risingSteps, int fallingSteps,
+        double leftExcursionPx, double rightExcursionPx, double leftViolationPx, double rightViolationPx,
+        double thresholdPx, double ownedRangePx) { }
 
     /** Boolean authorization witnesses only: no fit or proposed positions are produced. */
     private List<BoundedApexWitness> boundedApexWitnesses(List<Observation> observations,

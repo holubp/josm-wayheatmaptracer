@@ -10,6 +10,80 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 
 /** Analytic source-independent motion authorization oracles, not captured offset sequences. */
 class CorridorBoundedApexMotionTest {
+    private CorridorTubeBuilder controlBuilder;
+    @Test void completedOwnedApexSurvivesNeighboringReboundEnteringWindow()throws Exception {
+        double[] centers={0,1,2,3,4,5,6,5,4,3,2,1,2,3,4,5,6};
+        var s=scenario(centers,1);var old=new CorridorTubeBuilder().build(s.track,s.profiles,1,Map.of());
+        assertEquals("reversing-noise",old.at(8).motionSupportReason());
+        var actual=ownedBuilder().build(s.track,s.profiles,1,Map.of());
+        assertEquals("target-owned-apex",actual.at(8).motionSupportReason());
+        assertEquals(1,actual.at(8).motionSupport());
+        assertEquals(actual.at(8).localCenterOffsetPx(),actual.at(8).centerOffsetPx(),1e-12);
+        assertEquals(old.at(0),actual.at(0),"Remote turn cannot change historical target outside local5m");
+    }
+    @Test void analyticTwoTurnSwitchbackOwnsNearestCompletedTurn()throws Exception {
+        double[] centers={0,1,2,3,4,5,6,5,4,3,2,1,2,3,4,5,6};
+        var s=scenario(centers,1);var actual=ownedBuilder().build(s.track,s.profiles,1,Map.of());
+        assertEquals("target-owned-apex",actual.at(10).motionSupportReason());
+        assertEquals(1,actual.at(10).motionSupport());
+    }
+    private static CorridorTubeBuilder ownedBuilder()throws Exception {
+        try{return new CorridorTubeBuilder(CorridorTubeBuilder.MotionPolicy.valueOf("TARGET_OWNED_APEX"));}
+        catch(IllegalArgumentException absent){return new CorridorTubeBuilder();}
+    }
+    @Test void ownedTurnAdverseDirectnessThresholdAndHistoricalExactness()throws Exception {
+        for(double[] values:List.of(new double[]{0,.2,.4,.6,.8,.6,.4,.2,0,.2,.4,.6,.8,.6,.4,.2,0},
+                new double[]{0,2,0,2,0,2,0,2,0,2,0,2,0,2,0,2,0},
+                new double[]{0,1,2,1,0,1,2,1,0,1,2,1,0,1,2,1,0})){
+            var s=scenario(values,1);var old=new CorridorTubeBuilder().build(s.track,s.profiles,1,Map.of());
+            var actual=ownedBuilder().build(s.track,s.profiles,1,Map.of());
+            assertEquals(old,actual,"Sub-T/one-step/short repeated turns retain historical outcome");
+        }
+        double[] values={0,1,2,3,4,5,6,5,4,3,2,1,2,3,4,5,6};var s=scenario(values,1);
+        var points=new LinkedHashMap<>(s.track.points());points.remove(7);
+        var missing=new CorridorTrack("missing-arm",points,0,0,false,List.of(),"");
+        var actual=ownedBuilder().build(missing,s.profiles,1,Map.of());
+        assertFalse(actual.at(6).motionSupportReason().startsWith("target-owned-apex"),"Missing row cannot be bridged into an apex arm");
+        var interpolation=new LinkedHashMap<Integer,CorridorTrackPoint>();for(var p:s.track.points().values())interpolation.put(p.profileIndex(),new CorridorTrackPoint(p.profileIndex(),p.band(),true,CorridorPointSupport.BOUNDED_INTERPOLATION));
+        var predicted=new CorridorTrack("predicted-parent",interpolation,0,0,true,List.of(),"");
+        assertEquals(new CorridorTubeBuilder().build(predicted,s.profiles,1,Map.of()),ownedBuilder().build(predicted,s.profiles,1,Map.of()));
+        var old=new CorridorTubeBuilder().build(s.track,s.profiles,1,Map.of());var fresh=ownedBuilder().build(s.track,s.profiles,1,Map.of());
+        for(int i=0;i<values.length;i++)if(!old.at(i).motionSupportReason().equals("reversing-noise"))assertEquals(old.at(i),fresh.at(i));
+    }
+    @Test void ownedTurnPlateausReversalReflectionOversamplingAndScaleAttenuation()throws Exception {
+        double[] values={0,1,2,3,4,5,6,6,6,5,4,3,2,1,1,1,2,3,4,5,6};
+        var initial=scenario(values,1);var expected=ownedBuilder().build(initial.track,initial.profiles,1,Map.of()).at(9);
+        assertEquals("target-owned-apex",expected.motionSupportReason());
+        for(boolean reverse:List.of(false,true))for(double sign:List.of(-1.0,1.0))for(double scale:List.of(1.0,8.0)){
+            var transformed=new double[values.length];for(int i=0;i<values.length;i++)transformed[i]=sign*values[reverse?values.length-1-i:i];
+            var s=scenario(transformed,scale);int target=reverse?values.length-1-9:9;
+            var actual=ownedBuilder().build(s.track,s.profiles,scale,Map.of()).at(target);
+            assertEquals(expected.motionSupportReason(),actual.motionSupportReason());assertEquals(expected.motionSupport(),actual.motionSupport(),1e-12);
+            assertEquals(expected.centerOffsetPx(),actual.centerOffsetPx()/(scale*sign),1e-10);
+        }
+        var scale=new LinkedHashMap<String,BandScaleEvidence>();for(int i=0;i<values.length;i++)scale.put(CorridorCenterlineOptimizer.scaleEvidenceKey(i,"b"+i),new BandScaleEvidence(.5,Double.NaN,Double.NaN,List.of(0),true,false));
+        var conflict=ownedBuilder().build(initial.track,initial.profiles,1,scale).at(9);assertEquals(0,conflict.motionSupport());assertTrue(conflict.motionSupportReason().contains("scale-conflict"));
+        var profiles=new ArrayList<CorridorProfile>();for(var p:initial.profiles){double c=p.bands().get(0).centerOffsetPx();var peak=new RenderedHeatmapSampler.CrossSectionPeak(c,.25,0,false,.23,.02,.25,1,1,1,c,c+1,c+2,0,1,.5);var original=p.source();var source=new RenderedHeatmapSampler.CrossSectionProfile(original.samplingAnchor(),original.normalScreen(),List.of(peak),true,List.of());profiles.add(new CorridorProfile(p.index(),source,p.bands(),.25,.02,.23,true));}
+        var disagreement=ownedBuilder().build(initial.track,profiles,1,Map.of()).at(9);assertEquals(0,disagreement.motionSupport());assertTrue(disagreement.motionSupportReason().contains("center-disagreement"));
+    }
+    @Test void ownedTurnStrongFaintDiffuseParallelSparseAndRepeatedCurveControls()throws Exception {
+        controlBuilder=ownedBuilder();
+        optInStrongArcThinParallelSparseAndNoSignalControls();
+        optInWeakSineSwitchbackAndRepeatedCurvedPassKeepShapeAndAnchors();
+    }
+    @Test void ownedTurnWeakDiffusePlateauAndValidNoSignalRemainHistorical()throws Exception {
+        var fixtures=new CorridorRasterIntegrationTest();
+        @SuppressWarnings("unchecked") var source=(List<Point2D.Double>)call(fixtures,"sourcePolyline");
+        var weak=(java.awt.image.BufferedImage)call(fixtures,"raster",(java.util.function.IntToDoubleFunction)(i->i%2==0?-1:1),.16,false,false);
+        var profiles=sample(weak,source);var old=new CorridorAwareTracker().trackDetailed(profiles,1,ends());
+        controlBuilder=ownedBuilder();var actual=tracker().trackDetailed(profiles,1,ends());assertEquals(old.candidates().size(),actual.candidates().size());
+        for(int i=0;i<old.candidates().size();i++)assertEquals(old.candidates().get(i).offsetsPx(),actual.candidates().get(i).offsetsPx());
+        for(var tube:actual.tubes().values())assertTrue(tube.slices().stream().noneMatch(t->t.motionSupportReason().startsWith("target-owned-apex")));
+        var blank=new java.awt.image.BufferedImage(weak.getWidth(),weak.getHeight(),java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        var graphics=blank.createGraphics();graphics.setColor(java.awt.Color.BLACK);graphics.fillRect(0,0,blank.getWidth(),blank.getHeight());graphics.dispose();
+        var noSignal=sample(blank,source);assertTrue(noSignal.stream().allMatch(RenderedHeatmapSampler.CrossSectionProfile::anchorWithinRaster));
+        assertTrue(tracker().track(noSignal,1).isEmpty());
+    }
     @Test void sustainedApexWithUnresolvedSecondaryReboundRetainsLocalPhysicalReference()throws Exception {
         double[] centers={0,1,2,3,4,5,6,5,4,3,2.4,2.8,1.8,.8,-.2,-1.2,-2.2};
         var scenario=scenario(centers,1);
@@ -107,7 +181,7 @@ class CorridorBoundedApexMotionTest {
     }
     private static JunctionContext ends(){return new JunctionContext(List.of(new EndpointConstraint(0,1,true,false,0,0,6),new EndpointConstraint(60,2,true,false,0,0,6)));}
     private static List<RenderedHeatmapSampler.CrossSectionProfile> sample(java.awt.image.BufferedImage raster,List<Point2D.Double> source){return new RenderedHeatmapSampler().sampleProfilesOnScaledRaster(raster,source,18,1,"hot",1,1,IntensitySamplingMode.DIRECT_VALUE);}
-    private static CorridorAwareTracker tracker()throws Exception{return new CorridorAwareTracker(new CorridorCenterlineOptimizer().withLocalHardBacktrackGuard(RasterMetricTransform.visible(new MetricPoint(0,0),1),CancellationProbe.NONE),revisedBuilder());}
+    private CorridorAwareTracker tracker()throws Exception{return new CorridorAwareTracker(new CorridorCenterlineOptimizer().withLocalHardBacktrackGuard(RasterMetricTransform.visible(new MetricPoint(0,0),1),CancellationProbe.NONE),controlBuilder==null?revisedBuilder():controlBuilder);}
     private static Object call(Object target,String name,Object...args)throws Exception{Class<?> c=target instanceof Class<?> t?t:target.getClass();for(var m:c.getDeclaredMethods())if(m.getName().equals(name)&&m.getParameterCount()==args.length){m.setAccessible(true);return m.invoke(target instanceof Class<?>?null:target,args);}throw new NoSuchMethodException(name);}
     // Before this opt-in API exists, run the real historical builder for behavioral RED.
     private static CorridorTubeBuilder revisedBuilder()throws Exception {
