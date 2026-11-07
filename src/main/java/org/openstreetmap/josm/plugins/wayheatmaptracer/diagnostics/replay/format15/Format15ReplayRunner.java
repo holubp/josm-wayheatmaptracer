@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
@@ -13,6 +14,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceMemoryLimitException;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorEngineAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngine;
@@ -284,7 +287,7 @@ public final class Format15ReplayRunner {
                 shared.network(), partition, actualRuns, shared.options(), payload.authority());
         Format15NumericalPolicyReceipt.validateRecordedWork(archive,
                 actualRuns.stream().map(run -> run.result().inference()).toList());
-        Format15BRunAdmissionReceipt.validateActualIntervals(archive,shared,batch);
+        Format15BRunAdmissionReceipt.validateActualIntervals(archive,payload.sharedInputHash(),shared,batch);
         FixedIntervalEditPlanComposer.Assessment assessment;
         try {
             assessment = new FixedIntervalEditPlanComposer().compose(batch, choices);
@@ -685,11 +688,18 @@ public final class Format15ReplayRunner {
 
     private static Result legacyB(FrozenReplayInput input, ReplayLevel level, TrackerMode capturedEngine,
             String inputHash) {
+        return legacyB(input,level,capturedEngine,inputHash,AttemptMemoryLedger.production(),ignored->CancellationProbe.NONE);
+    }
+
+    /** Same native path; owner is created from its ledger, and only new metadata evaluates the probe factory. */
+    static Result legacyB(FrozenReplayInput input,ReplayLevel level,TrackerMode capturedEngine,String inputHash,
+            AttemptMemoryLedger ledger,Function<AttemptMemoryLedger.Owner,CancellationProbe> metadataProbeFactory) {
         if (input.legacyB() == null) throw new ReplayMismatchException("legacy-production-source-unavailable");
         var source = input.legacyB();
         var request = source.bind(input);
         var runner = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBProductionRunner();
-        var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+        AttemptMemoryLedger.ResourceLimitException metadataDenial=null;
+        TraceWorkUsage metadataUsage=null;
         try (var owner = ledger.rootOwner()) {
             var deadline = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Deadline.production();
             var discovery = source.visibleSource() != null
@@ -716,15 +726,26 @@ public final class Format15ReplayRunner {
             }
             var actual = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid
                     .LegacyBModernResultAdapter.adapt(executed.value(), request, input.options(), CancellationProbe.NONE);
-            return new Result(level, capturedEngine, TrackerMode.LEGACY_THEN_B, actual.inference(),
+            Format15Artifact admissions=null;
+            if(Format15BRunAdmissionReceipt.referencePolicy(input.request())) {
+                var probe=java.util.Objects.requireNonNull(metadataProbeFactory.apply(owner));
+                var usage=executed.value().batch().usage();
+                try {
+                    admissions=Format15BRunAdmissionReceipt.references(inputHash,inputHash,input,executed.value(),owner,probe);
+                }catch(AttemptMemoryLedger.ResourceLimitException denial) {
+                    metadataDenial=denial;metadataUsage=usage;
+                }
+            }
+            if(metadataDenial==null)return new Result(level, capturedEngine, TrackerMode.LEGACY_THEN_B, actual.inference(),
                     level == ReplayLevel.SCALAR_INFERENCE ? List.of() : actual.routes(), inputHash,
                     level == ReplayLevel.SCALAR_INFERENCE ? List.of() : DisconnectionReplaySemantics.recompute(input, actual),
                     executed.value().batch().sections().stream().flatMap(section -> section.execution().stream())
                         .map(execution -> execution.run().result().workAccounting()).toList(),
-                    LegacyBProvenance.artifact(request, executed.value()),
-                    Format15BRunAdmissionReceipt.referencePolicy(input.request())
-                        ?Format15BRunAdmissionReceipt.references(inputHash,input,executed.value()):null);
+                    LegacyBProvenance.artifact(request, executed.value()),admissions);
         }
+        var usage=java.util.Objects.requireNonNull(metadataUsage);
+        throw new TraceMemoryLimitException("b-run-admissions",usage.pairVisits(),usage.transitions(),
+                ledger.currentBytes(),ledger.peakBytes(),ledger.limitBytes(),metadataDenial);
     }
 
     private static Result scalar(FrozenReplayInput input, TrackerMode capturedEngine,

@@ -651,6 +651,7 @@ class V022LiveBPreviewServiceTest {
                 org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory.IntervalArtifactStatus.PRODUCED,null,null);
         var admitted=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory.withActualBAdmissions(rawBundle,actualBatch);
         assertTrue(admitted.artifactNames().contains("b-run-admissions.bin"),"Actual interval requests must be bound before numerical attestation");
+        assertIntervalAdmissionDowngradeRejected(admitted);
         assertTrue(actualBatch.runs().stream().map(run->run.request().budgets()).distinct().count()>1,"Later runs must bind their actual remaining allocation");
         Path b06Archive=java.nio.file.Files.createTempFile("b06-unequal-intervals-",".zip");
         try {
@@ -854,6 +855,7 @@ class V022LiveBPreviewServiceTest {
                         plan.canonicalHash(), plan.canonicalHash());
         bundle=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory.withActualBAdmissions(bundle,computed.intervalBatch());
         assertTrue(bundle.artifactNames().contains("b-run-admissions.bin"),"A single trimmed request needs its own actual chainage witness");
+        assertIntervalAdmissionDowngradeRejected(bundle);
         Path archive = java.nio.file.Files.createTempFile("rc8-endpoint-islands-", ".zip");
         try {
             org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15BundleWriter
@@ -872,6 +874,28 @@ class V022LiveBPreviewServiceTest {
         } finally {
             java.nio.file.Files.deleteIfExists(archive);
         }
+    }
+
+    private static void assertIntervalAdmissionDowngradeRejected(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle bundle) throws Exception {
+        var artifacts=new java.util.LinkedHashMap<>(bundle.artifacts());
+        var admissions=artifacts.remove("b-run-admissions.bin");
+        String declaration=new String(artifacts.get("numerical-policy.json").bytes(),StandardCharsets.UTF_8);
+        String historical=declaration.replace("\"schema\":3","\"schema\":2")
+                .replace(",\"runAdmissionsHash\":\""+admissions.sha256()+"\"","");
+        assertNotEquals(declaration,historical);
+        artifacts.put("numerical-policy.json",org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Artifact.text("numerical-policy.json",historical));
+        var downgraded=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle(
+                bundle.buildIdentity(),bundle.sourceIdentityHash(),bundle.parameterHash(),artifacts);
+        Path path=java.nio.file.Files.createTempFile("b06-interval-downgrade-",".zip");
+        try {
+            org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15BundleWriter.write(downgraded,path);
+            var archive=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader.read(path);
+            var failure=assertThrows(org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.ReplayMismatchException.class,
+                    ()->org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ReplayRunner.replayIntervals(
+                            archive,bundle.sourceIdentityHash(),bundle.parameterHash()));
+            assertEquals("b-run-new-policy-requires-schema3",failure.getMessage());
+        } finally {java.nio.file.Files.deleteIfExists(path);}
     }
 
     private static LiveBPreviewService.VisibleRaster wideFlatRaster() {

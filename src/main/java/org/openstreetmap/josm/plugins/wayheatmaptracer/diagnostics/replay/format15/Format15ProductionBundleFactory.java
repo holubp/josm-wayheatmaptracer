@@ -190,7 +190,7 @@ public final class Format15ProductionBundleFactory {
     public static Format15Bundle withActualBAdmissions(Format15Bundle bundle,IntervalTraceBatch batch) {
         if(Format15BRunAdmissionReceipt.intervalPolicy(batch.fullRequest())) {
             var input=new FrozenReplayInput(batch.fullRequest(),batch.evidence(),batch.network(),batch.options());
-            return withActualBAdmissions(bundle,input,Format15BRunAdmissionReceipt.intervals(bundle.sourceIdentityHash(),input,batch));
+            return withActualBAdmissions(bundle,input,Format15BRunAdmissionReceipt.intervals(bundle.sourceIdentityHash(),actualInputHash(bundle),input,batch));
         }
         return withCurrentNumericalPolicy(bundle,new FrozenReplayInput(batch.fullRequest(),batch.evidence(),batch.network(),batch.options()),
                 batch.fullRequest().engine(),batch.runs().stream().map(run->run.result().inference()).toList());
@@ -211,8 +211,18 @@ public final class Format15ProductionBundleFactory {
         var work=Format15BRunAdmissionReceipt.workArtifact(runs);String name=Format15BRunAdmissionReceipt.workName(runs);
         if(artifacts.containsKey(name)&&!artifacts.get(name).sha256().equals(work.sha256()))throw new IllegalArgumentException("b-run-actual-work-binding");
         artifacts.put(name,Format15Artifact.binary(name,work.bytes()));artifacts.put(Format15BRunAdmissionReceipt.ARTIFACT,admission);
-        artifacts.put(Format15NumericalPolicyReceipt.ARTIFACT,Format15NumericalPolicyReceipt.actualRuns(bundle.sourceIdentityHash(),input.canonicalHash(),input,admission));
+        artifacts.put(Format15NumericalPolicyReceipt.ARTIFACT,Format15NumericalPolicyReceipt.actualRuns(bundle.sourceIdentityHash(),actualInputHash(bundle),input,admission));
         return new Format15Bundle(bundle.buildIdentity(),bundle.sourceIdentityHash(),bundle.parameterHash(),artifacts);
+    }
+
+    /** Reuses the frozen artifact's existing verified digest; never re-encodes source imagery. */
+    static String actualInputHash(Format15Bundle bundle) {
+        var frozen=bundle.artifacts().get("frozen-input.bin");if(frozen!=null)return frozen.sha256();
+        if(bundle.artifactNames().contains(INTERVAL_INDEX_ARTIFACT)) {
+            Object hash=numericalReceiptMetadata(bundle.artifact(INTERVAL_INDEX_ARTIFACT)).get("sharedInputHash");
+            if(hash instanceof String value)return Format15Safety.requiredHash(value,"shared input");
+        }
+        throw new IllegalArgumentException("b-run-frozen-input-unavailable");
     }
 
     /**
