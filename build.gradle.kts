@@ -238,6 +238,30 @@ tasks.register<JavaExec>("v022ProbabilisticBenchmark") {
     args("--manifest", manifest.orNull ?: "")
 }
 
+tasks.register<JavaExec>("v022WideCompactQuality") {
+    group = "verification"
+    description = "Runs all six frozen public wide compact quality cases, stopping at first failure"
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.WideCompactQualityMain")
+    jvmArgs("-Xmx512m", "-Djava.awt.headless=true")
+    args(layout.buildDirectory.dir("reports/wide-compact-quality").get().asFile.absolutePath)
+}
+
+tasks.register<JavaExec>("v022WideCompactSceneManifest") {
+    group = "verification"
+    description = "Freezes public analytic input hashes without running preparation or inference"
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.WideCompactQualityMain")
+    jvmArgs("-Xmx512m", "-Djava.awt.headless=true")
+    val output = providers.gradleProperty("wideCompactManifestOutput")
+    doFirst {
+        require(output.isPresent) { "Supply a new -PwideCompactManifestOutput=<path>" }
+        args("--manifest", file(output.get()).absolutePath)
+    }
+}
+
 tasks.register<JavaExec>("legacyNormalPerformance") {
     group = "verification"
     description = "Runs one public synthetic Legacy normal-policy performance fork"

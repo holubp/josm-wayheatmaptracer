@@ -1,0 +1,82 @@
+# Public wide compact quality gate
+
+The required `public-wide-compact-quality` CI job runs
+`sh gradlew --no-daemon --max-workers=1 v022WideCompactQuality` with Java 17,
+a pinned JOSM 19555 host, headless graphics and a 512 MiB numerical process.
+It runs five fixed public analytic scenes and reversed drift, in that order,
+and stops on the first failure. This is separate from public JUnit, GUI,
+Legacy, private-control and repeated performance qualification.
+
+`src/test/resources/public-wide-compact-v1.properties` freezes all six
+canonical input hashes and the physical specification. Fixture arithmetic uses
+StrictMath. Preflight checks every hash before preparing any scene. The
+manifest-generation task constructs raster/request/network values only; it
+does not prepare profiles or run inference. No scene changes are permitted
+after this freeze to obtain a passing result.
+
+Native pitch is 1.556065358178362 m, ordinary decision width is ±25 m, and
+TraceBudgets.defaults(), K32/8, default evidence parameters, Precise Shape
+and disabled cleanup apply. The raster contains native-center analytic samples,
+valid context beyond the decision boundary and no added blur or oversampling.
+The source endpoints are fixed on the analytic corridor. The other scene
+extents are 62 native pitches. The faint scene retains the original physical
+3 m apex at x=50 m, 12 m support, 0.08 intensity and 0.65 m sigma.
+
+One PRE-FREEZE analytic sampling/fixture-validity adjustment extended only its
+right straight tail from 100 to 100.5 m. This consumes the single extent
+allowance. It was chosen before any wide preparation/inference/quality result;
+it does not establish that a 100 m scene cannot represent the bend within
+native localization uncertainty. The existing faint-apex regression remains
+unchanged. A pre-freeze authority-construction correction also keeps movable
+interior source nodes out of the disjoint removable-node set.
+
+The ordinary candidate request records INVENTORY_PREP_V4 and runs through
+ProbabilisticTraceEngine and ModernTracePipeline, including native finalization,
+assignments and topology assessment. The harness requires a factual original
+dense bound above the unchanged 128M score budget, actual omitted nonmandatory
+cells, all original profile rows and mandatory/fine-mode cells, 0/1 refinement,
+truthful cumulative native work, conditional posterior semantics and zero
+retained owner bytes. It rejects a full branch, an empty route, an oracle
+masquerading as the candidate or a false COMPLETE/global posterior claim.
+
+Each scene first tries the historical full production implementation on the
+same frozen physical evidence with its known exact parameter identity. A
+RESOURCE_LIMIT is retained and is not a quality baseline. Only then may the
+separately named full-lattice production-backend numerical oracle run. The
+oracle uses CACHED_EXACT_V4, every original cell/unary/quadrature, unchanged
+budgets and the real production preparation/materialization/finalization.
+Its execution identity is
+`full-lattice-production-backend-numerical-oracle-v1/cached-pair-stream-merge-scored-work-v4`.
+It is neither strict replay nor the candidate/default backend. There is no
+preference, system property, public selector or Format-15 oracle policy.
+The minimal package-private probe is thread-owned, rejects nesting and restores
+its ThreadLocal in finally; local tests cover exception and foreign-thread
+cleanup, exact tiny native output/work equality and actual resource refusal.
+
+The independent analytic checks require strong p95 ≤0.5p and certified maximum
+≤p; faint/noisy geometry remains within p, with ≥90% faint apex amplitude.
+Remote drift must follow the >20 m central ridge, the hairpin must retain both
+ordered legs/apex, parallel corridors must not switch or average, and the
+diffuse mean must not gain resolved alternating turns (adjacent extrema
+separated by ≤4p with ≥0.5p amplitude). Native authority and hard safety
+override distance averages.
+
+Against a completed suitable dense reference, raw same-profile and final
+geometry limits are p95/max 0.25p/0.5p for strong scenes and 0.5p/p for weak
+scenes. Raw p95 is the left empirical 95th percentile. Final p95 combines both
+directions with trapezoidal arc-length weights and the left empirical quantile.
+Maximum is certified by sampled maximum + half the maximum sampling gap
+(gap ≤p/256), plus p/10000 analytic chord error when applicable and a 1e-9 m
+floating-point guard. Reversed drift uses the strong physical limits.
+
+Public artifacts retain frozen inputs, named native outputs/work, all native
+raw path order/energies/original state indices, dense census, retained indices,
+raw/final geometry, assignments, quality/topology, counters and ownership.
+The summary always lists six scenes and identifies the first failed stage;
+later cases remain NOT_RUN. A refused dense oracle is unavailable, never a
+skip or permission to raise a cap.
+
+Local evidence currently covers only compilation and tiny seam/hash checks.
+The six-scene numerical gate has not run locally and is not qualified until
+the dedicated CI job completes. Wide approximation quality, private high
+inference/comparison, GUI, cancellation and repeated latency gates remain open.

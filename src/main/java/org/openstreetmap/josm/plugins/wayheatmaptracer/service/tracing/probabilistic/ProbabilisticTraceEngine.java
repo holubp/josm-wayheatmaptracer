@@ -100,6 +100,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
             return traceWithUsage(request, evidence, network, cancellation, owner).value();
         } finally {
             owner.close();
+            BQualityProbe.closed(ledger.currentBytes(),ledger.peakBytes());
         }
     }
 
@@ -349,8 +350,17 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
         org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
             "trace.continuationPositionsAdmitted", admittedContinuationPositions);
         long inferenceStarted = System.nanoTime();
+        BQualityProbe.dense(profiles,evaluated,request.budgets());
         ProbabilisticInferenceResult inference;
-        if (adaptive) {
+        if(BQualityProbe.fullOracle()) {
+            if(reference!=null||recordedPolicy!=BPolicy.INVENTORY_PREP_V4)
+                throw new IllegalArgumentException("Full-lattice numerical oracle requires an explicit standalone V4 public fixture");
+            var progress=ProbabilisticInference.allocated(workingOwner,AttemptMemoryLedger.objectBytes(8),"oracle native progress",
+                    ()->(ProbabilisticInference.WorkProgress)(pairs,scores)->{work.pairVisits=pairs;work.transitions=scores;});
+            inference=new ProbabilisticInference().solveCachedVersion(evaluated,parameters,request.budgets(),evidence.decisionRegion(),
+                    cancellation,workingOwner,ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V4,progress);
+            inference=inference.withExecutionIdentity("Full-lattice numerical oracle; not candidate/default backend or strict replay",BQualityProbe.ORACLE_VERSION,workingOwner);
+        }else if (adaptive) {
             var progress = ProbabilisticInference.allocated(workingOwner,AttemptMemoryLedger.objectBytes(8),
                     "adaptive native progress",() -> (ProbabilisticInference.WorkProgress)(pairs,scores) -> {
                         work.pairVisits=pairs; work.transitions=scores;
@@ -372,6 +382,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
         work.pairVisits = inference.evaluatedPairVisits();
         work.transitions = inference.evaluatedTransitions();
         work.rawAlternatives = inference.rawPaths().size();
+        BQualityProbe.inferred(inference);
         long inferenceNanos = System.nanoTime() - inferenceStarted;
         boolean usableRoutes = inference.status() == ProbabilisticInferenceResult.Status.COMPLETE
                 || inference.status() == ProbabilisticInferenceResult.Status.AMBIGUOUS
