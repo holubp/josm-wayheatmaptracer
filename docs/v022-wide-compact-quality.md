@@ -143,3 +143,41 @@ absolute-amplitude assertion is explicitly applicable only to the frozen
 `faint-apex` scene and requires both candidate and dense-reference outcomes.
 Candidate-only, reference-only, and shared baseline debt remain distinguishable. Absolute candidate/reference values carry the same declared interval and baseline identity as the retained-bend measurements; a mismatch or missing required evidence makes the assessment unavailable. These are reported
 assessment outcomes, not added release gates.
+
+## Public performance-retention assessment
+
+The separate `v022WideCompactRetention` task runs the six frozen scenes through
+actual production full/reference and compact/candidate executions in one
+invocation. It reuses those in-memory native outputs for branch/safety,
+analytic geometry, raw/final fidelity and faint amplitude measurements; the
+historical full attempt and explicit cached-V4 oracle fallback are labeled
+separately. It writes a versioned `public-wide-compact-performance-retention`
+report beside the unchanged frozen manifest. A suitable-reference retention
+PASS or shared baseline-debt result, plus the narrowly classified diffuse
+unsuitable-reference result with its distance still FAILED, can pass only this
+named task. Missing evidence is UNAVAILABLE and exits nonzero; mandatory
+failures are FAILED and exit nonzero. The report always says
+`releaseQualified=false`.
+
+The manual `Public B performance retention` workflow has a `workflow_dispatch`
+trigger and a push trigger restricted to
+`codex/v022-b-retention-qualification-20261107` so the reviewed task can be
+launched from a dedicated branch. The original fail-first quality task and
+FAILED diagnostic continuation retain their current commands, output paths,
+thresholds and statuses. No overall release or performance qualification
+follows from this assessment alone.
+
+The bounded local orchestration regression uses a separate eight-profile
+straight scene of length `6.5p`, with the same native `p` pitch and complete
+`+/-25 m` profile extent. Its historical full reference uses ordinary defaults;
+its candidate alone records the test-only `96/8M/1M/32/8` budget. Full admission
+must naturally exceed the score bound, and the actual V4 compact run must still
+finish with native work, original-cell mappings, zero closed-owner bytes,
+safety and analytic geometry evidence. The default public proof rejects this
+custom budget. The full-policy negative control reuses the actual reference
+output and must fail the compact runner gate. These controls do not change the
+six frozen scene inputs or execute their numerical gate locally.
+
+Summary JSON is parsed in regression coverage for faint shared amplitude debt
+and partial/unavailable outcomes. Unmeasured or non-finite metrics serialize as
+`null` with unavailable evidence, and diagnostic text is JSON escaped.

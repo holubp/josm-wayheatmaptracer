@@ -12,6 +12,8 @@ final class WideCompactScenes {
     record Scene(String id,FrozenReplayInput input,List<MetricPoint> analytic,boolean strong,boolean hairpin,double length) { }
     static Scene scene(String id){return scene(id,id.equals("faint-apex")?100.5:L,false);}
     static Scene tiny(){return scene("tiny",2.5*P,true);}
+    /** Eight physical rows retain a nontrivial K32 full-work bound, with the same native +/-25 m evidence. */
+    static Scene tinyRetention(){return scene("tiny",6.5*P,true);}
     private static Scene scene(String id,double length,boolean tiny) {
         boolean hairpin=id.equals("thin-hairpin"),reverse=id.endsWith("reversed");
         var source=new ArrayList<MetricPoint>();

@@ -33,10 +33,12 @@ public final class WideCompactQualityMain {
         final Map<Integer,Map<Integer,List<Integer>>> retained=new TreeMap<>();
         final List<int[]> rawStates=new ArrayList<>();final List<Double> rawEnergies=new ArrayList<>();
         DenseBAdmission.Bounds bound;boolean posteriorUsable;String completion="unavailable";
-        Capture(boolean demandCompact){this.demandCompact=demandCompact;}
+        final TraceBudgets expectedBudgets;
+        Capture(boolean demandCompact){this(demandCompact,TraceBudgets.defaults());}
+        Capture(boolean demandCompact,TraceBudgets expectedBudgets){this.demandCompact=demandCompact;this.expectedBudgets=expectedBudgets;}
         public void dense(List<ProbabilisticProfile> sampled,List<InferenceProfile> dense,TraceBudgets budgets) {
             denseCalls++;require(denseCalls==1,"More than one original preparation");
-            require(budgets.equals(TraceBudgets.defaults())||!demandCompact,"Candidate budgets differ from defaults");
+            require(budgets.equals(expectedBudgets),"Candidate budgets differ from the explicit run input");
             for(int row=0;row<dense.size();row++) {
                 var p=sampled.get(row);var d=dense.get(row);widths.add(d.cells().size());denseStates+=d.cells().size();var needed=new BitSet(d.cells().size());
                 require(Math.abs(p.minimumOffsetMeters()+25)<1e-8&&Math.abs(p.maximumOffsetMeters()-25)<1e-8,"Profile decision extent clipped at row "+row);
@@ -51,7 +53,8 @@ public final class WideCompactQualityMain {
                 required.add(needed);
             }
             bound=DenseBAdmission.estimate(widths.size(),widths::get,budgets,CancellationProbe.NONE);
-            if(demandCompact)require(!bound.admitted()&&bound.scoresExceeded(),"Fixed wide fixture did not naturally reject full admission");
+            if(demandCompact)require(!bound.admitted()&&bound.scoresExceeded(),
+                    "Fixed fixture did not naturally reject full admission: "+bound);
         }
         public void closed(long retainedBytes,long peak){closedCalls++;closedBytes=retainedBytes;peakBytes=peak;}
         public void inferred(ProbabilisticInferenceResult result) {
@@ -75,9 +78,24 @@ public final class WideCompactQualityMain {
     }
     record Run(ModernTracePipeline.PipelineRun pipeline,Capture capture,Map<String,Number> counters) { }
     static Run execute(WideCompactScenes.Scene scene,FrozenReplayInput input,boolean oracle,boolean compact,Path out)throws Exception {
+        return executeInternal(scene,input,oracle,compact,out,TraceBudgets.defaults());
+    }
+    /** Dedicated bounded seam for tiny production-flow tests with a recorded alternate budget. */
+    static Run executeTinyTestOnly(WideCompactScenes.Scene scene,FrozenReplayInput input,boolean oracle,boolean compact,
+            Path out,TraceBudgets expectedBudgets)throws Exception {
+        require(scene!=null&&scene.id().equals("tiny"),"Non-tiny scene cannot use the test-only budget seam");
+        require(input!=null&&expectedBudgets!=null&&input.request().budgets().equals(expectedBudgets),
+                "Tiny test budget does not match the actual frozen request");
+        return executeInternal(scene,input,oracle,compact,out,expectedBudgets);
+    }
+    private static Run executeInternal(WideCompactScenes.Scene scene,FrozenReplayInput input,boolean oracle,boolean compact,
+            Path out,TraceBudgets expectedBudgets)throws Exception {
+        require(expectedBudgets.equals(TraceBudgets.defaults())||scene.id().equals("tiny"),
+                "Non-default production budget is restricted to the tiny test seam");
+        require(input.request().budgets().equals(expectedBudgets),"Run input budgets differ from the pinned execution budget");
         Files.createDirectories(out);write(out,"input-identity.txt","fixture="+scene.id()+"\ninputHash="+input.canonicalHash()+"\nparameterHash="+input.request().parameterHash()+"\nbackend="+(oracle?BQualityProbe.ORACLE_VERSION:compact?"ordinary recorded INVENTORY_PREP_V4 candidate":"historical full default production")+"\nstrictHistoricalReplay=false\n");
         Files.write(out.resolve("frozen-public-input.bin"),FrozenReplayCodec.encode(input),StandardOpenOption.CREATE_NEW);
-        var capture=new Capture(compact);ModernDiagnosticCounters.begin();long start=System.nanoTime();
+        var capture=new Capture(compact,expectedBudgets);ModernDiagnosticCounters.begin();long start=System.nanoTime();
         try(var probe=BQualityProbe.install(oracle,capture);var observer=AdaptiveBObserver.observe(capture::retained)) {
             require(BQualityProbe.fullOracle()==oracle,"Unexpected oracle selector");
             var pipeline=new ModernTracePipeline((r,e,n,c)->{throw new AssertionError("A engine must not execute");});
@@ -97,6 +115,15 @@ public final class WideCompactQualityMain {
         finally{try{write(out,"native-counters.txt",new TreeMap<>(ModernDiagnosticCounters.snapshot())+"\n");capture.dump(out);}finally{ModernDiagnosticCounters.end();}}
     }
     static void candidateProof(Run run,WideCompactScenes.Scene scene) {
+        candidateProof(run,scene,TraceBudgets.defaults());
+    }
+    static void candidateProofTinyTestOnly(Run run,WideCompactScenes.Scene scene,TraceBudgets expectedBudgets) {
+        require(scene!=null&&scene.id().equals("tiny"),"Non-tiny scene cannot use the tiny candidate proof seam");
+        candidateProof(run,scene,expectedBudgets);
+    }
+    private static void candidateProof(Run run,WideCompactScenes.Scene scene,TraceBudgets expectedBudgets) {
+        require(run!=null&&expectedBudgets!=null&&run.capture().expectedBudgets.equals(expectedBudgets),
+                "Candidate proof budget differs from the actual captured run");
         var result=run.pipeline().result().inference();var c=run.capture();
         require(result.status()==TraceHypothesisSet.Status.AMBIGUOUS,"Conditional compact candidate must remain ambiguous, without COMPLETE/global-certainty claim: "+result.status());
         require(!run.pipeline().result().routes().isEmpty(),"Empty native final geometry");
@@ -105,7 +132,9 @@ public final class WideCompactQualityMain {
         require(c.widths.size()==scene.input().request().profileChainage().cumulativeGroundMeters().size(),"Physical profile rows changed");
         require(result.evaluatedStates()==c.denseStates,"Native dense state census mismatch");
         require(!c.posteriorUsable&&result.hypotheses().stream().allMatch(h->h.posteriorProbability().isEmpty()&&h.diagnostics().getOrDefault("bPosteriorConditional",0.0)==1),"False full/global posterior claim");
-        var declared=DenseBAdmission.validateWitness(DenseBAdmission.witnessFromExplanation(result.explanation()),TraceBudgets.defaults(),c.widths.size());require(declared.equals(c.bound)&&!declared.admitted(),"Actual admission/census differs");
+        var declared=DenseBAdmission.validateWitness(DenseBAdmission.witnessFromExplanation(result.explanation()),expectedBudgets,c.widths.size());require(declared.equals(c.bound)&&!declared.admitted()
+                &&declared.scoresExceeded()
+                &&declared.effectiveK()==Math.min(32,expectedBudgets.maximumRawAlternatives()),"Actual admission/census/K differs");
         require(!c.retained.isEmpty()&&c.retained.keySet().stream().allMatch(i->i==0||i==1),"Refinement count outside0/1");
         int last=c.retained.keySet().stream().mapToInt(Integer::intValue).max().orElseThrow();
         require(run.counters().get("b.adaptive.refinements").intValue()==last,"Recorded refinement differs");var rows=c.retained.get(last);long omitted=0;
@@ -117,13 +146,17 @@ public final class WideCompactQualityMain {
         }
         require(omitted>0,"Final graph did not genuinely omit original nonmandatory cells");
         var work=result.workAccounting().orElseThrow();require(work.computedTransitions()>0&&work.computedTransitions()==run.pipeline().usage().transitions()
-                &&work.computedTransitions()<=128_000_000&&run.pipeline().usage().pairVisits()<=8_000_000
-                &&run.pipeline().usage().rawAlternatives()<=32&&run.pipeline().usage().distinctAlternatives()<=8
+                &&work.computedTransitions()<=expectedBudgets.maximumTransitions()&&run.pipeline().usage().pairVisits()<=expectedBudgets.maximumPairVisits()
+                &&run.pipeline().usage().rawAlternatives()<=expectedBudgets.maximumRawAlternatives()
+                &&run.pipeline().usage().distinctAlternatives()<=expectedBudgets.maximumDistinctAlternatives()
                 &&work.bStages().stream().allMatch(s->s.refusedScoreAttempts()==0),"Native cumulative work is unavailable/refused/untruthful");
     }
     static void safety(Run run,WideCompactScenes.Scene scene,Path out)throws Exception {
+        safety(run,scene,scene.input(),out);
+    }
+    static void safety(Run run,WideCompactScenes.Scene scene,FrozenReplayInput input,Path out)throws Exception {
         Files.createDirectories(out);
-        var route=run.pipeline().result().routes().get(0);var input=scene.input();
+        var route=run.pipeline().result().routes().get(0);
         require(route.quality().disposition()!=FinalGeometryEvaluator.Disposition.HARD_BLOCKED,"Hard final geometry finding");
         require(route.quality().findings().stream().noneMatch(f->f.severity()==FinalGeometryEvaluator.Severity.HARD_BLOCK),"Hard native safety finding");
         require(route.assignments().size()==route.pointIds().size()&&new HashSet<>(route.pointIds()).size()==route.pointIds().size(),"Incomplete native assignments");

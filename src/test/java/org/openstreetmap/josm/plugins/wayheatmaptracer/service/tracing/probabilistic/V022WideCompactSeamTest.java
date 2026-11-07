@@ -55,7 +55,7 @@ class V022WideCompactSeamTest {
         var request=new TraceRequest(r.selectedWayKey(),r.selectedRange(),r.engine(),r.geometryMode(),r.permissions(),new TraceBudgets(96,8_000_000,1,32,8),
                 r.evidenceSnapshotId(),r.evidenceContentHash(),r.networkSnapshotId(),r.networkContentHash(),r.settingsHash(),r.parameterHash(),r.samplerId(),r.configuredSampleStepMeters(),r.profileChainage(),r.evidenceResolution(),r.corridorInput());
         var input=new FrozenReplayInput(request,f.evidence(),f.network(),f.options(),25,null);
-        var oracle=WideCompactQualityMain.execute(scene,input,true,false,out);
+        var oracle=WideCompactQualityMain.executeTinyTestOnly(scene,input,true,false,out,request.budgets());
         assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT,oracle.pipeline().result().inference().status());
         assertTrue(oracle.pipeline().result().routes().isEmpty());assertEquals(1,oracle.pipeline().usage().transitions());
         var stage=oracle.pipeline().result().inference().workAccounting().orElseThrow().bStages().get(0);

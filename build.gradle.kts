@@ -258,6 +258,16 @@ tasks.register<JavaExec>("v022WideCompactDiagnostic") {
     args("--diagnostic", layout.buildDirectory.dir("reports/wide-compact-diagnostic").get().asFile.absolutePath)
 }
 
+tasks.register<JavaExec>("v022WideCompactRetention") {
+    group = "verification"
+    description = "Runs the separately scoped public production-backed performance-retention assessment"
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.WideCompactRetentionMain")
+    jvmArgs("-Xmx512m", "-Djava.awt.headless=true")
+    args("--retention", layout.buildDirectory.dir("reports/wide-compact-retention").get().asFile.absolutePath)
+}
+
 tasks.register<JavaExec>("v022WideCompactSceneManifest") {
     group = "verification"
     description = "Freezes public analytic input hashes without running preparation or inference"
