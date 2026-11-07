@@ -68,6 +68,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchStatus;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileReliabilityPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TransportResponse;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayAction;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.*;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
@@ -1452,6 +1453,114 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
+    void liveCapturedAnalyticParabolaAdmitsShortenedNativeCandidate() throws Exception {
+        DataSet dataSet = new DataSet();
+        var nodes = new java.util.ArrayList<Node>();
+        for (int j = -10; j <= 10; j++) {
+            double u = 1.5 * j;
+            Node node = loadedNode(5000 + j + 10, latitude(-9.7 + u * u / 17.0), longitude(u));
+            nodes.add(node);
+            dataSet.addPrimitive(node);
+        }
+        Way way = new Way();
+        way.setNodes(nodes);
+        way.setOsmId(5100, 1);
+        way.setModified(false);
+        dataSet.addPrimitive(way);
+        var selection = new SelectionContext(way, 0, 20, nodes, Set.of(nodes.get(0), nodes.get(20)));
+        var base = config(TrackerMode.CORRIDOR_AWARE).heatmap();
+        var settings = new ManagedHeatmapConfig(base.keyPairId(), base.policy(), base.signature(), base.sessionToken(),
+                base.activity(), base.color(), base.manualLayerName(), base.layerRegex(), base.alignmentMode(), base.trackerMode(),
+                base.verbose(), base.debug(), base.multiColorDetection(), base.aggregateAllColorSchemes(),
+                base.showAggregateIntensityLayer(), base.candidateRatingEnabled(), base.parallelWayAwareness(),
+                base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), base.simplifyEnabled(), 16, 1,
+                base.simplifyTolerancePx(), base.inferenceMode(), base.inferenceZoom(), base.validationZoom(),
+                base.searchHalfWidthMeters(), base.sampleStepMeters(), IntensitySamplingMode.COLOR_MAPPING, base.cacheBuster());
+        var config = new AlignmentConfig(settings, GeometryCleanupConfig.disabled().withMode(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE));
+        var service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(dataSet, selection, rasterAt(300), config));
+        var computed = service.compute(captured[0], CancellationProbe.NONE);
+        var receipt = computed.corridorReceipt().orElseThrow();
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE,
+                computed.options().cleanup().mode());
+        assertTrue(receipt.tracks().values().stream().anyMatch(t -> t.admissionStatus().equals("ADMITTED")),
+                () -> "actual capture admission: " + receipt.tracks());
+        assertFalse(receipt.candidates().isEmpty());
+        assertEquals(receipt.totals().unaryEvaluations(), computed.pipeline().inference().evaluatedStates());
+        assertTrue(receipt.totals().bridgeUnaryEvaluations() > 0);
+        int routeIndex = -1;
+        for (int i = 0; i < computed.pipeline().routes().size(); i++) {
+            var route = computed.pipeline().routes().get(i);
+            var provenance = receipt.candidates().get(route.rawHypothesis().id());
+            if (provenance == null) continue;
+            assertEquals(provenance.mapping().workingCount(), route.rawHypothesis().points().size());
+            assertTrue(provenance.mapping().workingCount() < provenance.mapping().originalCount());
+            assertEquals(route.rawHypothesis().points().size(), route.rawHypothesis().support().size());
+            assertTrue(provenance.cleanupUnavailable());
+            assertEquals(route.pointIds().size(), route.assignments().size());
+            assertEquals(route.pointIds().size(), route.sourceOwnership().size());
+            assertThrows(UnsupportedOperationException.class,
+                    () -> route.assignments().put(route.pointIds().get(0), route.hypothesis().points().get(0)));
+            for (int j = 0; j < route.pointIds().size(); j++)
+                assertEquals(route.hypothesis().points().get(j), route.assignments().get(route.pointIds().get(j)));
+            var rawPoints = route.rawHypothesis().points();
+            assertTrue(route.hypothesis().points().containsAll(rawPoints.subList(1, rawPoints.size() - 1)));
+            assertEquals(captured[0].sourceMetric().get(0), route.hypothesis().points().get(0));
+            assertEquals(captured[0].sourceMetric().get(20),
+                    route.hypothesis().points().get(route.hypothesis().points().size() - 1));
+            if (new ModernSingleWayEditPlanAdapter().assess(computed, i).applyAvailable()) {
+                assertFalse(route.quality().findings().stream().anyMatch(finding ->
+                        finding.severity() == FinalGeometryEvaluator.Severity.HARD_BLOCK));
+                routeIndex = i;
+                break;
+            }
+        }
+        assertTrue(routeIndex >= 0, "an admitted shortened route must have native Apply authority");
+        var plan = new ModernSingleWayEditPlanAdapter().assess(computed, routeIndex).plan().orElseThrow();
+        var before = state(dataSet);
+        SwingUtilities.invokeAndWait(() -> {
+            service.requireCurrent(dataSet, captured[0]);
+            var bound = org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture
+                    .captureBound(dataSet, captured[0].specification());
+            var validator = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator(
+                    bound, plan, () -> plan.before().sourceGeneration());
+            var command = new org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand(
+                    dataSet, plan, validator, "Apply admitted A preview");
+            assertTrue(command.executeCommand());
+            command.undoCommand();
+            assertEquals(before, state(dataSet));
+        });
+        var frozen = new FrozenReplayInput(computed.request(), computed.evidence(), captured[0].network(), computed.options());
+        var bundle = Format15ProductionBundleFactory.createLive("live-a-admitted", frozen, computed.pipeline(),
+                "preview", "synthetic", routeIndex, plan, false, false);
+        bundle = Format15ProductionBundleFactory.withCurrentNumericalPolicy(bundle, frozen,
+                computed.request().engine(), List.of(computed.pipeline().inference()));
+        bundle = CorridorExecutionArtifacts.attach(bundle, frozen, computed.pipeline().inference(), receipt);
+        Path path = java.nio.file.Files.createTempFile("live-a-admitted-", ".zip");
+        try {
+            Format15BundleWriter.write(bundle, path);
+            var archive = Format15ArchiveReader.read(path);
+            assertTrue(archive.artifact("corridor-execution.csv").isPresent());
+            var decoded = FrozenReplayCodec.decode(archive.artifact("frozen-input.bin").orElseThrow().bytes());
+            assertEquals(computed.request(), decoded.request());
+            var scalar = Format15ReplayRunner.replay(archive,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel.SCALAR_INFERENCE,
+                    frozen.canonicalHash(), computed.request().parameterHash());
+            var replay = Format15ReplayRunner.replay(archive,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel.FINAL_GEOMETRY,
+                    frozen.canonicalHash(), computed.request().parameterHash());
+            assertEquals(ScalarReplayFingerprint.sha256(computed.pipeline().inference()),
+                    ScalarReplayFingerprint.sha256(scalar.inference()));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.LiveAReplayAssertions
+                    .assertFinalMatches(computed.pipeline(), replay);
+        } finally {
+            java.nio.file.Files.deleteIfExists(path);
+        }
+    }
+
+    @Test
     void ordinaryCorridorCaptureRoutesFrozenOriginalIslandOccurrences() throws Exception {
         DataSet dataSet = new DataSet();
         var nodes = new java.util.ArrayList<Node>();
@@ -1498,6 +1607,28 @@ class V022LiveBPreviewServiceTest {
             for (int i : fixed) if (i >= run.request().selectedRange().firstIndex()
                     && i <= run.request().selectedRange().lastIndex()) expected.add(i);
             assertEquals(expected, input.additionalFixedOccurrences());
+        }
+        var assessment = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer()
+                .compose(batch, java.util.Map.of());
+        var frozen = new FrozenReplayInput(batch.fullRequest(), batch.evidence(), batch.network(), batch.options());
+        var bundle = Format15ProductionBundleFactory.createLiveIntervals("live-a-interval", batch, assessment,
+                java.util.Map.of(), Format15ProductionBundleFactory.VisibleLayerSourceReceipt.unavailable(),
+                Format15ProductionBundleFactory.IntervalArtifactStatus.PRODUCED, null, null);
+        bundle = Format15ProductionBundleFactory.withCurrentNumericalPolicy(bundle, frozen,
+                batch.fullRequest().engine(), batch.runs().stream().map(run -> run.result().inference()).toList());
+        bundle = CorridorExecutionArtifacts.attachIntervals(bundle, batch);
+        Path archivePath = java.nio.file.Files.createTempFile("live-a-interval-", ".zip");
+        try {
+            Format15BundleWriter.write(bundle, archivePath);
+            var archive = Format15ArchiveReader.read(archivePath);
+            assertTrue(archive.artifact("corridor-execution.csv").isPresent());
+            var replay = Format15ReplayRunner.replayIntervals(archive, archive.sourceIdentityHash(), archive.parameterHash());
+            assertEquals(batch.runs().stream().map(run -> run.request()).toList(),
+                    replay.batch().runs().stream().map(run -> run.request()).toList());
+            assertEquals(batch.fullRequest(), replay.batch().fullRequest());
+            assertEquals(assessment.applyAvailable(), replay.assessment().applyAvailable());
+        } finally {
+            java.nio.file.Files.deleteIfExists(archivePath);
         }
     }
 
