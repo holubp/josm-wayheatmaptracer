@@ -10,7 +10,11 @@ import java.util.Set;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorQuality;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.IntensitySample;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /**
  * Selects a stable centerline inside one longitudinal corridor using second-order dynamic programming.
@@ -25,6 +29,20 @@ public final class CorridorCenterlineOptimizer {
 
     private final CorridorOptimizationParameters parameters;
     private final RippleRegularizationParameters rippleParameters;
+    private final RasterMetricTransform hardGeometryTransform;
+    private final CancellationProbe hardGeometryCancellation;
+    private HardGeometryWork hardGeometryWork = new HardGeometryWork(HardGeometryOutcome.DISABLED,
+        0, 0, 0, 0, 0, 0, 0, 0);
+    private final PreparedCounters preparedCounters=new PreparedCounters();
+    /** Spent prepared-domain work, independent of historical/default optimizer diagnostics. */
+    public PreparedWork preparedWork(){return preparedCounters.snapshot();}
+    public record PreparedWork(long originalStates,long retainedUnaryEvaluations,long bridgeUnaryEvaluations,
+        java.util.OptionalLong estimatedPreparedTableBytes,String outcome,long originalRows,long copiedProfileRows,long solverStarts){ }
+    private static final class PreparedCounters{
+        long original,retained,bridge,rows,copied,solves;long bytes=-1;String outcome="UNSTARTED";
+        void reset(){original=retained=bridge=rows=copied=solves=0;bytes=-1;outcome="UNSTARTED";}
+        PreparedWork snapshot(){return new PreparedWork(original,retained,bridge,bytes<0?java.util.OptionalLong.empty():java.util.OptionalLong.of(bytes),outcome,rows,copied,solves);}
+    }
 
     /**
      * Creates a stateless centerline optimizer.
@@ -44,8 +62,143 @@ public final class CorridorCenterlineOptimizer {
 
     CorridorCenterlineOptimizer(CorridorOptimizationParameters parameters,
         RippleRegularizationParameters rippleParameters) {
+        this(parameters, rippleParameters, null, CancellationProbe.NONE);
+    }
+
+    private CorridorCenterlineOptimizer(CorridorOptimizationParameters parameters,
+            RippleRegularizationParameters rippleParameters, RasterMetricTransform transform,
+            CancellationProbe cancellation) {
         this.parameters = java.util.Objects.requireNonNull(parameters);
         this.rippleParameters = java.util.Objects.requireNonNull(rippleParameters);
+        this.hardGeometryTransform = transform;
+        this.hardGeometryCancellation = java.util.Objects.requireNonNull(cancellation);
+    }
+
+    /** Creates an explicit opt-in experiment using the factual raster-to-ground transform.
+     * Preserves FGE-legal raw paths only. Finalization may insert/remove points; this is not live activation. */
+    public CorridorCenterlineOptimizer withLocalHardBacktrackGuard(RasterMetricTransform transform,
+            CancellationProbe cancellation) {
+        return new CorridorCenterlineOptimizer(parameters, rippleParameters,
+            java.util.Objects.requireNonNull(transform), cancellation);
+    }
+
+    /** Actual work of the last explicitly guarded solve, including rejected/no-route/cancelled work. */
+    public HardGeometryWork hardGeometryWork() { return hardGeometryWork; }
+
+    /** Original evidence/domain capsule, prepared before any observation/output correspondence choice. */
+    public static final class OriginalDomain {
+        private final Object token;
+        private final CorridorTrack track;private final List<CorridorProfile> profiles;private final double sourcePixel;
+        private final JunctionContext junctions;private final Map<String,BandScaleEvidence> scales;
+        private final LongitudinalCorridorTube tube;private final EndpointApproachModel approaches;
+        private final List<List<Double>> states;private final org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets;
+        private final CorridorWorkingSchedule.BoundContext context;private final PreparedWork generationWork;
+        private OriginalDomain(CorridorTrack track,List<CorridorProfile> profiles,double sourcePixel,JunctionContext junctions,
+            Map<String,BandScaleEvidence> scales,LongitudinalCorridorTube tube,EndpointApproachModel approaches,
+            List<List<Double>> states,org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets,
+            CorridorWorkingSchedule.BoundContext context,Object token,PreparedWork work){
+            this.track=track;this.profiles=List.copyOf(profiles);this.sourcePixel=sourcePixel;this.junctions=junctions;
+            this.scales=Map.copyOf(scales);this.tube=tube;this.approaches=approaches;this.states=states.stream().map(List::copyOf).toList();
+            this.budgets=budgets;this.context=context;this.token=token;generationWork=work;
+        }
+        public CorridorTrack track(){return track;}
+        /** Defensive scalar-profile copies keep mutable Point2D normals outside the frozen domain. */
+        public List<CorridorProfile> profiles(){return copyProfiles(profiles);}
+        public double sourcePixel(){return sourcePixel;} public JunctionContext junctions(){return junctions;}
+        public Map<String,BandScaleEvidence> scales(){return scales;} public LongitudinalCorridorTube tube(){return tube;}
+        public EndpointApproachModel approaches(){return approaches;} public List<List<Double>> states(){return states;}
+        public org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets(){return budgets;}
+        Object token(){return token;} CorridorWorkingSchedule.BoundContext context(){return context;}
+    }
+
+    private static List<CorridorProfile> copyProfiles(List<CorridorProfile> profiles){
+        return profiles.stream().map(p->{var s=p.source();var n=s.normalScreen();
+            if(!(s.samplingAnchor() instanceof ProfileSamplingAnchor)&&!(s.samplingAnchor() instanceof DetachedProfileSamplingLocation))
+                throw new IllegalArgumentException("Immutable known profile sampling location required");
+            var copy=new RenderedHeatmapSampler.CrossSectionProfile(s.samplingAnchor(),new Point2D.Double(n.x,n.y),s.peaks(),s.anchorWithinRaster(),s.intensitySamples(),s.projectedLateralTransform());
+            return new CorridorProfile(p.index(),copy,p.bands(),p.maxIntensity(),p.noiseFloor(),p.prominence(),p.supported());}).toList();
+    }
+
+    /** Builds the historical complete original state domain without executing inference. */
+    public OriginalDomain prepareOriginalDomain(CorridorTrack track,List<CorridorProfile> profiles,
+        double sourcePixel,JunctionContext junctions,Map<String,BandScaleEvidence> scales,LongitudinalCorridorTube tube){
+        return prepareOriginalDomain(track,profiles,sourcePixel,junctions,scales,tube,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets.defaults());
+    }
+    public OriginalDomain prepareOriginalDomain(CorridorTrack track,List<CorridorProfile> profiles,
+        double sourcePixel,JunctionContext junctions,Map<String,BandScaleEvidence> scales,LongitudinalCorridorTube tube,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets){
+        return prepareOriginalDomain(track,profiles,sourcePixel,junctions,scales,tube,budgets,null);
+    }
+    public OriginalDomain prepareOriginalDomain(CorridorTrack track,List<CorridorProfile> profiles,
+        double sourcePixel,JunctionContext junctions,Map<String,BandScaleEvidence> scales,LongitudinalCorridorTube tube,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets,CorridorWorkingSchedule.BoundContext context){
+        preparedCounters.reset();preparedCounters.outcome="ORIGINAL_PREPARING";
+        hardGeometryWork=new HardGeometryWork(HardGeometryOutcome.DISABLED,0,0,0,0,0,0,0,0);
+        try{
+        sourcePixel=validSourcePixel(sourcePixel);
+        if(profiles.isEmpty()||profiles.size()!=tube.slices().size())throw new IllegalArgumentException("Original tube alignment differs");
+        profiles=copyProfiles(profiles);preparedCounters.copied=profiles.size();scales=Map.copyOf(scales);
+        if(context!=null)for(var p:profiles)context.requireProfileFrame(p.source().samplingAnchor());
+        var approaches=new EndpointApproachBuilder().build(track,profiles,tube,junctions,scales);
+        var states=new ArrayList<List<Double>>();
+        for(int row=0;row<profiles.size();row++){
+            hardGeometryCancellation.checkpoint();
+            states.add(allowedOffsets(track,profiles,row,sourcePixel,junctions,scales,tube.at(row),approaches));
+            preparedCounters.rows++;preparedCounters.original+=states.get(row).size();
+        }
+        preparedCounters.outcome="ORIGINAL_PREPARED";
+        return new OriginalDomain(track,profiles,sourcePixel,junctions,scales,tube,approaches,states,java.util.Objects.requireNonNull(budgets),context,new Object(),preparedCounters.snapshot());
+        }catch(java.util.concurrent.CancellationException cancelled){preparedCounters.outcome="CANCELLED";throw cancelled;}
+        catch(IllegalArgumentException corrupt){preparedCounters.outcome="BINDING_OR_INPUT_FAILURE";throw corrupt;}
+    }
+
+    /** Identity schedule: uses the already prepared original models/states, with unchanged disabled-cleanup arithmetic. */
+    public OptimizationResult optimizeOriginalDomain(OriginalDomain d){
+        beginInference(d);
+        try{
+        long pairs=0,transitions=0;
+        for(int i=0;i<d.states().size();i++){
+            int count=d.states().get(i).size();
+            if(count==0||count>d.budgets().maximumStatesPerProfile())throw new CorridorResourceLimitException("Original state cap");
+            if(i>0)pairs=Math.addExact(pairs,Math.multiplyExact((long)count,d.states().get(i-1).size()));
+            if(i>1)transitions=Math.addExact(transitions,Math.multiplyExact((long)count,Math.multiplyExact((long)d.states().get(i-1).size(),d.states().get(i-2).size())));
+        }
+        if(d.states().size()>1)transitions=Math.addExact(transitions,Math.multiplyExact((long)d.states().get(0).size(),d.states().get(1).size()));
+        if(pairs>d.budgets().maximumPairVisits()||transitions>d.budgets().maximumTransitions())throw new CorridorResourceLimitException("Original declared solver work cap");
+        var cleanup=GeometryCleanupConfig.disabled();
+        var ripple=new UnsupportedRippleEvaluator().evaluate(d.track(),d.tube(),d.sourcePixel(),cleanup.rippleScaleMeters(),false);
+        var gates=rippleEndpointGates(d.profiles().size(),d.approaches());
+        preparedCounters.solves++;
+        var solution=solveExact(d.track(),d.profiles,d.states(),d.sourcePixel(),d.junctions(),d.scales(),d.tube(),d.approaches(),ripple,gates,0);
+        var result=finishOptimization(d.track(),d.profiles,d.sourcePixel(),d.junctions(),d.scales(),d.tube(),cleanup,d.approaches(),ripple,gates,0,solution);
+        preparedCounters.retained=result.profileCostEvaluations();preparedCounters.outcome=result.disposition().name();return result;
+        }catch(java.util.concurrent.CancellationException cancelled){preparedCounters.retained=hardGeometryWork.profileCostEvaluations();preparedCounters.outcome="CANCELLED";throw cancelled;}
+        catch(CorridorResourceLimitException limited){preparedCounters.outcome="RESOURCE_LIMIT";throw limited;}
+        catch(ArithmeticException overflow){preparedCounters.outcome="RESOURCE_LIMIT";throw new CorridorResourceLimitException("Prepared table/work estimate overflow");}
+    }
+
+    static OriginalDomain withBudgets(OriginalDomain d,org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets){
+        return new OriginalDomain(d.track(),d.profiles,d.sourcePixel(),d.junctions(),d.scales(),d.tube(),d.approaches(),d.states(),budgets,d.context,d.token,d.generationWork);
+    }
+
+    private void beginInference(OriginalDomain d){
+        preparedCounters.reset();preparedCounters.original=d.generationWork.originalStates();preparedCounters.rows=d.generationWork.originalRows();
+        preparedCounters.copied=d.generationWork.copiedProfileRows();preparedCounters.outcome="INFERENCE_PREPARING";
+        hardGeometryWork=new HardGeometryWork(HardGeometryOutcome.DISABLED,0,0,0,0,0,0,0,0);
+    }
+
+    /** Explicitly selected prepared schedule; no original-domain fallback on failure. */
+    public PreparedOptimization optimizePrepared(OriginalDomain d,CorridorWorkingSchedule.Preparation p){
+        beginInference(d);
+        try{p.requireBound(d,hardGeometryTransform);}catch(IllegalArgumentException corrupt){preparedCounters.outcome="BINDING_REFUSED";throw corrupt;}
+        if(!p.admitted())throw new IllegalArgumentException("Prepared correspondence was not admitted: "+p.status());
+        if(hardGeometryTransform==null)throw new IllegalArgumentException("Prepared correspondence requires factual metric hard geometry guard");
+        long spent=Math.addExact(p.contactTests(),p.pairTests());
+        if(spent>=d.budgets().maximumPairVisits()){preparedCounters.outcome="RESOURCE_LIMIT";throw new CorridorResourceLimitException("Prepared admission exhausted pair work");}
+        var remaining=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets(d.budgets().maximumStatesPerProfile(),
+            d.budgets().maximumPairVisits()-spent,d.budgets().maximumTransitions(),d.budgets().maximumRawAlternatives(),d.budgets().maximumDistinctAlternatives());
+        return optimizePrepared(d.track(),d.profiles,d.sourcePixel(),d.junctions(),d.scales(),d.tube(),d.approaches(),p.schedule(),d.states(),p.domain(),remaining);
     }
 
     /**
@@ -168,7 +321,202 @@ public final class CorridorCenterlineOptimizer {
         }
         ExactSolution exactSolution = solveExact(track, profiles, allowed, sourcePixel, junctionContext,
             scaleEvidence, tube, endpointApproaches, rippleSupport, rippleEndpointGates, rippleStrength);
+        return finishOptimization(track,profiles,sourcePixel,junctionContext,scaleEvidence,tube,cleanupConfig,
+            endpointApproaches,rippleSupport,rippleEndpointGates,rippleStrength,exactSolution);
+    }
+
+    /** Prepared-domain test seam. All evidence is constructed on original rows before retention. */
+    OptimizationResult optimizePrepared(CorridorTrack track,List<CorridorProfile> profiles,double sourcePixel,
+        CorridorWorkingSchedule schedule,List<List<Double>> allowed) {
+        var tube=new CorridorTubeBuilder().build(track,profiles,sourcePixel,Map.of());
+        var approaches=new EndpointApproachBuilder().build(track,profiles,tube,JunctionContext.empty(),Map.of());
+        var domain=CorridorWorkingSchedule.BridgeDomain.intersections(schedule,track,profiles,allowed);
+        return optimizePrepared(track,profiles,sourcePixel,JunctionContext.empty(),Map.of(),tube,
+            approaches,schedule,allowed,domain).geometry();
+    }
+
+    /**
+     * Runs the same pair recurrence on a caller-certified prepared domain. This is an explicit
+     * experiment seam, not live eligibility: native/source authority must certify the domain first.
+     * Original observations, fits, states and endpoint dependencies are never reconstructed here.
+     */
+    PreparedOptimization optimizePrepared(CorridorTrack track,List<CorridorProfile> profiles,
+        double sourcePixel,JunctionContext junctions,Map<String,BandScaleEvidence> scale,
+        LongitudinalCorridorTube tube,EndpointApproachModel approaches,CorridorWorkingSchedule schedule,
+        List<List<Double>> allowed,CorridorWorkingSchedule.BridgeDomain domain) {
+        preparedCounters.reset();preparedCounters.outcome="GEOMETRY_ONLY_PREPARING";
+        return optimizePrepared(track,profiles,sourcePixel,junctions,scale,tube,approaches,schedule,allowed,domain,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets.defaults());
+    }
+    private PreparedOptimization optimizePrepared(CorridorTrack track,List<CorridorProfile> profiles,
+        double sourcePixel,JunctionContext junctions,Map<String,BandScaleEvidence> scale,
+        LongitudinalCorridorTube tube,EndpointApproachModel approaches,CorridorWorkingSchedule schedule,
+        List<List<Double>> allowed,CorridorWorkingSchedule.BridgeDomain domain,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets limits) {
+        try{return optimizePreparedInternal(track,profiles,sourcePixel,junctions,scale,tube,approaches,schedule,allowed,domain,limits);}
+        catch(java.util.concurrent.CancellationException cancelled){preparedCounters.outcome="CANCELLED";throw cancelled;}
+        catch(CorridorResourceLimitException limited){preparedCounters.outcome="RESOURCE_LIMIT";throw limited;}
+        catch(ArithmeticException overflow){preparedCounters.outcome="RESOURCE_LIMIT";throw new CorridorResourceLimitException("Prepared table/work estimate overflow");}
+    }
+
+    private PreparedOptimization optimizePreparedInternal(CorridorTrack track,List<CorridorProfile> profiles,
+        double sourcePixel,JunctionContext junctions,Map<String,BandScaleEvidence> scale,
+        LongitudinalCorridorTube tube,EndpointApproachModel approaches,CorridorWorkingSchedule schedule,
+        List<List<Double>> allowed,CorridorWorkingSchedule.BridgeDomain domain,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets limits) {
+        long originalInventory=allowed.stream().mapToLong(List::size).sum();
+        preparedCounters.retained=0;preparedCounters.bridge=0;preparedCounters.bytes=-1;preparedCounters.outcome="PREPARING";
+        if(profiles.size()!=schedule.originalCount()||allowed.size()!=profiles.size()
+            ||tube.slices().size()!=profiles.size())throw new IllegalArgumentException("Original domain size differs");
+        sourcePixel=validSourcePixel(sourcePixel);
+        var geometryProfiles=schedule.retain(profiles);
+        var geometryTrack=schedule.geometryTrack(track);
+        var geometryTube=schedule.geometryTube(tube);
+        var geometryScale=schedule.geometryScale(track,scale);
+        var geometryJunctions=schedule.geometryJunctions(junctions);
+        var geometryApproaches=schedule.geometryApproaches(approaches);
+        domain.requireBinding(schedule,allowed);
+        long points=0,edges=0,transitions=0;
+        if(allowed.stream().anyMatch(row->row.isEmpty()||row.size()>limits.maximumStatesPerProfile()))
+            throw new CorridorResourceLimitException("Prepared original state cap");
+        for(int i=0;i<schedule.workingCount();i++){
+            int size=allowed.get(schedule.originalRow(i)).size();
+            if(size<=0||size>limits.maximumStatesPerProfile())throw new CorridorResourceLimitException("Prepared original state cap");
+            points=Math.addExact(points,size);
+            if(i>0)edges=Math.addExact(edges,Math.multiplyExact((long)size,allowed.get(schedule.originalRow(i-1)).size()));
+            if(i>1)transitions=Math.addExact(transitions,Math.multiplyExact((long)size,
+                Math.multiplyExact((long)allowed.get(schedule.originalRow(i-1)).size(),allowed.get(schedule.originalRow(i-2)).size())));
+        }
+        transitions=Math.addExact(transitions,Math.multiplyExact((long)allowed.get(schedule.originalRow(0)).size(),allowed.get(schedule.originalRow(1)).size()));
+        long pairBytes=Math.multiplyExact((long)allowed.get(schedule.leftOriginalRow()).size(),allowed.get(schedule.rightOriginalRow()).size());
+        long reserved=estimatePreparedTableBytes(originalInventory,points,edges,profiles.size(),schedule.workingCount(),pairBytes,domain.edges().size(),schedule.consumedRows().size());
+        preparedCounters.bytes=reserved;
+        if(reserved>128L*1024*1024||edges>limits.maximumPairVisits()||transitions>limits.maximumTransitions()){
+            preparedCounters.outcome="RESOURCE_LIMIT";throw new CorridorResourceLimitException("Prepared table/work cap");
+        }
+        preparedCounters.bytes=reserved;
+        var cleanup=GeometryCleanupConfig.disabled();
+        var ripple=new UnsupportedRippleEvaluator().evaluate(track,tube,sourcePixel,cleanup.rippleScaleMeters(),false);
+        var gates=rippleEndpointGates(profiles.size(),approaches);
+        var tables=new ArrayList<List<OffsetState>>();
+        for(int row:schedule.originalRows()){
+            hardGeometryCancellation.checkpoint();
+            var states=new ArrayList<OffsetState>();
+            for(double offset:allowed.get(row)){
+                double cost=profileCost(track,profiles,row,offset,sourcePixel,junctions,scale,tube,approaches,ripple.get(row),0,gates[row]);
+                preparedCounters.retained++;
+                requireFiniteCost(cost,row);states.add(new OffsetState(offset,pointFor(profiles.get(row),offset),cost));
+            }
+            if(states.isEmpty())throw new IllegalArgumentException("Empty original state array");
+            tables.add(List.copyOf(states));
+        }
+        int left=schedule.leftOriginalRow(),right=schedule.rightOriginalRow();
+        double[][] extra=new double[allowed.get(left).size()][allowed.get(right).size()];
+        long bridgeCosts=0;var bridgeRows=new ArrayList<BridgeUnaryRow>();
+        for(var edge:domain.edges()){
+            hardGeometryCancellation.checkpoint();
+            double cost=0;
+            for(int k=0;k<edge.offsets().size();k++){
+                int row=left+1+k;
+                double offset=edge.offsets().get(k);
+                var components=dataCostComponents(track,profiles.get(row),row,offset,sourcePixel,scale,tube.at(row),
+                    heatmapWeight(approaches,row),ripple.get(row),0,gates[row]);
+                double endpoint=constraintCost(row,offset,junctions,approaches,sourcePixel);
+                double unary=components.total()+endpoint;cost+=unary;
+                bridgeRows.add(new BridgeUnaryRow(edge.leftState(),edge.rightState(),row,offset,components.total(),
+                    components.plateauCenterCost(),components.coarsePriorCost(),components.tubeCenterCost(),endpoint,unary));
+                bridgeCosts++;requireFiniteCost(cost,row);
+                preparedCounters.bridge++;
+            }
+            extra[edge.leftState()][edge.rightState()]=cost;
+        }
+        var prepared=new PreparedTables(List.copyOf(tables),schedule.rightWorkingRow(),domain,extra);
+        var geometryRipple=schedule.retain(ripple);
+        double[] geometryGates=new double[schedule.workingCount()];
+        for(int i=0;i<geometryGates.length;i++)geometryGates[i]=gates[schedule.originalRow(i)];
+        HardGeometryCounters work=hardGeometryTransform==null?null:new HardGeometryCounters();
+        ExactSolution solution;
+        try{
+            preparedCounters.solves++;
+            solution=solveExactInternal(geometryTrack,geometryProfiles,schedule.retain(allowed),sourcePixel,
+                geometryJunctions,geometryScale,geometryTube,geometryApproaches,geometryRipple,geometryGates,0,work,prepared);
+        }catch(java.util.concurrent.CancellationException cancelled){
+            preparedCounters.outcome="CANCELLED";
+            if(work!=null){work.outcome=HardGeometryOutcome.CANCELLED;throw new HardGeometryCancelledException(work.snapshot(),cancelled);}
+            throw cancelled;
+        }finally{if(work!=null)hardGeometryWork=work.snapshot();}
+        var result=finishOptimization(geometryTrack,geometryProfiles,sourcePixel,geometryJunctions,geometryScale,
+            geometryTube,cleanup,geometryApproaches,geometryRipple,geometryGates,0,solution);
+        List<Double> consumed=List.of();double bridgeCost=0;
+        if(!result.offsetsPx().isEmpty()){
+            int l=allowed.get(left).indexOf(result.offsetsPx().get(schedule.workingRow(left)));
+            int r=allowed.get(right).indexOf(result.offsetsPx().get(schedule.workingRow(right)));
+            consumed=domain.edge(l,r).offsets();bridgeCost=extra[l][r];
+            result=new OptimizationResult(result.offsetsPx(),result.screenPoints(),result.totalCost()+bridgeCost,
+                result.costs(),result.inCorridorFraction(),result.longitudinalStability(),result.quality(),
+                result.endpointApproaches(),result.maximumOffsetStates(),result.maximumPairStates(),
+                result.transitionEvaluations(),result.profileCostEvaluations(),result.pointTableEntries(),
+                result.adjacentGeometryEntries(),result.retainedPairStateAllocations());
+        }
+        preparedCounters.outcome=result.disposition().name();
+        return new PreparedOptimization(result,schedule,consumed,bridgeCost,bridgeCosts,approaches,bridgeRows);
+    }
+
+    void startTrackPreparation(){preparedCounters.reset();hardGeometryWork=new HardGeometryWork(HardGeometryOutcome.DISABLED,0,0,0,0,0,0,0,0);}
+    void preparationFailed(String outcome){preparedCounters.outcome=outcome;}
+
+    /** Scoped prepared/state/factor/metric-table estimate, excluding PairState ancestry and ordinary
+     * adjacent-geometry/transient/native-field allocations. No heap reservation or owner release is implied. */
+    static long estimatePreparedTableBytes(long originalStates,long points,long edges,long originalRows,
+        long retainedRows,long bridgePairs,long admittedEdges,long consumedRows){
+        for(long value:new long[]{originalStates,points,edges,originalRows,retainedRows,bridgePairs,admittedEdges,consumedRows})
+            if(value<0)throw new IllegalArgumentException("Prepared table counts must be nonnegative");
+        long bytes=Math.addExact(Math.multiplyExact(Math.addExact(points,edges),64L),Math.multiplyExact(retainedRows,128L));
+        bytes=Math.addExact(bytes,Math.addExact(Math.multiplyExact(points,80L),Math.multiplyExact(originalStates,40L)));
+        bytes=Math.addExact(bytes,Math.multiplyExact(originalRows,640L));
+        bytes=Math.addExact(bytes,Math.multiplyExact(bridgePairs,24L));
+        return Math.addExact(bytes,Math.multiplyExact(admittedEdges,Math.addExact(64L,Math.multiplyExact(consumedRows,128L))));
+    }
+
+    /** Separate original observation identity; the shortened geometry is never cleanup-ready. */
+    public record PreparedOptimization(OptimizationResult geometry,CorridorWorkingSchedule schedule,
+        List<Double> consumedOffsets,double bridgeUnaryCost,long bridgeUnaryEvaluations,
+        EndpointApproachModel originalEndpointApproaches,List<BridgeUnaryRow> bridgeUnaryRows){
+        public PreparedOptimization{consumedOffsets=List.copyOf(consumedOffsets);bridgeUnaryRows=List.copyOf(bridgeUnaryRows);}
+        public String cleanupCorrespondenceStatus(){return "UNSUPPORTED_CORRESPONDENCE";}
+        /** Every admitted consumed hit is in its measured core; retain the original observation population. */
+        public double observationInCorridorFraction(){
+            return geometry.offsetsPx().isEmpty()?0:(geometry.inCorridorFraction()*schedule.workingCount()+consumedOffsets.size())/schedule.originalCount();
+        }
+        /** Cost rows retain an explicit original-observation identity separate from output index. */
+        public List<OriginalCostRow> originalCostRows(){
+            return geometry.costs().stream().map(c->new OriginalCostRow(schedule.originalRow(c.profileIndex()),c)).toList();
+        }
+    }
+    public record OriginalCostRow(int originalRow,CostRow retainedGeometryCost){ }
+    /** All original-row bridge factors, including nonwinning admitted edges, separately from output geometry. */
+    public record BridgeUnaryRow(int leftState,int rightState,int originalRow,double offsetPx,double dataCost,
+        double plateauCenterCost,double coarsePriorCost,double tubeCenterCost,double endpointCost,double totalCost){ }
+
+    private record PreparedTables(List<List<OffsetState>> states,int bridgeRight,
+        CorridorWorkingSchedule.BridgeDomain domain,double[][] costs){
+        boolean allowed(int row,int left,int right){return row!=bridgeRight||domain.edge(left,right)!=null;}
+        double extra(int row,int left,int right){return row==bridgeRight?costs[left][right]:0;}
+    }
+
+    private OptimizationResult finishOptimization(CorridorTrack track,List<CorridorProfile> profiles,
+        double sourcePixel,JunctionContext junctionContext,Map<String,BandScaleEvidence> scaleEvidence,
+        LongitudinalCorridorTube tube,GeometryCleanupConfig cleanupConfig,EndpointApproachModel endpointApproaches,
+        List<UnsupportedRippleEvaluator.RippleSupport> rippleSupport,double[] rippleEndpointGates,
+        double rippleStrength,ExactSolution exactSolution) {
         List<Double> optimizedOffsets = exactSolution.offsetsPx();
+        if (optimizedOffsets.isEmpty()) {
+            return new OptimizationResult(List.of(), List.of(), Double.POSITIVE_INFINITY, List.of(), 0, 0,
+                CorridorQuality.empty(), endpointApproaches, exactSolution.maximumOffsetStates(),
+                exactSolution.maximumPairStates(), exactSolution.transitionEvaluations(),
+                exactSolution.profileCostEvaluations(), exactSolution.pointTableEntries(),
+                exactSolution.adjacentGeometryEntries(), exactSolution.retainedPairStateAllocations());
+        }
         List<Point2D.Double> points = new ArrayList<>(profiles.size());
         List<CostRow> costs = new ArrayList<>(profiles.size());
         int inCorridor = 0;
@@ -252,16 +600,50 @@ public final class CorridorCenterlineOptimizer {
         double[] rippleEndpointGates,
         double rippleStrength
     ) {
-        List<List<OffsetState>> stateTables = buildStateTables(track, profiles, allowed, sourcePixel,
+        HardGeometryCounters work = hardGeometryTransform == null ? null : new HardGeometryCounters();
+        try {
+            return solveExactInternal(track, profiles, allowed, sourcePixel, junctionContext, scaleEvidence,
+                tube, endpointApproaches, rippleSupport, rippleEndpointGates, rippleStrength, work);
+        } catch (java.util.concurrent.CancellationException cancelled) {
+            if (work == null) throw cancelled;
+            work.outcome = HardGeometryOutcome.CANCELLED;
+            throw new HardGeometryCancelledException(work.snapshot(), cancelled);
+        } finally {
+            if (work != null) hardGeometryWork = work.snapshot();
+        }
+    }
+
+    private ExactSolution solveExactInternal(CorridorTrack track, List<CorridorProfile> profiles,
+        List<List<Double>> allowed, double sourcePixel, JunctionContext junctionContext,
+        Map<String, BandScaleEvidence> scaleEvidence, LongitudinalCorridorTube tube,
+        EndpointApproachModel endpointApproaches,
+        List<UnsupportedRippleEvaluator.RippleSupport> rippleSupport,
+        double[] rippleEndpointGates, double rippleStrength, HardGeometryCounters work) {
+        return solveExactInternal(track,profiles,allowed,sourcePixel,junctionContext,scaleEvidence,tube,
+            endpointApproaches,rippleSupport,rippleEndpointGates,rippleStrength,work,null);
+    }
+
+    private ExactSolution solveExactInternal(CorridorTrack track,List<CorridorProfile> profiles,
+        List<List<Double>> allowed,double sourcePixel,JunctionContext junctionContext,
+        Map<String,BandScaleEvidence> scaleEvidence,LongitudinalCorridorTube tube,
+        EndpointApproachModel endpointApproaches,List<UnsupportedRippleEvaluator.RippleSupport> rippleSupport,
+        double[] rippleEndpointGates,double rippleStrength,HardGeometryCounters work,PreparedTables prepared) {
+        List<List<OffsetState>> stateTables = prepared==null?buildStateTables(track, profiles, allowed, sourcePixel,
             junctionContext, scaleEvidence, tube, endpointApproaches, rippleSupport,
-            rippleEndpointGates, rippleStrength);
+            rippleEndpointGates, rippleStrength):prepared.states();
         long profileCostEvaluations = stateTables.stream().mapToLong(List::size).sum();
         long pointTableEntries = profileCostEvaluations;
+        MetricEdge[][][] metricEdges = null;
+        if (work != null) {
+            work.profileCosts = profileCostEvaluations;
+            metricEdges = metricEdgeCache(stateTables, work);
+        }
         if (profiles.size() == 1) {
             OffsetState best = stateTables.get(0).stream().min(Comparator
                 .comparingDouble(OffsetState::profileCost)
                 .thenComparingDouble(OffsetState::offset)).orElseThrow();
             int stateCount = stateTables.get(0).size();
+            if (work != null) work.outcome = HardGeometryOutcome.ROUTE;
             return new ExactSolution(List.of(best.offset()), stateCount, stateCount, stateCount,
                 profileCostEvaluations, pointTableEntries, 0L, 0L);
         }
@@ -282,9 +664,13 @@ public final class CorridorCenterlineOptimizer {
             for (int secondIndex = 0; secondIndex < stateTables.get(1).size(); secondIndex++) {
                 OffsetState second = stateTables.get(1).get(secondIndex);
                 transitionEvaluations++;
+                if (work != null) work.attempted++;
+                if(prepared!=null&&!prepared.allowed(1,firstIndex,secondIndex))continue;
                 double cost = first.profileCost() + second.profileCost()
                     + firstGeometry.continuityCost(firstIndex, secondIndex);
+                if(prepared!=null)cost+=prepared.extra(1,firstIndex,secondIndex);
                 requireFiniteCost(cost, 1);
+                if (work != null) work.scored++;
                 states[firstIndex][secondIndex] = new PairState(1, first.offset(), second.offset(),
                     firstGeometry.heading(firstIndex, secondIndex), firstGeometry.referenceHeading(),
                     spacingSourcePixels, cost, null);
@@ -292,8 +678,10 @@ public final class CorridorCenterlineOptimizer {
             }
         }
         int maximumPairStates = countStates(states);
+        if(prepared!=null&&maximumPairStates==0){if(work!=null)work.outcome=HardGeometryOutcome.NO_LEGAL_PATH;return new ExactSolution(List.of(),maximumOffsetStates,0,transitionEvaluations,profileCostEvaluations,pointTableEntries,adjacentGeometryEntries,retainedPairStateAllocations);}
 
         for (int profileIndex = 2; profileIndex < profiles.size(); profileIndex++) {
+            if (work != null) hardGeometryCancellation.checkpoint();
             List<OffsetState> previousOffsets = stateTables.get(profileIndex - 1);
             List<OffsetState> currentOffsets = stateTables.get(profileIndex);
             PairState[][] next = new PairState[previousOffsets.size()][currentOffsets.size()];
@@ -315,6 +703,19 @@ public final class CorridorCenterlineOptimizer {
                     for (int currentIndex = 0; currentIndex < currentOffsets.size(); currentIndex++) {
                         OffsetState current = currentOffsets.get(currentIndex);
                         transitionEvaluations++;
+                        if(prepared!=null&&!prepared.allowed(profileIndex,previousIndex,currentIndex)){if(work!=null)work.attempted++;continue;}
+                        if (work != null) {
+                            work.attempted++;
+                            if ((work.attempted & 1023L) == 0L) hardGeometryCancellation.checkpoint();
+                            work.tested++;
+                            MetricEdge incoming = metricEdges[profileIndex - 1][beforeIndex][previousIndex];
+                            MetricEdge outgoing = metricEdges[profileIndex][previousIndex][currentIndex];
+                            if (FinalGeometryEvaluator.hardBacktrackEdges(incoming.east(), incoming.north(),
+                                    incoming.length(), outgoing.east(), outgoing.north(), outgoing.length())) {
+                                work.rejected++;
+                                continue;
+                            }
+                        }
                         double candidateHeading = geometry.heading(previousIndex, currentIndex);
                         double acceleration = profileAccelerationWeight
                             * geometricCurvatureCost(candidateHeading, geometry.referenceHeading(),
@@ -325,7 +726,9 @@ public final class CorridorCenterlineOptimizer {
                         double cost = previous.cost()
                             + current.profileCost()
                             + geometry.continuityCost(previousIndex, currentIndex) + acceleration + absoluteTurn;
+                        if(prepared!=null)cost+=prepared.extra(profileIndex,previousIndex,currentIndex);
                         requireFiniteCost(cost, profileIndex);
+                        if (work != null) work.scored++;
                         PairState existing = next[previousIndex][currentIndex];
                         if (existing == null || cost < existing.cost()) {
                             next[previousIndex][currentIndex] = new PairState(profileIndex,
@@ -338,9 +741,16 @@ public final class CorridorCenterlineOptimizer {
             }
             states = next;
             maximumPairStates = Math.max(maximumPairStates, countStates(states));
+            if ((work != null||prepared!=null) && countStates(states) == 0) {
+                if(work!=null)work.outcome = HardGeometryOutcome.NO_LEGAL_PATH;
+                return new ExactSolution(List.of(), maximumOffsetStates, maximumPairStates,
+                    transitionEvaluations, profileCostEvaluations, pointTableEntries,
+                    adjacentGeometryEntries, retainedPairStateAllocations);
+            }
         }
 
         PairState best = bestState(states);
+        if (work != null) work.outcome = HardGeometryOutcome.ROUTE;
         Double[] result = new Double[profiles.size()];
         PairState cursor = best;
         while (cursor != null) {
@@ -351,6 +761,71 @@ public final class CorridorCenterlineOptimizer {
         return new ExactSolution(List.of(result), maximumOffsetStates, maximumPairStates, transitionEvaluations,
             profileCostEvaluations, pointTableEntries, adjacentGeometryEntries, retainedPairStateAllocations);
     }
+
+    private MetricEdge[][][] metricEdgeCache(List<List<OffsetState>> states, HardGeometryCounters work) {
+        long points = states.stream().mapToLong(List::size).sum(), edges = 0;
+        for (int i = 1; i < states.size(); i++) edges = Math.addExact(edges,
+            Math.multiplyExact((long) states.get(i - 1).size(), states.get(i).size()));
+        long reserved = Math.addExact(Math.multiplyExact(Math.addExact(points, edges), 64L),
+            Math.multiplyExact(states.size(), 128L));
+        if (reserved > 128L * 1024 * 1024) {
+            work.outcome = HardGeometryOutcome.RESOURCE_LIMIT;
+            throw new HardGeometryResourceLimitException(work.snapshot());
+        }
+        work.reserved = reserved;
+        MetricPoint[][] metric = new MetricPoint[states.size()][];
+        for (int i = 0; i < states.size(); i++) {
+            hardGeometryCancellation.checkpoint();
+            metric[i] = new MetricPoint[states.get(i).size()];
+            for (int j = 0; j < metric[i].length; j++) {
+                var point = states.get(i).get(j).point();
+                metric[i][j] = hardGeometryTransform.pixelCenterToMetric(point.x, point.y);
+                work.points++;
+            }
+        }
+        MetricEdge[][][] result = new MetricEdge[states.size()][][];
+        for (int i = 1; i < states.size(); i++) {
+            hardGeometryCancellation.checkpoint();
+            result[i] = new MetricEdge[metric[i - 1].length][metric[i].length];
+            for (int a = 0; a < metric[i - 1].length; a++) {
+                hardGeometryCancellation.checkpoint();
+                for (int b = 0; b < metric[i].length; b++) {
+                    double east = metric[i][b].xMeters() - metric[i - 1][a].xMeters();
+                    double north = metric[i][b].yMeters() - metric[i - 1][a].yMeters();
+                    result[i][a][b] = new MetricEdge(east, north, StrictMath.hypot(east, north));
+                    work.edges++;
+                }
+            }
+        }
+        return result;
+    }
+
+    /** Typed experimental outcome; default solvers retain their historical path and work. */
+    public enum HardGeometryOutcome { DISABLED, ROUTE, NO_LEGAL_PATH, CANCELLED, RESOURCE_LIMIT }
+    public record HardGeometryWork(HardGeometryOutcome outcome, long profileCostEvaluations,
+        long attemptedTransitions, long testedTriples, long rejectedTriples, long scoredTransitions,
+        long metricPoints, long metricEdges, long metricCacheReservedBytes) { }
+    public static final class HardGeometryCancelledException extends java.util.concurrent.CancellationException {
+        private final HardGeometryWork work;
+        HardGeometryCancelledException(HardGeometryWork work, Throwable cause) {
+            super("Explicit hard-geometry experiment cancelled"); this.work = work; initCause(cause);
+        }
+        public HardGeometryWork work() { return work; }
+    }
+    public static final class HardGeometryResourceLimitException extends IllegalStateException {
+        private final HardGeometryWork work;
+        HardGeometryResourceLimitException(HardGeometryWork work) {
+            super("Explicit hard-geometry metric cache exceeds 128 MiB"); this.work = work;
+        }
+        public HardGeometryWork work() { return work; }
+    }
+    private static final class HardGeometryCounters {
+        HardGeometryOutcome outcome = HardGeometryOutcome.ROUTE;
+        long profileCosts, attempted, tested, rejected, scored, points, edges, reserved;
+        HardGeometryWork snapshot() { return new HardGeometryWork(outcome, profileCosts, attempted,
+            tested, rejected, scored, points, edges, reserved); }
+    }
+    private record MetricEdge(double east, double north, double length) { }
 
     private List<List<OffsetState>> buildStateTables(
         CorridorTrack track,
@@ -980,11 +1455,19 @@ public final class CorridorCenterlineOptimizer {
             endpointApproaches = java.util.Objects.requireNonNull(endpointApproaches);
         }
 
+        /** Distinguishes a spent no-legal-path attempt from an unstarted empty input. */
+        public SolverDisposition disposition() {
+            return !offsetsPx.isEmpty() ? SolverDisposition.ROUTE
+                : profileCostEvaluations > 0 ? SolverDisposition.NO_LEGAL_PATH : SolverDisposition.EMPTY_INPUT;
+        }
+
         static OptimizationResult empty() {
             return new OptimizationResult(List.of(), List.of(), Double.POSITIVE_INFINITY, List.of(), 0.0, 0.0,
                 CorridorQuality.empty(), new EndpointApproachModel(List.of()), 0, 0, 0L, 0L, 0L, 0L, 0L);
         }
     }
+
+    public enum SolverDisposition { ROUTE, NO_LEGAL_PATH, EMPTY_INPUT }
 
     /**
      * Per-profile optimizer diagnostics.

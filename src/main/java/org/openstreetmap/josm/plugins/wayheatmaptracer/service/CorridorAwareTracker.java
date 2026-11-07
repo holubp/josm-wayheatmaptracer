@@ -20,16 +20,68 @@ public final class CorridorAwareTracker {
     private final CorridorExtractor extractor = new CorridorExtractor();
     private final CorridorTracker tracker = new CorridorTracker();
     private final CorridorGrouping grouping = new CorridorGrouping();
-    private final CorridorTubeBuilder tubeBuilder = new CorridorTubeBuilder();
-    private final CorridorCenterlineOptimizer optimizer = new CorridorCenterlineOptimizer();
+    private final CorridorTubeBuilder tubeBuilder;
+    private final CorridorCenterlineOptimizer optimizer;
+    private final PreparedCorrespondencePolicy preparedCorrespondence;
+    private final CorridorWorkingSchedule.BoundContext correspondenceContext;
+    private final Map<String,CorridorWorkingSchedule.Preparation> preparations=new LinkedHashMap<>();
+    private final Map<String,CorridorCenterlineOptimizer.PreparedOptimization> preparedOptimizations=new LinkedHashMap<>();
+    private final Map<String,TrackPreparationWork> preparationWork=new LinkedHashMap<>();
+    public record TrackPreparationWork(CorridorCenterlineOptimizer.PreparedWork preparation,
+        java.util.Optional<CorridorWorkingSchedule.Preparation> admission,CorridorCenterlineOptimizer.HardGeometryWork hardGeometry){ }
+    public Map<String,TrackPreparationWork> correspondenceWork(){return Map.copyOf(preparationWork);}
     private final CorridorCoverageCalculator coverageCalculator = new CorridorCoverageCalculator();
 
     /**
      * Creates a tracker with the standard extraction, association, grouping, and optimization stages.
      */
     public CorridorAwareTracker() {
-        // Stage services are initialized in field declarations.
+        this(new CorridorCenterlineOptimizer());
     }
+
+    /** Explicit experiment injection only; normal construction retains the unfiltered optimizer. */
+    public CorridorAwareTracker(CorridorCenterlineOptimizer optimizer) {
+        this(optimizer, new CorridorTubeBuilder());
+    }
+
+    /** Explicit experiment injection; historical/default tube construction remains unchanged. */
+    public CorridorAwareTracker(CorridorCenterlineOptimizer optimizer, CorridorTubeBuilder tubeBuilder) {
+        this(optimizer,tubeBuilder,null);
+    }
+
+    /** Explicit experimental correspondence injection; default discovery/domain/diagnostics are retained. */
+    CorridorAwareTracker(CorridorCenterlineOptimizer optimizer,CorridorTubeBuilder tubeBuilder,
+        PreparedCorrespondencePolicy preparedCorrespondence){
+        this(optimizer,tubeBuilder,preparedCorrespondence,null);
+    }
+    private CorridorAwareTracker(CorridorCenterlineOptimizer optimizer,CorridorTubeBuilder tubeBuilder,
+        PreparedCorrespondencePolicy preparedCorrespondence,CorridorWorkingSchedule.BoundContext context){
+        this.optimizer = java.util.Objects.requireNonNull(optimizer);
+        this.tubeBuilder = java.util.Objects.requireNonNull(tubeBuilder);
+        this.preparedCorrespondence=preparedCorrespondence;
+        correspondenceContext=context;
+    }
+
+    /** Bound public experiment; admission and inference share the actual frozen context token. */
+    public static CorridorAwareTracker withTargetOwnedBridgeCorrespondence(CorridorCenterlineOptimizer optimizer,
+        CorridorWorkingSchedule.BoundContext context,PreparedCorrespondencePolicy policy){
+        return new CorridorAwareTracker(optimizer,new CorridorTubeBuilder(CorridorTubeBuilder.MotionPolicy.TARGET_OWNED_APEX),
+            java.util.Objects.requireNonNull(policy),java.util.Objects.requireNonNull(context));
+    }
+
+    /** Named opt-in correspondence experiment on the ordinary owned-apex tube only. */
+    public static CorridorAwareTracker withTargetOwnedBridgeCorrespondence(CorridorCenterlineOptimizer optimizer,
+        PreparedCorrespondencePolicy policy){
+        return new CorridorAwareTracker(optimizer,new CorridorTubeBuilder(CorridorTubeBuilder.MotionPolicy.TARGET_OWNED_APEX),
+            java.util.Objects.requireNonNull(policy));
+    }
+
+    /** Admission only; receives complete original domains and cannot rebuild an inference result. */
+    @FunctionalInterface public interface PreparedCorrespondencePolicy{
+        CorridorWorkingSchedule.Preparation prepare(CorridorCenterlineOptimizer.OriginalDomain original);
+    }
+    public Map<String,CorridorWorkingSchedule.Preparation> correspondencePreparations(){return Map.copyOf(preparations);}
+    public Map<String,CorridorCenterlineOptimizer.PreparedOptimization> preparedOptimizations(){return Map.copyOf(preparedOptimizations);}
 
     /**
      * Converts complete scalar profiles into corridor-aware centerline candidates.
@@ -336,6 +388,7 @@ public final class CorridorAwareTracker {
         long scaleAssociationNanos,
         TraceBudgets budgets
     ) {
+        if(preparedCorrespondence!=null){preparations.clear();preparedOptimizations.clear();preparationWork.clear();}
         long trackingStart = System.nanoTime();
         List<CorridorTrack> elementary = tracker.track(corridorProfiles, sourcePixelSizePx, scaleEvidence);
         CorridorGrouping.GroupingResult grouped = grouping.group(elementary, corridorProfiles, sourcePixelSizePx);
@@ -344,6 +397,7 @@ public final class CorridorAwareTracker {
         }
         long trackingNanos = System.nanoTime() - trackingStart;
         long optimizationStart = System.nanoTime();
+        long correspondencePairWork=0,correspondenceTransitions=0;
         List<CenterlineCandidate> candidates = new ArrayList<>();
         Map<String, CorridorCenterlineOptimizer.OptimizationResult> optimizations = new LinkedHashMap<>();
         Map<String, LongitudinalCorridorTube> tubes = new LinkedHashMap<>();
@@ -361,28 +415,78 @@ public final class CorridorAwareTracker {
         for (CorridorTrack track : grouped.tracks()) {
             LongitudinalCorridorTube tube = tubeBuilder.build(
                 track, corridorProfiles, sourcePixelSizePx, effectiveScaleEvidence);
-            CorridorCenterlineOptimizer.OptimizationResult optimized = optimizer.optimize(
-                track, corridorProfiles, sourcePixelSizePx, junctionContext, effectiveScaleEvidence, tube,
-                cleanupConfig);
+            CorridorCenterlineOptimizer.OptimizationResult optimized;
+            CorridorCenterlineOptimizer.PreparedOptimization prepared=null;
+            if(preparedCorrespondence==null){
+                optimized=optimizer.optimize(track,corridorProfiles,sourcePixelSizePx,junctionContext,
+                    effectiveScaleEvidence,tube,cleanupConfig);
+            }else{
+                optimizer.startTrackPreparation();
+                try{
+                if(!cleanupConfig.isDisabled())throw new IllegalArgumentException("Prepared correspondence requires cleanup Off");
+                var limits=budgets==null?TraceBudgets.defaults():budgets;
+                if(correspondencePairWork>=limits.maximumPairVisits()||correspondenceTransitions>=limits.maximumTransitions())
+                    throw new CorridorResourceLimitException("Prepared correspondence cumulative work cap");
+                var remaining=new TraceBudgets(limits.maximumStatesPerProfile(),limits.maximumPairVisits()-correspondencePairWork,
+                    limits.maximumTransitions()-correspondenceTransitions,limits.maximumRawAlternatives(),limits.maximumDistinctAlternatives());
+                var original=optimizer.prepareOriginalDomain(track,corridorProfiles,sourcePixelSizePx,
+                    junctionContext,effectiveScaleEvidence,tube,remaining,correspondenceContext);
+                var admission=preparedCorrespondence.prepare(original);
+                preparations.put(track.id(),admission);
+                long spent=Math.addExact(admission.contactTests(),admission.pairTests());
+                correspondencePairWork=Math.addExact(correspondencePairWork,spent);
+                if("RESOURCE_LIMIT".equals(admission.status()))throw new CorridorResourceLimitException("Prepared admission work cap");
+                if("NO_TRIGGER".equals(admission.status())||admission.status().startsWith("REFUSED_")&&!admission.status().contains("BINDING")){
+                    if(spent>=remaining.maximumPairVisits())throw new CorridorResourceLimitException("Prepared admission exhausted pair work");
+                    var solveLimits=new TraceBudgets(remaining.maximumStatesPerProfile(),remaining.maximumPairVisits()-spent,
+                        remaining.maximumTransitions(),remaining.maximumRawAlternatives(),remaining.maximumDistinctAlternatives());
+                    optimized=optimizer.optimizeOriginalDomain(CorridorCenterlineOptimizer.withBudgets(original,solveLimits));
+                }
+                else if(admission.admitted()){
+                    prepared=optimizer.optimizePrepared(original,admission);
+                    preparedOptimizations.put(track.id(),prepared);optimized=prepared.geometry();
+                }else{throw new IllegalArgumentException("Terminal correspondence admission failure: "+admission.status());}
+                correspondencePairWork=Math.addExact(correspondencePairWork,optimized.adjacentGeometryEntries());
+                correspondenceTransitions=Math.addExact(correspondenceTransitions,optimized.transitionEvaluations());
+                }catch(java.util.concurrent.CancellationException cancelled){
+                    if(cancelled instanceof CorridorWorkingSchedule.PreparationCancelledException partial)preparations.put(track.id(),partial.spent());
+                    optimizer.preparationFailed("CANCELLED");throw cancelled;
+                }catch(CorridorResourceLimitException limited){
+                    optimizer.preparationFailed("RESOURCE_LIMIT");throw limited;
+                }catch(IllegalArgumentException corrupt){
+                    if(!optimizer.preparedWork().outcome().equals("BINDING_REFUSED"))optimizer.preparationFailed("BINDING_OR_EXECUTION_FAILURE");
+                    throw corrupt;
+                }finally{
+                    preparationWork.put(track.id(),new TrackPreparationWork(optimizer.preparedWork(),
+                        java.util.Optional.ofNullable(preparations.get(track.id())),optimizer.hardGeometryWork()));
+                }
+            }
             if (optimized.offsetsPx().isEmpty()) {
+                if (optimized.disposition() == CorridorCenterlineOptimizer.SolverDisposition.NO_LEGAL_PATH) {
+                    optimizations.put(track.id(), optimized);
+                    tubes.put(track.id(), tube);
+                }
                 continue;
             }
             SparseCorridorBundle bundle = bundlesById.get(track.id());
             CorridorCoverage coverage = coverageCalculator.calculate(
-                track, corridorProfiles, optimized.endpointApproaches(), bundle);
+                track, corridorProfiles, prepared==null?optimized.endpointApproaches():prepared.originalEndpointApproaches(), bundle);
             CandidateEvidence evidence = evidence(track, corridorProfiles, optimized, effectiveScaleEvidence, coverage,
-                bundle);
+                bundle,prepared==null?optimized.inCorridorFraction():prepared.observationInCorridorFraction());
             double normalizedCost = optimized.totalCost() / Math.max(1, corridorProfiles.size());
             double score = 2.0 * evidence.signalExistenceConfidence()
                 + evidence.localizationConfidence()
                 + evidence.supportRatio()
                 + optimized.longitudinalStability()
-                + optimized.inCorridorFraction()
+                + evidence.inCorridorFraction()
                 - normalizedCost * 0.25;
+            var cleanupEvidence=prepared==null?CleanupEvidenceFactory.candidateEvidence(
+                cleanupFrame,track,tube,coverage.complete(),corridorProfiles.size()):
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateCleanupEvidence.skipped(
+                    cleanupFrame,List.of(),org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupEvidenceStatus.MISALIGNED_CANDIDATE_ROWS);
             candidates.add(new CenterlineCandidate(track.id(), score, optimized.screenPoints(), optimized.offsetsPx())
                 .withEvidence(evidence)
-                .withCleanupEvidence(CleanupEvidenceFactory.candidateEvidence(
-                    cleanupFrame, track, tube, coverage.complete(), corridorProfiles.size())));
+                .withCleanupEvidence(cleanupEvidence));
             optimizations.put(track.id(), optimized);
             tubes.put(track.id(), tube);
         }
@@ -460,13 +564,20 @@ public final class CorridorAwareTracker {
         return Map.copyOf(result);
     }
 
+    private CandidateEvidence evidence(CorridorTrack track,List<CorridorProfile> profiles,
+        CorridorCenterlineOptimizer.OptimizationResult optimized,Map<String,BandScaleEvidence> scaleEvidence,
+        CorridorCoverage coverage,SparseCorridorBundle bundle){
+        return evidence(track,profiles,optimized,scaleEvidence,coverage,bundle,optimized.inCorridorFraction());
+    }
+
     private CandidateEvidence evidence(
         CorridorTrack track,
         List<CorridorProfile> profiles,
         CorridorCenterlineOptimizer.OptimizationResult optimized,
         Map<String, BandScaleEvidence> scaleEvidence,
         CorridorCoverage coverage,
-        SparseCorridorBundle bundle
+        SparseCorridorBundle bundle,
+        double observationInCorridorFraction
     ) {
         int supported = bundle == null ? track.points().size() : bundle.directUnionProfileCount();
         int empty = Math.max(0, profiles.size() - supported);
@@ -518,7 +629,7 @@ public final class CorridorAwareTracker {
             meanExistence,
             meanLocalization,
             normalizedCost,
-            optimized.inCorridorFraction(),
+            observationInCorridorFraction,
             meanPersistence,
             conflictFraction,
             optimized.quality(),

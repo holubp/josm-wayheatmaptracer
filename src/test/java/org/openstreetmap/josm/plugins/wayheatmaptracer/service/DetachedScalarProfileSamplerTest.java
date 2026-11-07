@@ -40,6 +40,129 @@ class DetachedScalarProfileSamplerTest {
     private static final String FIELD_NAME = "scalar";
 
     @Test
+    void radiusThreeRetainsExactStandaloneContextRecordsAcrossScales() {
+        var fixture = secantFixture(9, true);
+        var actual = new DetachedScalarProfileSampler().sampleRadiusThree(fixture.evidence(), FIELD_NAME,
+            fixture.anchors(), 8.0, 1.0, CancellationProbe.NONE, 0.0);
+        assertSecantContexts(fixture, actual.profiles());
+        assertEquals(25, actual.work().temporaryAnchorCount());
+        assertEquals(25 * actual.profiles().levels().size(), actual.work().sampledProfileCount());
+        assertEquals(9 * actual.profiles().levels().size(), actual.work().retainedProfileCount());
+        assertTrue(actual.work().materializationEstimateBytes() > actual.profiles().estimatedBytes());
+        assertTrue(actual.work().constructionNanos() >= 0 && actual.work().samplingNanos() >= 0
+            && actual.work().selectionNanos() >= 0);
+    }
+
+    @Test
+    void radiusThreeStraightAndSmallClippedContextsRemainExact() {
+        for (int count : List.of(2, 3, 4, 7, 9)) for (boolean curved : List.of(false, true)) {
+            var f = secantFixture(count, curved);
+            var actual = new DetachedScalarProfileSampler().sampleRadiusThree(f.evidence(), FIELD_NAME,
+                f.anchors(), 8, 1, CancellationProbe.NONE, 0);
+            assertSecantContexts(f, actual.profiles());
+            assertEquals(3 * count - 2, actual.work().temporaryAnchorCount());
+            assertEquals(count, actual.profiles().levelZeroProfiles().size());
+            if (!curved) assertEquals(new DetachedScalarProfileSampler().sample(f.evidence(), FIELD_NAME,
+                f.anchors(), 8, 1, CancellationProbe.NONE).levels(), actual.profiles().levels());
+        }
+    }
+
+    @Test
+    void radiusThreePreservesInvalidSupportAndDecisionBoundary() {
+        var f = secantFixture(9, true); var old = f.evidence();
+        var source = old.fields().get(FIELD_NAME); var cells = source.copiedInterpolationValidity();
+        cells[55 * 119 + 30] = false;
+        var e = snapshot(120, 120, old.coordinateFrame(), old.transform(), old.resolution(),
+            rasterRectangle(old.transform(), 20, 50, 100, 61), source.copiedValues(), source.copiedValidity(), cells);
+        var actual = new DetachedScalarProfileSampler().sampleRadiusThree(e, FIELD_NAME,
+            f.anchors(), 8, 1, CancellationProbe.NONE, 0).profiles();
+        assertSecantContexts(new SecantFixture(e, f.anchors()), actual);
+        assertTrue(actual.levelZeroProfiles().stream().flatMap(p -> p.intensitySamples().stream())
+            .anyMatch(s -> !s.insideRaster()));
+    }
+
+    @Test
+    void radiusThreeRejectsOriginalNonmonotonicAndWrongFramesBeforeSampling() {
+        var f = secantFixture(4, true); var reversed = new ArrayList<>(f.anchors());
+        java.util.Collections.swap(reversed, 1, 2);
+        assertThrows(IllegalArgumentException.class, () -> new DetachedScalarProfileSampler().sampleRadiusThree(
+            f.evidence(), FIELD_NAME, reversed, 8, 1, CancellationProbe.NONE, 0));
+        var wrong = new ArrayList<>(f.anchors());
+        var t = RasterMetricTransform.metricGrid(new MetricPoint(1, 0), 1, 0, 0, 1);
+        wrong.set(1, detachedAt(f.evidence().coordinateFrame(), t, new RasterPoint(35, 56), 6));
+        assertThrows(IllegalArgumentException.class, () -> new DetachedScalarProfileSampler().sampleRadiusThree(
+            f.evidence(), FIELD_NAME, wrong, 8, 1, CancellationProbe.NONE, 0));
+    }
+
+    @Test
+    void radiusThreeBudgetsTemporaryRowsAndChecksOverflow() {
+        var f = secantFixture(9, true);
+        long oldEstimate = DetachedScalarProfileSampler.estimatedMaterializationBytes(120, 120, 4, 9, 8, 1);
+        assertThrows(IllegalArgumentException.class, () -> new DetachedScalarProfileSampler(oldEstimate)
+            .sampleRadiusThree(f.evidence(), FIELD_NAME, f.anchors(), 8, 1, CancellationProbe.NONE, 0));
+        assertThrows(IllegalArgumentException.class, () -> DetachedScalarProfileSampler.radiusThreeMaterializationBytes(
+            120, 120, 4, Integer.MAX_VALUE, 8, 1));
+        long exact = DetachedScalarProfileSampler.radiusThreeMaterializationBytes(120, 120, 4, 9, 8, 1);
+        assertEquals(exact, new DetachedScalarProfileSampler(exact).sampleRadiusThree(f.evidence(), FIELD_NAME,
+            f.anchors(), 8, 1, CancellationProbe.NONE, 0).work().materializationEstimateBytes());
+    }
+
+    @Test
+    void radiusThreeCancelsDuringContextConstructionSamplingAndSelection() {
+        var f = secantFixture(9, true);
+        for (String method : List.of("radiusThreeContexts", "sampleProfilesFromField", "retainContextCenters")) {
+            var reached = new AtomicInteger();
+            CancellationProbe probe = () -> StackWalker.getInstance().walk(frames -> frames.anyMatch(
+                frame -> frame.getMethodName().equals(method))) && reached.incrementAndGet() == 2;
+            assertThrows(CancellationException.class, () -> new DetachedScalarProfileSampler().sampleRadiusThree(
+                f.evidence(), FIELD_NAME, f.anchors(), 8, 1, probe, 0), method);
+            assertEquals(2, reached.get(), method);
+        }
+    }
+
+    private static void assertSecantContexts(SecantFixture fixture, MultiScaleProfileSet actual) {
+        var anchors = fixture.anchors();
+        var scalar = ScalarIntensityField.fromEvidence(fixture.evidence().fields().get(FIELD_NAME), () -> { });
+        for (int i = 0; i < anchors.size(); i++) {
+            int lo = Math.max(0, i - 3), hi = Math.min(anchors.size() - 1, i + 3);
+            var context = i == 0 ? List.of(anchors.get(i), anchors.get(hi))
+                : i == anchors.size() - 1 ? List.of(anchors.get(lo), anchors.get(i))
+                : List.of(anchors.get(lo), anchors.get(i), anchors.get(hi));
+            int center = i == 0 ? 0 : 1;
+            var expected = new RenderedHeatmapSampler().sampleMultiScaleProfilesOnDetachedField(
+                scalar, context, 8.0, 1.0, 1.0, fixture.evidence(), CancellationProbe.NONE);
+            assertEquals(expected.levels().size(), actual.levels().size());
+            for (int level = 0; level < expected.levels().size(); level++) {
+                assertEquals(expected.levels().get(level).profiles().get(center),
+                    actual.levels().get(level).profiles().get(i), "full record at scale " + level + " row " + i);
+                assertTrue(actual.levels().get(level).profiles().get(i).samplingAnchor() == anchors.get(i));
+            }
+        }
+    }
+
+    private record SecantFixture(EvidenceSnapshot evidence, List<DetachedProfileSamplingLocation> anchors) { }
+
+    private static SecantFixture secantFixture(int count, boolean curved) {
+        int size = 120;
+        var frame = frame();
+        var transform = RasterMetricTransform.metricGrid(new MetricPoint(0, 0), 1, 0, 0, 1);
+        var values = new double[size * size];
+        for (int y = 0; y < size; y++) for (int x = 0; x < size; x++)
+            values[y * size + x] = 0.1 + 0.8 * Math.exp(-Math.pow((y - 58.0 - 2 * Math.sin(x / 9.0)) / 3, 2));
+        var evidence = snapshot(size, size, frame, transform, EvidenceResolution.nativeSource(1, 1),
+            rasterRectangle(transform, 15, 15, 105, 105), values, allTrue(size * size), allTrue((size - 1) * (size - 1)));
+        var anchors = new ArrayList<DetachedProfileSamplingLocation>();
+        double chainage = 0;
+        RasterPoint previous = null;
+        for (int i = 0; i < count; i++) {
+            var p = new RasterPoint(30 + i * 5, curved ? 55 + 4 * Math.sin(i * 0.8) : 55);
+            if (previous != null) chainage += Math.hypot(p.x() - previous.x(), p.y() - previous.y());
+            anchors.add(detachedAt(frame, transform, p, chainage)); previous = p;
+        }
+        return new SecantFixture(evidence, List.copyOf(anchors));
+    }
+
+    @Test
     void detachedScalarProfilesMatchLegacyReferenceAndFeedActualTracker() {
         int width = 480;
         int height = 256;
