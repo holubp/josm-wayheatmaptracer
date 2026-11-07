@@ -4,6 +4,10 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionPeak;
 
@@ -22,6 +26,9 @@ public final class CorridorTubeBuilder {
     private static final int WEAK_STABILITY_MAX_WINDOW_PROFILES = 33;
     private static final int HUBER_ITERATIONS = 2;
     private final MotionPolicy motionPolicy;
+    private final RasterMetricTransform componentFrame;
+    private final double nativePitchMeters;
+    private final Set<Integer> protectedProfiles;
 
     /** Explicit policy identity; historical replay/default construction remains unchanged. */
     public enum MotionPolicy { HISTORICAL, BOUNDED_SECONDARY_REVERSAL, TARGET_OWNED_APEX }
@@ -34,6 +41,18 @@ public final class CorridorTubeBuilder {
     /** Creates an explicitly opted-in motion classifier without changing fit/window parameters. */
     public CorridorTubeBuilder(MotionPolicy motionPolicy) {
         this.motionPolicy = java.util.Objects.requireNonNull(motionPolicy);
+        this.componentFrame = null;
+        this.nativePitchMeters = Double.NaN;
+        this.protectedProfiles = Set.of();
+    }
+
+    /** Explicit COMPONENT_LOCAL_METRIC_XY experiment, based solely on TARGET_OWNED_APEX. */
+    public CorridorTubeBuilder(RasterMetricTransform frame, double nativePitchMeters, Set<Integer> protectedProfiles) {
+        this.motionPolicy = MotionPolicy.TARGET_OWNED_APEX;
+        this.componentFrame = java.util.Objects.requireNonNull(frame);
+        if (!Double.isFinite(nativePitchMeters) || nativePitchMeters <= 0) throw new IllegalArgumentException("Factual native pitch required");
+        this.nativePitchMeters = nativePitchMeters;
+        this.protectedProfiles = Set.copyOf(protectedProfiles);
     }
 
     /**
@@ -51,6 +70,7 @@ public final class CorridorTubeBuilder {
         double sourcePixelSizePx,
         Map<String, BandScaleEvidence> scaleEvidence
     ) {
+        if (componentFrame != null) return buildComponentReference(track, profiles, sourcePixelSizePx, scaleEvidence).tube();
         if (profiles.isEmpty()) {
             return new LongitudinalCorridorTube(List.of());
         }
@@ -140,6 +160,104 @@ public final class CorridorTubeBuilder {
         }
         return new LongitudinalCorridorTube(slices);
     }
+
+    /** Immutable audit for the explicit component experiment; no tracker/optimizer work is implied. */
+    public record ComponentReferenceResult(LongitudinalCorridorTube tube, LongitudinalCorridorTube ordinaryTube,
+            List<ReferenceComponent> components, List<WorldFitDiagnostic> fits, long contactTests, String status) {
+        public ComponentReferenceResult { components=List.copyOf(components); fits=List.copyOf(fits); }
+    }
+    public record ReferenceComponent(int firstProfile, int lastProfile) { }
+    public record WorldFitDiagnostic(int profile, String window, double metricEast, double metricNorth,
+            double velocityEastPerMeter, double velocityNorthPerMeter, double offsetPx, double offsetPerMeter,
+            double residualMeters, double confidence, double projectionMissMeters, double normalScaleMetersPerPixel,
+            List<Double> finalSharedWeights) {
+        public WorldFitDiagnostic { finalSharedWeights=List.copyOf(finalSharedWeights); }
+    }
+
+    /** Builds the ordinary tube once, then modifies only native-triggered closed components. */
+    public ComponentReferenceResult buildComponentReference(CorridorTrack track, List<CorridorProfile> profiles,
+            double sourcePixelSizePx, Map<String,BandScaleEvidence> scaleEvidence) {
+        if (componentFrame == null) throw new IllegalStateException("Explicit metric reference policy required");
+        var ordinary = new CorridorTubeBuilder(MotionPolicy.TARGET_OWNED_APEX).build(track,profiles,sourcePixelSizePx,scaleEvidence);
+        double sourcePixel=validSourcePixel(sourcePixelSizePx);
+        List<MetricPoint> reference=metricPoints(profiles,ordinary), source=metricPoints(profiles,null);
+        List<ReferenceComponent> components=new ArrayList<>();long contactTests=0;
+        for(int a=1;a+1<profiles.size()-1;a++)for(int b=a+2;b+1<profiles.size()-1;b++){
+            contactTests++;
+            if(!FinalGeometryEvaluator.properIntersection(reference.get(a),reference.get(a+1),reference.get(b),reference.get(b+1)))continue;
+            if(!direct(track,a)||!direct(track,a+1)||!direct(track,b)||!direct(track,b+1))continue;
+            // Refuse inherited source contacts anywhere in the prospective closed component.
+            boolean inherited=false;
+            for(int c=a;c<=b&&!inherited;c++)for(int d=c+2;d<=b;d++){
+                contactTests++;
+                if(FinalGeometryEvaluator.properIntersection(source.get(c),source.get(c+1),source.get(d),source.get(d+1))){inherited=true;break;}
+            }
+            if(!inherited)components.add(new ReferenceComponent(a,b+1));
+        }
+        if(components.isEmpty())return new ComponentReferenceResult(ordinary,ordinary,List.of(),List.of(),contactTests,"NO_DEFINITE_DIRECT_INTERIOR_TRIGGER");
+        var hard=FinalGeometryEvaluator.backtrackFindings(reference);
+        boolean enlarged;
+        do{
+            enlarged=false;
+            for(int i=0;i<components.size();i++){
+                var c=components.get(i);int first=c.firstProfile(),last=c.lastProfile();
+                for(var finding:hard)if(finding.firstVertex()<=last+1&&finding.lastVertex()+1>=first){first=Math.min(first,finding.firstVertex());last=Math.max(last,finding.lastVertex());}
+                if(first!=c.firstProfile()||last!=c.lastProfile()){components.set(i,new ReferenceComponent(first,last));enlarged=true;}
+                for(int j=i+1;j<components.size();j++){var other=components.get(j);if(other.firstProfile()<=last+1&&other.lastProfile()+1>=first){components.set(i,new ReferenceComponent(Math.min(first,other.firstProfile()),Math.max(last,other.lastProfile())));components.remove(j);enlarged=true;break;}}
+            }
+        }while(enlarged);
+        components.sort(java.util.Comparator.comparingInt(ReferenceComponent::firstProfile));
+        for(var component:components)for(int row=component.firstProfile();row<=component.lastProfile();row++)
+            if(row==0||row==profiles.size()-1||protectedProfiles.contains(row)||!direct(track,row))
+                return new ComponentReferenceResult(ordinary,ordinary,components,List.of(),contactTests,"REFUSED_PROTECTED_OR_MISSING_DIRECT_COMPONENT");
+        double[] distance=cumulativeDistanceMeters(profiles);
+        List<Observation> observations=track.points().values().stream().map(p->observation(p,profiles.get(p.profileIndex()),distance,sourcePixel,scaleEvidence)).sorted(Comparator.comparingInt(Observation::profileIndex)).toList();
+        var slices=new ArrayList<>(ordinary.slices());var diagnostics=new ArrayList<WorldFitDiagnostic>();
+        try{
+            for(var component:components)for(int row=component.firstProfile();row<=component.lastProfile();row++){
+                var old=ordinary.at(row);var band=track.points().get(row).band();
+                var local=worldRegression(supportWindow(observations,distance[row],LOCAL_HALF_WINDOW_METERS,LOCAL_MIN_WINDOW_PROFILES,LOCAL_MAX_WINDOW_PROFILES,true),row,"local5m",profiles,distance,sourcePixel,band,diagnostics);
+                var stable=worldRegression(supportWindow(observations,distance[row],STABILITY_HALF_WINDOW_METERS,STABILITY_MIN_WINDOW_PROFILES,STABILITY_MAX_WINDOW_PROFILES,true),row,"stability12m",profiles,distance,sourcePixel,band,diagnostics);
+                var weak=worldRegression(supportWindow(observations,distance[row],WEAK_STABILITY_HALF_WINDOW_METERS,WEAK_STABILITY_MIN_WINDOW_PROFILES,WEAK_STABILITY_MAX_WINDOW_PROFILES,true),row,"weak32m",profiles,distance,sourcePixel,band,diagnostics);
+                double motion=old.motionSupport(),weakWeight=clamp((.35-Math.max(0,band.peakIntensity()-band.noiseFloor()))/.30)*(1-motion);
+                double stabilityCenter=blend(stable.centerOffsetPx(),weak.centerOffsetPx(),weakWeight),stabilitySlope=blend(stable.tangentOffsetPerMeter(),weak.tangentOffsetPerMeter(),weakWeight);
+                double stabilityResidual=blend(stable.residualScalePx(),weak.residualScalePx(),weakWeight),stabilityConfidence=blend(stable.confidence(),weak.confidence(),weakWeight);
+                slices.set(row,new CorridorTubeSlice(row,distance[row],blend(stabilityCenter,local.centerOffsetPx(),motion),blend(stabilitySlope,local.tangentOffsetPerMeter(),motion),local.centerOffsetPx(),local.tangentOffsetPerMeter(),stabilityCenter,stabilitySlope,stabilityResidual,motion,old.motionSupportReason(),old.curvatureOffsetPerMeterSquared(),old.coreMinPx(),old.coreMaxPx(),old.shoulderMinPx(),old.shoulderMaxPx(),Math.max(Math.max(sourcePixel*.5,band.uncertaintyPx()),blend(stabilityResidual,local.residualScalePx(),motion)),blend(stabilityConfidence,local.confidence(),motion),old.scaleConflict(),old.parentMerge(),old.rawCenterPx(),old.lightCenterPx(),old.standardCenterPx(),old.observed()));
+            }
+        }catch(IllegalArgumentException refused){return new ComponentReferenceResult(ordinary,ordinary,components,diagnostics,contactTests,"REFUSED_METRIC_FIT: "+refused.getMessage());}
+        return new ComponentReferenceResult(new LongitudinalCorridorTube(slices),ordinary,components,diagnostics,contactTests,"COMPONENT_LOCAL_METRIC_XY");
+    }
+
+    private static boolean direct(CorridorTrack track,int row){var point=track.points().get(row);return point!=null&&point.support()==CorridorPointSupport.DIRECT_UNION;}
+    private List<MetricPoint> metricPoints(List<CorridorProfile> profiles,LongitudinalCorridorTube tube){var result=new ArrayList<MetricPoint>();for(int i=0;i<profiles.size();i++){var p=profiles.get(i).source();var a=p.anchorScreen();var n=p.normalScreen();double d=tube==null?0:tube.at(i).centerOffsetPx();result.add(componentFrame.pixelCenterToMetric(a.x+n.x*d,a.y+n.y*d));}return result;}
+
+    private record WorldFrame(double ax,double ay,double nx,double ny,double scale) { }
+    private WorldFrame worldFrame(CorridorProfile profile){var p=profile.source();var a=p.anchorScreen();var n=p.normalScreen();var origin=componentFrame.pixelCenterToMetric(a.x,a.y);var normal=componentFrame.pixelCenterToMetric(a.x+n.x,a.y+n.y);double x=normal.xMeters()-origin.xMeters(),y=normal.yMeters()-origin.yMeters(),scale=StrictMath.hypot(x,y);if(!Double.isFinite(scale)||scale<=1e-12)throw new IllegalArgumentException("Singular metric normal");return new WorldFrame(origin.xMeters(),origin.yMeters(),x/scale,y/scale,scale);}
+    private record WorldLine(double x,double y,double vx,double vy) { }
+    private Regression worldRegression(List<Observation> observations,int target,String window,List<CorridorProfile> profiles,double[] distances,double sourcePixel,CorridorBand band,List<WorldFitDiagnostic> diagnostics){
+        if(observations.size()<2)throw new IllegalArgumentException("Insufficient metric fit window");
+        double[] x=new double[observations.size()],y=new double[x.length],weights=observations.stream().mapToDouble(Observation::weight).toArray();
+        for(int i=0;i<x.length;i++){var f=worldFrame(profiles.get(observations.get(i).profileIndex()));x[i]=f.ax()+f.nx()*f.scale()*observations.get(i).centerOffsetPx();y[i]=f.ay()+f.ny()*f.scale()*observations.get(i).centerOffsetPx();}
+        WorldLine fit=weightedWorld(observations,weights,x,y,distances[target]);double residual=nativePitchMeters*.5;
+        for(int iteration=0;iteration<HUBER_ITERATIONS;iteration++){
+            double[] radial=new double[x.length];for(int i=0;i<x.length;i++){double ds=observations.get(i).distanceMeters()-distances[target];radial[i]=StrictMath.hypot(x[i]-fit.x()-fit.vx()*ds,y[i]-fit.y()-fit.vy()*ds);}
+            residual=Math.max(nativePitchMeters*.5,1.5*weightedMedianAbsolute(radial,weights));
+            for(int i=0;i<weights.length;i++)weights[i]=observations.get(i).weight()*(radial[i]<=residual?1:residual/Math.max(radial[i],1e-12));
+            fit=weightedWorld(observations,weights,x,y,distances[target]);
+        }
+        var frame=worldFrame(profiles.get(target));double dx=fit.x()-frame.ax(),dy=fit.y()-frame.ay(),normalDistance=dx*frame.nx()+dy*frame.ny();
+        double miss=StrictMath.hypot(dx-normalDistance*frame.nx(),dy-normalDistance*frame.ny());
+        // Symmetric secants in factual chainage, clipped to the adjacent pair at endpoints.
+        int left=Math.max(0,target-1),right=Math.min(profiles.size()-1,target+1);double span=distances[right]-distances[left];if(span<=1e-12)throw new IllegalArgumentException("Degenerate factual derivative");
+        var l=worldFrame(profiles.get(left));var r=worldFrame(profiles.get(right));
+        double apx=(r.ax()-l.ax())/span,apy=(r.ay()-l.ay())/span,npx=(r.nx()-l.nx())/span,npy=(r.ny()-l.ny())/span,kp=(r.scale()-l.scale())/span;
+        double offset=normalDistance/frame.scale(),slope=((fit.vx()-apx)*frame.nx()+(fit.vy()-apy)*frame.ny()+dx*npx+dy*npy)/frame.scale()-normalDistance*kp/(frame.scale()*frame.scale());
+        double confidence=Math.min(1,java.util.Arrays.stream(weights).sum()/Math.max(1,observations.size()));
+        diagnostics.add(new WorldFitDiagnostic(target,window,fit.x(),fit.y(),fit.vx(),fit.vy(),offset,slope,residual,confidence,miss,frame.scale(),java.util.Arrays.stream(weights).boxed().toList()));
+        if(!Double.isFinite(offset)||!Double.isFinite(slope)||!Double.isFinite(residual)||miss>Math.max(nativePitchMeters,band.uncertaintyPx()*frame.scale()))throw new IllegalArgumentException("Nonfinite fit or off-normal miss beyond factual envelope at "+target+"/"+window);
+        return new Regression(offset,slope,Math.max(Math.max(sourcePixel*.5,nativePitchMeters*.5/frame.scale()),StrictMath.hypot(residual,miss)/frame.scale()),confidence);
+    }
+    private WorldLine weightedWorld(List<Observation> observations,double[] weights,double[] x,double[] y,double target){double sum=0,ts=0,xs=0,ys=0;for(int i=0;i<x.length;i++){sum+=weights[i];ts+=weights[i]*(observations.get(i).distanceMeters()-target);xs+=weights[i]*x[i];ys+=weights[i]*y[i];}if(sum<=1e-12)throw new IllegalArgumentException("Zero metric fit weight");double mt=ts/sum,mx=xs/sum,my=ys/sum,var=0,cx=0,cy=0;for(int i=0;i<x.length;i++){double dt=observations.get(i).distanceMeters()-target-mt;var+=weights[i]*dt*dt;cx+=weights[i]*dt*(x[i]-mx);cy+=weights[i]*dt*(y[i]-my);}if(var<=1e-12)throw new IllegalArgumentException("Singular metric fit span");double vx=cx/var,vy=cy/var;return new WorldLine(mx-vx*mt,my-vy*mt,vx,vy);}
 
     private Observation observation(
         CorridorTrackPoint point,

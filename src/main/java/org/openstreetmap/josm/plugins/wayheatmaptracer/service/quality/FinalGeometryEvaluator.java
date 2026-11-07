@@ -1667,6 +1667,17 @@ public final class FinalGeometryEvaluator {
         return result;
     }
 
+    /**
+     * Tests definite proper segment crossing with the unchanged native intersection arithmetic.
+     * MetricPoint construction enforces finite coordinates; null inputs are rejected explicitly.
+     * Touches, overlaps and near/uncertain contacts do not satisfy this predicate.
+     */
+    public static boolean properIntersection(MetricPoint a, MetricPoint b, MetricPoint c, MetricPoint d) {
+        java.util.Objects.requireNonNull(a); java.util.Objects.requireNonNull(b);
+        java.util.Objects.requireNonNull(c); java.util.Objects.requireNonNull(d);
+        return intersection(a, b, c, d) == IntersectionKind.PROPER;
+    }
+
     private static IntersectionKind intersection(MetricPoint a, MetricPoint b, MetricPoint c, MetricPoint d) {
         double o1 = orientation(a, b, c);
         double o2 = orientation(a, b, d);
