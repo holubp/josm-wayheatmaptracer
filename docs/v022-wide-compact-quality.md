@@ -135,3 +135,11 @@ candidate execution, integrity, native authority, branch, or safety checks.
 This assessment does not alter the diagnostic runner's FAILED status, existing
 assertions, or release gates; root-owned runner integration and all other
 performance qualification remain pending.
+
+The retention helper also keeps the frozen analytic oracle by scene strength:
+strong analytic p95 is bounded by 0.5p and weak analytic p95 by p; both retain
+certified maximum ≤p. Missing anti-zigzag evidence is unavailable. The faint
+absolute-amplitude assertion is explicitly applicable only to the frozen
+`faint-apex` scene and requires both candidate and dense-reference outcomes.
+Candidate-only, reference-only, and shared baseline debt remain distinguishable. Absolute candidate/reference values carry the same declared interval and baseline identity as the retained-bend measurements; a mismatch or missing required evidence makes the assessment unavailable. These are reported
+assessment outcomes, not added release gates.

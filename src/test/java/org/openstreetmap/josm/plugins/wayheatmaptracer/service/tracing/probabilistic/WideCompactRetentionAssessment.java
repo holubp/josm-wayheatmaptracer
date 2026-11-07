@@ -9,7 +9,8 @@ final class WideCompactRetentionAssessment {
     enum Evidence { RUNNER_VALIDATED, FAILED, UNAVAILABLE, NOT_APPLICABLE }
     enum Strength { STRONG, WEAK }
     enum Status { PASS, FAILED, UNAVAILABLE, NOT_APPLICABLE }
-    enum Verdict { RETENTION_PASS, RETENTION_PASS_WITH_BASELINE_DEBT, FAILED, UNAVAILABLE, ASSESSED_WITH_UNSUITABLE_REFERENCE }
+    enum Verdict { RETENTION_PASS, RETENTION_PASS_WITH_BASELINE_DEBT, RETENTION_PASS_WITH_CANDIDATE_DEBT,
+        RETENTION_PASS_WITH_REFERENCE_DEBT, FAILED, UNAVAILABLE, ASSESSED_WITH_UNSUITABLE_REFERENCE }
     enum ReferenceDisposition { SUITABLE, UNSUITABLE_REFERENCE, SUITABILITY_FAILED, UNAVAILABLE }
 
     record RunnerChecks(Evidence referenceExecution, Evidence referenceIdentity, Evidence referenceNativeAuthority,
@@ -19,64 +20,99 @@ final class WideCompactRetentionAssessment {
     record Distances(Metric rawP95, Metric rawCertifiedMaximum, Metric finalP95, Metric finalCertifiedMaximum) { }
     record Amplitudes(Metric candidate, Metric reference, String candidateInterval, String referenceInterval,
             String candidateBaseline, String referenceBaseline) { }
-    record AbsoluteAmplitude(Metric candidate, Metric target, Metric requiredMinimum) { }
+    record AbsoluteAmplitude(Metric candidate, Metric reference, Metric target, Metric requiredMinimum,
+            String interval, String baseline) { }
     record GeometryOracle(Metric p95, Metric certifiedMaximum, Evidence antiZigZag) { }
     record Input(String sceneId, Strength strength, RunnerChecks runnerChecks, Distances distances,
-            boolean supportedBend, Amplitudes amplitudes, AbsoluteAmplitude absoluteAmplitude,
-            GeometryOracle referenceGeometry, GeometryOracle candidateGeometry) { }
+            boolean supportedBend, boolean absoluteAmplitudeApplicable, Amplitudes amplitudes,
+            AbsoluteAmplitude absoluteAmplitude, GeometryOracle referenceGeometry, GeometryOracle candidateGeometry) { }
     record Result(String version, Verdict verdict, Status distanceStatus, ReferenceDisposition referenceDisposition,
-            Status amplitudeRetentionStatus, Double amplitudeRetentionRatio, Status absoluteQualityDebt,
-            boolean releaseQualified, List<String> reasons) { }
+            Status amplitudeRetentionStatus, Double amplitudeRetentionRatio, Status candidateAbsoluteQuality,
+            Status referenceAbsoluteQuality, Status absoluteQualityDebt, boolean releaseQualified, List<String> reasons) { }
 
     static final double P = WideCompactScenes.P;
 
     static Result assess(Input input) {
         if (input == null || input.sceneId() == null || input.strength() == null) {
             return result(Verdict.UNAVAILABLE, Status.UNAVAILABLE, ReferenceDisposition.UNAVAILABLE,
-                    Status.UNAVAILABLE, null, Status.UNAVAILABLE, "missing assessment identity or strength");
+                    Status.UNAVAILABLE, null, Status.UNAVAILABLE, Status.UNAVAILABLE,
+                    "missing assessment identity or strength");
         }
-        var reasons = new java.util.ArrayList<String>();
+        boolean frozenAbsoluteApplicability = "faint-apex".equals(input.sceneId());
+        if (input.absoluteAmplitudeApplicable() != frozenAbsoluteApplicability) {
+            return result(Verdict.UNAVAILABLE, Status.UNAVAILABLE, ReferenceDisposition.UNAVAILABLE,
+                    input.supportedBend() ? Status.UNAVAILABLE : Status.NOT_APPLICABLE, null,
+                    Status.UNAVAILABLE, Status.UNAVAILABLE, "absolute-amplitude applicability does not match frozen scene");
+        }
         Status required = requiredChecks(input.runnerChecks());
-        Status candidateOracle = oracleStatus(input.candidateGeometry(), true);
-        Status referenceOracle = oracleStatus(input.referenceGeometry(), false);
+        Status candidateOracle = oracleStatus(input.candidateGeometry(), input.strength());
+        Status referenceOracle = oracleStatus(input.referenceGeometry(), input.strength());
         Status distance = distanceStatus(input.distances(), input.strength());
         Status amplitude = input.supportedBend() ? amplitudeStatus(input.amplitudes()) : Status.NOT_APPLICABLE;
-        Status debt = absoluteStatus(input.absoluteAmplitude());
+        AbsoluteOutcomes absolute = absoluteStatus(input.absoluteAmplitude(), input.absoluteAmplitudeApplicable(), input.amplitudes());
         ReferenceDisposition disposition;
-        if (referenceOracle == Status.PASS) disposition = ReferenceDisposition.SUITABLE;
-        else if (referenceOracle == Status.UNAVAILABLE) disposition = ReferenceDisposition.UNAVAILABLE;
+        if (referenceOracle == Status.UNAVAILABLE || candidateOracle == Status.UNAVAILABLE || required == Status.UNAVAILABLE)
+            disposition = ReferenceDisposition.UNAVAILABLE;
+        else if (referenceOracle == Status.PASS) disposition = ReferenceDisposition.SUITABLE;
         else if ("diffuse-three-strand".equals(input.sceneId()) && candidateOracle == Status.PASS
                 && required == Status.PASS) disposition = ReferenceDisposition.UNSUITABLE_REFERENCE;
         else disposition = ReferenceDisposition.SUITABILITY_FAILED;
 
-        if (required == Status.FAILED || candidateOracle == Status.FAILED || distance == Status.FAILED
-                || amplitude == Status.FAILED || (disposition == ReferenceDisposition.SUITABILITY_FAILED)) {
+        var reasons = new java.util.ArrayList<String>();
+        if (required == Status.FAILED || candidateOracle == Status.FAILED || amplitude == Status.FAILED) {
             reasons.add("one or more mandatory candidate, reference, fidelity, or retention checks failed");
-            Verdict verdict = disposition == ReferenceDisposition.UNSUITABLE_REFERENCE
-                    ? Verdict.ASSESSED_WITH_UNSUITABLE_REFERENCE : Verdict.FAILED;
-            return new Result(VERSION, verdict, distance, disposition, amplitude,
-                    amplitudeRatio(input.amplitudes()), debt, false, List.copyOf(reasons));
+            return assessed(input, Verdict.FAILED, distance, disposition, amplitude, absolute, reasons);
         }
         if (required == Status.UNAVAILABLE || candidateOracle == Status.UNAVAILABLE || distance == Status.UNAVAILABLE
-                || amplitude == Status.UNAVAILABLE || disposition == ReferenceDisposition.UNAVAILABLE) {
+                || amplitude == Status.UNAVAILABLE || absolute.debt() == Status.UNAVAILABLE
+                || disposition == ReferenceDisposition.UNAVAILABLE) {
             reasons.add("required runner evidence or measurement is unavailable");
-            return new Result(VERSION, Verdict.UNAVAILABLE, distance, disposition, amplitude,
-                    amplitudeRatio(input.amplitudes()), debt, false, List.copyOf(reasons));
+            return assessed(input, Verdict.UNAVAILABLE, distance, disposition, amplitude, absolute, reasons);
+        }
+        if (disposition == ReferenceDisposition.SUITABILITY_FAILED) {
+            reasons.add("reference fails the independent geometry oracle outside the frozen exception");
+            return assessed(input, Verdict.FAILED, distance, disposition, amplitude, absolute, reasons);
+        }
+        if (distance == Status.FAILED) {
+            if (disposition == ReferenceDisposition.UNSUITABLE_REFERENCE) {
+                reasons.add("frozen diffuse reference fails independent geometry oracle; measured distance failure retained");
+                return assessed(input, Verdict.ASSESSED_WITH_UNSUITABLE_REFERENCE, distance, disposition, amplitude, absolute, reasons);
+            }
+            reasons.add("measured fidelity distance exceeds its applicable limit");
+            return assessed(input, Verdict.FAILED, distance, disposition, amplitude, absolute, reasons);
         }
         if (disposition == ReferenceDisposition.UNSUITABLE_REFERENCE) {
-            reasons.add("frozen diffuse reference fails independent geometry oracle; measured distance status retained");
-            return new Result(VERSION, Verdict.ASSESSED_WITH_UNSUITABLE_REFERENCE, distance, disposition,
-                    amplitude, amplitudeRatio(input.amplitudes()), debt, false, List.copyOf(reasons));
+            reasons.add("frozen diffuse reference fails independent geometry oracle; disposition retained");
+            return assessed(input, Verdict.ASSESSED_WITH_UNSUITABLE_REFERENCE, distance, disposition, amplitude, absolute, reasons);
         }
-        Verdict verdict = debt == Status.FAILED ? Verdict.RETENTION_PASS_WITH_BASELINE_DEBT : Verdict.RETENTION_PASS;
-        if (debt == Status.FAILED) reasons.add("absolute amplitude target debt remains separately visible");
-        return new Result(VERSION, verdict, distance, disposition, amplitude, amplitudeRatio(input.amplitudes()),
-                debt, false, List.copyOf(reasons));
+        Verdict verdict = switch (absolute.debt()) {
+            case FAILED -> absolute.candidate() == Status.FAILED && absolute.reference() == Status.FAILED
+                    ? Verdict.RETENTION_PASS_WITH_BASELINE_DEBT
+                    : absolute.candidate() == Status.FAILED ? Verdict.RETENTION_PASS_WITH_CANDIDATE_DEBT
+                    : Verdict.RETENTION_PASS_WITH_REFERENCE_DEBT;
+            default -> Verdict.RETENTION_PASS;
+        };
+        if (absolute.debt() == Status.FAILED) reasons.add("absolute amplitude outcome remains separately visible");
+        return assessed(input, verdict, distance, disposition, amplitude, absolute, reasons);
+    }
+
+    private record AbsoluteOutcomes(Status candidate, Status reference, Status debt) { }
+
+    private static Result assessed(Input input, Verdict verdict, Status distance, ReferenceDisposition disposition,
+            Status amplitude, AbsoluteOutcomes absolute, List<String> reasons) {
+        return new Result(VERSION, verdict, distance, disposition, amplitudeRetentionStatus(input),
+                amplitudeRatio(input.amplitudes()), absolute.candidate(), absolute.reference(), absolute.debt(), false,
+                List.copyOf(reasons));
+    }
+
+    private static Status amplitudeRetentionStatus(Input input) {
+        return input.supportedBend() ? amplitudeStatus(input.amplitudes()) : Status.NOT_APPLICABLE;
     }
 
     private static Result result(Verdict verdict, Status distance, ReferenceDisposition reference, Status amplitude,
-            Double ratio, Status debt, String reason) {
-        return new Result(VERSION, verdict, distance, reference, amplitude, ratio, debt, false, List.of(reason));
+            Double ratio, Status candidateAbsolute, Status referenceAbsolute, String reason) {
+        return new Result(VERSION, verdict, distance, reference, amplitude, ratio, candidateAbsolute,
+                referenceAbsolute, Status.UNAVAILABLE, false, List.of(reason));
     }
 
     private static Status requiredChecks(RunnerChecks c) {
@@ -106,13 +142,14 @@ final class WideCompactRetentionAssessment {
         return Status.PASS;
     }
 
-    private static Status oracleStatus(GeometryOracle oracle, boolean candidate) {
-        if (oracle == null) return Status.UNAVAILABLE;
+    private static Status oracleStatus(GeometryOracle oracle, Strength strength) {
+        if (oracle == null || strength == null) return Status.UNAVAILABLE;
         Double p95 = valid(oracle.p95()), max = valid(oracle.certifiedMaximum());
-        if (p95 == null || max == null || oracle.antiZigZag() == Evidence.UNAVAILABLE
-                || oracle.antiZigZag() == Evidence.NOT_APPLICABLE) return Status.UNAVAILABLE;
-        if (p95 > .5 * P || max > P || oracle.antiZigZag() == Evidence.FAILED) return Status.FAILED;
-        return Status.PASS;
+        if (p95 == null || max == null) return Status.UNAVAILABLE;
+        if (oracle.antiZigZag() == Evidence.FAILED) return Status.FAILED;
+        if (oracle.antiZigZag() != Evidence.RUNNER_VALIDATED) return Status.UNAVAILABLE;
+        double p95Limit = (strength == Strength.STRONG ? .5 : 1.0) * P;
+        return p95 > p95Limit || max > P ? Status.FAILED : Status.PASS;
     }
 
     private static Status amplitudeStatus(Amplitudes a) {
@@ -130,11 +167,20 @@ final class WideCompactRetentionAssessment {
         return candidate == null || reference == null || reference <= 0 ? null : candidate / reference;
     }
 
-    private static Status absoluteStatus(AbsoluteAmplitude a) {
-        if (a == null) return Status.NOT_APPLICABLE;
-        Double candidate = valid(a.candidate()), target = valid(a.target()), minimum = valid(a.requiredMinimum());
-        if (candidate == null || target == null || minimum == null) return Status.UNAVAILABLE;
-        return candidate >= minimum ? Status.PASS : Status.FAILED;
+    private static AbsoluteOutcomes absoluteStatus(AbsoluteAmplitude a, boolean applicable, Amplitudes amplitudes) {
+        if (!applicable) return new AbsoluteOutcomes(Status.NOT_APPLICABLE, Status.NOT_APPLICABLE, Status.NOT_APPLICABLE);
+        if (a == null) return new AbsoluteOutcomes(Status.UNAVAILABLE, Status.UNAVAILABLE, Status.UNAVAILABLE);
+        if (amplitudes == null || !same(a.interval(), amplitudes.candidateInterval())
+                || !same(a.interval(), amplitudes.referenceInterval()) || !same(a.baseline(), amplitudes.candidateBaseline())
+                || !same(a.baseline(), amplitudes.referenceBaseline()))
+            return new AbsoluteOutcomes(Status.UNAVAILABLE, Status.UNAVAILABLE, Status.UNAVAILABLE);
+        Double candidate = valid(a.candidate()), reference = valid(a.reference()), target = valid(a.target()), minimum = valid(a.requiredMinimum());
+        if (candidate == null || reference == null || target == null || minimum == null)
+            return new AbsoluteOutcomes(Status.UNAVAILABLE, Status.UNAVAILABLE, Status.UNAVAILABLE);
+        Status candidateStatus = candidate >= minimum ? Status.PASS : Status.FAILED;
+        Status referenceStatus = reference >= minimum ? Status.PASS : Status.FAILED;
+        Status debt = candidateStatus == Status.FAILED || referenceStatus == Status.FAILED ? Status.FAILED : Status.PASS;
+        return new AbsoluteOutcomes(candidateStatus, referenceStatus, debt);
     }
 
     private static Double valid(Metric metric) {
