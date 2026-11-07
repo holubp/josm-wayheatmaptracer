@@ -19,7 +19,7 @@ final class WideCompactScenes {
         return scene(id,length,tiny,BPolicy.INVENTORY_PREP_V4);
     }
     private static Scene scene(String id,double length,boolean tiny,BPolicy policy) {
-        if(policy!=BPolicy.INVENTORY_PREP_V4&&policy!=BPolicy.INVENTORY_FRONTIER_V5)
+        if(policy!=BPolicy.INVENTORY_PREP_V4&&policy!=BPolicy.INVENTORY_FRONTIER_V5&&policy!=BPolicy.INVENTORY_FRONTIER_BUDGETED_V6)
             throw new IllegalArgumentException("An explicit V4/V5 inventory fixture policy is required");
         boolean hairpin=id.equals("thin-hairpin"),reverse=id.endsWith("reversed");
         var source=new ArrayList<MetricPoint>();

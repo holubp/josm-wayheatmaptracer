@@ -39,7 +39,7 @@ public final class WideCompactQualityMain {
         Capture(boolean demandCompact){this(demandCompact,TraceBudgets.defaults());}
         Capture(boolean demandCompact,TraceBudgets expectedBudgets){this(demandCompact,expectedBudgets,BPolicy.INVENTORY_PREP_V4);}
         Capture(boolean demandCompact,TraceBudgets expectedBudgets,BPolicy policy){
-            require(policy==BPolicy.INVENTORY_PREP_V4||policy==BPolicy.INVENTORY_FRONTIER_V5,"Unknown fixture inventory policy");
+            require(policy==BPolicy.INVENTORY_PREP_V4||policy==BPolicy.INVENTORY_FRONTIER_V5||policy==BPolicy.INVENTORY_FRONTIER_BUDGETED_V6,"Unknown fixture inventory policy");
             this.demandCompact=demandCompact;this.expectedBudgets=expectedBudgets;this.expectedPolicy=policy;
         }
         public void dense(List<ProbabilisticProfile> sampled,List<InferenceProfile> dense,TraceBudgets budgets) {
@@ -57,7 +57,7 @@ public final class WideCompactQualityMain {
                             &&cell.offsetMeters()<=mode.coreMaximumMeters()+.5*p.sourcePitchMeters())needed.set(i);
                 }
                 required.add(needed);
-                if(expectedPolicy==BPolicy.INVENTORY_FRONTIER_V5) {
+                if(expectedPolicy==BPolicy.INVENTORY_FRONTIER_V5||expectedPolicy==BPolicy.INVENTORY_FRONTIER_BUDGETED_V6) {
                     var frontier=(BitSet)needed.clone();
                     for(int seed=needed.nextSetBit(0);seed>=0;seed=needed.nextSetBit(seed+1))
                         for(int i=0;i<d.cells().size();i++)
@@ -87,7 +87,7 @@ public final class WideCompactQualityMain {
             StringBuilder cells=new StringBuilder("pass,row,compact_index,original_index\n");retained.forEach((pass,rs)->rs.forEach((row,is)->{for(int i=0;i<is.size();i++)cells.append(pass).append(',').append(row).append(',').append(i).append(',').append(is.get(i)).append('\n');}));write(out,"retained-indices.csv",cells.toString());
             StringBuilder paths=new StringBuilder("rank,energy,original_graph_state_sequence\n");for(int i=0;i<rawStates.size();i++)paths.append(i).append(',').append(rawEnergies.get(i)).append(",\"").append(Arrays.toString(rawStates.get(i))).append("\"\n");write(out,"native-raw-path-order.csv",paths.toString());
             write(out,"probe.txt","denseCalls="+denseCalls+"\ninferredCalls="+inferredCalls+"\nclosedCalls="+closedCalls+"\nclosedBytes="+closedBytes+"\npeakBytes="+peakBytes+"\ndenseStates="+denseStates+"\nbounds="+bound+"\nposteriorUsable="+posteriorUsable+"\ncompletion="+completion+"\n");
-            if(expectedPolicy==BPolicy.INVENTORY_FRONTIER_V5) {
+            if(expectedPolicy==BPolicy.INVENTORY_FRONTIER_V5||expectedPolicy==BPolicy.INVENTORY_FRONTIER_BUDGETED_V6) {
                 StringBuilder frontier=new StringBuilder("row,original_fine_cells,source_frontier_cells\n");
                 for(int i=0;i<widths.size();i++)frontier.append(i).append(",\"").append(required.get(i)).append("\",\"").append(sourceFrontiers.get(i)).append("\"\n");
                 write(out,"source-frontier-census.csv",frontier.toString());
@@ -171,7 +171,7 @@ public final class WideCompactQualityMain {
             var indices=rows.get(row);require(indices!=null&&!indices.isEmpty(),"Missing retained row "+row);var set=new BitSet(c.widths.get(row));
             for(int index:indices){require(index>=0&&index<c.widths.get(row),"Foreign original cell");set.set(index);}
             var missing=(BitSet)c.required.get(row).clone();missing.andNot(set);require(missing.isEmpty(),"Measured/mandatory cell omitted");omitted+=c.widths.get(row)-set.cardinality();
-            if(policy==BPolicy.INVENTORY_FRONTIER_V5) {
+            if(policy==BPolicy.INVENTORY_FRONTIER_V5||policy==BPolicy.INVENTORY_FRONTIER_BUDGETED_V6) {
                 var initial=new BitSet(c.widths.get(row));for(int index:c.retained.get(0).get(row))initial.set(index);
                 var frontier=(BitSet)c.sourceFrontiers.get(row).clone();frontier.andNot(initial);
                 require(frontier.isEmpty(),"Original source frontier omitted before the first solve");

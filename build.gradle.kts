@@ -292,6 +292,16 @@ tasks.register<JavaExec>("v022WideFrontierRetention") {
     args("--frontier-retention", layout.buildDirectory.dir("reports/wide-frontier-v5-retention").get().asFile.absolutePath)
 }
 
+tasks.register<JavaExec>("v022WideBudgetedFrontierRetention") {
+    group = "verification"
+    description = "Runs all six frozen public V6 budgeted source-frontier compact retention cases"
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.WideBudgetedFrontierRetentionMain")
+    jvmArgs("-Xmx512m", "-Djava.awt.headless=true")
+    args("--budgeted-frontier-retention", layout.buildDirectory.dir("reports/wide-budgeted-frontier-v6-retention").get().asFile.absolutePath)
+}
+
 tasks.register<JavaExec>("legacyNormalPerformance") {
     group = "verification"
     description = "Runs one public synthetic Legacy normal-policy performance fork"

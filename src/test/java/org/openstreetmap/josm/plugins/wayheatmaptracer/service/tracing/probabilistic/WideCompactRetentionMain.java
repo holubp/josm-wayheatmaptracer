@@ -43,7 +43,11 @@ public final class WideCompactRetentionMain {
         var refExpected=referenceBackend.equals("CACHED_V4_ORACLE_AFTER_HISTORICAL_RESOURCE_LIMIT")
                 ?scene.input():WideCompactQualityMain.historical(scene.input());
         markIdentity(record,WideCompactRetentionFlow.Stage.REFERENCE_IDENTITY,scene,refExpected,referenceInput,reference,"reference");
-        boolean frontier=policy==BPolicy.INVENTORY_FRONTIER_V5||BPolicy.recorded(scene.input().request())==BPolicy.INVENTORY_FRONTIER_V5
+        boolean frontier=policy==BPolicy.INVENTORY_FRONTIER_BUDGETED_V6
+                ||BPolicy.recorded(scene.input().request())==BPolicy.INVENTORY_FRONTIER_BUDGETED_V6
+                ||candidateInput!=null&&BPolicy.recorded(candidateInput.request())==BPolicy.INVENTORY_FRONTIER_BUDGETED_V6
+                ||candidate!=null&&candidate.capture().expectedPolicy==BPolicy.INVENTORY_FRONTIER_BUDGETED_V6
+                ||policy==BPolicy.INVENTORY_FRONTIER_V5||BPolicy.recorded(scene.input().request())==BPolicy.INVENTORY_FRONTIER_V5
                 ||candidateInput!=null&&BPolicy.recorded(candidateInput.request())==BPolicy.INVENTORY_FRONTIER_V5
                 ||candidate!=null&&candidate.capture().expectedPolicy==BPolicy.INVENTORY_FRONTIER_V5;
         markIdentity(record,WideCompactRetentionFlow.Stage.CANDIDATE_IDENTITY,scene,frontier?scene.input():candidateInput,
@@ -324,7 +328,7 @@ public final class WideCompactRetentionMain {
     static void completeScene(WideCompactRetentionFlow.Report report,WideCompactScenes.Scene scene,
             FrozenReplayInput referenceInput,WideCompactQualityMain.Run reference,FrozenReplayInput candidateInput,
             WideCompactQualityMain.Run candidate,Path dir,BPolicy policy) {
-        if(policy!=BPolicy.INVENTORY_PREP_V4&&policy!=BPolicy.INVENTORY_FRONTIER_V5)
+        if(policy!=BPolicy.INVENTORY_PREP_V4&&policy!=BPolicy.INVENTORY_FRONTIER_V5&&policy!=BPolicy.INVENTORY_FRONTIER_BUDGETED_V6)
             throw new IllegalArgumentException("An explicit V4/V5 inventory fixture policy is required");
         String id=scene.id();var record=report.scene(id);
         if(reference!=null&&candidate!=null) {
