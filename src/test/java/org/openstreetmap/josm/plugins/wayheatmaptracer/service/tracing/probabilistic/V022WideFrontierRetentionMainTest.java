@@ -110,11 +110,17 @@ class V022WideFrontierRetentionMainTest {
         assertTrue(contract.contains("public-wide-frontier-v5-performance-retention"));
         assertTrue(contract.contains(BPolicy.FRONTIER_COMPACT_VERSION));
         assertFalse(contract.contains("\"nativeExecution\":\"PASS\""));
-        var parsed = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader
-                .parseObject(Files.readAllBytes(output.resolve("frontier-source-bindings.json")), "frontier-source-bindings.json");
-        assertEquals(false, parsed.get("releaseQualified"));
-        assertEquals("INVENTORY_FRONTIER_V5", parsed.get("policy"));
-        assertEquals(6, ((List<?>) parsed.get("bindings")).size());
+        var parser = new ProcessBuilder("python3", "-c",
+                "import json,sys; v=json.load(open(sys.argv[1])); "
+                + "assert v['releaseQualified'] is False; assert v['policy']=='INVENTORY_FRONTIER_V5'; "
+                + "assert len(v['bindings'])==6", output.resolve("frontier-source-bindings.json").toString())
+                .redirectErrorStream(true).start();
+        try {
+            assertTrue(parser.waitFor(10, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(0, parser.exitValue(), new String(parser.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+        } finally {
+            if (parser.isAlive()) parser.destroyForcibly();
+        }
         assertThrows(AssertionError.class, () -> WideCompactRetentionMain.requireAccepted(report));
         assertThrows(java.io.IOException.class, () -> WideFrontierRetentionMain.requireFreshOutput(output));
         assertThrows(java.nio.file.FileAlreadyExistsException.class,
