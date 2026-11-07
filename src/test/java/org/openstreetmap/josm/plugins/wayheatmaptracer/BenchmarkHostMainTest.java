@@ -43,6 +43,23 @@ class BenchmarkHostMainTest {
     }
 
     @Test
+    void profileIsRequiredOnlyByNamedV4AndOrdinaryPolicyCannotBeOverridden() {
+        for (var profile : BenchmarkSourceFixture.values()) {
+            assertEquals(profile, BenchmarkHostMain.sourceProfile(BenchmarkComparisonContract.INVENTORY_V4_APPROVED,
+                    profile.identity()));
+            assertThrows(IllegalArgumentException.class, () -> BenchmarkHostMain.sourceProfile(
+                    BenchmarkComparisonContract.STRICT, profile.identity()));
+            assertThrows(IllegalArgumentException.class, () -> BenchmarkHostMain.sourceProfile(
+                    BenchmarkComparisonContract.RC10_APPROVED, profile.identity()));
+        }
+        assertThrows(IllegalArgumentException.class, () -> BenchmarkHostMain.sourceProfile(
+                BenchmarkComparisonContract.INVENTORY_V4_APPROVED, null));
+        BenchmarkHostMain.requireOrdinaryActionContract(BenchmarkComparisonContract.INVENTORY_V4_APPROVED);
+        assertThrows(IllegalStateException.class, () -> BenchmarkHostMain.requireOrdinaryActionContract(
+                BenchmarkComparisonContract.RC10_APPROVED));
+    }
+
+    @Test
     void fatalEntrypointFailureExitsEvenWithASwallowingJosmStyleHandler() throws Exception {
         String classpath = java.util.stream.Stream.of(BenchmarkHostMainTest.class, BenchmarkHostMain.class,
                 org.openstreetmap.josm.data.osm.DataSet.class, org.junit.jupiter.api.Test.class)

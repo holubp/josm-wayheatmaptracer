@@ -17,11 +17,23 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Selected
 /** Maintainer-approved cross-version exceptions; native identities are never rewritten. */
 public enum BenchmarkComparisonContract {
     STRICT("rc6-identical-v1"),
-    RC10_APPROVED("rc10-approved-numerical-readonly-v1");
+    RC10_APPROVED("rc10-approved-numerical-readonly-v1"),
+    INVENTORY_V4_APPROVED("b-inventory-v4-numerical-readonly-v1");
 
     // Exact reviewed live B parameter identities. A future policy needs a new approved contract.
     public static final String RC6_B_PARAMETERS = "df52ac49e7aae10c1b5953155ef4ba3cc9430c06b1b42ac8a9afe24f3235e825";
     public static final String RC10_B_PARAMETERS = "9814307c79fae2c8ec105c755c7373694d3c4e893be78a747062511361241b35";
+    public static final String V4_MANAGED_B_PARAMETERS = "68d3b706f28674e60cb45646be640e4d83d1c14200c93987b4c0a42dcceb5fda";
+    public enum ComparisonScope {
+        BASELINE_REPEAT("baseline-repeat"), CANDIDATE_REPEAT("candidate-repeat"), CROSS_VERSION("cross-version");
+        private final String identity;
+        ComparisonScope(String identity) { this.identity = identity; }
+        public String identity() { return identity; }
+        public static ComparisonScope parse(String identity) {
+            for (var scope : values()) if (scope.identity.equals(identity)) return scope;
+            throw new IllegalArgumentException("Unknown benchmark comparison scope");
+        }
+    }
     private final String identity;
     BenchmarkComparisonContract(String identity) { this.identity = identity; }
     public String identity() { return identity; }
@@ -41,6 +53,22 @@ public enum BenchmarkComparisonContract {
         if ((!RC6_B_PARAMETERS.equals(baseline) && !RC10_B_PARAMETERS.equals(baseline))
                 || !RC10_B_PARAMETERS.equals(candidate)) {
             throw new IllegalStateException("Unapproved B numerical parameter identity");
+        }
+    }
+
+    public static void requireApprovedParameters(BenchmarkComparisonContract contract, ComparisonScope scope,
+            String baseline, String candidate) {
+        if (contract == null || scope == null) throw new IllegalArgumentException("Explicit benchmark contract and scope required");
+        if (contract == INVENTORY_V4_APPROVED) {
+            String first = scope == ComparisonScope.CANDIDATE_REPEAT ? V4_MANAGED_B_PARAMETERS : RC6_B_PARAMETERS;
+            String second = scope == ComparisonScope.BASELINE_REPEAT ? RC6_B_PARAMETERS : V4_MANAGED_B_PARAMETERS;
+            if (!first.equals(baseline) || !second.equals(candidate)) {
+                throw new IllegalStateException("Unapproved V4 scope or numerical policy identity");
+            }
+        } else if (contract == RC10_APPROVED) {
+            requireApprovedParameters(baseline, candidate);
+        } else if (!RC6_B_PARAMETERS.equals(baseline) || !baseline.equals(candidate)) {
+            throw new IllegalStateException("Strict benchmark requires identical RC6 policy");
         }
     }
 
@@ -102,6 +130,47 @@ public enum BenchmarkComparisonContract {
         requireReadOnlyExtension(baseline.network(), candidate.network(), fixedIslandKeys);
         BenchmarkDecisionComparatorMain.requireSameEvidence(baseline, candidate);
         requireRequests(baseline.request(), candidate.request());
+    }
+
+    public static void requireInputs(BenchmarkComparisonContract contract, FrozenReplayInput baseline,
+            FrozenReplayInput candidate, Set<PrimitiveKey> fixedIslandKeys) {
+        if (contract == STRICT) {
+            BenchmarkDecisionComparatorMain.requireSame(baseline, candidate);
+            return;
+        }
+        requireReadOnlyExtension(baseline.network(), candidate.network(), fixedIslandKeys);
+        BenchmarkDecisionComparatorMain.requireSameEvidence(baseline, candidate);
+        requireRequests(contract, baseline.request(), candidate.request());
+    }
+
+    /** Explicit source/selection origin only: a bookmark is never a fresh numerical result. */
+    public static void requireV4BookmarkOrigin(FrozenReplayInput bookmark, FrozenReplayInput nativeBaseline,
+            BenchmarkSourceFixture profile) {
+        java.util.Objects.requireNonNull(profile);
+        var a = bookmark.request(); var b = nativeBaseline.request();
+        var old = bookmark.network(); var actual = nativeBaseline.network();
+        String source = "managed-selected-" + profile.palette() + "-g" + old.sourceGeneration();
+        String bookmarkPolicy = profile == BenchmarkSourceFixture.HOT ? RC6_B_PARAMETERS : RC10_B_PARAMETERS;
+        if (!bookmarkPolicy.equals(a.parameterHash()) || !RC6_B_PARAMETERS.equals(b.parameterHash())
+                || a.engine() != TrackerMode.PROBABILISTIC || b.engine() != TrackerMode.PROBABILISTIC
+                || !a.selectedWayKey().equals(b.selectedWayKey()) || !a.selectedRange().equals(b.selectedRange())
+                || old.sourceGeneration() != actual.sourceGeneration()
+                || !source.equals(bookmark.evidence().sourceIdentity())
+                || !source.equals(nativeBaseline.evidence().sourceIdentity())
+                || b.geometryMode() != org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.PRECISE_SHAPE
+                || a.geometryMode() != b.geometryMode()
+                    && (profile != BenchmarkSourceFixture.BLUERED
+                        || a.geometryMode() != org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.MOVE_EXISTING_NODES)) {
+            throw new IllegalStateException("V4 native baseline source/profile transition differs from bookmark");
+        }
+        var way = (org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay) old.primitives().get(a.selectedWayKey());
+        var keys = new HashSet<>(way.nodeKeys()); keys.add(way.key());
+        for (var key : keys) if (!old.primitives().get(key).equals(actual.primitives().get(key))) {
+            throw new IllegalStateException("V4 original selection payload differs");
+        }
+        System.out.println("bookmarkOriginGeometryMode=" + a.geometryMode());
+        System.out.println("nativeBaselineGeometryMode=" + b.geometryMode());
+        System.out.println("sourceProfile=" + profile.identity());
     }
 
     /**
@@ -199,6 +268,23 @@ public enum BenchmarkComparisonContract {
 
     public static void requireRequests(TraceRequest a, TraceRequest b) {
         requireApprovedParameters(a.parameterHash(), b.parameterHash());
+        requireRequestFields(a, b);
+    }
+
+    public static void requireRequests(BenchmarkComparisonContract contract, TraceRequest a, TraceRequest b) {
+        if (contract == INVENTORY_V4_APPROVED) {
+            requireApprovedParameters(contract, RC6_B_PARAMETERS.equals(a.parameterHash())
+                    ? ComparisonScope.CROSS_VERSION : ComparisonScope.CANDIDATE_REPEAT,
+                    a.parameterHash(), b.parameterHash());
+        } else if (contract == RC10_APPROVED) {
+            requireApprovedParameters(a.parameterHash(), b.parameterHash());
+        } else if (!a.parameterHash().equals(b.parameterHash())) {
+            throw new IllegalStateException("Strict benchmark policy differs");
+        }
+        requireRequestFields(a, b);
+    }
+
+    private static void requireRequestFields(TraceRequest a, TraceRequest b) {
         if (a.engine() != TrackerMode.PROBABILISTIC || b.engine() != TrackerMode.PROBABILISTIC
                 || !a.selectedWayKey().equals(b.selectedWayKey()) || !a.selectedRange().equals(b.selectedRange())
                 || a.geometryMode() != b.geometryMode() || !a.permissions().equals(b.permissions())

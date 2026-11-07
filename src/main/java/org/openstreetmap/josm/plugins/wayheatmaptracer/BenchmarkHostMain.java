@@ -60,7 +60,7 @@ import org.openstreetmap.josm.spi.preferences.Config;
 public final class BenchmarkHostMain {
     private BenchmarkHostMain() { }
 
-    record FixtureSource(long generation) {
+    record FixtureSource(long generation, BenchmarkSourceFixture profile) {
         FixtureSource {
             if (generation < 0L) {
                 throw new IllegalArgumentException("Frozen source generation must be non-negative");
@@ -68,7 +68,7 @@ public final class BenchmarkHostMain {
         }
 
         ManagedHeatmapConfig config() {
-            return fixtureConfig(generation);
+            return fixtureConfig(generation, profile);
         }
 
         void saveCacheGenerationPreference() {
@@ -76,7 +76,7 @@ public final class BenchmarkHostMain {
         }
 
         String sourceIdentity() {
-            return "managed-selected-hot-g" + generation;
+            return "managed-selected-" + (profile == null ? "hot" : profile.palette()) + "-g" + generation;
         }
 
         ManagedTileGeneration tileGeneration() {
@@ -85,7 +85,17 @@ public final class BenchmarkHostMain {
     }
 
     static FixtureSource fixtureSource(long generation) {
-        return new FixtureSource(generation);
+        return new FixtureSource(generation, null);
+    }
+
+    static FixtureSource fixtureSource(long generation, BenchmarkSourceFixture profile) {
+        return new FixtureSource(generation, java.util.Objects.requireNonNull(profile));
+    }
+
+    static BenchmarkSourceFixture sourceProfile(BenchmarkComparisonContract contract, String value) {
+        if (contract == BenchmarkComparisonContract.INVENTORY_V4_APPROVED) return BenchmarkSourceFixture.parse(value);
+        if (value != null) throw new IllegalArgumentException("Source profile requires the named V4 contract");
+        return null;
     }
 
     public static void main(String[] args) throws Exception {
@@ -105,6 +115,10 @@ public final class BenchmarkHostMain {
         }
         Path archive = Path.of(args[0]), osm = Path.of(args[1]), tiles = Path.of(args[2]);
         Path receipt = Path.of(args[3]);
+        BenchmarkComparisonContract contract = BenchmarkComparisonContract.parse(System.getProperty(
+                "wayheatmaptracer.benchmark.comparisonContract", BenchmarkComparisonContract.STRICT.identity()));
+        BenchmarkSourceFixture profile = sourceProfile(contract,
+                System.getProperty("wayheatmaptracer.benchmark.sourceProfile"));
         System.setProperty("wayheatmaptracer.benchmark.offline", "true");
         System.setProperty("wayheatmaptracer.benchmark.pluginJar", args[4]);
         System.setProperty("wayheatmaptracer.benchmark.receipt", receipt.toString());
@@ -126,7 +140,8 @@ public final class BenchmarkHostMain {
         var historical = FrozenReplayCodec.decode(Format15ArchiveReader.read(archive)
                 .artifact("frozen-input.bin").orElseThrow(() -> new IllegalStateException(
                         "Original benchmark input requires a single frozen-input.bin" )).bytes());
-        FixtureSource fixtureSource = fixtureSource(historical.network().sourceGeneration());
+        FixtureSource fixtureSource = profile == null ? fixtureSource(historical.network().sourceGeneration())
+                : fixtureSource(historical.network().sourceGeneration(), profile);
         DetachedWay expected = (DetachedWay) historical.network().primitives().get(
                 historical.request().selectedWayKey());
         Way selected = (Way) dataSet.getPrimitiveById(expected.key().id(), OsmPrimitiveType.WAY);
@@ -160,7 +175,7 @@ public final class BenchmarkHostMain {
         PluginPreferences.save(config);
         fixtureSource.saveCacheGenerationPreference();
         PluginPreferences.saveTracingSettings(new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
-                TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false,
+                TrackerMode.PROBABILISTIC, RecoverySettings.defaults(config.searchHalfWidthMeters()), false,
                 AlignmentSourceMode.MANAGED_TILES));
         PluginPreferences.saveGeometryCleanup(GeometryCleanupConfig.disabled());
         config = PluginPreferences.load();
@@ -173,12 +188,11 @@ public final class BenchmarkHostMain {
                 slideConfig, fixtureSource.sourceIdentity()));
         var actual = seed.network();
         var frozen = historical.network();
-        BenchmarkComparisonContract contract = BenchmarkComparisonContract.parse(System.getProperty(
-                "wayheatmaptracer.benchmark.comparisonContract", BenchmarkComparisonContract.STRICT.identity()));
         requireOrdinaryActionContract(contract);
-        if (contract == BenchmarkComparisonContract.RC10_APPROVED) {
-            var reference = readBaselineReference(historical, args[6].split(":", 2)[0]);
-            requireNativeBaselineCapture(reference, seed);
+        if (contract == BenchmarkComparisonContract.RC10_APPROVED
+                || contract == BenchmarkComparisonContract.INVENTORY_V4_APPROVED) {
+            var reference = readBaselineReference(historical, args[6].split(":", 2)[0], contract, profile);
+            requireNativeBaselineCapture(reference, seed, contract);
         } else if (!actual.closure().equals(frozen.closure())
                 || !actual.primitives().equals(frozen.primitives())
                 || !actual.incomingReferrerWatches().equals(frozen.incomingReferrerWatches())
@@ -192,7 +206,7 @@ public final class BenchmarkHostMain {
                     .requireSemanticWitnessCurrent(dataSet, actual);
             return null;
         });
-        seedTiles(tiles, fixtureSource.tileGeneration());
+        seedTiles(tiles, fixtureSource.tileGeneration(), profile);
         PluginInformation info = new PluginInformation(
                 Path.of(System.getProperty("wayheatmaptracer.benchmark.pluginJar")).toFile());
         SwingUtilities.invokeAndWait(() -> {
@@ -240,6 +254,11 @@ public final class BenchmarkHostMain {
 
     /** The later registered action constructs its own ordinary seed; a compatibility preflight cannot override it. */
     static void requireOrdinaryActionContract(BenchmarkComparisonContract contract) {
+        if (contract == BenchmarkComparisonContract.INVENTORY_V4_APPROVED
+                && !BenchmarkComparisonContract.V4_MANAGED_B_PARAMETERS.equals(
+                        BPolicy.newCaptureParameterHash(BPolicy.exactParameterHash()))) {
+            throw new IllegalStateException("Current ordinary managed B policy differs from named V4 contract");
+        }
         if (contract == BenchmarkComparisonContract.RC10_APPROVED
                 && !BenchmarkComparisonContract.RC10_B_PARAMETERS.equals(
                         BPolicy.newCaptureParameterHash(BPolicy.exactParameterHash()))) {
@@ -250,9 +269,17 @@ public final class BenchmarkHostMain {
     static void requireNativeBaselineCapture(
             org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput reference,
             LiveBPreviewService.ManagedCaptureSeed seed) {
+        requireNativeBaselineCapture(reference, seed, BenchmarkComparisonContract.RC10_APPROVED);
+    }
+
+    static void requireNativeBaselineCapture(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput reference,
+            LiveBPreviewService.ManagedCaptureSeed seed, BenchmarkComparisonContract contract) {
         BenchmarkComparisonContract.requireReadOnlyExtension(reference.network(), seed.network(),
                 BenchmarkComparisonContract.frozenKeys(seed.intervalPartition()));
-        BenchmarkComparisonContract.requireApprovedParameters(reference.request().parameterHash(), seed.parameterHash());
+        BenchmarkComparisonContract.requireApprovedParameters(contract,
+                BenchmarkComparisonContract.ComparisonScope.CROSS_VERSION,
+                reference.request().parameterHash(), seed.parameterHash());
         if (!reference.evidence().coordinateFrame().equals(seed.frame())
                 || !reference.request().permissions().equals(seed.specification().permissions())
                 || !reference.request().settingsHash().equals(seed.settingsHash())) {
@@ -263,6 +290,12 @@ public final class BenchmarkHostMain {
     static org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput
             readBaselineReference(org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput bookmark,
                     String caseId) throws Exception {
+        return readBaselineReference(bookmark, caseId, BenchmarkComparisonContract.RC10_APPROVED, null);
+    }
+
+    static org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput
+            readBaselineReference(org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput bookmark,
+                    String caseId, BenchmarkComparisonContract contract, BenchmarkSourceFixture profile) throws Exception {
         Path archive = pinnedPropertyPath("baselineArchive");
         Path receipt = pinnedPropertyPath("baselineReceipt");
         if (!archive.getParent().equals(receipt.getParent()) || Files.size(receipt) > 65_536L) {
@@ -277,7 +310,11 @@ public final class BenchmarkHostMain {
         var input = FrozenReplayCodec.decode(nativeArchive.artifact("frozen-input.bin").orElseThrow().bytes());
         org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.BenchmarkFinalOutputComparison
                 .verifyNative(nativeArchive, input);
-        BenchmarkComparisonContract.requireBookmarkProvenance(bookmark, input);
+        if (contract == BenchmarkComparisonContract.INVENTORY_V4_APPROVED) {
+            BenchmarkComparisonContract.requireV4BookmarkOrigin(bookmark, input, profile);
+        } else {
+            BenchmarkComparisonContract.requireBookmarkProvenance(bookmark, input);
+        }
         pinnedPropertyPath("baselineArchive"); pinnedPropertyPath("baselineReceipt");
         System.out.println("bookmarkSettingsHash=" + bookmark.request().settingsHash());
         System.out.println("nativeBaselineSettingsHash=" + input.request().settingsHash());
@@ -314,33 +351,56 @@ public final class BenchmarkHostMain {
         return task.get();
     }
 
-    private static ManagedHeatmapConfig fixtureConfig(long generation) {
+    private static ManagedHeatmapConfig fixtureConfig(long generation, BenchmarkSourceFixture profile) {
         return new ManagedHeatmapConfig("fixture-key", "fixture-policy", "fixture-signature",
-                "fixture-session", "all", "hot", "", ".*", AlignmentMode.PRECISE_SHAPE,
+                "fixture-session", "all", profile == null ? "hot" : profile.palette(), "", ".*", AlignmentMode.PRECISE_SHAPE,
                 TrackerMode.PROBABILISTIC, false, false, false, false, false, false,
                 false, false, false, false, 7, 4, 3, InferenceMode.RAW_HIGH_RESOLUTION,
-                15, 14, 7.01, 1.56, IntensitySamplingMode.COLOR_MAPPING, generation);
+                15, 14, profile == null ? 7.01 : profile.halfWidthMeters(), 1.56, IntensitySamplingMode.COLOR_MAPPING, generation);
     }
 
     private static void seedTiles(Path index, ManagedTileGeneration generation) throws Exception {
+        seedTiles(index, generation, null);
+    }
+
+    static void seedTiles(Path index, ManagedTileGeneration generation, BenchmarkSourceFixture profile) throws Exception {
+        if (Files.size(index) > 16_384) throw new IllegalStateException("Tile inventory exceeds bound");
+        var counts = profile == null ? java.util.Map.of(14, 4, 15, 6) : profile.expectedTileCounts();
+        String palette = profile == null ? "hot" : profile.palette();
         List<String> lines = Files.readAllLines(index);
-        if (lines.size() != 11 || !lines.get(0).equals("zoom\tx\ty\tsha256\trelativePath")) {
+        if (lines.size() != counts.values().stream().mapToInt(Integer::intValue).sum() + 1
+                || !lines.get(0).equals("zoom\tx\ty\tsha256\trelativePath")) {
             throw new IllegalStateException("Selected Hot tile inventory is incomplete");
         }
         ManagedTileCache cache = new ManagedTileCache(
                 PluginDirectories.ensurePluginDataDirectory().toPath().resolve("managed-source-tile-cache"),
                 new TileDecoderClassifier());
         int z14 = 0, z15 = 0;
+        var addresses = new java.util.HashSet<ManagedTileAddress>();
+        var paths = new java.util.HashSet<Path>();
         for (String line : lines.subList(1, lines.size())) {
             String[] parts = line.split("\t", -1);
             if (parts.length != 5) throw new IllegalStateException("Invalid tile record");
             int zoom = Integer.parseInt(parts[0]);
-            ManagedTileAddress address = new ManagedTileAddress("all", "hot", zoom,
+            ManagedTileAddress address = new ManagedTileAddress("all", palette, zoom,
                     Integer.parseInt(parts[1]), Integer.parseInt(parts[2]));
             Path png = index.toAbsolutePath().getParent().resolve(parts[4]).normalize();
             if (!png.startsWith(index.toAbsolutePath().getParent())) {
                 throw new IllegalStateException("Tile escapes fixture directory");
             }
+            if (profile != null) {
+                Path relative = Path.of(parts[4]);
+                if (!counts.containsKey(zoom) || relative.isAbsolute() || parts[4].contains("\\")
+                        || relative.toString().contains("..") || !addresses.add(address) || !paths.add(png)) {
+                    throw new IllegalStateException("Duplicate or invalid selected source tile");
+                }
+                Path cursor = index.toAbsolutePath().getParent();
+                for (Path part : relative) {
+                    cursor = cursor.resolve(part);
+                    if (Files.isSymbolicLink(cursor)) throw new IllegalStateException("Tile path traverses symlink");
+                }
+            }
+            if (Files.size(png) > 1_048_576) throw new IllegalStateException("Tile exceeds byte bound");
             byte[] bytes = Files.readAllBytes(png);
             if (bytes.length > 1_048_576 || !HexFormat.of().formatHex(
                     MessageDigest.getInstance("SHA-256").digest(bytes)).equals(parts[3])) {
@@ -354,7 +414,7 @@ public final class BenchmarkHostMain {
             Files.write(destination, bytes);
             if (zoom == 14) z14++; else if (zoom == 15) z15++;
         }
-        if (z14 != 4 || z15 != 6) {
+        if (z14 != counts.get(14) || z15 != counts.get(15)) {
             throw new IllegalStateException("Selected Hot zoom inventory differs");
         }
     }
