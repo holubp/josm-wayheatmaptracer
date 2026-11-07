@@ -32,6 +32,24 @@ class V022WideCompactSeamTest {
         assertEquals(WideCompactScenes.SPEC,expected.getProperty("spec"));
         for(String id:WideCompactScenes.IDS)assertEquals(expected.getProperty(id),WideCompactScenes.scene(id).input().canonicalHash(),id);
     }
+    @Test void publicScenesGrantOnlyWayAndOrdinaryInteriorsEditableAuthority()throws Exception {
+        // Exercise the actual pure production preflight without preparing profiles or solving.
+        var nativeBoundary=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter.class
+                .getDeclaredMethod("requireSupportedBoundary",TraceRequest.class,NetworkSnapshot.class,GeometryCleanupConfig.class);
+        nativeBoundary.setAccessible(true);
+        for(String id:WideCompactScenes.IDS) {
+            var input=WideCompactScenes.scene(id).input();var request=input.request();var network=input.network();var closure=network.closure();
+            var way=(DetachedWay)network.primitives().get(request.selectedWayKey());
+            var nodes=way.nodeKeys().subList(request.selectedRange().firstIndex(),request.selectedRange().lastIndex()+1);
+            var expectedEditable=new java.util.HashSet<PrimitiveKey>(nodes.subList(1,nodes.size()-1));expectedEditable.add(way.key());
+            assertEquals(expectedEditable,closure.editableExistingKeys(),id+": fixed endpoints are protected/read-only, not ordinary editable occurrences");
+            assertEquals(java.util.Set.of(nodes.get(0),nodes.get(nodes.size()-1)),closure.protectedExistingNodeKeys(),id);
+            assertEquals(new java.util.HashSet<>(nodes.subList(1,nodes.size()-1)),closure.movableExistingNodeKeys(),id);
+            assertTrue(closure.removableExistingNodeKeys().isEmpty(),id);
+            for(var node:closure.movableExistingNodeKeys())assertEquals(java.util.Set.of(way.key()),network.incomingReferrerWatches().get(node),id);
+            assertEquals(way,assertDoesNotThrow(()->nativeBoundary.invoke(null,request,network,input.options().cleanup()),id),id);
+        }
+    }
     @Test void fullOraclePreservesNativeResourceRefusalWithoutBudgetOrOwnershipFabrication(@TempDir Path out)throws Exception {
         var scene=WideCompactScenes.tiny();var f=scene.input();var r=f.request();
         var request=new TraceRequest(r.selectedWayKey(),r.selectedRange(),r.engine(),r.geometryMode(),r.permissions(),new TraceBudgets(96,8_000_000,1,32,8),

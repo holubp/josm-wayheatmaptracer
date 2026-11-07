@@ -77,6 +77,26 @@ later cases remain NOT_RUN. A refused dense oracle is unavailable, never a
 skip or permission to raise a cap.
 
 Local evidence currently covers only compilation and tiny seam/hash checks.
-The six-scene numerical gate has not run locally and is not qualified until
-the dedicated CI job completes. Wide approximation quality, private high
+The first numerical CI run42329157376 stopped at remote-drift reference
+suitability: historical full inference refused its cap; the named cached-V4
+oracle completed66,143,412scores and one review route, then the native edit-plan
+adapter rejected fixture authority. The fixture incorrectly included its
+protected fixed endpoints in editableExistingKeys. This is an authority
+metadata error, not a passing quality comparison.
+
+The corrective manifest changes only that metadata: editable keys become the
+selected way plus ordinary movable interiors, while fixed endpoints remain
+protected/read-only. Frozen network/request/input hashes consequently change.
+Raster samples, evidence/frame/decision region, source and analytic geometry,
+chainage, settings, parameters and all numerical/quality limits remain exact.
+An independent failing authority-structure regression precedes the correction;
+the fast test also invokes the actual native adapter boundary on all six
+requests without preparing profiles or solving. Private before/after per-scene
+bit digests preserve the physical identity proof and original CI evidence.
+This explicit metadata-only manifest correction requires controller/Astra
+review before new numerical CI. It does not consume another extent adjustment
+or authorize physical fixture tuning.
+
+The six-scene numerical gate has not run locally and remains unqualified until
+the corrected dedicated CI job completes. Wide approximation quality, private high
 inference/comparison, GUI, cancellation and repeated latency gates remain open.

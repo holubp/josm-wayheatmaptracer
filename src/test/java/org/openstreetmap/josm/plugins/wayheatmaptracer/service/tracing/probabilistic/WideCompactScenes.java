@@ -50,7 +50,8 @@ final class WideCompactScenes {
         }
         primitives.put(way,new DetachedWay(way,nodes,Map.of("highway","path"),false,false));
         var protectedNodes=Set.of(nodes.get(0),nodes.get(nodes.size()-1));var movable=new HashSet<>(nodes);movable.removeAll(protectedNodes);
-        var closure=new ClosureDescriptor(ClosureDescriptor.Scope.EDIT_COMPONENT,"public-wide-v1",primitives.keySet(),primitives.keySet(),movable,protectedNodes,Set.of(),
+        var editable=new HashSet<PrimitiveKey>(movable);editable.add(way);
+        var closure=new ClosureDescriptor(ClosureDescriptor.Scope.EDIT_COMPONENT,"public-wide-v1",primitives.keySet(),editable,movable,protectedNodes,Set.of(),
                 Map.of(way,List.of(new OccurrenceRange(0,nodes.size()-1))),List.of(),region,region,true,true,true,true);
         var network=new NetworkSnapshot("wide-network-"+id,SnapshotRole.CAPTURED_BEFORE,"public-wide-dataset",1,closure,primitives,V022SnapshotFixtures.closedWorldReferrerWatches(primitives));
         var factualSource=nodes.stream().map(k->frame.toMetric(((DetachedNode)primitives.get(k)).coordinate())).toList();
