@@ -139,3 +139,54 @@ Behavioral seam RED failed with the declared old/default selector; final Java17 
 ### First CI failure and explicit authority-only manifest correction
 
 CI42329157376 stopped remote-drift:reference-suitability: historical exact RESOURCE_LIMIT; named cachedV4 oracle completed66,143,412scores/1review route, then native edit-plan authority rejected editable protected endpoints. No candidate quality result or remaining scene qualification. First artifacts remain immutable. Independent fast authority-structure test RED confirmed the incorrect editable set before correction. Fixture now grants edit authority only to way+ordinary interiors; endpoints remain protected/read-only. Actual native adapter boundary passes all6 fixture requests without profiles/inference. Independent per-scene before/after digests prove evidence/raster/source/analytic specification+geometry/chainage/parameter exact; only network/frozen input hashes change, explicitly reflected in manifest. No production safety/model or numerical limits changed. Final6tiny tests GREEN/0skip and58Legacy hashes exact; controller/Astra review must precede next numerical CI. Private activation inventory persisted separately; live activation remains blocked.
+
+## B06 live/replay integration — authorized implementation in progress
+
+Base a1c99352; bounded reviewed packet b06-live-replay-integration-task-packet.md.
+Owner drasov_b_resource_diagnosis, sole core B writer. No objective/model/cap/K/
+retention changes; all58Legacy paths frozen. New captures record reviewed V4;
+known new Legacy→B parent resolves via immutable validated Reference.originalRequest.
+Actual interval requests and actual Hybrid SectionExecution references/results
+feed ordered admission/work companions before numerical attestation. Existing
+old request/hash/output/work/receipt paths stay exact. No private controls/push.
+
+First behavioral RED captured: actual visible/managed capture expects V4 hash,
+but visible capture records historical exact ce865e7c... (b06-integration/identity-red).
+Actual full+compact child behavior REDs are next, before policy selection edits.
+Then ordered companion/capture/export/replay tests and zero/partial/refusal cases;
+focused GREEN followed by neighboring B/live/codec/replay suites and58guard.
+Freeze complete base-to-head source/XML/hash packet for critical independent
+review before controller activation/integration. Existing public diagnostic
+and retention-contract evidence stays separate; this slice has no new solver.
+
+B06 checkpoint: identity RED and both actual bound-child backend REDs are GREEN
+(3tests). Actual three-interval capture/factory missing-companion RED is GREEN
+(1test), with ordered request/work evidence before schema3 attestation. New
+reference companions transport actual SectionExecution references/results;
+local replay Result keeps all historical constructors and adds optional bounded
+artifact only. All old entrypoints remain; no sampler/objective/Legacy edits.
+
+Reference replay development: actual full child, actual compact child, zero
+native sections and self-consistently swapped/missing companion cases now pass.
+New schema expected-engine forgery RED found/corrected a missing validation
+check. Runtime memory-denial/owner0 and independent serialization-bound tests
+pass. Partial-cancellation test initially used a metadata fixture whose7m
+window exceeded its4x4 raster, correctly returning NO_ROUTE before scoring.
+A valid1m window still had flat evidence and correctly refused before inference;
+the final test reuses the existing genuine synthetic ridge. Counters publish in
+inference finally, so deterministic cancellation observes the third native
+forward/backward checkpoint instead of pretending counters are live callbacks.
+Synthetic compact replay fixture explicitly uses8m child width/1M remaining
+allocation (not a production/default or frozen public-fixture change); ordinary
+guarded reference allocation/replay stays factual. Final focused15tests GREEN,
+0failure/error/skip,3m52s: includes actual single-trimmed and unequal-interval
+capture/factory/strict replay and the strengthened foreign request/count/budget
+forgeries. Early and positive-work cancellation have accessible unattested
+diagnostics, real usage and owner0. New fast Hybrid capture golden-domain and
+assembled compact ambiguity checks join the neighboring B/live/codec/replay
+suite now running. Authoritative58Legacy hashes exact/0mismatch; diff check clean.
+No private numerical controls/model changes. Evidence logs/XML b06-integration/*;
+Scoped B06 source freeze requested by controller while neighboring tests run;
+their results remain PENDING. Supplemental synthetic1024-score resource section
+transport test was added after that invocation compiled and needs focused
+execution afterward. No completion/release claim attaches to this review commit.

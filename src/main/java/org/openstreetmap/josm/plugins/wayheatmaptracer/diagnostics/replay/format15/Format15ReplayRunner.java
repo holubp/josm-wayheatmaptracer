@@ -39,7 +39,15 @@ public final class Format15ReplayRunner {
             TraceHypothesisSet inference, List<ModernTracePipeline.Route> routes,
             String inputHash, List<String> disconnectionPlanReviews,
             List<java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.model.ExecutionWorkReceipt>> nativeBExecutionWork,
-            Format15Artifact legacyBProvenance) {
+            Format15Artifact legacyBProvenance,Format15Artifact bRunAdmissions) {
+        /** Preserves the historical result constructor and its absent companion. */
+        public Result(ReplayLevel level,TrackerMode capturedEngine,TrackerMode engine,
+                TraceHypothesisSet inference,List<ModernTracePipeline.Route> routes,String inputHash,
+                List<String> disconnectionPlanReviews,
+                List<java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.model.ExecutionWorkReceipt>> nativeBExecutionWork,
+                Format15Artifact legacyBProvenance) {
+            this(level,capturedEngine,engine,inference,routes,inputHash,disconnectionPlanReviews,nativeBExecutionWork,legacyBProvenance,null);
+        }
         public Result(ReplayLevel level, TrackerMode capturedEngine, TrackerMode engine,
                 TraceHypothesisSet inference, List<ModernTracePipeline.Route> routes,
                 String inputHash, List<String> disconnectionPlanReviews,
@@ -72,6 +80,9 @@ public final class Format15ReplayRunner {
                 throw new IllegalArgumentException("Intermediate provenance is reserved for sequential Hybrid");
             if (engine != TrackerMode.LEGACY_THEN_B && !nativeBExecutionWork.isEmpty())
                 throw new IllegalArgumentException("Section work is reserved for sequential Hybrid");
+            if(bRunAdmissions!=null&&(engine!=TrackerMode.LEGACY_THEN_B||!Format15BRunAdmissionReceipt.ARTIFACT.equals(bRunAdmissions.name())
+                    ||!Format15BRunAdmissionReceipt.read(bRunAdmissions).inputHash().equals(inputHash)))
+                throw new IllegalArgumentException("Actual B run admissions belong to another frozen result");
             if (!disconnectionPlanReviews.isEmpty() && (level != ReplayLevel.FINAL_GEOMETRY
                     || disconnectionPlanReviews.size() != routes.size()))
                 throw new IllegalArgumentException("Disconnection review output is incomplete");
@@ -271,6 +282,7 @@ public final class Format15ReplayRunner {
                 shared.network(), partition, actualRuns, shared.options(), payload.authority());
         Format15NumericalPolicyReceipt.validateRecordedWork(archive,
                 actualRuns.stream().map(run -> run.result().inference()).toList());
+        Format15BRunAdmissionReceipt.validateActualIntervals(archive,shared,batch);
         FixedIntervalEditPlanComposer.Assessment assessment;
         try {
             assessment = new FixedIntervalEditPlanComposer().compose(batch, choices);
@@ -503,6 +515,7 @@ public final class Format15ReplayRunner {
         Result actual = replay(input, level, input.request().engine());
         Format15NumericalPolicyReceipt.validateRecordedWork(archive, List.of(actual.inference()));
         LegacyBReplayWork.validate(archive, actual);
+        Format15BRunAdmissionReceipt.validateActualReference(archive,actual);
         verifyDisconnectionReview(archive, input, actual);
         return actual;
     }
@@ -514,6 +527,7 @@ public final class Format15ReplayRunner {
         Result actual = replay(input, level, engine);
         Format15NumericalPolicyReceipt.validateRecordedWork(archive, List.of(actual.inference()));
         LegacyBReplayWork.validate(archive, actual);
+        Format15BRunAdmissionReceipt.validateActualReference(archive,actual);
         verifyDisconnectionReview(archive, input, actual);
         return actual;
     }
@@ -693,7 +707,8 @@ public final class Format15ReplayRunner {
                     if (nativeResult.status() == TraceHypothesisSet.Status.COMPLETE
                             || nativeResult.status() == TraceHypothesisSet.Status.AMBIGUOUS
                             || nativeResult.workAccounting().isPresent()) {
-                        Format15NumericalPolicyReceipt.validateExecuted(nativeResult);
+                        Format15NumericalPolicyReceipt.validateReferenceExecuted(nativeResult,
+                                section.execution().orElseThrow().reference().orElseThrow());
                     }
                 }
             }
@@ -704,7 +719,9 @@ public final class Format15ReplayRunner {
                     level == ReplayLevel.SCALAR_INFERENCE ? List.of() : DisconnectionReplaySemantics.recompute(input, actual),
                     executed.value().batch().sections().stream().flatMap(section -> section.execution().stream())
                         .map(execution -> execution.run().result().workAccounting()).toList(),
-                    LegacyBProvenance.artifact(request, executed.value()));
+                    LegacyBProvenance.artifact(request, executed.value()),
+                    Format15BRunAdmissionReceipt.referencePolicy(input.request())
+                        ?Format15BRunAdmissionReceipt.references(inputHash,input,executed.value()):null);
         }
     }
 

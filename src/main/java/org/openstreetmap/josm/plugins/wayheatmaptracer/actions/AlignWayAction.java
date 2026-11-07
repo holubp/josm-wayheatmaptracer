@@ -2754,10 +2754,7 @@ public class AlignWayAction extends JosmAction {
                 reviewed, applied);
         var batch = state.batch();
         return withSourceChoices(withSettingsResolution(
-                Format15ProductionBundleFactory.withCurrentNumericalPolicy(bundle,
-                new FrozenReplayInput(batch.fullRequest(), batch.evidence(), batch.network(), batch.options()),
-                batch.fullRequest().engine(), batch.runs().stream()
-                        .map(run -> run.result().inference()).toList()), selected), computed, selected);
+                Format15ProductionBundleFactory.withActualBAdmissions(bundle,batch), selected), computed, selected);
     }
 
     private static void recordIntervalDiagnostics(LiveBPreviewService.Computed computed,
@@ -2991,6 +2988,11 @@ public class AlignWayAction extends JosmAction {
         if (computed.legacyB() != null) {
             bundle = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
                     .LegacyBReplayWork.attach(bundle, input, computed.legacyB());
+        }
+        if(computed.legacyB()!=null&&org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                .BReferencePolicyBinding.isNewParentHash(input.request().parameterHash())) {
+            return withSourceChoices(withSettingsResolution(Format15ProductionBundleFactory.withActualBAdmissions(
+                    bundle,input,computed.legacyB()),computed),root,computed);
         }
         return withSourceChoices(withSettingsResolution(
                 Format15ProductionBundleFactory.withCurrentNumericalPolicy(

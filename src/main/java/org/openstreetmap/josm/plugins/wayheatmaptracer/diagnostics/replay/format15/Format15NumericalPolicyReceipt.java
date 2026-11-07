@@ -22,6 +22,24 @@ final class Format15NumericalPolicyReceipt {
 
     private Format15NumericalPolicyReceipt() { }
 
+    /** Actual ordered child/interval evidence is assembled before this declaration. */
+    static Format15Artifact actualRuns(String sourceHash,String inputHash,FrozenReplayInput input,Format15Artifact admission) {
+        var runs=Format15BRunAdmissionReceipt.read(admission);
+        if(!runs.sourceHash().equals(sourceHash)||!runs.inputHash().equals(inputHash)||!runs.parameterHash().equals(input.request().parameterHash()))
+            throw new IllegalArgumentException("b-run-numerical-binding-invalid");
+        String json=new String(withLegacySourcePolicy(current(sourceHash,inputHash,input.request().parameterHash(),
+                input.request().engine(),input.request().engine()),input.request().engine(),input.legacyB()).bytes(),StandardCharsets.UTF_8);
+        if(input.request().engine()==TrackerMode.LEGACY_THEN_B)json=json.replace(inferencePolicy(TrackerMode.PROBABILISTIC),
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BReferencePolicyBinding.VERSION+"/"
+                +org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_PREP_VERSION);
+        json=json.stripTrailing();json=json.substring(0,json.length()-1).replace("\"schema\":1","\"schema\":3")
+                +",\"executionWorkHash\":\""+Format15BRunAdmissionReceipt.workArtifact(runs).sha256()
+                +"\",\"runAdmissionsHash\":\""+admission.sha256()+"\"}\n";
+        if(!Format15BRunAdmissionReceipt.attested(runs,input.request()))json=json.replace("explicit-current-computation","execution-unattested");
+        if(json.getBytes(StandardCharsets.UTF_8).length>MAX_BYTES)throw new IllegalArgumentException("numerical-policy-budget");
+        return Format15Artifact.text(ARTIFACT,json);
+    }
+
     static Format15Artifact current(String sourceHash, String inputHash, String parameterHash,
             TrackerMode capturedEngine, TrackerMode computedEngine,
             List<Optional<ExecutionWorkReceipt>> receipts) {
@@ -96,6 +114,18 @@ final class Format15NumericalPolicyReceipt {
         if (artifact.sizeBytes() > MAX_BYTES) throw new ReplayMismatchException("numerical-policy-invalid");
         try {
             Map<String, Object> declared = Format15ArchiveReader.parseObject(artifact.bytes(), ARTIFACT);
+            if(Long.valueOf(3L).equals(declared.get("schema"))) {
+                var runs=Format15BRunAdmissionReceipt.validate(archive,input,verifiedInputHash);
+                var admission=archive.artifact(Format15BRunAdmissionReceipt.ARTIFACT).orElseThrow();
+                var expected=Format15ArchiveReader.parseObject(actualRuns(archive.sourceIdentityHash(),verifiedInputHash,input,admission).bytes(),ARTIFACT);
+                if(!declared.equals(expected)||!"explicit-current-computation".equals(declared.get("declaration")))
+                    throw new IllegalArgumentException("actual-run-binding");
+                var scalar=ScalarReplayExpectation.read(archive);var geometry=FinalReplayExpectation.read(archive);
+                if(scalar.isPresent()&&scalar.orElseThrow().requestedEngine()!=input.request().engine()
+                        ||geometry.isPresent()&&geometry.orElseThrow().requestedEngine()!=input.request().engine())
+                    throw new ReplayMismatchException("numerical-policy-engine-mismatch");
+                return input.request().engine();
+            }
             TrackerMode engine = TrackerMode.valueOf(ScalarReplayExpectation.string(declared, "computedEngine"));
             boolean scored = probabilistic(engine);
             var keys = new java.util.HashSet<>(KEYS);
@@ -197,10 +227,27 @@ final class Format15NumericalPolicyReceipt {
         }
     }
 
+    static void validateReferenceExecuted(TraceHypothesisSet inference,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBModels.Reference reference) {
+        if(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BReferencePolicyBinding.recordedPolicy(reference)
+                ==org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_PREP_V4) {
+            if(inference.workAccounting().isEmpty()||!matchesPolicy(inference.workAccounting().orElseThrow(),
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_PREP_VERSION))
+                throw new ReplayMismatchException("numerical-policy-runtime-unattested");
+        }else validateExecuted(inference);
+    }
+
     static void validateRecordedWork(Format15Archive archive, List<TraceHypothesisSet> actual) {
         if (actual.isEmpty() || !probabilistic(actual.get(0).engine())) return;
         try {
             var policy = Format15ArchiveReader.parseObject(archive.artifact(ARTIFACT).orElseThrow().bytes(), ARTIFACT);
+            if(Long.valueOf(3L).equals(policy.get("schema"))) {
+                var runs=Format15BRunAdmissionReceipt.read(archive.artifact(Format15BRunAdmissionReceipt.ARTIFACT).orElseThrow());
+                if(!Format15BRunAdmissionReceipt.workArtifact(runs).sha256().equals(
+                        Format15ExecutionWorkCodec.artifact(actual.stream().map(TraceHypothesisSet::workAccounting).toList()).sha256()))
+                    throw new ReplayMismatchException("numerical-policy-runtime-work-mismatch");
+                return;
+            }
             if (!actual.get(0).engine().name().equals(policy.get("computedEngine"))) return;
             var captured = Format15ExecutionWorkCodec.read(
                     archive.artifact(Format15ExecutionWorkCodec.ARTIFACT).orElseThrow());

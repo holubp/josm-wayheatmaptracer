@@ -250,18 +250,18 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
         long started = System.nanoTime();
         cancellation.checkpoint();
         validateSnapshots(request, evidence, network);
-        BPolicy recordedPolicy=BPolicy.recorded(request);
-        boolean adaptive = recordedPolicy != BPolicy.EXACT_DEFAULT;
-        if (adaptive && (reference != null || reliabilityPolicy != ReliabilityPolicy.DIRECT_LONGITUDINAL_V2
-                || !parameters.equals(EvidenceModelParameters.defaults()))) {
-            throw new IllegalArgumentException("Recorded adaptive B requires its complete standalone parameter policy");
-        }
         if (request.samplerId().endsWith(LegacyBReferenceFactory.REFERENCE_SAMPLER_SUFFIX)
                 && reference == null) {
             throw new IllegalArgumentException("A bound reference is required for Legacy refinement sampling");
         }
         if (reference != null) {
             new LegacyBReferenceFactory().validateReferenceAuthority(reference, network, cancellation);
+        }
+        BPolicy recordedPolicy=reference==null?BPolicy.recorded(request):BReferencePolicyBinding.recordedPolicy(reference);
+        boolean adaptive = recordedPolicy != BPolicy.EXACT_DEFAULT;
+        if (adaptive && (reliabilityPolicy != ReliabilityPolicy.DIRECT_LONGITUDINAL_V2
+                || !parameters.equals(EvidenceModelParameters.defaults()))) {
+            throw new IllegalArgumentException("Recorded adaptive B requires its complete parameter policy");
         }
         ScalarEvidenceField field = evidence.fields().get(fieldName);
         if (field == null) {

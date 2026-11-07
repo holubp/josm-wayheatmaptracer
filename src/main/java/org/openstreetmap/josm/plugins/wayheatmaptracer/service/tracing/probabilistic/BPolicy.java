@@ -56,6 +56,12 @@ public enum BPolicy {
         return sourceParameterHash("managed-live-probabilistic-v2");
     }
     public static String visibleExactParameterHash() { return sourceParameterHash("live-probabilistic-v2"); }
+    /** New capture selection only; frozen requests continue selecting their recorded policy. */
+    public static String newCaptureParameterHash(String knownExactHash) {
+        if(!exactParameterHash().equals(knownExactHash)&&!visibleExactParameterHash().equals(knownExactHash))
+            throw new IllegalArgumentException("New B capture requires a known current source domain");
+        return adaptiveParameterHash(knownExactHash,INVENTORY_PREP_V4);
+    }
     private static String sourceParameterHash(String domain) {
         return hash(domain, EvidenceModelParameters.defaults().version() + "/"
                 + ProbabilisticTraceEngine.ReliabilityPolicy.DIRECT_LONGITUDINAL_V2 + "/"
@@ -112,7 +118,7 @@ public enum BPolicy {
         return null;
     }
     static boolean isAdaptiveVersion(String version) { return VERSION.equals(version)||CURRENT_VERSION.equals(version)||COMPACT_EXECUTION_VERSION.equals(version)||INVENTORY_COMPACT_VERSION.equals(version); }
-    private static String hash(String... values) {
+    static String hash(String... values) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             for (String value : values) {

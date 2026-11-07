@@ -594,8 +594,7 @@ public final class LiveBPreviewService {
         TrackerMode engine = config.heatmap().trackerMode();
         String settingsHash = hash(config.heatmap().toRedactedJson(), config.cleanup().toRedactedJson(),
                 permissions.canonicalIdentity());
-        String parameterHash = hash("live-" + engine.name().toLowerCase(java.util.Locale.ROOT)
-                + "-v2", parameterIdentity(engine));
+        String parameterHash = newCaptureParameterHash(engine,false);
         String snapshotId = "live-modern-network-" + hash(Long.toString(selection.way().getUniqueId()),
                 source.toString(), settingsHash).substring(0, 16);
         NetworkSnapshotCapture.Specification specification = new NetworkSnapshotCapture.Specification(
@@ -1210,9 +1209,7 @@ public final class LiveBPreviewService {
             }
             return new ManagedCaptureSeed(specification, network, source, metric, frame,
                     config.heatmap().color(), radius, config.heatmap().sampleStepMeters(),
-                    settingsHash, hash("managed-live-" + config.heatmap().trackerMode().name()
-                            .toLowerCase(java.util.Locale.ROOT) + "-v2",
-                            parameterIdentity(config.heatmap().trackerMode())),
+                    settingsHash, newCaptureParameterHash(config.heatmap().trackerMode(),true),
                     config.cleanup(), config.heatmap().alignmentMode(),
                     config.heatmap().trackerMode(), sourceIdentity,
                     ProjectionRegistry.getProjection().toCode(), null, intervalPartition,
@@ -1240,9 +1237,7 @@ public final class LiveBPreviewService {
         return new ManagedCaptureSeed(specification, network,
                 source, metric, frame, config.heatmap().color(), radius,
                 config.heatmap().sampleStepMeters(), settingsHash,
-                hash("managed-live-" + config.heatmap().trackerMode().name()
-                        .toLowerCase(java.util.Locale.ROOT) + "-v2",
-                        parameterIdentity(config.heatmap().trackerMode())),
+                newCaptureParameterHash(config.heatmap().trackerMode(),true),
                 config.cleanup(), config.heatmap().alignmentMode(),
                 config.heatmap().trackerMode(), sourceIdentity,
                 ProjectionRegistry.getProjection().toCode(), junction, null,
@@ -2202,6 +2197,13 @@ public final class LiveBPreviewService {
         }
         return RenderedHeatmapSampler.directIntensity((argb >>> 16) & 0xff,
                 (argb >>> 8) & 0xff, argb & 0xff, alpha, mode);
+    }
+
+    private static String newCaptureParameterHash(TrackerMode engine,boolean managed) {
+        String historical=hash((managed?"managed-live-":"live-")+engine.name().toLowerCase(java.util.Locale.ROOT)+"-v2",parameterIdentity(engine));
+        if(engine==TrackerMode.PROBABILISTIC)return org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.newCaptureParameterHash(historical);
+        if(engine==TrackerMode.LEGACY_THEN_B)return org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BReferencePolicyBinding.newParentParameterHash(historical);
+        return historical;
     }
 
     static String parameterIdentity(TrackerMode engine) {

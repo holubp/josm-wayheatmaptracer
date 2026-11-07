@@ -421,10 +421,13 @@ class V022LiveBPreviewServiceTest {
     }
 
     private static String historicalSettingsHash(AlignmentConfig config, String permissionIdentity) {
+        return independentHash(config.heatmap().toRedactedJson(),config.cleanup().toRedactedJson(),permissionIdentity);
+    }
+
+    private static String independentHash(String... values) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            for (String value : List.of(config.heatmap().toRedactedJson(),
-                    config.cleanup().toRedactedJson(), permissionIdentity)) {
+            for (String value : values) {
                 byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
                 digest.update(Integer.toString(bytes.length).getBytes(StandardCharsets.US_ASCII));
                 digest.update((byte) ':');
@@ -640,6 +643,21 @@ class V022LiveBPreviewServiceTest {
         assertSame(captured[0].network(), computed.intervalBatch().network());
         assertEquals(captured[0].network().canonicalHash(),
                 computed.intervalBatch().network().canonicalHash());
+        var actualBatch=computed.intervalBatch();
+        var actualAssessment=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer().compose(actualBatch,java.util.Map.of());
+        var rawBundle=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory.createLiveIntervals(
+                "b06-live-interval",actualBatch,actualAssessment,java.util.Map.of(),
+                org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory.VisibleLayerSourceReceipt.unavailable(),
+                org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory.IntervalArtifactStatus.PRODUCED,null,null);
+        var admitted=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory.withActualBAdmissions(rawBundle,actualBatch);
+        assertTrue(admitted.artifactNames().contains("b-run-admissions.bin"),"Actual interval requests must be bound before numerical attestation");
+        assertTrue(actualBatch.runs().stream().map(run->run.request().budgets()).distinct().count()>1,"Later runs must bind their actual remaining allocation");
+        Path b06Archive=java.nio.file.Files.createTempFile("b06-unequal-intervals-",".zip");
+        try {
+            org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15BundleWriter.write(admitted,b06Archive);
+            var decoded=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader.read(b06Archive);
+            assertDoesNotThrow(()->org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ReplayRunner.replayIntervals(decoded,admitted.sourceIdentityHash(),admitted.parameterHash()));
+        }finally{java.nio.file.Files.deleteIfExists(b06Archive);}
         assertThrows(IllegalArgumentException.class, () -> new LiveBPreviewService.Computed(
                 computed.captured(), computed.evidence(), computed.request(), null,
                 computed.options(), java.util.Map.of(), null));
@@ -834,6 +852,8 @@ class V022LiveBPreviewServiceTest {
                         org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
                                 .Format15ProductionBundleFactory.IntervalArtifactStatus.APPLIED,
                         plan.canonicalHash(), plan.canonicalHash());
+        bundle=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory.withActualBAdmissions(bundle,computed.intervalBatch());
+        assertTrue(bundle.artifactNames().contains("b-run-admissions.bin"),"A single trimmed request needs its own actual chainage witness");
         Path archive = java.nio.file.Files.createTempFile("rc8-endpoint-islands-", ".zip");
         try {
             org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15BundleWriter
@@ -844,6 +864,9 @@ class V022LiveBPreviewServiceTest {
                     java.nio.charset.StandardCharsets.UTF_8);
             assertTrue(index.contains(plan.canonicalHash()));
             assertTrue(index.contains("APPLIED"));
+            var replayBundle=bundle;
+            assertDoesNotThrow(()->org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ReplayRunner.replayIntervals(
+                    decoded,replayBundle.sourceIdentityHash(),replayBundle.parameterHash()));
             assertFalse(decoded.capability().supports(org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics
                     .replay.ReplayLevel.FULL_EDIT_PLAN), "interval artifacts must retain truthful replay capability");
         } finally {
@@ -1053,6 +1076,41 @@ class V022LiveBPreviewServiceTest {
                     identity.contains("adjacent-orientation-trapezoid-v1"), engine.name());
         }
         assertEquals("legacy-v02", LiveBPreviewService.parameterIdentity(TrackerMode.LEGACY_V02));
+    }
+
+    @Test
+    void newVisibleAndManagedBCapturesRecordInventoryPolicyBeforeWorker() throws Exception {
+        var fixture=fiveNodeFixture();var service=new LiveBPreviewService();
+        var visible=new LiveBPreviewService.Captured[1];var managed=new LiveBPreviewService.ManagedCaptureSeed[1];
+        var base=managedConfig();var managedB=new AlignmentConfig(base.heatmap().withTrackerMode(TrackerMode.PROBABILISTIC),base.cleanup());
+        SwingUtilities.invokeAndWait(()->{
+            visible[0]=service.capture(fixture.dataSet(),fixture.selection(),raster(),config(),false);
+            managed[0]=service.captureManagedSeed(fixture.dataSet(),fixture.selection(),managedB,"synthetic-b06-source");
+        });
+        assertEquals("7b3b1d6108998233eae015e4bcf398376a9d7a37f39393a085178f39ae97aeb6",visible[0].parameterHash(),"Visible capture must bind the policy that ordinary replay selects");
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.adaptiveParameterHash(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_PREP_V4),managed[0].parameterHash());
+    }
+
+    @Test
+    void newVisibleAndManagedHybridCapturesBindOnlyTheKnownParentSourceDomains() throws Exception {
+        var fixture=fiveNodeFixture();var service=new LiveBPreviewService();
+        var visible=new LiveBPreviewService.Captured[1];var managed=new LiveBPreviewService.ManagedCaptureSeed[1];
+        var base=managedConfig();var managedHybrid=new AlignmentConfig(base.heatmap().withTrackerMode(TrackerMode.LEGACY_THEN_B),base.cleanup());
+        SwingUtilities.invokeAndWait(()->{
+            visible[0]=service.capture(fixture.dataSet(),fixture.selection(),raster(),config(TrackerMode.LEGACY_THEN_B),false);
+            managed[0]=service.captureManagedSeed(fixture.dataSet(),fixture.selection(),managedHybrid,"synthetic-b06-source");
+        });
+        String identity=LiveBPreviewService.parameterIdentity(TrackerMode.LEGACY_THEN_B);
+        String version="legacy-b-reference-inventory-policy-v1";
+        String prep=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_PREP_VERSION;
+        assertEquals("7938a8409abd9284912509640aede6376f88b2259c3b27d91115fd0f3de255f6",independentHash("live-legacy_then_b-v2",identity));
+        assertEquals("8597cdeab11ed10fcd617f082208f8eee4019101ccff2fcfde3c7a023d8ec70c",independentHash("managed-live-legacy_then_b-v2",identity));
+        assertEquals(independentHash(version,independentHash("live-legacy_then_b-v2",identity),prep),visible[0].parameterHash());
+        assertEquals(independentHash(version,independentHash("managed-live-legacy_then_b-v2",identity),prep),managed[0].parameterHash());
+        assertEquals("3497e9113e3193fef36465cace342027261ac27e550b498f6f448aa845bbdb5e",visible[0].parameterHash());
+        assertEquals("00ce9cc57e00c4b654c439ebcb3c308198eb2a7aa55ed165d85012b47952d480",managed[0].parameterHash());
+        assertNotEquals(visible[0].parameterHash(),managed[0].parameterHash());
     }
 
     @Test

@@ -186,6 +186,35 @@ public final class Format15ProductionBundleFactory {
     private Format15ProductionBundleFactory() {
     }
 
+    /** Typed live interval entry; the ordered request contract is supplied by the batch. */
+    public static Format15Bundle withActualBAdmissions(Format15Bundle bundle,IntervalTraceBatch batch) {
+        if(Format15BRunAdmissionReceipt.intervalPolicy(batch.fullRequest())) {
+            var input=new FrozenReplayInput(batch.fullRequest(),batch.evidence(),batch.network(),batch.options());
+            return withActualBAdmissions(bundle,input,Format15BRunAdmissionReceipt.intervals(bundle.sourceIdentityHash(),input,batch));
+        }
+        return withCurrentNumericalPolicy(bundle,new FrozenReplayInput(batch.fullRequest(),batch.evidence(),batch.network(),batch.options()),
+                batch.fullRequest().engine(),batch.runs().stream().map(run->run.result().inference()).toList());
+    }
+
+    /** Serializes the actual immutable section references retained by live computation. */
+    public static Format15Bundle withActualBAdmissions(Format15Bundle bundle,FrozenReplayInput input,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService.LegacyBComputation actual) {
+        if(!Format15BRunAdmissionReceipt.referencePolicy(input.request()))
+            throw new IllegalArgumentException("Actual child admission export requires its recognized new parent policy");
+        return withActualBAdmissions(bundle,input,Format15BRunAdmissionReceipt.references(bundle,input,actual));
+    }
+
+    private static Format15Bundle withActualBAdmissions(Format15Bundle bundle,FrozenReplayInput input,Format15Artifact admission) {
+        if(!bundle.parameterHash().equals(input.request().parameterHash()))throw new IllegalArgumentException("b-run-bundle-binding");
+        var runs=Format15BRunAdmissionReceipt.read(admission);
+        var artifacts=new LinkedHashMap<>(bundle.artifacts());
+        var work=Format15BRunAdmissionReceipt.workArtifact(runs);String name=Format15BRunAdmissionReceipt.workName(runs);
+        if(artifacts.containsKey(name)&&!artifacts.get(name).sha256().equals(work.sha256()))throw new IllegalArgumentException("b-run-actual-work-binding");
+        artifacts.put(name,Format15Artifact.binary(name,work.bytes()));artifacts.put(Format15BRunAdmissionReceipt.ARTIFACT,admission);
+        artifacts.put(Format15NumericalPolicyReceipt.ARTIFACT,Format15NumericalPolicyReceipt.actualRuns(bundle.sourceIdentityHash(),input.canonicalHash(),input,admission));
+        return new Format15Bundle(bundle.buildIdentity(),bundle.sourceIdentityHash(),bundle.parameterHash(),artifacts);
+    }
+
     /**
      * Explicitly declares that the caller computed this bundle using the current
      * named numerical policies. The caller owns that provenance assertion; this
@@ -1301,8 +1330,7 @@ public final class Format15ProductionBundleFactory {
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
         artifacts.put(ScalarReplayExpectation.ARTIFACT_NAME, Format15Artifact.binary(
             ScalarReplayExpectation.ARTIFACT_NAME, expectation.bytes()));
-        return LegacyBReplayWork.attach(withCurrentNumericalPolicy(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
-            base.parameterHash(), artifacts), input, requestedEngine, List.of(actual.inference())), actual);
+        return finishExpected(new Format15Bundle(base.buildIdentity(),base.sourceIdentityHash(),base.parameterHash(),artifacts),input,requestedEngine,actual);
     }
 
     /** Creates a frozen bundle that records one actual final-geometry production result. */
@@ -1322,8 +1350,12 @@ public final class Format15ProductionBundleFactory {
             artifacts.put(DisconnectionReplaySemantics.ARTIFACT, Format15Artifact.text(
                     DisconnectionReplaySemantics.ARTIFACT,
                     DisconnectionReplaySemantics.artifact(actual.disconnectionPlanReviews())));
-        return LegacyBReplayWork.attach(withCurrentNumericalPolicy(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
-            base.parameterHash(), artifacts), input, requestedEngine, List.of(actual.inference())), actual);
+        return finishExpected(new Format15Bundle(base.buildIdentity(),base.sourceIdentityHash(),base.parameterHash(),artifacts),input,requestedEngine,actual);
+    }
+
+    private static Format15Bundle finishExpected(Format15Bundle bundle,FrozenReplayInput input,TrackerMode requestedEngine,Format15ReplayRunner.Result actual) {
+        if(actual.bRunAdmissions()!=null)return withActualBAdmissions(LegacyBReplayWork.attach(bundle,actual),input,actual.bRunAdmissions());
+        return LegacyBReplayWork.attach(withCurrentNumericalPolicy(bundle,input,requestedEngine,List.of(actual.inference())),actual);
     }
 
     private static void addFinalOutputComponents(Map<String, Format15Artifact> artifacts,
