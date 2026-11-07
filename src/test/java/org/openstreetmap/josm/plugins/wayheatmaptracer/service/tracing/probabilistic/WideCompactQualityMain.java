@@ -3,6 +3,7 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
@@ -14,7 +15,17 @@ import org.openstreetmap.josm.spi.preferences.*;
 public final class WideCompactQualityMain {
     static final double P=WideCompactScenes.P,GAP=P/256,ANALYTIC_CHORD_ERROR=P/10000;
     static final String MANIFEST="/public-wide-compact-v1.properties";
+    static final class QualityFailure extends AssertionError {
+        QualityFailure(String message) { super(message); }
+    }
+    record Invocation(boolean diagnostic, Path output) { }
+    static Invocation invocation(String[] args) {
+        boolean diagnostic=args.length>0&&args[0].equals("--diagnostic");
+        if(args.length>(diagnostic?2:1)||(!diagnostic&&args.length==1&&args[0].startsWith("--"))||(diagnostic&&args.length==2&&args[1].startsWith("--")))throw new IllegalArgumentException("Expected [output] or --diagnostic [output]");
+        return new Invocation(diagnostic,Path.of(diagnostic?(args.length==2?args[1]:"build/reports/wide-compact-diagnostic"):(args.length==1?args[0]:"build/reports/wide-compact-quality")));
+    }
     static void require(boolean condition,String reason){if(!condition)throw new AssertionError(reason);}
+    static void qualityRequire(boolean condition,String reason){if(!condition)throw new QualityFailure(reason);}
     static void write(Path out,String name,String text)throws IOException{Files.writeString(out.resolve(name),text,StandardOpenOption.CREATE_NEW);}
     static final class Capture implements BQualityProbe.Sink {
         final boolean demandCompact;int denseCalls,closedCalls,inferredCalls;long closedBytes=-1,peakBytes,denseStates;
@@ -22,10 +33,12 @@ public final class WideCompactQualityMain {
         final Map<Integer,Map<Integer,List<Integer>>> retained=new TreeMap<>();
         final List<int[]> rawStates=new ArrayList<>();final List<Double> rawEnergies=new ArrayList<>();
         DenseBAdmission.Bounds bound;boolean posteriorUsable;String completion="unavailable";
-        Capture(boolean demandCompact){this.demandCompact=demandCompact;}
+        final TraceBudgets expectedBudgets;
+        Capture(boolean demandCompact){this(demandCompact,TraceBudgets.defaults());}
+        Capture(boolean demandCompact,TraceBudgets expectedBudgets){this.demandCompact=demandCompact;this.expectedBudgets=expectedBudgets;}
         public void dense(List<ProbabilisticProfile> sampled,List<InferenceProfile> dense,TraceBudgets budgets) {
             denseCalls++;require(denseCalls==1,"More than one original preparation");
-            require(budgets.equals(TraceBudgets.defaults())||!demandCompact,"Candidate budgets differ from defaults");
+            require(budgets.equals(expectedBudgets),"Candidate budgets differ from the explicit run input");
             for(int row=0;row<dense.size();row++) {
                 var p=sampled.get(row);var d=dense.get(row);widths.add(d.cells().size());denseStates+=d.cells().size();var needed=new BitSet(d.cells().size());
                 require(Math.abs(p.minimumOffsetMeters()+25)<1e-8&&Math.abs(p.maximumOffsetMeters()-25)<1e-8,"Profile decision extent clipped at row "+row);
@@ -40,7 +53,8 @@ public final class WideCompactQualityMain {
                 required.add(needed);
             }
             bound=DenseBAdmission.estimate(widths.size(),widths::get,budgets,CancellationProbe.NONE);
-            if(demandCompact)require(!bound.admitted()&&bound.scoresExceeded(),"Fixed wide fixture did not naturally reject full admission");
+            if(demandCompact)require(!bound.admitted()&&bound.scoresExceeded(),
+                    "Fixed fixture did not naturally reject full admission: "+bound);
         }
         public void closed(long retainedBytes,long peak){closedCalls++;closedBytes=retainedBytes;peakBytes=peak;}
         public void inferred(ProbabilisticInferenceResult result) {
@@ -64,9 +78,24 @@ public final class WideCompactQualityMain {
     }
     record Run(ModernTracePipeline.PipelineRun pipeline,Capture capture,Map<String,Number> counters) { }
     static Run execute(WideCompactScenes.Scene scene,FrozenReplayInput input,boolean oracle,boolean compact,Path out)throws Exception {
+        return executeInternal(scene,input,oracle,compact,out,TraceBudgets.defaults());
+    }
+    /** Dedicated bounded seam for tiny production-flow tests with a recorded alternate budget. */
+    static Run executeTinyTestOnly(WideCompactScenes.Scene scene,FrozenReplayInput input,boolean oracle,boolean compact,
+            Path out,TraceBudgets expectedBudgets)throws Exception {
+        require(scene!=null&&scene.id().equals("tiny"),"Non-tiny scene cannot use the test-only budget seam");
+        require(input!=null&&expectedBudgets!=null&&input.request().budgets().equals(expectedBudgets),
+                "Tiny test budget does not match the actual frozen request");
+        return executeInternal(scene,input,oracle,compact,out,expectedBudgets);
+    }
+    private static Run executeInternal(WideCompactScenes.Scene scene,FrozenReplayInput input,boolean oracle,boolean compact,
+            Path out,TraceBudgets expectedBudgets)throws Exception {
+        require(expectedBudgets.equals(TraceBudgets.defaults())||scene.id().equals("tiny"),
+                "Non-default production budget is restricted to the tiny test seam");
+        require(input.request().budgets().equals(expectedBudgets),"Run input budgets differ from the pinned execution budget");
         Files.createDirectories(out);write(out,"input-identity.txt","fixture="+scene.id()+"\ninputHash="+input.canonicalHash()+"\nparameterHash="+input.request().parameterHash()+"\nbackend="+(oracle?BQualityProbe.ORACLE_VERSION:compact?"ordinary recorded INVENTORY_PREP_V4 candidate":"historical full default production")+"\nstrictHistoricalReplay=false\n");
         Files.write(out.resolve("frozen-public-input.bin"),FrozenReplayCodec.encode(input),StandardOpenOption.CREATE_NEW);
-        var capture=new Capture(compact);ModernDiagnosticCounters.begin();long start=System.nanoTime();
+        var capture=new Capture(compact,expectedBudgets);ModernDiagnosticCounters.begin();long start=System.nanoTime();
         try(var probe=BQualityProbe.install(oracle,capture);var observer=AdaptiveBObserver.observe(capture::retained)) {
             require(BQualityProbe.fullOracle()==oracle,"Unexpected oracle selector");
             var pipeline=new ModernTracePipeline((r,e,n,c)->{throw new AssertionError("A engine must not execute");});
@@ -86,6 +115,15 @@ public final class WideCompactQualityMain {
         finally{try{write(out,"native-counters.txt",new TreeMap<>(ModernDiagnosticCounters.snapshot())+"\n");capture.dump(out);}finally{ModernDiagnosticCounters.end();}}
     }
     static void candidateProof(Run run,WideCompactScenes.Scene scene) {
+        candidateProof(run,scene,TraceBudgets.defaults());
+    }
+    static void candidateProofTinyTestOnly(Run run,WideCompactScenes.Scene scene,TraceBudgets expectedBudgets) {
+        require(scene!=null&&scene.id().equals("tiny"),"Non-tiny scene cannot use the tiny candidate proof seam");
+        candidateProof(run,scene,expectedBudgets);
+    }
+    private static void candidateProof(Run run,WideCompactScenes.Scene scene,TraceBudgets expectedBudgets) {
+        require(run!=null&&expectedBudgets!=null&&run.capture().expectedBudgets.equals(expectedBudgets),
+                "Candidate proof budget differs from the actual captured run");
         var result=run.pipeline().result().inference();var c=run.capture();
         require(result.status()==TraceHypothesisSet.Status.AMBIGUOUS,"Conditional compact candidate must remain ambiguous, without COMPLETE/global-certainty claim: "+result.status());
         require(!run.pipeline().result().routes().isEmpty(),"Empty native final geometry");
@@ -94,7 +132,9 @@ public final class WideCompactQualityMain {
         require(c.widths.size()==scene.input().request().profileChainage().cumulativeGroundMeters().size(),"Physical profile rows changed");
         require(result.evaluatedStates()==c.denseStates,"Native dense state census mismatch");
         require(!c.posteriorUsable&&result.hypotheses().stream().allMatch(h->h.posteriorProbability().isEmpty()&&h.diagnostics().getOrDefault("bPosteriorConditional",0.0)==1),"False full/global posterior claim");
-        var declared=DenseBAdmission.validateWitness(DenseBAdmission.witnessFromExplanation(result.explanation()),TraceBudgets.defaults(),c.widths.size());require(declared.equals(c.bound)&&!declared.admitted(),"Actual admission/census differs");
+        var declared=DenseBAdmission.validateWitness(DenseBAdmission.witnessFromExplanation(result.explanation()),expectedBudgets,c.widths.size());require(declared.equals(c.bound)&&!declared.admitted()
+                &&declared.scoresExceeded()
+                &&declared.effectiveK()==Math.min(32,expectedBudgets.maximumRawAlternatives()),"Actual admission/census/K differs");
         require(!c.retained.isEmpty()&&c.retained.keySet().stream().allMatch(i->i==0||i==1),"Refinement count outside0/1");
         int last=c.retained.keySet().stream().mapToInt(Integer::intValue).max().orElseThrow();
         require(run.counters().get("b.adaptive.refinements").intValue()==last,"Recorded refinement differs");var rows=c.retained.get(last);long omitted=0;
@@ -106,13 +146,17 @@ public final class WideCompactQualityMain {
         }
         require(omitted>0,"Final graph did not genuinely omit original nonmandatory cells");
         var work=result.workAccounting().orElseThrow();require(work.computedTransitions()>0&&work.computedTransitions()==run.pipeline().usage().transitions()
-                &&work.computedTransitions()<=128_000_000&&run.pipeline().usage().pairVisits()<=8_000_000
-                &&run.pipeline().usage().rawAlternatives()<=32&&run.pipeline().usage().distinctAlternatives()<=8
+                &&work.computedTransitions()<=expectedBudgets.maximumTransitions()&&run.pipeline().usage().pairVisits()<=expectedBudgets.maximumPairVisits()
+                &&run.pipeline().usage().rawAlternatives()<=expectedBudgets.maximumRawAlternatives()
+                &&run.pipeline().usage().distinctAlternatives()<=expectedBudgets.maximumDistinctAlternatives()
                 &&work.bStages().stream().allMatch(s->s.refusedScoreAttempts()==0),"Native cumulative work is unavailable/refused/untruthful");
     }
     static void safety(Run run,WideCompactScenes.Scene scene,Path out)throws Exception {
+        safety(run,scene,scene.input(),out);
+    }
+    static void safety(Run run,WideCompactScenes.Scene scene,FrozenReplayInput input,Path out)throws Exception {
         Files.createDirectories(out);
-        var route=run.pipeline().result().routes().get(0);var input=scene.input();
+        var route=run.pipeline().result().routes().get(0);
         require(route.quality().disposition()!=FinalGeometryEvaluator.Disposition.HARD_BLOCKED,"Hard final geometry finding");
         require(route.quality().findings().stream().noneMatch(f->f.severity()==FinalGeometryEvaluator.Severity.HARD_BLOCK),"Hard native safety finding");
         require(route.assignments().size()==route.pointIds().size()&&new HashSet<>(route.pointIds()).size()==route.pointIds().size(),"Incomplete native assignments");
@@ -142,17 +186,17 @@ public final class WideCompactQualityMain {
     static void analytic(Run run,WideCompactScenes.Scene scene,Path out)throws Exception {
         Files.createDirectories(out);
         var points=run.pipeline().result().routes().get(0).hypothesis().points();var d=compare(points,scene.analytic(),ANALYTIC_CHORD_ERROR);write(out,"analytic-distance.txt",d+"\np95=bidirectional trapezoidal arc-length-weighted left empirical quantile; gap<=p/256; analytic chord error<=p/10000\n");
-        require(d.certifiedMaximum()<=P&&d.p95()<=(scene.strong()?.5*P:P),"Unsuitable analytic fixture/reference or failed analytic geometry: "+scene.id()+" "+d);
-        if(scene.id().startsWith("remote-drift")){var central=points.stream().filter(p->p.xMeters()>.4*scene.length()&&p.xMeters()<.6*scene.length()).toList();require(!central.isEmpty()&&central.stream().allMatch(p->p.yMeters()>20),"Remote corridor identity/reach lost");}
-        if(scene.id().equals("faint-apex")){double apex=points.stream().filter(p->Math.abs(p.xMeters()-50)<=2*P).mapToDouble(MetricPoint::yMeters).max().orElseThrow();require(apex>=2.7&&Math.abs(apex-3)<=P,"Faint supported amplitude/apex lost");}
+        qualityRequire(d.certifiedMaximum()<=P&&d.p95()<=(scene.strong()?.5*P:P),"Unsuitable analytic fixture/reference or failed analytic geometry: "+scene.id()+" "+d);
+        if(scene.id().startsWith("remote-drift")){var central=points.stream().filter(p->p.xMeters()>.4*scene.length()&&p.xMeters()<.6*scene.length()).toList();qualityRequire(!central.isEmpty()&&central.stream().allMatch(p->p.yMeters()>20),"Remote corridor identity/reach lost");}
+        if(scene.id().equals("faint-apex")){double apex=points.stream().filter(p->Math.abs(p.xMeters()-50)<=2*P).mapToDouble(MetricPoint::yMeters).max().orElseThrow();qualityRequire(apex>=2.7&&Math.abs(apex-3)<=P,"Faint supported amplitude/apex lost");}
         if(scene.hairpin()) {
             double previous=-Double.MAX_VALUE;boolean lower=false,upper=false,apex=false;
-            for(var p:points){double s=WideCompactScenes.hairpinChainage(p);require(s>=previous-.25*P,"Hairpin ordering/leg switch");previous=Math.max(previous,s);lower|=p.xMeters()>.25*WideCompactScenes.LEG&&p.xMeters()<.75*WideCompactScenes.LEG&&Math.abs(p.yMeters()+WideCompactScenes.R)<=P;upper|=p.xMeters()>.25*WideCompactScenes.LEG&&p.xMeters()<.75*WideCompactScenes.LEG&&Math.abs(p.yMeters()-WideCompactScenes.R)<=P;apex|=p.xMeters()>=WideCompactScenes.LEG+WideCompactScenes.R-P&&Math.abs(p.yMeters())<=2*P;}require(lower&&upper&&apex,"Hairpin shortcut/lost leg/apex");
+            for(var p:points){double s=WideCompactScenes.hairpinChainage(p);qualityRequire(s>=previous-.25*P,"Hairpin ordering/leg switch");previous=Math.max(previous,s);lower|=p.xMeters()>.25*WideCompactScenes.LEG&&p.xMeters()<.75*WideCompactScenes.LEG&&Math.abs(p.yMeters()+WideCompactScenes.R)<=P;upper|=p.xMeters()>.25*WideCompactScenes.LEG&&p.xMeters()<.75*WideCompactScenes.LEG&&Math.abs(p.yMeters()-WideCompactScenes.R)<=P;apex|=p.xMeters()>=WideCompactScenes.LEG+WideCompactScenes.R-P&&Math.abs(p.yMeters())<=2*P;}qualityRequire(lower&&upper&&apex,"Hairpin shortcut/lost leg/apex");
         }
-        if(scene.id().equals("distinct-parallel"))for(var p:points)require(Math.abs(p.yMeters()+4*P)<=P,"Parallel corridor switch/midpoint/impulse excursion");
+        if(scene.id().equals("distinct-parallel"))for(var p:points)qualityRequire(Math.abs(p.yMeters()+4*P)<=P,"Parallel corridor switch/midpoint/impulse excursion");
         if(scene.id().equals("diffuse-three-strand")) {
             var extrema=new ArrayList<MetricPoint>();for(int i=1;i+1<points.size();i++){var a=points.get(i-1);var b=points.get(i);var c=points.get(i+1);if((b.yMeters()-a.yMeters())*(c.yMeters()-b.yMeters())<0)extrema.add(b);}
-            for(int i=1;i<extrema.size();i++){var a=extrema.get(i-1);var b=extrema.get(i);require(!(Math.abs(a.xMeters()-b.xMeters())<=4*P&&Math.abs(a.yMeters()-b.yMeters())>=.5*P),"Resolved alternating short-wave turn introduced into straight mean");}
+            for(int i=1;i<extrema.size();i++){var a=extrema.get(i-1);var b=extrema.get(i);qualityRequire(!(Math.abs(a.xMeters()-b.xMeters())<=4*P&&Math.abs(a.yMeters()-b.yMeters())>=.5*P),"Resolved alternating short-wave turn introduced into straight mean");}
         }
     }
     static FrozenReplayInput historical(FrozenReplayInput f) {
@@ -163,46 +207,68 @@ public final class WideCompactQualityMain {
     public static void main(String[] args)throws Exception {
         Config.setPreferencesInstance(new MemoryPreferences());
         if(args.length==2&&args[0].equals("--manifest")){Files.writeString(Path.of(args[1]),manifest(),StandardOpenOption.CREATE_NEW);return;}
-        Path out=Path.of(args.length==1?args[0]:"build/reports/wide-compact-quality");Files.createDirectories(out);require(!Files.exists(out.resolve("summary.json")),"Existing evidence must not be overwritten");
-        var status=new LinkedHashMap<String,String>();for(String id:WideCompactScenes.IDS)status.put(id,"NOT_RUN");
-        Throwable failure=null;List<MetricPoint> drift=null;String stage="fixed-input-preflight";
+        var invocation=invocation(args);boolean diagnostic=invocation.diagnostic();Path out=invocation.output();Files.createDirectories(out);require(!Files.exists(out.resolve("summary.json")),"Existing evidence must not be overwritten");
+        var report=new WideCompactDiagnosticFlow.Report();for(String id:WideCompactScenes.IDS)report.ensureScene(id);
+        Throwable failure=null;var drift=new AtomicReference<List<MetricPoint>>();String[] currentStage={"fixed-input-preflight"};
         try {
-            write(out,"runtime.txt","sourceCommit="+System.getenv().getOrDefault("GITHUB_SHA","unavailable-local")+"\njavaVersion="+System.getProperty("java.version")+"\nnumericalParameters="+EvidenceModelParameters.defaults().version()+"\nsceneSpecification="+WideCompactScenes.SPEC+"\n");
+            write(out,"runtime.txt","sourceCommit="+System.getenv().getOrDefault("GITHUB_SHA","unavailable-local")+"\njavaVersion="+System.getProperty("java.version")+"\nnumericalParameters="+EvidenceModelParameters.defaults().version()+"\nsceneSpecification="+WideCompactScenes.SPEC+"\ndiagnosticOnly="+diagnostic+"\nreleaseQualified=false\n");
             var expected=new Properties();try(var in=WideCompactQualityMain.class.getResourceAsStream(MANIFEST)){require(in!=null,"Missing frozen public scene hashes");expected.load(in);}
             require(WideCompactScenes.SPEC.equals(expected.getProperty("spec")),"Scene specification changed after freeze");
             for(String id:WideCompactScenes.IDS)require(WideCompactScenes.scene(id).input().canonicalHash().equals(expected.getProperty(id)),"Frozen scene hash changed: "+id);
             for(String id:WideCompactScenes.IDS) {
-                status.put(id,"FAILED");var scene=WideCompactScenes.scene(id);var dir=out.resolve(id);Files.createDirectories(dir);
-                stage=id+":reference-execution";
-                Run reference=execute(scene,historical(scene.input()),false,false,dir.resolve("historical-full"));
-                if(reference.pipeline().result().inference().status()==TraceHypothesisSet.Status.RESOURCE_LIMIT)reference=execute(scene,scene.input(),true,false,dir.resolve("full-cached-v4-oracle"));
-                require(!reference.pipeline().result().routes().isEmpty(),"Completed full reference unavailable");
-                var referenceInference=reference.pipeline().result().inference();
-                require((referenceInference.status()==TraceHypothesisSet.Status.COMPLETE||referenceInference.status()==TraceHypothesisSet.Status.AMBIGUOUS)
-                        &&reference.capture().posteriorUsable&&reference.capture().retained.isEmpty(),"Full reference is incomplete/conditional/sparse");
-                require(referenceInference.workAccounting().orElseThrow().bStages().stream().allMatch(s->s.refusedScoreAttempts()==0),"Full reference has a refused score attempt");
-                require(reference.capture().closedBytes==0&&reference.capture().inferredCalls==1,"Reference execution/ownership missing");
-                require(reference.capture().bound!=null&&!reference.capture().bound.admitted()&&reference.capture().bound.scoresExceeded(),"Frozen wide scene does not naturally exercise compact admission");
-                stage=id+":reference-suitability";safety(reference,scene,dir.resolve("reference-safety"));analytic(reference,scene,dir.resolve("reference-analytic"));
-                stage=id+":candidate-execution";Run candidate=execute(scene,scene.input(),false,true,dir.resolve("candidate"));
-                stage=id+":candidate-branch-proof";candidateProof(candidate,scene);
-                stage=id+":candidate-quality";safety(candidate,scene,dir.resolve("candidate-safety"));analytic(candidate,scene,dir.resolve("candidate-analytic"));
-                stage=id+":reference-physical-comparison";
-                var raw=candidate.pipeline().result().routes().get(0).rawHypothesis().points();var oldRaw=reference.pipeline().result().routes().get(0).rawHypothesis().points();require(raw.size()==oldRaw.size(),"Raw physical profile rows differ");
-                double[] distances=new double[raw.size()];for(int i=0;i<raw.size();i++)distances[i]=Math.hypot(raw.get(i).xMeters()-oldRaw.get(i).xMeters(),raw.get(i).yMeters()-oldRaw.get(i).yMeters());Arrays.sort(distances);
-                double p95=distances[(int)Math.ceil(.95*distances.length)-1],maximum=distances[distances.length-1];double p95Limit=(scene.strong()?.25:.5)*P,maxLimit=(scene.strong()?.5:1)*P;
-                var finalPoints=candidate.pipeline().result().routes().get(0).hypothesis().points();var comparison=compare(finalPoints,reference.pipeline().result().routes().get(0).hypothesis().points(),0);
-                write(dir,"reference-comparison.txt","rawP95="+p95+"\nrawMaximum="+maximum+"\nfinal="+comparison+"\np95Limit="+p95Limit+"\nmaximumLimit="+maxLimit+"\n");
-                require(p95<=p95Limit&&maximum<=maxLimit&&comparison.p95()<=p95Limit&&comparison.certifiedMaximum()<=maxLimit,"Compact quality loss exceeds fixed physical bounds: "+id);
-                if(id.equals("remote-drift"))drift=finalPoints;
-                if(id.equals("remote-drift-reversed")){var reversal=compare(finalPoints,drift,0);write(dir,"reversal-comparison.txt",reversal+"\n");require(reversal.p95()<=.25*P&&reversal.certifiedMaximum()<=.5*P,"Physical drift reversal changed corridor");}
-                status.put(id,"PASS");
+                var scene=WideCompactScenes.scene(id);var dir=out.resolve(id);Files.createDirectories(dir);
+                final Run[] reference={null},candidate={null};final boolean[] referenceAnalyticFailed={false},candidateAnalyticFailed={false};
+                currentStage[0]=id+":reference-execution";
+                WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.REFERENCE,currentStage[0],diagnostic,false,false,()->{
+                    Run r=execute(scene,historical(scene.input()),false,false,dir.resolve("historical-full"));if(r.pipeline().result().inference().status()==TraceHypothesisSet.Status.RESOURCE_LIMIT)r=execute(scene,scene.input(),true,false,dir.resolve("full-cached-v4-oracle"));reference[0]=r;
+                    var inf=r.pipeline().result().inference();
+                    if(r.pipeline().result().routes().isEmpty()){report.markUnavailable(id,WideCompactDiagnosticFlow.Assessment.COMPARISON);throw new IllegalStateException("Completed full reference unavailable");}
+                    require((inf.status()==TraceHypothesisSet.Status.COMPLETE||inf.status()==TraceHypothesisSet.Status.AMBIGUOUS)&&r.capture().posteriorUsable&&r.capture().retained.isEmpty(),"Full reference is incomplete/conditional/sparse");
+                    require(inf.workAccounting().orElseThrow().bStages().stream().allMatch(x->x.refusedScoreAttempts()==0),"Full reference has a refused score attempt");
+                    require(r.capture().closedBytes==0&&r.capture().inferredCalls==1,"Reference execution/ownership missing");
+                    require(r.capture().bound!=null&&!r.capture().bound.admitted()&&r.capture().bound.scoresExceeded(),"Frozen wide scene does not naturally exercise compact admission");
+                });
+                currentStage[0]=id+":reference-safety";
+                WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.REFERENCE_SAFETY,currentStage[0],diagnostic,false,false,()->safety(reference[0],scene,dir.resolve("reference-safety")));
+                currentStage[0]=id+":reference-analytic";
+                referenceAnalyticFailed[0]=!WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.REFERENCE_ANALYTIC,currentStage[0],diagnostic,true,false,()->analytic(reference[0],scene,dir.resolve("reference-analytic")));
+                currentStage[0]=id+":candidate-execution";
+                WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.CANDIDATE,currentStage[0],diagnostic,false,false,()->candidate[0]=execute(scene,scene.input(),false,true,dir.resolve("candidate")));
+                currentStage[0]=id+":candidate-branch-proof";
+                WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.CANDIDATE_BRANCH,currentStage[0],diagnostic,false,false,()->candidateProof(candidate[0],scene));
+                currentStage[0]=id+":candidate-safety";
+                WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.CANDIDATE_SAFETY,currentStage[0],diagnostic,false,false,()->{
+                    safety(candidate[0],scene,dir.resolve("candidate-safety"));
+                    if(id.equals("remote-drift"))drift.set(candidate[0].pipeline().result().routes().get(0).hypothesis().points());
+                });
+                currentStage[0]=id+":candidate-analytic";
+                candidateAnalyticFailed[0]=!WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.CANDIDATE_ANALYTIC,currentStage[0],diagnostic,true,false,()->analytic(candidate[0],scene,dir.resolve("candidate-analytic")));
+                currentStage[0]=id+":reference-physical-comparison";
+                boolean comparisonDiagnostic=referenceAnalyticFailed[0]||candidateAnalyticFailed[0];
+                if(reference[0]==null||reference[0].pipeline().result().routes().isEmpty())report.markUnavailable(id,WideCompactDiagnosticFlow.Assessment.COMPARISON);
+                else WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.COMPARISON,currentStage[0],diagnostic,true,comparisonDiagnostic,()->{
+                    Run c=candidate[0],r=reference[0];var raw=c.pipeline().result().routes().get(0).rawHypothesis().points();var oldRaw=r.pipeline().result().routes().get(0).rawHypothesis().points();require(raw.size()==oldRaw.size(),"Raw physical profile rows differ");
+                    double[] distances=new double[raw.size()];for(int i=0;i<raw.size();i++)distances[i]=Math.hypot(raw.get(i).xMeters()-oldRaw.get(i).xMeters(),raw.get(i).yMeters()-oldRaw.get(i).yMeters());Arrays.sort(distances);
+                    double p95=distances[(int)Math.ceil(.95*distances.length)-1],maximum=distances[distances.length-1];double p95Limit=(scene.strong()?.25:.5)*P,maxLimit=(scene.strong()?.5:1)*P;
+                    var finalPoints=c.pipeline().result().routes().get(0).hypothesis().points();var comparison=compare(finalPoints,r.pipeline().result().routes().get(0).hypothesis().points(),0);
+                    write(dir,"reference-comparison.txt","rawP95="+p95+"\nrawMaximum="+maximum+"\nfinal="+comparison+"\np95Limit="+p95Limit+"\nmaximumLimit="+maxLimit+"\ncomparisonBaseline="+(comparisonDiagnostic?"DIAGNOSTIC_ONLY":"VALID_REFERENCE")+"\n");
+                    qualityRequire(p95<=p95Limit&&maximum<=maxLimit&&comparison.p95()<=p95Limit&&comparison.certifiedMaximum()<=maxLimit,"Compact quality loss exceeds fixed physical bounds: "+id);
+                });
+                if(id.equals("remote-drift-reversed")) {
+                    currentStage[0]=id+":physical-reversal-comparison";
+                    WideCompactDiagnosticFlow.runAssessment(report,id,WideCompactDiagnosticFlow.Assessment.REVERSAL,currentStage[0],diagnostic,true,comparisonDiagnostic,()->{
+                        var finalPoints=candidate[0].pipeline().result().routes().get(0).hypothesis().points();require(drift.get()!=null,"Forward drift comparison unavailable");var reversal=compare(finalPoints,drift.get(),0);
+                        write(dir,"reversal-comparison.txt",reversal+"\n");qualityRequire(reversal.p95()<=.25*P&&reversal.certifiedMaximum()<=.5*P,"Physical drift reversal changed corridor");
+                    });
+                }
             }
-        }catch(Throwable caught){failure=caught;try(var writer=new PrintWriter(Files.newBufferedWriter(out.resolve("first-failure.txt")))){caught.printStackTrace(writer);}}
-        finally {
-            var json=new StringBuilder("{\"schema\":1,\"status\":\"").append(failure==null?"PASS":"FAILED").append("\",\"lastStage\":\"").append(stage).append("\",\"requiredScenes\":6,\"completedScenes\":").append(status.values().stream().filter("PASS"::equals).count()).append(",\"extentAdjustments\":1,\"scenes\":{");boolean comma=false;for(var e:status.entrySet()){if(comma)json.append(',');comma=true;json.append('"').append(e.getKey()).append("\":\"").append(e.getValue()).append('"');}write(out,"summary.json",json.append("}}\n").toString());
+        } catch(Throwable caught) {
+            failure=caught;
+            if(report.firstFailure()==null)report.preserve("driver",WideCompactDiagnosticFlow.Assessment.REFERENCE,currentStage[0],caught);
+        } finally {
+            report.write(out,diagnostic);
         }
-        if(failure!=null)throw new AssertionError("Public wide compact qualification stopped; preserved first failure",failure);
+        if(WideCompactDiagnosticFlow.exitFailed(report))throw new AssertionError(diagnostic?"Diagnostic-only wide compact assessment failed; release remains unqualified":"Public wide compact qualification stopped; preserved first failure",failure);
     }
     private WideCompactQualityMain() { }
 }

@@ -7,6 +7,16 @@ It runs five fixed public analytic scenes and reversed drift, in that order,
 and stops on the first failure. This is separate from public JUnit, GUI,
 Legacy, private-control and repeated performance qualification.
 
+The dedicated `Wide diagnostic continuation` workflow is restricted to push
+on `codex/v022-wide-diagnostics-20261107`. Its separate
+`v022WideCompactDiagnostic` task records completed reference and candidate
+evidence after typed analytic or physical-comparison quality failures, then
+continues to later scenes only when native execution and authority checks are
+valid. It is diagnostic-only, always reports `releaseQualified=false`, and
+exits nonzero if any required assessment fails. The ordinary task and Build
+workflow remain fail-first and unchanged. Its distinct artifact includes the
+same frozen manifest; this report cannot qualify a release.
+
 `src/test/resources/public-wide-compact-v1.properties` freezes all six
 canonical input hashes and the physical specification. Fixture arithmetic uses
 StrictMath. Preflight checks every hash before preparing any scene. The
@@ -100,3 +110,82 @@ or authorize physical fixture tuning.
 The six-scene numerical gate has not run locally and remains unqualified until
 the corrected dedicated CI job completes. Wide approximation quality, private high
 inference/comparison, GUI, cancellation and repeated latency gates remain open.
+
+## Separate performance-retention assessment
+
+`wide-compact-performance-retention-v1` is a pure, test-side assessment
+contract. Its caller must provide execution, identity, native-authority,
+branch, safety, and measurement evidence that an actual runner independently
+validated. The helper does not establish those facts or qualify a release;
+`releaseQualified` is always false. Missing or invalid measurements remain
+unavailable.
+
+For suitable dense references, strong scenes use p95/max limits of 0.25p/0.5p
+and weak scenes use 0.5p/1p for both raw and final geometry. Supported-bend
+retention compares candidate and reference amplitudes on the same declared
+physical interval and baseline and requires at least 90%. Absolute analytic
+amplitude debt is reported separately and does not rewrite the relative
+retention result.
+
+Only `diffuse-three-strand` can receive `UNSUITABLE_REFERENCE`, and only when
+the reference fails its independent geometry oracle while the candidate passes
+its independent geometry and runner checks. Any measured distance failure
+remains `FAILED` alongside that disposition. The exception never bypasses
+candidate execution, integrity, native authority, branch, or safety checks.
+This assessment does not alter the diagnostic runner's FAILED status, existing
+assertions, or release gates; root-owned runner integration and all other
+performance qualification remain pending.
+
+The retention helper also keeps the frozen analytic oracle by scene strength:
+strong analytic p95 is bounded by 0.5p and weak analytic p95 by p; both retain
+certified maximum ≤p. Missing anti-zigzag evidence is unavailable. The faint
+absolute-amplitude assertion is explicitly applicable only to the frozen
+`faint-apex` scene and requires both candidate and dense-reference outcomes.
+Candidate-only, reference-only, and shared baseline debt remain distinguishable. Absolute candidate/reference values carry the same declared interval and baseline identity as the retained-bend measurements; a mismatch or missing required evidence makes the assessment unavailable. These are reported
+assessment outcomes, not added release gates.
+
+## Public performance-retention assessment
+
+The separate `v022WideCompactRetention` task runs the six frozen scenes through
+actual production full/reference and compact/candidate executions in one
+invocation. It reuses those in-memory native outputs for branch/safety,
+analytic geometry, raw/final fidelity and faint amplitude measurements; the
+historical full attempt and explicit cached-V4 oracle fallback are labeled
+separately. It writes a versioned `public-wide-compact-performance-retention`
+report beside the unchanged frozen manifest. A suitable-reference retention
+PASS or shared baseline-debt result, plus the narrowly classified diffuse
+unsuitable-reference result with its distance still FAILED, can pass only this
+named task. Missing evidence is UNAVAILABLE and exits nonzero; mandatory
+failures are FAILED and exit nonzero. The report always says
+`releaseQualified=false`.
+
+The manual `Public B performance retention` workflow has a `workflow_dispatch`
+trigger and a push trigger restricted to
+`codex/v022-b-retention-qualification-20261107` so the reviewed task can be
+launched from a dedicated branch. The original fail-first quality task and
+FAILED diagnostic continuation retain their current commands, output paths,
+thresholds and statuses. No overall release or performance qualification
+follows from this assessment alone.
+
+The bounded local orchestration regression uses a separate eight-profile
+straight scene of length `6.5p`, with the same native `p` pitch and complete
+`+/-25 m` profile extent. Its historical full reference uses ordinary defaults;
+its candidate alone records the test-only `96/8M/1M/32/8` budget. Full admission
+must naturally exceed the score bound, and the actual V4 compact run must still
+finish with native work, original-cell mappings, zero closed-owner bytes,
+safety and analytic geometry evidence. The default public proof rejects this
+custom budget. The full-policy negative control reuses the actual reference
+output and must fail the compact runner gate. These controls do not change the
+six frozen scene inputs or execute their numerical gate locally.
+
+Summary JSON is parsed in regression coverage for faint shared amplitude debt
+and partial/unavailable outcomes. Unmeasured or non-finite metrics serialize as
+`null` with unavailable evidence, and diagnostic text is JSON escaped.
+
+Mandatory runner failures retain their earliest actual stage and original
+exception through scene completion, JSON reporting and the failing CLI exit.
+Missing execution records unavailable evidence with no invented native exception;
+later measurement failures cannot replace that first event. Available native
+work counters remain recorded even when a subsequent measurement fails. The
+accepted analytic baseline/reference debt remains separate from mandatory
+execution, identity and safety failures.
