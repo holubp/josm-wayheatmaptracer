@@ -395,7 +395,8 @@ public final class Format15ReplayRunner {
         }
     }
 
-    private static Format15ProductionBundleFactory.IntervalSourceReceipt sourceReceipt(Object value) {
+    /** Shared bounded native source-receipt parser; export binding grants no replay capability. */
+    static Format15ProductionBundleFactory.IntervalSourceReceipt sourceReceipt(Object value) {
         if (!(value instanceof Map<?, ?> map) || !(map.get("kind") instanceof String kind)) {
             throw new ReplayMismatchException("strict-interval-source-receipt-mismatch");
         }

@@ -9,6 +9,55 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 
 /** Deterministic owner/event ordering; native engine completes inside the detached worker. */
 class CorridorCancellationOwnerTest {
+    private enum StartFamily { SNAPSHOT, DETACHED, DIAGNOSTIC }
+
+    @Test void pausedHistoricalSuccessCannotPublishUnderReusedOwnerBeforeNewAReceipt()throws Exception{
+        for(var old:List.of(StartFamily.SNAPSHOT,StartFamily.DETACHED))
+            pausedSuccessRace(old,StartFamily.DIAGNOSTIC,true);
+    }
+    @Test void pausedASuccessCannotClearDifferentOwnerOrSameOwnerCancellationReceipt()throws Exception{
+        for(boolean sameOwner:List.of(false,true))pausedSuccessRace(StartFamily.DIAGNOSTIC,StartFamily.DIAGNOSTIC,sameOwner);
+    }
+    @Test void pausedASuccessCannotPublishOverNewHistoricalStart()throws Exception{
+        for(var next:List.of(StartFamily.SNAPSHOT,StartFamily.DETACHED))
+            for(boolean sameOwner:List.of(false,true))pausedSuccessRace(StartFamily.DIAGNOSTIC,next,sameOwner);
+    }
+    private static void pausedSuccessRace(StartFamily oldFamily,StartFamily nextFamily,boolean sameOwner)throws Exception{
+        try(var h=new Harness()){
+            var oldPublished=new AtomicInteger();var newPublished=new AtomicInteger();
+            startFamily(h,oldFamily,h.owner,context->"old",oldPublished);
+            h.executor.queue.remove().run();var oldDelivery=h.events.remove();
+            Thread delivery=new Thread(oldDelivery,"paused-old-success");
+            synchronized(h.session){
+                delivery.start();
+                long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);
+                while(h.session.currentAttempt().state()!=AlignmentJob.State.PREVIEW_READY&&System.nanoTime()<deadline)
+                    java.util.concurrent.locks.LockSupport.parkNanos(100_000);
+                assertEquals(AlignmentJob.State.PREVIEW_READY,h.session.currentAttempt().state(),"Pause after the actual job CAS while the callback waits for this session monitor");
+                var nextOwner=sameOwner?h.owner:h.session.open(()->{});
+                startFamily(h,nextFamily,nextOwner,context->{
+                    if(nextFamily==StartFamily.DIAGNOSTIC)throw NativeCancellation.VALUE;
+                    return "new";
+                },newPublished);
+            }
+            delivery.join(5000);assertFalse(delivery.isAlive());
+            assertEquals(0,oldPublished.get(),"Old success must not publish after another start, even with the same owner");
+            h.executor.queue.remove().run();h.events.remove().run();
+            if(nextFamily==StartFamily.DIAGNOSTIC){
+                assertEquals(1,h.published.size(),"Old success must not revoke the newer completed-work token");
+                assertNull(h.session.currentAttempt().result());assertEquals(0,newPublished.get());
+            }else{assertEquals(1,newPublished.get());assertEquals("new",h.session.currentAttempt().result());}
+        }
+    }
+    private static void startFamily(Harness h,StartFamily family,PreviewSessionController.Owner owner,
+            CancelWorker worker,AtomicInteger previews){
+        if(family==StartFamily.SNAPSHOT)h.session.start(owner,()->h.snapshot,(snapshot,context)->worker.compute(context),a->previews.incrementAndGet());
+        else if(family==StartFamily.DETACHED)h.session.startDetached(owner,
+            ()->new AlignmentJob.CapturedAttempt<>(h.snapshot,"input"),(input,context)->worker.compute(context),a->previews.incrementAndGet());
+        else h.session.startDetached(owner,()->new AlignmentJob.CapturedAttempt<>(h.snapshot,"input"),
+            (input,context)->worker.compute(context),a->previews.incrementAndGet(),"new-diagnostic",
+            event->h.session.publishCancellationDiagnosticsIfLatest(owner,event,"new-diagnostic",()->h.published.add(event)));
+    }
     private static final class NativeCancellation {
         static final CorridorFinalizationCancelledException VALUE=CorridorPolicyFixture.finalizationCancellation();
     }

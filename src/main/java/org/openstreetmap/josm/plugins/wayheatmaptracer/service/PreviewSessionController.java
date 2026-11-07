@@ -50,12 +50,7 @@ public final class PreviewSessionController<R> implements AutoCloseable {
                 cancellationDiagnosticOwner = new CancellationDiagnosticOwner(owner,
                     job.currentAttempt().sequence(), captured.snapshot(), diagnosticAttemptIdentity);
                 return captured;
-            }, worker, attempt -> {
-                synchronized (this) {
-                    cancellationDiagnosticOwner = null;
-                    if (isCurrent(owner)) publisher.publish(attempt);
-                }
-            }, diagnostics);
+            }, worker, attempt -> publishSuccessIfCurrent(owner, attempt, publisher), diagnostics);
             if (!result.started()) cancellationDiagnosticOwner = null;
             return result;
         } catch (RuntimeException failure) {
@@ -123,11 +118,7 @@ public final class PreviewSessionController<R> implements AutoCloseable {
             AlignmentJob.PreviewPublisher<R> publisher) {
         requireCurrent(owner);
         cancellationDiagnosticOwner = null;
-        return job.start(capture, worker, attempt -> {
-            if (isCurrent(owner)) {
-                publisher.publish(attempt);
-            }
-        });
+        return job.start(capture, worker, attempt -> publishSuccessIfCurrent(owner, attempt, publisher));
     }
 
     /** Starts a detached typed worker only for the current plugin-wide owner. */
@@ -136,11 +127,18 @@ public final class PreviewSessionController<R> implements AutoCloseable {
             AlignmentJob.PreviewPublisher<R> publisher) {
         requireCurrent(owner);
         cancellationDiagnosticOwner = null;
-        return job.startDetached(capture, worker, attempt -> {
-            if (isCurrent(owner)) {
-                publisher.publish(attempt);
-            }
-        });
+        return job.startDetached(capture, worker, attempt -> publishSuccessIfCurrent(owner, attempt, publisher));
+    }
+
+    /** Registration, immutable-attempt validation and publication share the same session monitor. */
+    private synchronized void publishSuccessIfCurrent(Owner owner, AlignmentJob.Attempt<R> attempt,
+            AlignmentJob.PreviewPublisher<R> publisher) {
+        if (!isCurrent(owner) || job.currentAttempt() != attempt
+                || attempt.state() != AlignmentJob.State.PREVIEW_READY || attempt.cancelled()) return;
+        var token = cancellationDiagnosticOwner;
+        if (token != null && token.owner().equals(owner) && token.jobSequence() == attempt.sequence()
+                && token.snapshot().equals(attempt.snapshot())) cancellationDiagnosticOwner = null;
+        publisher.publish(attempt);
     }
 
     /** Returns the shared job's current immutable attempt state. */
