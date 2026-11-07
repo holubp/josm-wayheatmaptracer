@@ -265,6 +265,11 @@ public final class Format15ProductionBundleFactory {
                 var workBundle=new Format15Bundle(bundle.buildIdentity(),bundle.sourceIdentityHash(),bundle.parameterHash(),artifacts);
                 artifacts.put(Format15DenseBAdmissionReceipt.ARTIFACT,
                         Format15DenseBAdmissionReceipt.artifact(workBundle,input,executedRuns.get(0)));
+                if(Format15BRefinementBudgetReceipt.required(input.request().parameterHash())
+                        &&org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BRefinementBudget
+                            .fromExplanation(executedRuns.get(0).explanation()).isPresent())
+                    artifacts.put(Format15BRefinementBudgetReceipt.ARTIFACT,
+                            Format15BRefinementBudgetReceipt.artifact(workBundle,input,executedRuns.get(0)));
             }
         }
         var receipt = executedRuns == null

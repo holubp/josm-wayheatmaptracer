@@ -48,7 +48,8 @@ public final class FinalGeometryEvaluator {
         UNAVAILABLE_IMAGE_QUALITY,
         PROTECTED_ASSIGNMENT_MISMATCH,
         PRECISE_SHAPE_REQUIRED,
-        LOCAL_SHAPE_IMAGE_AMBIGUITY
+        LOCAL_SHAPE_IMAGE_AMBIGUITY,
+        REFINEMENT_NOT_PERFORMED_BUDGET
     }
 
     /** Severity remains separate from empirical confidence or average fit. */
@@ -232,6 +233,20 @@ public final class FinalGeometryEvaluator {
         public boolean has(FindingCode code) {
             return findings.stream().anyMatch(finding -> finding.code() == code);
         }
+    }
+
+    /** Adds review-only meaning for an exact native budgeted-completion marker, preserving physical metrics. */
+    public static Result withRefinementBudgetReview(Result original, double nativeMarker, int vertexCount) {
+        Objects.requireNonNull(original, "original");
+        if(nativeMarker!=1.0)return original;
+        if(vertexCount<2)throw new IllegalArgumentException("Complete final geometry is required");
+        if(original.has(FindingCode.REFINEMENT_NOT_PERFORMED_BUDGET))return original;
+        var findings=new ArrayList<>(original.findings());
+        findings.add(review(FindingCode.REFINEMENT_NOT_PERFORMED_BUDGET,0,vertexCount-1,0));
+        return new Result(original.id(),original.disposition()==Disposition.HARD_BLOCKED
+                ?Disposition.HARD_BLOCKED:Disposition.REVIEW_REQUIRED,findings,
+                original.totalLengthMeters(),original.directlySupportedLengthMeters(),
+                original.worstUnsupportedSpanMeters(),original.meanImageCenterCost(),original.bendPreservingRoughness());
     }
 
     /** Projects the adapter's proved contacts without replacing any existing quality finding or metric. */

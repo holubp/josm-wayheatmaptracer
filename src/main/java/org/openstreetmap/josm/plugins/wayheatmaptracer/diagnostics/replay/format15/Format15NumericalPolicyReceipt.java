@@ -158,6 +158,8 @@ final class Format15NumericalPolicyReceipt {
             }
             if(engine==TrackerMode.PROBABILISTIC&&Format15DenseBAdmissionReceipt.required(input.request().parameterHash()))
                 Format15DenseBAdmissionReceipt.validate(archive,input,verifiedInputHash);
+            if(engine==TrackerMode.PROBABILISTIC&&Format15BRefinementBudgetReceipt.required(input.request().parameterHash()))
+                Format15BRefinementBudgetReceipt.validate(archive,input,verifiedInputHash);
             Format15Artifact expectedReceipt = scored ? current(archive.sourceIdentityHash(), verifiedInputHash, input.request().parameterHash(),
                     input.request().engine(), engine, receipts)
                     : current(archive.sourceIdentityHash(), verifiedInputHash, input.request().parameterHash(),
@@ -198,8 +200,11 @@ final class Format15NumericalPolicyReceipt {
     private static boolean matchesPolicy(ExecutionWorkReceipt receipt,String expected) {
         if(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.DENSE_ADMISSION_VERSION.equals(expected)
                 ||org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_PREP_VERSION.equals(expected)
-                ||org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_FRONTIER_VERSION.equals(expected)) {
-            var selected=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.DENSE_ADMISSION_VERSION.equals(expected)
+                ||org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_FRONTIER_VERSION.equals(expected)
+                ||org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.BUDGETED_FRONTIER_VERSION.equals(expected)) {
+            var selected=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.BUDGETED_FRONTIER_VERSION.equals(expected)
+                    ?org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_FRONTIER_BUDGETED_V6
+                    :org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.DENSE_ADMISSION_VERSION.equals(expected)
                     ?org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.DENSE_ADMITTED_V3
                     :org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_FRONTIER_VERSION.equals(expected)
                     ?org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BPolicy.INVENTORY_FRONTIER_V5
@@ -263,6 +268,7 @@ final class Format15NumericalPolicyReceipt {
                 throw new ReplayMismatchException("numerical-policy-runtime-work-mismatch");
             }
             Format15DenseBAdmissionReceipt.validateActual(archive,actual);
+            Format15BRefinementBudgetReceipt.validateActual(archive,actual);
         } catch (Format15ArchiveException | IllegalArgumentException | java.util.NoSuchElementException malformed) {
             throw new ReplayMismatchException("numerical-policy-runtime-work-mismatch");
         }

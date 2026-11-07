@@ -11,7 +11,7 @@ final class Format15DenseBAdmissionReceipt {
     private static final int MAX_BYTES=8*1024*1024;
     private static final Set<String> KEYS=Set.of("schema","sourceIdentityHash","inputHash","parameterHash","executionWorkHash","witness");
     private Format15DenseBAdmissionReceipt() { }
-    static boolean required(String parameterHash){String policy=BPolicy.adaptiveVersion(parameterHash);return BPolicy.DENSE_ADMISSION_VERSION.equals(policy)||BPolicy.INVENTORY_PREP_VERSION.equals(policy)||BPolicy.INVENTORY_FRONTIER_VERSION.equals(policy);}
+    static boolean required(String parameterHash){String policy=BPolicy.adaptiveVersion(parameterHash);return BPolicy.DENSE_ADMISSION_VERSION.equals(policy)||BPolicy.INVENTORY_PREP_VERSION.equals(policy)||BPolicy.INVENTORY_FRONTIER_VERSION.equals(policy)||BPolicy.BUDGETED_FRONTIER_VERSION.equals(policy);}
     static Format15Artifact artifact(Format15Bundle bundle,FrozenReplayInput input,TraceHypothesisSet run) {
         String witness=DenseBAdmission.witnessFromExplanation(run.explanation());
         requireWork(witness,input,run.workAccounting().orElseThrow());

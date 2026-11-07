@@ -363,6 +363,9 @@ public final class ModernTracePipeline {
                     quality.worstUnsupportedSpanMeters(), quality.meanImageCenterCost(),
                     quality.bendPreservingRoughness());
         }
+        quality = FinalGeometryEvaluator.withRefinementBudgetReview(quality,
+                source.diagnostics().getOrDefault("bBudgetedFirstGraphV1",0.0),finalPoints.size());
+        cancellation.checkpoint();
         long finalGeometryNanos = System.nanoTime() - finalGeometryStarted;
         if (request.engine() == TrackerMode.PROBABILISTIC) {
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(

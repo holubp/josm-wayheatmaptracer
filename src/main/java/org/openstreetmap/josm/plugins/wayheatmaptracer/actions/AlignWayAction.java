@@ -2440,12 +2440,18 @@ public class AlignWayAction extends JosmAction {
     private String liveBQualitySummary(LiveBPreviewService.Computed computed, int index) {
         FinalGeometryEvaluator.Result quality = computed.pipeline().routes().get(index).quality();
         String findings = FindingSummary.summarize(quality.findings().stream()
-                .map(finding -> finding.code().name() + " (" + finding.severity().name() + ")")
+                .map(AlignWayAction::modernFindingSummary)
                 .toList());
         return tr("Final quality: {0}; findings: {1}; supported length: {2} m of {3} m",
                 quality.disposition().name(), findings,
                 String.format(Locale.ROOT, "%.1f", quality.directlySupportedLengthMeters()),
                 String.format(Locale.ROOT, "%.1f", quality.totalLengthMeters()));
+    }
+
+    static String modernFindingSummary(FinalGeometryEvaluator.Finding finding) {
+        return finding.code()==FinalGeometryEvaluator.FindingCode.REFINEMENT_NOT_PERFORMED_BUDGET
+                ?tr("Refinement could not fit within the work limit. This preview uses the completed initial search and requires review.")
+                :finding.code().name()+" ("+finding.severity().name()+")";
     }
 
     private void requireLiveBCurrent(DataSet dataSet, SelectionContext selection,
