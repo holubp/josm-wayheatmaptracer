@@ -1,5 +1,47 @@
 # Unattended v0.22 ordinary-action benchmark
 
+## Named managed V4 inventory comparison
+
+The separate `b-inventory-v4-numerical-readonly-v1` contract compares native RC6
+with the current registered ordinary managed B action. It accepts only the
+fixed per-case profiles `managed-hot-precise-7m01-z15-v1` (six hot z15 and four
+hot z14 PNGs) and `managed-bluered-precise-25m-z15-v1` (four bluered z15 and two
+bluered z14 PNGs), exactly one of each. Both use Precise Shape, step 1.56 m,
+RAW_HIGH_RESOLUTION z15/14, fixed junctions, disabled cleanup/recovery and the
+ordinary default budgets. Profile values are finite choices, never arbitrary
+settings or numerical-policy overrides. Old contracts refuse source profiles.
+
+Use the separately pinned `v022-rc6-v4-benchmark-instrumentation.patch` on a fresh
+exact RC6 checkout. Its six-file registry is distinct from the original five-file
+registry. The four original non-host instrumentation files remain byte-identical;
+only the fixture host and common profile enum adapt the source fixture. The
+original patch and historical instrumented checkout remain unchanged.
+
+The selected-only TSV retains `zoom`, `x`, `y`, `sha256`, `relativePath` columns.
+Pin the chosen original OSM bytes, bookmark archive, TSV and every selected PNG.
+The runner verifies those pins before and after every preview/cancellation
+process. Every observed preview tile must be a positive cache hit for the
+selected palette and pinned address; transport executions must be zero. RC6
+observes z15, current observes z14 and z15. Missing support fails the fixture.
+Cancellation input pins are checked independently; tile acquisition observations
+are unavailable when the existing cancellation observer does not expose them.
+
+An archived Move capture is origin metadata only. The named
+`drasov-explicit-precise-from-archived-source-v1` scenario performs a fresh Precise
+capture in both versions. The actual authenticated RC6 warm-up is the effective
+native reference; historical bookmark bytes never masquerade as a fresh result.
+Comparators use explicit `baseline-repeat`, `candidate-repeat`, `cross-version`
+scopes. Current authority/interval partition is recaptured from the pinned OSM;
+baseline repetitions retain native RC6 output/work and available plan identities
+without replaying the old policy through the current observation model.
+
+All two-case, warmup, repetition, per-case 2×, production observer and three-probe
+cancellation gates remain mandatory. Reports identify
+`historicalStrictReplay=false`, `sameObjectiveDenseComparison=false`,
+`releaseQualified=false`, and `B07QualityQualification=UNAVAILABLE/INCOMPLETE`.
+A timing/cancellation PASS is scoped to this named comparison. It does not
+qualify B07 geometry or supply a suitable same-objective dense quality reference.
+
 ## Approved RC10 comparison
 
 The default contract remains `rc6-identical-v1`. To use the maintainer-approved

@@ -17,6 +17,22 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 
+
+def test_benchmark_contract_profile_schema_is_finite_and_explicit():
+    module = _runner_module()
+    v4 = 'b-inventory-v4-numerical-readonly-v1'
+    hot = 'managed-hot-precise-7m01-z15-v1'
+    blue = 'managed-bluered-precise-25m-z15-v1'
+    cases = [{'id': name, 'archive': {}, 'osm': {}, 'tiles': {}, 'sourceProfile': profile}
+             for name, profile in [('N1', hot), ('N2', blue)]]
+    assert module._benchmark_contract_profiles({'comparisonContract': v4, 'cases': cases}) == (v4, [hot, blue])
+    for bad in ({'cases': cases}, {'comparisonContract': v4, 'cases': [{**cases[0], 'sourceProfile': 'unknown'}, cases[1]]},
+                {'comparisonContract': v4, 'cases': [cases[0], {k: v for k, v in cases[1].items() if k != 'sourceProfile'}]},
+                {'comparisonContract': 'unknown', 'cases': cases},
+                {'comparisonContract': v4, 'cases': [{**cases[0], 'parameterHash': 'a'*64}, cases[1]]}):
+        with pytest.raises(module.ValidationError):
+            module._benchmark_contract_profiles(bad)
+
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_RUNNER = SOURCE_ROOT / "scripts" / "run-validation.py"
 ROOT = SOURCE_ROOT
@@ -512,6 +528,43 @@ def test_numeric_josm_version_matches_benchmark_manifest_schema(tmp_path: Path) 
     assert details["benchmark_input_sha256"] == benchmark_identity
     assert details["manifest_validation"] == "valid"
     assert len(identity) == 64
+
+
+def test_v4_parent_identity_binds_contract_profile_and_selected_tile_bytes(tmp_path: Path, monkeypatch) -> None:
+    manifest_path, _, java, _ = _benchmark_fixture(tmp_path)
+    module = _benchmark_validation_module(java)
+    spec = importlib.util.spec_from_file_location('runner_pins', SOURCE_ROOT/'scripts/run-v022-benchmark.py')
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    manifest = json.loads(manifest_path.read_text())
+    manifest['comparisonContract'] = runner.V4_CONTRACT
+    manifest['baseline']['revision'] = runner.BASELINE_REVISION
+    manifest['baseline']['sourceHashes'] = dict(runner.REVIEWED_RC6_V4_SOURCE_SHA256)
+    # This test exercises schema and fixture identity; worktree identity has its own real Git tests.
+    monkeypatch.setattr(module, '_worktree_identity', lambda *args, **kwargs: 'worktree-pinned')
+    for case, (profile, (_, counts)) in zip(manifest['cases'], runner.SOURCE_PROFILES.items()):
+        case['sourceProfile'] = profile
+        index = Path(case['tiles']['path'])
+        pngs = sorted(index.parent.glob('*.png'))
+        rows = []
+        for zoom, count in counts.items():
+            for x in range(count):
+                png = pngs[len(rows)]
+                rows.append(f'{zoom}\t{x}\t0\t{hashlib.sha256(png.read_bytes()).hexdigest()}\t{png.name}')
+        index.write_text('zoom\tx\ty\tsha256\trelativePath\n'+'\n'.join(rows)+'\n')
+        case['tiles'] = _required_file(index)
+    manifest_path.write_text(json.dumps(manifest))
+    first = module.benchmark_manifest_identity(manifest_path)
+    assert len(first) == 64
+    manifest['cases'][1]['sourceProfile'] = manifest['cases'][0]['sourceProfile']
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(module.ValidationError):
+        module.benchmark_manifest_identity(manifest_path)
+    manifest['cases'][1]['sourceProfile'] = list(runner.SOURCE_PROFILES)[1]
+    manifest['baseline']['sourceHashes'][next(iter(runner.REVIEWED_RC6_V4_SOURCE_SHA256))] = '0'*64
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(module.ValidationError, match='adapter pins'):
+        module.benchmark_manifest_identity(manifest_path)
 
 
 def test_parent_benchmark_candidate_rejects_external_and_noncanonical_root_paths(tmp_path: Path) -> None:

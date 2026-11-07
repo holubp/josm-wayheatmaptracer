@@ -46,11 +46,65 @@ public final class BenchmarkDecisionComparatorMain {
     private BenchmarkDecisionComparatorMain() { }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 2 && args.length != 4 && args.length != 5) {
+        if (args.length != 2 && args.length != 4 && args.length != 5 && args.length != 7) {
             throw new IllegalArgumentException("Two production archives, optionally pinned original OSM and SHA256 required");
         }
         var firstArchive = Format15ArchiveReader.read(Path.of(args[0]));
         var secondArchive = Format15ArchiveReader.read(Path.of(args[1]));
+        if (args.length == 7) {
+            if (BenchmarkComparisonContract.parse(args[4]) != BenchmarkComparisonContract.INVENTORY_V4_APPROVED) {
+                throw new IllegalArgumentException("Seven arguments require named V4 contract");
+            }
+            var profile = BenchmarkSourceFixture.parse(args[5]);
+            var scope = BenchmarkComparisonContract.ComparisonScope.parse(args[6]);
+            var contract = BenchmarkComparisonContract.INVENTORY_V4_APPROVED;
+            var first = BenchmarkIntervalDecisionComparison.sharedInput(firstArchive);
+            var second = BenchmarkIntervalDecisionComparison.sharedInput(secondArchive);
+            BenchmarkComparisonContract.requireApprovedParameters(contract, scope,
+                    first.request().parameterHash(), second.request().parameterHash());
+            boolean cross = scope == BenchmarkComparisonContract.ComparisonScope.CROSS_VERSION;
+            boolean current = scope != BenchmarkComparisonContract.ComparisonScope.BASELINE_REPEAT;
+            if (firstArchive.buildIdentity().equals(secondArchive.buildIdentity()) == cross) {
+                throw new IllegalStateException("Native build roles differ from explicit comparison scope");
+            }
+            VerifiedOriginal original = verifyOriginal(Path.of(args[2]), args[3], second, contract, profile, current);
+            var partition = current ? BenchmarkIntervalDecisionComparison.requireFreshCapture(secondArchive,
+                    original.authority(), original.partition()) : null;
+            if (cross) {
+                BenchmarkComparisonContract.requireInputs(contract, first, second,
+                        BenchmarkComparisonContract.frozenKeys(partition));
+            } else {
+                requireSame(first, second);
+                BenchmarkIntervalDecisionComparison.requireSameNativeOutputs(firstArchive, first, secondArchive, second);
+                var firstPlan = firstArchive.artifact("frozen-edit-plan.bin");
+                var secondPlan = secondArchive.artifact("frozen-edit-plan.bin");
+                if (firstPlan.isPresent() != secondPlan.isPresent()) {
+                    throw new IllegalStateException("Within-version native plan availability differs");
+                }
+                if (firstPlan.isPresent()) requireSamePlan(FrozenReplayCodec.decodeEditPlan(firstPlan.orElseThrow().bytes()),
+                        FrozenReplayCodec.decodeEditPlan(secondPlan.orElseThrow().bytes()));
+            }
+            BenchmarkIntervalDecisionComparison.verifyNativePublication(firstArchive, first,
+                    scope == BenchmarkComparisonContract.ComparisonScope.CANDIDATE_REPEAT,
+                    original.dataSet(), original.halfWidthMeters());
+            BenchmarkIntervalDecisionComparison.verifyNativePublication(secondArchive, second, current,
+                    original.dataSet(), original.halfWidthMeters());
+            System.out.println("comparisonContract=" + contract.identity());
+            System.out.println("sourceProfile=" + profile.identity());
+            System.out.println("comparisonScope=" + scope.identity());
+            System.out.println("baselineNativeFrozenHash=" + first.canonicalHash());
+            System.out.println("candidateNativeFrozenHash=" + second.canonicalHash());
+            System.out.println("baselineParameterHash=" + first.request().parameterHash());
+            System.out.println("candidateParameterHash=" + second.request().parameterHash());
+            System.out.println("baselineSettingsHash=" + first.request().settingsHash());
+            System.out.println("candidateSettingsHash=" + second.request().settingsHash());
+            System.out.println("baselineSourceIdentity=" + first.evidence().sourceIdentity());
+            System.out.println("candidateSourceIdentity=" + second.evidence().sourceIdentity());
+            System.out.println("baselinePublicationKind=" + (firstArchive.artifact("frozen-input.bin").isPresent() ? "single" : "interval"));
+            System.out.println("candidatePublicationKind=" + (secondArchive.artifact("frozen-input.bin").isPresent() ? "single" : "interval"));
+            System.out.println("candidateFixedIslands=" + (partition == null ? "[]" : partition.fixedIslands()));
+            return;
+        }
         if (args.length == 5) {
             if (BenchmarkComparisonContract.parse(args[4]) != BenchmarkComparisonContract.RC10_APPROVED) {
                 throw new IllegalArgumentException("Explicit cross-version mode requires approved RC10 contract");
@@ -217,6 +271,18 @@ public final class BenchmarkDecisionComparatorMain {
 
     private static VerifiedOriginal verifyOriginal(Path osm, String expectedSha256,
             FrozenReplayInput candidate, BenchmarkComparisonContract contract) throws Exception {
+        return verifyOriginal(osm, expectedSha256, candidate, contract, null, true);
+    }
+
+    private static VerifiedOriginal verifyOriginal(Path osm, String expectedSha256,
+            FrozenReplayInput candidate, BenchmarkComparisonContract contract,
+            BenchmarkSourceFixture profile, boolean current) throws Exception {
+        if (contract == BenchmarkComparisonContract.INVENTORY_V4_APPROVED
+                && (!candidate.request().budgets().equals(
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets.defaults())
+                    || !candidate.options().cleanup().equals(GeometryCleanupConfig.disabled()))) {
+            throw new IllegalStateException("V4 fixed fixture budgets or cleanup differ");
+        }
         if (contract == BenchmarkComparisonContract.RC10_APPROVED) {
             BenchmarkComparisonContract.requireApprovedParameters(candidate.request().parameterHash(),
                     candidate.request().parameterHash());
@@ -255,11 +321,13 @@ public final class BenchmarkDecisionComparatorMain {
             selection.add(selected.getNode(range.firstIndex()));
             selection.add(selected.getNode(range.lastIndex()));
         }
-        var fixture = BenchmarkHostMain.fixtureSource(candidate.network().sourceGeneration());
+        var fixture = profile == null ? BenchmarkHostMain.fixtureSource(candidate.network().sourceGeneration())
+                : BenchmarkHostMain.fixtureSource(candidate.network().sourceGeneration(), profile);
         PluginPreferences.save(fixture.config());
         fixture.saveCacheGenerationPreference();
         PluginPreferences.saveTracingSettings(new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
-                TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false, AlignmentSourceMode.MANAGED_TILES));
+                TrackerMode.PROBABILISTIC, RecoverySettings.defaults(fixture.config().searchHalfWidthMeters()),
+                false, AlignmentSourceMode.MANAGED_TILES));
         PluginPreferences.saveGeometryCleanup(GeometryCleanupConfig.disabled());
         return BenchmarkHostMain.onEventThread(() -> {
             dataSet.setSelected(selection);
@@ -274,7 +342,12 @@ public final class BenchmarkDecisionComparatorMain {
                             org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions.disabled(
                                     config.heatmap().searchHalfWidthMeters()))
                     : service.captureManagedSeed(dataSet, resolved, config, fixture.sourceIdentity());
-            requireSameNetwork(candidate.network(), seed.network());
+            if (current) {
+                requireSameNetwork(candidate.network(), seed.network());
+            } else {
+                BenchmarkComparisonContract.requireReadOnlyExtension(candidate.network(), seed.network(),
+                        BenchmarkComparisonContract.frozenKeys(seed.intervalPartition()));
+            }
             if (!candidate.evidence().coordinateFrame().equals(seed.frame())
                     || candidate.request().engine() != seed.engine()
                     || candidate.request().geometryMode() != seed.geometryMode()
@@ -282,10 +355,11 @@ public final class BenchmarkDecisionComparatorMain {
                         != Double.doubleToRawLongBits(seed.sampleStepMeters())
                     || !candidate.request().permissions().equals(seed.specification().permissions())
                     || !candidate.request().settingsHash().equals(seed.settingsHash())
-                    || !candidate.request().parameterHash().equals(seed.parameterHash())) {
+                    || current && !candidate.request().parameterHash().equals(seed.parameterHash())
+                    || profile != null && !candidate.evidence().sourceIdentity().equals(fixture.sourceIdentity())) {
                 throw new IllegalStateException("Original capture frame or effective configuration differs");
             }
-            NetworkSnapshotCapture.requireSemanticWitnessCurrent(dataSet, candidate.network());
+            if (current) NetworkSnapshotCapture.requireSemanticWitnessCurrent(dataSet, candidate.network());
             return new VerifiedOriginal(dataSet, seed.searchRadiusMeters(), seed.specification(), seed.intervalPartition());
         });
     }

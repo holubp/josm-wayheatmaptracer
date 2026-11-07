@@ -1,0 +1,712 @@
+diff --git a/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/actions/AlignWayAction.java b/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/actions/AlignWayAction.java
+index 95747c79..6447066b 100644
+--- a/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/actions/AlignWayAction.java
++++ b/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/actions/AlignWayAction.java
+@@ -65,6 +65,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCl
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ModernAlignmentInvocation;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
+@@ -90,6 +92,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Selected
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
+@@ -499,6 +502,7 @@ public class AlignWayAction extends JosmAction {
+             }
+             return;
+         }
++        OrdinaryActionBenchmarkObserver.actionStarted();
+         ManagedHeatmapConfig config = null;
+         String diagnosticAttemptIdentity = beginDiagnosticAttempt();
+         String diagnosticSourceLineage = "unavailable";
+@@ -671,6 +675,7 @@ public class AlignWayAction extends JosmAction {
+                         () -> recordModernUnavailable("cancelled", sourceLineage,
+                                 diagnosticAttemptIdentity));
+                 if (closed) {
++                    OrdinaryActionBenchmarkObserver.actionCancelled(livePreviewSession.currentAttempt());
+                     overlay.hide();
+                     PluginLog.endSlideSession();
+                 }
+@@ -1069,6 +1074,10 @@ public class AlignWayAction extends JosmAction {
+             recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.PREVIEW,
+                     diagnosticAttemptIdentity);
+             dialog.setVisible(true);
++            OrdinaryActionBenchmarkObserver.previewReady("interval", computed, () ->
++                    state.assessment().plan().orElseThrow(() -> new IllegalStateException(
++                            "Benchmark interval has no final edit plan"))
++                            .finalPreviewWays().get(computed.request().selectedWayKey()));
+         } catch (RuntimeException failure) {
+             dialog.dispose();
+             throw failure;
+@@ -1181,6 +1190,8 @@ public class AlignWayAction extends JosmAction {
+         AlignmentEditPlan[] plan = {null};
+         PreviewReviewState[] review = {null};
+         ModernSingleWayEditPlanAdapter.Assessment[] assessment = {null};
++        int[] benchmarkDisplayedIndex = {-1};
++        AlignmentEditPlan[] benchmarkDisplayedPlan = {null};
+         boolean[] applying = {false};
+         boolean[] completed = {false};
+         JButton confirm = new JButton(tr("Confirm review"));
+@@ -1209,6 +1220,8 @@ public class AlignWayAction extends JosmAction {
+         activePreviewDialog = dialog;
+         livePreviewSession.replaceWindow(previewOwner, dialog::dispose);
+         Runnable refresh = () -> {
++            benchmarkDisplayedIndex[0] = -1;
++            benchmarkDisplayedPlan[0] = null;
+             if (!livePreviewSession.isCurrentWindow(previewOwner, dialog,
+                     activePreviewDialog, dialog.isDisplayable())) {
+                 throw new IllegalStateException("The preview window no longer owns this attempt");
+@@ -1276,6 +1289,8 @@ public class AlignWayAction extends JosmAction {
+             confirm.setEnabled(review[0] != null && review[0].disposition()
+                     == org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport.Disposition.REVIEW_REQUIRED);
+             apply.setEnabled(review[0] != null && review[0].canApply() && !applying[0]);
++            benchmarkDisplayedIndex[0] = index;
++            benchmarkDisplayedPlan[0] = plan[0];
+         };
+         choices.addActionListener(event -> {
+             try {
+@@ -1426,12 +1441,53 @@ public class AlignWayAction extends JosmAction {
+         try {
+             refresh.run();
+             dialog.setVisible(true);
++            OrdinaryActionBenchmarkObserver.previewReady("single", computed, () -> {
++                int displayedIndex = benchmarkDisplayedIndex[0];
++                if (displayedIndex < 0 || displayedIndex >= candidates.size()
++                        || plan[0] != benchmarkDisplayedPlan[0]) {
++                    throw new IllegalStateException("Benchmark selected preview changed after display");
++                }
++                List<BenchmarkPreviewRoute> routes = computed.pipeline().routes().stream()
++                        .map(route -> new BenchmarkPreviewRoute(route,
++                                computed.evidence().coordinateFrame())).toList();
++                AlignmentEditPlan displayedPlan = benchmarkDisplayedPlan[0];
++                List<GeographicPoint> exactPlanGeometry = displayedPlan == null ? null
++                        : displayedPlan.finalPreviewWays().get(displayedPlan.selectedWayKey());
++                return benchmarkDisplayedGeometry(routes, displayedIndex,
++                        choices.getSelectedIndex(), exactPlanGeometry);
++            });
+         } catch (RuntimeException exception) {
+             dialog.dispose();
+             throw exception;
+         }
+     }
+
++    /** Exact pre-projection final route for one source-owned preview choice. */
++    record BenchmarkPreviewRoute(ModernTracePipeline.Route route, LocalMetricFrame frame) {
++        BenchmarkPreviewRoute {
++            Objects.requireNonNull(route, "final route");
++            Objects.requireNonNull(frame, "route coordinate frame");
++        }
++    }
++
++    /** Supplies the geometry already displayed, without constructing or requiring an Apply plan. */
++    static List<GeographicPoint> benchmarkDisplayedGeometry(List<BenchmarkPreviewRoute> routes,
++            int displayedIndex, int selectedIndex, List<GeographicPoint> exactPlanGeometry) {
++        if (routes == null || displayedIndex < 0 || displayedIndex >= routes.size()
++                || selectedIndex != displayedIndex) {
++            throw new IllegalStateException("Benchmark selected preview changed after display");
++        }
++        BenchmarkPreviewRoute source = routes.get(displayedIndex);
++        List<GeographicPoint> geometry = exactPlanGeometry == null
++                ? source.route().hypothesis().points().stream()
++                        .map(source.frame()::toGeographic).toList()
++                : exactPlanGeometry;
++        if (geometry.size() < 2) {
++            throw new IllegalStateException("Benchmark displayed final geometry is incomplete");
++        }
++        return geometry;
++    }
++
+     /** Routes persisted modern engines through their detached live pipeline. */
+     static boolean requiresLiveModernPreview(TrackerMode engine) {
+         return Objects.requireNonNull(engine, "engine").capabilities().requiresEvidenceSnapshot();
+diff --git a/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/diagnostics/replay/format15/Format15ProductionBundleFactory.java b/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/diagnostics/replay/format15/Format15ProductionBundleFactory.java
+index b2814657..65c49bca 100644
+--- a/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/diagnostics/replay/format15/Format15ProductionBundleFactory.java
++++ b/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/diagnostics/replay/format15/Format15ProductionBundleFactory.java
+@@ -423,6 +423,10 @@ public final class Format15ProductionBundleFactory {
+             artifacts.put(FrozenIntervalReplayCodec.ARTIFACT,
+                     Format15Artifact.binary(FrozenIntervalReplayCodec.ARTIFACT, frozenIntervals));
+         }
++        if (plan != null && System.getProperty("wayheatmaptracer.benchmark.receipt") != null) {
++            String name = "private/interval-frozen-edit-plan.bin";
++            artifacts.put(name, Format15Artifact.binary(name, FrozenReplayCodec.encodeEditPlan(plan)));
++        }
+         artifacts.put("private/interval-point-provenance.json", Format15Artifact.text(
+                 "private/interval-point-provenance.json",
+                 intervalPointProvenanceJson(batch, assessment, plan, previewWays)));
+diff --git a/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/tile/ManagedTileRuntime.java b/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/tile/ManagedTileRuntime.java
+index 91edabf3..586223ea 100644
+--- a/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/tile/ManagedTileRuntime.java
++++ b/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/tile/ManagedTileRuntime.java
+@@ -25,8 +25,12 @@ public final class ManagedTileRuntime {
+             File data = PluginDirectories.ensurePluginDataDirectory();
+             Path root = new File(data, "managed-source-tile-cache").toPath();
+             ManagedTileCache cache = new ManagedTileCache(root, classifier, policy.maximumBodyBytes());
+-            coordinator = new TileFetchCoordinator(new HttpUrlConnectionTileTransport(policy), cache,
+-                classifier, policy);
++            ManagedTileTransport transport = Boolean.getBoolean("wayheatmaptracer.benchmark.offline")
++                ? (request, credentials) -> {
++                    throw new IllegalStateException("Offline benchmark tile cache miss");
++                }
++                : new HttpUrlConnectionTileTransport(policy);
++            coordinator = new TileFetchCoordinator(transport, cache, classifier, policy);
+         }
+         if (config != null) {
+             coordinator.updateActiveGeneration(new ManagedTileGeneration(Math.max(0L, config.cacheBuster())));
+diff --git a/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/BenchmarkHostMain.java b/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/BenchmarkHostMain.java
+new file mode 100644
+index 00000000..d334a134
+--- /dev/null
++++ b/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/BenchmarkHostMain.java
+@@ -0,0 +1,325 @@
++package org.openstreetmap.josm.plugins.wayheatmaptracer;
++
++import java.io.InputStream;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.security.MessageDigest;
++import java.util.ArrayList;
++import java.util.HexFormat;
++import java.util.List;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.Callable;
++import java.util.concurrent.FutureTask;
++
++import javax.swing.SwingUtilities;
++import javax.swing.JDialog;
++
++import org.openstreetmap.josm.data.osm.DataSet;
++import org.openstreetmap.josm.data.osm.Node;
++import org.openstreetmap.josm.data.osm.OsmPrimitive;
++import org.openstreetmap.josm.data.osm.OsmPrimitiveType;
++import org.openstreetmap.josm.data.osm.Way;
++import org.openstreetmap.josm.data.projection.ProjectionRegistry;
++import org.openstreetmap.josm.data.projection.Projections;
++import org.openstreetmap.josm.gui.MainApplication;
++import org.openstreetmap.josm.gui.layer.OsmDataLayer;
++import org.openstreetmap.josm.gui.progress.NullProgressMonitor;
++import org.openstreetmap.josm.io.OsmReader;
++import org.openstreetmap.josm.plugins.PluginInformation;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.OrdinaryActionBenchmarkObserver;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentSourceMode;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoverySettings;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileAddress;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileCache;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileDecoderClassifier;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginDirectories;
++import org.openstreetmap.josm.spi.preferences.Config;
++
++/**
++ * Runs one private, offline, real JOSM GUI action in a fresh process. This is
++ * invoked by the fixed Python benchmark runner, never by a normal plugin UI.
++ */
++public final class BenchmarkHostMain {
++    private BenchmarkHostMain() { }
++
++    record FixtureSource(long generation, BenchmarkSourceFixture profile) {
++        FixtureSource {
++            if (generation < 0L) {
++                throw new IllegalArgumentException("Frozen source generation must be non-negative");
++            }
++        }
++
++        ManagedHeatmapConfig config() {
++            return fixtureConfig(generation, profile);
++        }
++
++        void saveCacheGenerationPreference() {
++            Config.getPref().putLong("wayheatmaptracer.cacheBuster", generation);
++        }
++
++        String sourceIdentity() {
++            return "managed-selected-" + (profile == null ? "hot" : profile.palette()) + "-g" + generation;
++        }
++
++        ManagedTileGeneration tileGeneration() {
++            return new ManagedTileGeneration(generation);
++        }
++    }
++
++    static FixtureSource fixtureSource(long generation) {
++        return new FixtureSource(generation, null);
++    }
++
++    static FixtureSource fixtureSource(long generation, BenchmarkSourceFixture profile) {
++        return new FixtureSource(generation, java.util.Objects.requireNonNull(profile));
++    }
++
++    static BenchmarkSourceFixture sourceProfile() {
++        String contract = System.getProperty("wayheatmaptracer.benchmark.comparisonContract", "rc6-identical-v1");
++        String profile = System.getProperty("wayheatmaptracer.benchmark.sourceProfile");
++        if (contract.equals("b-inventory-v4-numerical-readonly-v1")) return BenchmarkSourceFixture.parse(profile);
++        if (!contract.equals("rc6-identical-v1") && !contract.equals("rc10-approved-numerical-readonly-v1")) {
++            throw new IllegalArgumentException("Unknown benchmark comparison contract");
++        }
++        if (profile != null) throw new IllegalArgumentException("Source profile requires named V4 contract");
++        return null;
++    }
++
++    public static void main(String[] args) throws Exception {
++        if (args.length != 8) {
++            throw new IllegalArgumentException("archive osm tiles receipt plugin nonce case version mode required");
++        }
++        Path archive = Path.of(args[0]), osm = Path.of(args[1]), tiles = Path.of(args[2]);
++        Path receipt = Path.of(args[3]);
++        BenchmarkSourceFixture profile = sourceProfile();
++        System.setProperty("wayheatmaptracer.benchmark.offline", "true");
++        System.setProperty("wayheatmaptracer.benchmark.pluginJar", args[4]);
++        System.setProperty("wayheatmaptracer.benchmark.receipt", receipt.toString());
++        System.setProperty("wayheatmaptracer.benchmark.nonce", args[5]);
++        System.setProperty("wayheatmaptracer.benchmark.case", args[6].split(":", 2)[0]);
++        System.setProperty("wayheatmaptracer.benchmark.version", args[6].split(":", 2)[1]);
++        if (!args[7].equals("preview") && !args[7].equals("cancel")) {
++            throw new IllegalArgumentException("Unknown benchmark host mode");
++        }
++        System.setProperty("wayheatmaptracer.benchmark.mode", args[7]);
++        if (java.awt.GraphicsEnvironment.isHeadless()) {
++            throw new IllegalStateException("Real JOSM GUI display is unavailable");
++        }
++        MainApplication.main(new String[] {"--offline=ALL"});
++        DataSet dataSet;
++        try (InputStream stream = Files.newInputStream(osm)) {
++            dataSet = OsmReader.parseDataSet(stream, NullProgressMonitor.INSTANCE);
++        }
++        var historical = FrozenReplayCodec.decode(Format15ArchiveReader.read(archive)
++                .artifact("frozen-input.bin").orElseThrow(() -> new IllegalStateException(
++                        "Original benchmark input requires a single frozen-input.bin" )).bytes());
++        FixtureSource fixtureSource = profile == null ? fixtureSource(historical.network().sourceGeneration())
++                : fixtureSource(historical.network().sourceGeneration(), profile);
++        DetachedWay expected = (DetachedWay) historical.network().primitives().get(
++                historical.request().selectedWayKey());
++        Way selected = (Way) dataSet.getPrimitiveById(expected.key().id(), OsmPrimitiveType.WAY);
++        if (selected == null || selected.getNodesCount() != expected.nodeKeys().size()
++                || !selected.getKeys().equals(expected.tags()) || selected.isModified() != expected.modified()) {
++            throw new IllegalStateException("Original selected way payload differs");
++        }
++        for (int index = 0; index < selected.getNodesCount(); index++) {
++            Node node = selected.getNode(index);
++            DetachedNode frozen = (DetachedNode) historical.network().primitives().get(
++                    expected.nodeKeys().get(index));
++            if (node.getUniqueId() != frozen.key().id() || !node.getKeys().equals(frozen.tags())
++                    || node.isModified() != frozen.modified()
++                    || Double.doubleToRawLongBits(node.lat()) != Double.doubleToRawLongBits(
++                            frozen.coordinate().latitudeDegrees())
++                    || Double.doubleToRawLongBits(node.lon()) != Double.doubleToRawLongBits(
++                            frozen.coordinate().longitudeDegrees())) {
++                throw new IllegalStateException("Original selected node payload differs");
++            }
++        }
++        var range = historical.request().selectedRange();
++        List<OsmPrimitive> selectedPrimitives = new ArrayList<>();
++        selectedPrimitives.add(selected);
++        if (range.firstIndex() != 0 || range.lastIndex() != selected.getNodesCount() - 1) {
++            selectedPrimitives.add(selected.getNode(range.firstIndex()));
++            selectedPrimitives.add(selected.getNode(range.lastIndex()));
++        }
++        dataSet.setSelected(selectedPrimitives);
++        ManagedHeatmapConfig config = fixtureSource.config();
++        ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
++        PluginPreferences.save(config);
++        fixtureSource.saveCacheGenerationPreference();
++        PluginPreferences.saveTracingSettings(new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
++                TrackerMode.PROBABILISTIC, RecoverySettings.defaults(config.searchHalfWidthMeters()), false,
++                AlignmentSourceMode.MANAGED_TILES));
++        PluginPreferences.saveGeometryCleanup(GeometryCleanupConfig.disabled());
++        config = PluginPreferences.load();
++        var selection = SelectionResolver.resolve(dataSet, false);
++        if (selection.startIndex() != range.firstIndex() || selection.endIndex() != range.lastIndex()) {
++            throw new IllegalStateException("Original selected range differs");
++        }
++        AlignmentConfig slideConfig = new AlignmentConfig(config, GeometryCleanupConfig.disabled());
++        var seed = onEventThread(() -> new LiveBPreviewService().captureManagedSeed(dataSet, selection,
++                slideConfig, fixtureSource.sourceIdentity()));
++        var actual = seed.network();
++        var frozen = historical.network();
++        if (profile != null) {
++            // The pinned bookmark is origin metadata. The action below captures its own
++            // effective native RC6 result from the exact original OSM and explicit profile.
++            String bookmarkPolicy = profile == BenchmarkSourceFixture.HOT
++                    ? "df52ac49e7aae10c1b5953155ef4ba3cc9430c06b1b42ac8a9afe24f3235e825"
++                    : "9814307c79fae2c8ec105c755c7373694d3c4e893be78a747062511361241b35";
++            if (!historical.request().parameterHash().equals(bookmarkPolicy)
++                    || !seed.parameterHash().equals("df52ac49e7aae10c1b5953155ef4ba3cc9430c06b1b42ac8a9afe24f3235e825")
++                    || !historical.evidence().sourceIdentity().equals(fixtureSource.sourceIdentity())
++                    || historical.request().engine() != TrackerMode.PROBABILISTIC
++                    || historical.request().geometryMode() != AlignmentMode.PRECISE_SHAPE
++                        && (profile != BenchmarkSourceFixture.BLUERED
++                            || historical.request().geometryMode() != AlignmentMode.MOVE_EXISTING_NODES)) {
++                throw new IllegalStateException("V4 bookmark source/profile transition differs");
++            }
++        } else if (!actual.closure().equals(frozen.closure())
++                || !actual.primitives().equals(frozen.primitives())
++                || !actual.incomingReferrerWatches().equals(frozen.incomingReferrerWatches())
++                || actual.sourceGeneration() != frozen.sourceGeneration()) {
++            throw new IllegalStateException("Original live network context differs");
++        }
++        seedTiles(tiles, fixtureSource.tileGeneration(), profile);
++        PluginInformation info = new PluginInformation(
++                Path.of(System.getProperty("wayheatmaptracer.benchmark.pluginJar")).toFile());
++        SwingUtilities.invokeAndWait(() -> {
++            new WayHeatmapTracerPlugin(info);
++            OsmDataLayer layer = new OsmDataLayer(dataSet, "benchmark-original-layer", null);
++            MainApplication.getLayerManager().addLayer(layer);
++            MainApplication.getLayerManager().setActiveLayer(layer);
++            // The registered, ordinary menu action is invoked through the real UI owner.
++            MainApplication.getMenu().moreToolsMenu.getMenuComponents();
++        });
++        SwingUtilities.invokeAndWait(() -> {
++            var menu = MainApplication.getMenu().moreToolsMenu;
++            for (var component : menu.getMenuComponents()) {
++                if (component instanceof javax.swing.JMenuItem item
++                        && item.getAction() instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayAction action
++                        && action.forcedAlignmentMode() == null) {
++                    action.actionPerformed(null);
++                    return;
++                }
++            }
++            throw new IllegalStateException("Registered ordinary alignment action is missing");
++        });
++        if (args[7].equals("cancel")) {
++            SwingUtilities.invokeAndWait(() -> {
++                for (java.awt.Window window : java.awt.Window.getWindows()) {
++                    if (window instanceof JDialog dialog && dialog.isVisible()
++                            && dialog.getTitle().endsWith("alignment preview")) {
++                        OrdinaryActionBenchmarkObserver.cancellationRequested();
++                        dialog.dispatchEvent(new java.awt.event.WindowEvent(dialog,
++                                java.awt.event.WindowEvent.WINDOW_CLOSING));
++                        return;
++                    }
++                }
++                throw new IllegalStateException("Cancellable production progress dialog is unavailable");
++            });
++        }
++        for (int second = 0; second < 900; second++) {
++            if (Files.isRegularFile(receipt)) {
++                System.exit(0);
++            }
++            TimeUnit.SECONDS.sleep(1);
++        }
++        throw new IllegalStateException("Real preview did not publish within host deadline");
++    }
++
++    static <T> T onEventThread(Callable<T> action) throws Exception {
++        FutureTask<T> task = new FutureTask<>(action);
++        if (SwingUtilities.isEventDispatchThread()) {
++            task.run();
++        } else {
++            SwingUtilities.invokeAndWait(task);
++        }
++        return task.get();
++    }
++
++    private static ManagedHeatmapConfig fixtureConfig(long generation, BenchmarkSourceFixture profile) {
++        return new ManagedHeatmapConfig("fixture-key", "fixture-policy", "fixture-signature",
++                "fixture-session", "all", profile == null ? "hot" : profile.palette(), "", ".*", AlignmentMode.PRECISE_SHAPE,
++                TrackerMode.PROBABILISTIC, false, false, false, false, false, false,
++                false, false, false, false, 7, 4, 3, InferenceMode.RAW_HIGH_RESOLUTION,
++                15, 14, profile == null ? 7.01 : profile.halfWidthMeters(), 1.56, IntensitySamplingMode.COLOR_MAPPING, generation);
++    }
++
++    private static void seedTiles(Path index, ManagedTileGeneration generation) throws Exception {
++        seedTiles(index, generation, null);
++    }
++
++    static void seedTiles(Path index, ManagedTileGeneration generation, BenchmarkSourceFixture profile) throws Exception {
++        if (Files.size(index) > 16_384) throw new IllegalStateException("Tile inventory exceeds bound");
++        var counts = profile == null ? java.util.Map.of(14, 4, 15, 6) : profile.expectedTileCounts();
++        String palette = profile == null ? "hot" : profile.palette();
++        List<String> lines = Files.readAllLines(index);
++        if (lines.size() != counts.values().stream().mapToInt(Integer::intValue).sum() + 1
++                || !lines.get(0).equals("zoom\tx\ty\tsha256\trelativePath")) {
++            throw new IllegalStateException("Selected Hot tile inventory is incomplete");
++        }
++        ManagedTileCache cache = new ManagedTileCache(
++                PluginDirectories.ensurePluginDataDirectory().toPath().resolve("managed-source-tile-cache"),
++                new TileDecoderClassifier());
++        int z14 = 0, z15 = 0;
++        var addresses = new java.util.HashSet<ManagedTileAddress>();
++        var paths = new java.util.HashSet<Path>();
++        for (String line : lines.subList(1, lines.size())) {
++            String[] parts = line.split("\t", -1);
++            if (parts.length != 5) throw new IllegalStateException("Invalid tile record");
++            int zoom = Integer.parseInt(parts[0]);
++            ManagedTileAddress address = new ManagedTileAddress("all", palette, zoom,
++                    Integer.parseInt(parts[1]), Integer.parseInt(parts[2]));
++            Path png = index.toAbsolutePath().getParent().resolve(parts[4]).normalize();
++            if (!png.startsWith(index.toAbsolutePath().getParent())) {
++                throw new IllegalStateException("Tile escapes fixture directory");
++            }
++            if (profile != null) {
++                Path relative = Path.of(parts[4]);
++                if (!counts.containsKey(zoom) || relative.isAbsolute() || parts[4].contains("\\")
++                        || relative.toString().contains("..") || !addresses.add(address) || !paths.add(png)) {
++                    throw new IllegalStateException("Duplicate or invalid selected source tile");
++                }
++                Path cursor = index.toAbsolutePath().getParent();
++                for (Path part : relative) {
++                    cursor = cursor.resolve(part);
++                    if (Files.isSymbolicLink(cursor)) throw new IllegalStateException("Tile path traverses symlink");
++                }
++            }
++            if (Files.size(png) > 1_048_576) throw new IllegalStateException("Tile exceeds byte bound");
++            byte[] bytes = Files.readAllBytes(png);
++            if (bytes.length > 1_048_576 || !HexFormat.of().formatHex(
++                    MessageDigest.getInstance("SHA-256").digest(bytes)).equals(parts[3])) {
++                throw new IllegalStateException("Selected Hot tile hash or size differs");
++            }
++            if (!new TileDecoderClassifier().decodeAndClassify(address, "image/png", bytes).usable()) {
++                throw new IllegalStateException("Selected Hot tile is not usable PNG");
++            }
++            Path destination = cache.path(generation, address);
++            Files.createDirectories(destination.getParent());
++            Files.write(destination, bytes);
++            if (zoom == 14) z14++; else if (zoom == 15) z15++;
++        }
++        if (z14 != counts.get(14) || z15 != counts.get(15)) {
++            throw new IllegalStateException("Selected Hot zoom inventory differs");
++        }
++    }
++}
+diff --git a/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/BenchmarkSourceFixture.java b/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/BenchmarkSourceFixture.java
+new file mode 100644
+index 00000000..527ab922
+--- /dev/null
++++ b/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/BenchmarkSourceFixture.java
+@@ -0,0 +1,32 @@
++package org.openstreetmap.josm.plugins.wayheatmaptracer;
++
++import java.util.Map;
++
++/** Finite source fixtures for the named ordinary-action experiment, never live action overrides. */
++public enum BenchmarkSourceFixture {
++    HOT("managed-hot-precise-7m01-z15-v1", "hot", 7.01, Map.of(15, 6, 14, 4)),
++    BLUERED("managed-bluered-precise-25m-z15-v1", "bluered", 25.0, Map.of(15, 4, 14, 2));
++
++    private final String identity;
++    private final String palette;
++    private final double halfWidthMeters;
++    private final Map<Integer, Integer> expectedTileCounts;
++
++    BenchmarkSourceFixture(String identity, String palette, double halfWidthMeters,
++            Map<Integer, Integer> expectedTileCounts) {
++        this.identity = identity;
++        this.palette = palette;
++        this.halfWidthMeters = halfWidthMeters;
++        this.expectedTileCounts = Map.copyOf(expectedTileCounts);
++    }
++
++    public String identity() { return identity; }
++    public String palette() { return palette; }
++    public double halfWidthMeters() { return halfWidthMeters; }
++    public Map<Integer, Integer> expectedTileCounts() { return expectedTileCounts; }
++
++    public static BenchmarkSourceFixture parse(String identity) {
++        for (var profile : values()) if (profile.identity.equals(identity)) return profile;
++        throw new IllegalArgumentException("Unknown benchmark source profile");
++    }
++}
+diff --git a/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/actions/OrdinaryActionBenchmarkObserver.java b/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/actions/OrdinaryActionBenchmarkObserver.java
+new file mode 100644
+index 00000000..7c227e45
+--- /dev/null
++++ b/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/actions/OrdinaryActionBenchmarkObserver.java
+@@ -0,0 +1,174 @@
++package org.openstreetmap.josm.plugins.wayheatmaptracer.actions;
++
++import java.io.IOException;
++import java.awt.image.BufferedImage;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.nio.file.StandardCopyOption;
++import java.security.MessageDigest;
++import java.security.NoSuchAlgorithmException;
++import java.util.HexFormat;
++import java.util.List;
++import java.util.function.Supplier;
++
++import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
++
++/**
++ * Opt-in observation of the real JOSM action. The clock stops only after the
++ * production preview dialog has been made visible. Diagnostic export follows
++ * the clock, so private archive I/O is not charged to normal preview latency.
++ */
++public final class OrdinaryActionBenchmarkObserver {
++    private static final String OUTPUT_PROPERTY = "wayheatmaptracer.benchmark.receipt";
++    private static long startedNanos;
++    private static long cancelRequestedNanos;
++
++    private OrdinaryActionBenchmarkObserver() { }
++
++    static void actionStarted() {
++        if (System.getProperty(OUTPUT_PROPERTY) != null) {
++            startedNanos = System.nanoTime();
++            cancelRequestedNanos = 0;
++        }
++    }
++
++    /** Marks the host's actual request to close the progress window. */
++    public static void cancellationRequested() {
++        if ("cancel".equals(System.getProperty("wayheatmaptracer.benchmark.mode"))) {
++            cancelRequestedNanos = System.nanoTime();
++        }
++    }
++
++    static void actionCancelled(AlignmentJob.Attempt<?> attempt) {
++        String destination = System.getProperty(OUTPUT_PROPERTY);
++        if (destination == null || !"cancel".equals(
++                System.getProperty("wayheatmaptracer.benchmark.mode"))) return;
++        long terminal = System.nanoTime();
++        if (cancelRequestedNanos <= startedNanos || terminal <= cancelRequestedNanos
++                || attempt == null || attempt.state() != AlignmentJob.State.CANCELLED) {
++            throw new IllegalStateException("Benchmark cancellation was not terminal");
++        }
++        Path receipt = Path.of(destination).toAbsolutePath().normalize();
++        Path archive = receipt.resolveSibling(receipt.getFileName() + ".format15.zip");
++        try {
++            Files.createDirectories(receipt.getParent());
++            DiagnosticsRegistry.writeLatest(archive.toFile());
++            String json = "{\"producer\":\"AlignWayAction.production-cancel-v1\","
++                    + "\"nonce\":\"" + requiredToken("wayheatmaptracer.benchmark.nonce")
++                    + "\",\"caseId\":\"" + requiredToken("wayheatmaptracer.benchmark.case")
++                    + "\",\"version\":\"" + requiredToken("wayheatmaptracer.benchmark.version")
++                    + "\",\"terminalState\":\"CANCELLED\",\"noPreviewPublication\":true,"
++                    + "\"cancelNanos\":" + (terminal - cancelRequestedNanos)
++                    + ",\"diagnosticsSha256\":\"" + fileHash(archive)
++                    + "\",\"diagnosticsFile\":\"" + archive.getFileName() + "\"}\n";
++            writeReceipt(receipt, json);
++        } catch (Exception failure) {
++            throw new IllegalStateException("Benchmark cancellation receipt could not be written", failure);
++        }
++    }
++
++    static void previewReady(String kind, LiveBPreviewService.Computed computed,
++            Supplier<List<GeographicPoint>> geometrySupplier) {
++        String destination = System.getProperty(OUTPUT_PROPERTY);
++        if (destination == null) return;
++        long stoppedNanos = System.nanoTime();
++        List<GeographicPoint> finalGeometry = geometrySupplier.get();
++        if (startedNanos <= 0 || stoppedNanos <= startedNanos || finalGeometry == null
++                || finalGeometry.size() < 2) {
++            throw new IllegalStateException("Benchmark preview lacked action start or final geometry");
++        }
++        Path receipt = Path.of(destination).toAbsolutePath().normalize();
++        Path archive = receipt.resolveSibling(receipt.getFileName() + ".format15.zip");
++        Path tiles = receipt.resolveSibling(receipt.getFileName() + ".tiles.json");
++        try {
++            Files.createDirectories(receipt.getParent());
++            DiagnosticsRegistry.writeLatest(archive.toFile());
++            Files.writeString(tiles, ManagedTileRuntime.diagnosticsJsonIfInitialized(),
++                    StandardCharsets.UTF_8);
++            String json = "{\"producer\":\"AlignWayAction.production-preview-v1\","
++                    + "\"nonce\":\"" + requiredToken("wayheatmaptracer.benchmark.nonce")
++                    + "\",\"caseId\":\"" + requiredToken("wayheatmaptracer.benchmark.case")
++                    + "\",\"version\":\"" + requiredToken("wayheatmaptracer.benchmark.version")
++                    + "\",\"kind\":\"" + kind + "\",\"totalNanos\":"
++                    + (stoppedNanos - startedNanos) + ",\"finalGeometrySha256\":\""
++                    + geometryHash(finalGeometry) + "\",\"selectedRasterSha256\":\""
++                    + rasterHash(computed) + "\",\"diagnosticsSha256\":\""
++                    + fileHash(archive) + "\",\"diagnosticsFile\":\""
++                    + archive.getFileName() + "\",\"tileDiagnosticsSha256\":\""
++                    + fileHash(tiles) + "\",\"tileDiagnosticsFile\":\""
++                    + tiles.getFileName() + "\"}\n";
++            writeReceipt(receipt, json);
++        } catch (Exception failure) {
++            throw new IllegalStateException("Benchmark receipt could not be written", failure);
++        } finally {
++            startedNanos = 0;
++        }
++    }
++
++    private static String requiredToken(String key) {
++        String value = System.getProperty(key, "");
++        if (!value.matches("[A-Za-z0-9._-]{1,128}")) {
++            throw new IllegalStateException("Benchmark run binding is missing or invalid");
++        }
++        return value;
++    }
++
++    private static void writeReceipt(Path receipt, String json) throws IOException {
++        Path temporary = Files.createTempFile(receipt.getParent(), ".benchmark-", ".tmp");
++        try {
++            Files.writeString(temporary, json, StandardCharsets.UTF_8);
++            Files.move(temporary, receipt, StandardCopyOption.ATOMIC_MOVE,
++                    StandardCopyOption.REPLACE_EXISTING);
++        } finally {
++            Files.deleteIfExists(temporary);
++        }
++    }
++
++    private static String geometryHash(List<GeographicPoint> points) {
++        MessageDigest digest = digest();
++        addLong(digest, points.size());
++        for (GeographicPoint point : points) {
++            addLong(digest, Double.doubleToRawLongBits(point.latitudeDegrees()));
++            addLong(digest, Double.doubleToRawLongBits(point.longitudeDegrees()));
++        }
++        return HexFormat.of().formatHex(digest.digest());
++    }
++
++    private static String rasterHash(LiveBPreviewService.Computed computed) {
++        if (computed.captured().managedRaster() == null) {
++            throw new IllegalStateException("Benchmark requires managed source raster");
++        }
++        BufferedImage image = computed.captured().managedRaster().image();
++        boolean[] validity = computed.captured().managedRaster().validity();
++        MessageDigest digest = digest();
++        addLong(digest, image.getWidth());
++        addLong(digest, image.getHeight());
++        for (int pixel : image.getRGB(0, 0, image.getWidth(), image.getHeight(), null,
++                0, image.getWidth())) addLong(digest, pixel);
++        for (boolean valid : validity) digest.update((byte) (valid ? 1 : 0));
++        return HexFormat.of().formatHex(digest.digest());
++    }
++
++    private static String fileHash(Path path) throws IOException {
++        return HexFormat.of().formatHex(digest().digest(Files.readAllBytes(path)));
++    }
++
++    private static MessageDigest digest() {
++        try {
++            return MessageDigest.getInstance("SHA-256");
++        } catch (NoSuchAlgorithmException failure) {
++            throw new IllegalStateException(failure);
++        }
++    }
++
++    private static void addLong(MessageDigest digest, long value) {
++        for (int shift = 56; shift >= 0; shift -= 8) {
++            digest.update((byte) (value >>> shift));
++        }
++    }
++}

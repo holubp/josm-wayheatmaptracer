@@ -106,6 +106,11 @@ class BenchmarkDecisionComparatorIntegrationTest {
 
     private static NativeFixture produceFixture(boolean partial, boolean move, boolean inheritedContact,
             boolean rc10Benchmark) throws Exception {
+        return produceFixture(partial, move, inheritedContact, rc10Benchmark, null);
+    }
+
+    private static NativeFixture produceFixture(boolean partial, boolean move, boolean inheritedContact,
+            boolean rc10Benchmark, BenchmarkSourceFixture profile) throws Exception {
         DataSet original = new DataSet();
         Node west = node(1, -8, 0), east = node(2, 8, 0);
         Node south = node(33, 0.17345, -10), north = node(34, 0.17345, 10);
@@ -134,11 +139,12 @@ class BenchmarkDecisionComparatorIntegrationTest {
         original.addPrimitive(forest);
         if (partial) original.setSelected(List.of(selected, west, east));
         else original.setSelected(selected);
-        var fixture = BenchmarkHostMain.fixtureSource(37);
+        var fixture = profile == null ? BenchmarkHostMain.fixtureSource(37) : BenchmarkHostMain.fixtureSource(37, profile);
         PluginPreferences.save(move ? fixture.config().withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES)
                 : fixture.config()); fixture.saveCacheGenerationPreference();
         PluginPreferences.saveTracingSettings(new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
-                TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false, AlignmentSourceMode.MANAGED_TILES));
+                TrackerMode.PROBABILISTIC, RecoverySettings.defaults(fixture.config().searchHalfWidthMeters()),
+                false, AlignmentSourceMode.MANAGED_TILES));
         PluginPreferences.saveGeometryCleanup(GeometryCleanupConfig.disabled());
         var seed = BenchmarkHostMain.onEventThread(() -> {
             var service = new LiveBPreviewService();
@@ -154,14 +160,17 @@ class BenchmarkDecisionComparatorIntegrationTest {
             // unchanged 7.01m decision window at this fixture's factual native z15 pitch.
             int gray = (int) Math.round(255 * (0.01 + 0.96 * Math.exp(
                     -0.5 * (y - 299.5) * (y - 299.5) / (0.35 * 0.35))));
-            for (int x = 0; x < 600; x++) image.setRGB(x, y, 0xff000000 | gray << 16 | gray << 8 | gray);
+            int rgb = profile == BenchmarkSourceFixture.BLUERED
+                    ? 0xffff0000 | (255 - gray) << 8 | (255 - gray)
+                    : 0xff000000 | gray << 16 | gray << 8 | gray;
+            for (int x = 0; x < 600; x++) image.setRGB(x, y, rgb);
         }
         boolean[] valid = new boolean[600 * 600]; Arrays.fill(valid, true);
         double equator = Math.scalb(256.0, 15) / 2;
         var captured = new LiveBPreviewService().attachManagedRaster(seed,
                 new ManagedModernPreviewSource.Raster(image, valid,
                         SupportedInputRasterTransform.webMercator(15, equator - 150, equator - 150, 2),
-                        "hot", 15, fixture.sourceIdentity(), new ManagedTileGeneration(37)));
+                        profile == null ? "hot" : profile.palette(), 15, fixture.sourceIdentity(), new ManagedTileGeneration(37)));
         LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(captured, CancellationProbe.NONE);
         assertFalse(computed.pipeline().routes().isEmpty(), computed.pipeline().inference().status()
                 + ": " + computed.pipeline().inference().explanation());
@@ -255,6 +264,118 @@ class BenchmarkDecisionComparatorIntegrationTest {
                         .verifyNativePublication(archive, forged, true, original,
                                 computed.captured().searchRadiusMeters())).getMessage(),
                 "native V4 work must be rejected before any exact-policy replay");
+    }
+
+    @Test
+    void v4OrdinaryPreciseProfilesCaptureAndReplayTheirOwnActualNativeOutput(@TempDir Path directory) throws Exception {
+        for (var profile : BenchmarkSourceFixture.values()) {
+            Path folder = directory.resolve(profile.palette()); Files.createDirectories(folder);
+            var fixture = produceFixture(false, false, true, false, profile);
+            assertEquals(BenchmarkComparisonContract.V4_MANAGED_B_PARAMETERS, fixture.computed().request().parameterHash());
+            assertEquals(AlignmentMode.PRECISE_SHAPE, fixture.computed().request().geometryMode());
+            assertEquals(profile.halfWidthMeters(), fixture.computed().request().permissions().ordinaryRadiusMeters());
+            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets.defaults(),
+                    fixture.computed().request().budgets());
+            var pair = archives(folder, "none", fixture.computed(), fixture.plan());
+            Files.writeString(pair.osm(), osm("none", fixture.original()));
+            org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> BenchmarkDecisionComparatorMain.main(new String[] {
+                    pair.candidate().toString(), pair.candidate().toString(), pair.osm().toString(), sha256(pair.osm()),
+                    "b-inventory-v4-numerical-readonly-v1", profile.identity(), "candidate-repeat"}));
+            for (String scope : List.of("baseline-repeat", "cross-version")) {
+                assertThrows(IllegalStateException.class, () -> BenchmarkDecisionComparatorMain.main(new String[] {
+                        pair.candidate().toString(), pair.candidate().toString(), pair.osm().toString(), sha256(pair.osm()),
+                        "b-inventory-v4-numerical-readonly-v1", profile.identity(), scope}));
+            }
+            var other = profile == BenchmarkSourceFixture.HOT ? BenchmarkSourceFixture.BLUERED : BenchmarkSourceFixture.HOT;
+            var profileFailure = assertThrows(java.util.concurrent.ExecutionException.class, () -> BenchmarkDecisionComparatorMain.main(new String[] {
+                    pair.candidate().toString(), pair.candidate().toString(), pair.osm().toString(), sha256(pair.osm()),
+                    "b-inventory-v4-numerical-readonly-v1", other.identity(), "candidate-repeat"}));
+            assertEquals(IllegalStateException.class, profileFailure.getCause().getClass());
+            assertTrue(List.of("Decision-bearing network closure differs", "Original capture frame or effective configuration differs")
+                    .contains(profileFailure.getCause().getMessage()));
+        }
+    }
+
+    @Test
+    void drasovBookmarkPolicyAndMoveModeAreOriginMetadataOnly() throws Exception {
+        // Typed provenance metadata test only: no forged native output or success receipt.
+        var evidence = recordWith(computed.evidence(), "sourceIdentity", "managed-selected-bluered-g37");
+        var common = recordWith(computed.request(), "evidenceContentHash", evidence.canonicalHash());
+        var historicalRequest = recordWith(recordWith(common, "parameterHash", BenchmarkComparisonContract.RC10_B_PARAMETERS),
+                "geometryMode", AlignmentMode.MOVE_EXISTING_NODES);
+        var nativeRequest = recordWith(common, "parameterHash", BenchmarkComparisonContract.RC6_B_PARAMETERS);
+        var bookmark = new FrozenReplayInput(historicalRequest, evidence, computed.captured().network(), computed.options());
+        var baseline = new FrozenReplayInput(nativeRequest, evidence, computed.captured().network(), computed.options());
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> BenchmarkComparisonContract.requireV4BookmarkOrigin(
+                bookmark, baseline, BenchmarkSourceFixture.BLUERED));
+        assertThrows(IllegalStateException.class, () -> BenchmarkComparisonContract.requireV4BookmarkOrigin(
+                bookmark, baseline, BenchmarkSourceFixture.HOT));
+        assertThrows(IllegalStateException.class, () -> BenchmarkComparisonContract.requireV4BookmarkOrigin(
+                bookmark, bookmark, BenchmarkSourceFixture.BLUERED));
+        var wrongPolicy = new FrozenReplayInput(recordWith(historicalRequest, "parameterHash", "f".repeat(64)),
+                evidence, computed.captured().network(), computed.options());
+        assertThrows(IllegalStateException.class, () -> BenchmarkComparisonContract.requireV4BookmarkOrigin(
+                wrongPolicy, baseline, BenchmarkSourceFixture.BLUERED));
+    }
+
+    @Test
+    void v4FreshProfileRefusesAgreedButNondefaultBudgetsOrCleanup(@TempDir Path directory) throws Exception {
+        Path osm = directory.resolve("original.osm"); Files.writeString(osm, osm("none"));
+        Method verify = BenchmarkDecisionComparatorMain.class.getDeclaredMethod("verifyOriginal", Path.class,
+                String.class, FrozenReplayInput.class, BenchmarkComparisonContract.class, BenchmarkSourceFixture.class,
+                boolean.class);
+        verify.setAccessible(true);
+        var input = new FrozenReplayInput(computed.request(), computed.evidence(), computed.captured().network(), computed.options());
+        var budgets = recordWith(input.request().budgets(), "maximumTransitions", 128_000_001L);
+        var changedRequest = recordWith(input.request(), "budgets", budgets);
+        var cleanup = GeometryCleanupConfig.disabled().withChoice(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupChoice.BALANCED);
+        var changedOptions = recordWith(input.options(), "cleanup", cleanup);
+        for (var changed : List.of(new FrozenReplayInput(changedRequest, input.evidence(), input.network(), input.options()),
+                new FrozenReplayInput(input.request(), input.evidence(), input.network(), changedOptions))) {
+            var failure = assertThrows(java.lang.reflect.InvocationTargetException.class, () -> verify.invoke(null,
+                    osm, sha256(osm), changed, BenchmarkComparisonContract.INVENTORY_V4_APPROVED,
+                    BenchmarkSourceFixture.HOT, true));
+            assertEquals(IllegalStateException.class, failure.getCause().getClass());
+            assertEquals("V4 fixed fixture budgets or cleanup differ", failure.getCause().getMessage());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"missing-policy", "forged-work-binding", "missing-plan", "forged-plan", "core", "config", "missing-companion"})
+    void v4CandidateRepeatRefusesActualNativeMutations(String mutation, @TempDir Path directory) throws Exception {
+        var pair = archives(directory, mutation);
+        Files.writeString(pair.osm(), osm("none"));
+        Class<? extends Exception> failureClass = mutation.equals("core") || mutation.equals("config")
+                ? java.util.concurrent.ExecutionException.class : RuntimeException.class;
+        var failure = assertThrows(failureClass, () -> BenchmarkDecisionComparatorMain.main(new String[] {
+                pair.candidate().toString(), pair.candidate().toString(), pair.osm().toString(), sha256(pair.osm()),
+                "b-inventory-v4-numerical-readonly-v1", BenchmarkSourceFixture.HOT.identity(), "candidate-repeat"}));
+        if (mutation.equals("core") || mutation.equals("config")) {
+            assertEquals(IllegalStateException.class, failure.getCause().getClass());
+            assertEquals(mutation.equals("core") ? "Decision-bearing network closure differs"
+                    : "Original capture frame or effective configuration differs", failure.getCause().getMessage());
+        }
+    }
+
+    @Test
+    void v4IntervalRepeatRequiresActualOrderedChildAdmissionAndFreshPartition(@TempDir Path directory) throws Exception {
+        var fixture = produceNativeIntervalFixture();
+        Path archive = directory.resolve("interval.zip"), osm = directory.resolve("original.osm");
+        Format15BundleWriter.write(fixture.bundle(), archive);
+        writeSyntheticOsm(fixture.dataSet(), osm);
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> BenchmarkDecisionComparatorMain.main(new String[] {
+                archive.toString(), archive.toString(), osm.toString(), sha256(osm),
+                "b-inventory-v4-numerical-readonly-v1", BenchmarkSourceFixture.HOT.identity(), "candidate-repeat"}));
+        var changed = new LinkedHashMap<>(fixture.bundle().artifacts());
+        assertTrue(changed.containsKey("b-run-admissions.bin"));
+        changed.remove("b-run-admissions.bin");
+        Path corrupt = directory.resolve("missing-admissions.zip");
+        Format15BundleWriter.write(new Format15Bundle(fixture.bundle().buildIdentity(), fixture.bundle().sourceIdentityHash(),
+                fixture.bundle().parameterHash(), changed), corrupt);
+        assertThrows(RuntimeException.class, () -> BenchmarkDecisionComparatorMain.main(new String[] {
+                corrupt.toString(), corrupt.toString(), osm.toString(), sha256(osm),
+                "b-inventory-v4-numerical-readonly-v1", BenchmarkSourceFixture.HOT.identity(), "candidate-repeat"}));
     }
 
     @Test

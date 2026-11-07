@@ -18,6 +18,82 @@ SPEC.loader.exec_module(benchmark)
 
 
 class BenchmarkRunnerTest(unittest.TestCase):
+    def test_v4_baseline_registry_is_separate_and_rejects_any_unreviewed_bytes(self):
+        old = benchmark.REVIEWED_RC6_SOURCE_SHA256
+        new = benchmark.REVIEWED_RC6_V4_SOURCE_SHA256
+        self.assertEqual(6, len(new))
+        for path in old:
+            if not path.endswith('/BenchmarkHostMain.java'):
+                self.assertEqual(old[path], new[path])
+        benchmark.require_reviewed_rc6(dict(new), list(benchmark.REVIEWED_RC6_V4_DIRTY), benchmark.V4_CONTRACT)
+        for contract in (benchmark.STRICT_CONTRACT, benchmark.APPROVED_CONTRACT):
+            with self.assertRaises(benchmark.GateFailure):
+                benchmark.require_reviewed_rc6(dict(new), list(benchmark.REVIEWED_RC6_V4_DIRTY), contract)
+        for path in new:
+            changed = {**new, path: '0'*64}
+            with self.assertRaises(benchmark.GateFailure):
+                benchmark.require_reviewed_rc6(changed, list(benchmark.REVIEWED_RC6_V4_DIRTY), benchmark.V4_CONTRACT)
+        with self.assertRaises(benchmark.GateFailure):
+            benchmark.require_reviewed_rc6(dict(new), [*benchmark.REVIEWED_RC6_V4_DIRTY, '?? unexpected.java'], benchmark.V4_CONTRACT)
+        self.assertEqual(benchmark.REVIEWED_RC6_V4_PATCH_SHA256,
+                         benchmark.sha256(SCRIPT.parent/'v022-rc6-v4-benchmark-instrumentation.patch'))
+
+    def test_v4_comparator_never_guesses_repeat_scope_from_build_identity(self):
+        paths = [Path('/'+name) for name in ('java', 'josm', 'plugin', 'first', 'second', 'osm')]
+        profile = 'managed-bluered-precise-25m-z15-v1'
+        for scope in ('baseline-repeat', 'candidate-repeat', 'cross-version'):
+            command = benchmark.comparator_command(*paths, 'a'*64, benchmark.V4_CONTRACT, profile, scope)
+            self.assertEqual([str(item) for item in paths[3:]]+['a'*64, benchmark.V4_CONTRACT, profile, scope],
+                             command[command.index(benchmark.COMPARE_CLASS)+1:])
+        with self.assertRaises(benchmark.GateFailure):
+            benchmark.comparator_command(*paths, 'a'*64, benchmark.V4_CONTRACT, profile, 'same-build')
+
+    def test_selected_source_inventory_rejects_mutations_and_duplicate_addresses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plain = root/'input'
+            plain.write_bytes(b'OSM/archive synthetic pin')
+            index = root/'tiles.tsv'
+            rows = []
+            for zoom, count in ((15, 4), (14, 2)):
+                for x in range(count):
+                    png = root/f'{zoom}-{x}.png'
+                    png.write_bytes(b'\x89PNG\r\n\x1a\nsynthetic')
+                    rows.append(f'{zoom}\t{x}\t0\t{benchmark.sha256(png)}\t{png.name}')
+            def case_for(lines):
+                index.write_text('zoom\tx\ty\tsha256\trelativePath\n'+'\n'.join(lines)+'\n')
+                pin = {'path': str(plain), 'sha256': benchmark.sha256(plain)}
+                return {'archive': pin, 'osm': pin, 'tiles': {'path': str(index), 'sha256': benchmark.sha256(index)},
+                        'sourceProfile': 'managed-bluered-precise-25m-z15-v1'}
+            case = case_for(rows)
+            self.assertEqual(6, len(benchmark.pinned_case_inputs(case, benchmark.V4_CONTRACT)))
+            for changed in (rows[:-1], [rows[0], rows[0], *rows[2:]],
+                            [rows[0].replace('15\t0', '13\t0'), *rows[1:]],
+                            [rows[0].rsplit('\t', 1)[0]+'\t../escape.png', *rows[1:]]):
+                with self.assertRaises(benchmark.GateFailure):
+                    benchmark.pinned_case_inputs(case_for(changed), benchmark.V4_CONTRACT)
+            case = case_for(rows)
+            (root/'15-0.png').write_bytes(b'changed')
+            with self.assertRaises(benchmark.GateFailure):
+                benchmark.pinned_case_inputs(case, benchmark.V4_CONTRACT)
+
+    def test_v4_profiles_are_explicit_on_both_versions_and_actions(self):
+        root = Path('/synthetic')
+        reference = {'diagnosticsPath': '/baseline/a.zip', 'diagnosticsSha256': 'a'*64,
+                     'receiptPath': '/baseline/p.json', 'receiptSha256': 'b'*64, 'nonce': 'warmup'}
+        for profile in benchmark.SOURCE_PROFILES:
+            for version in ('baseline', 'candidate'):
+                for action in ('preview', 'cancel'):
+                    command = benchmark.host_command(root/'java', root, root/'josm', root/'plugin',
+                        root/'archive', root/'osm', root/'tiles', root/'receipt', 'nonce',
+                        'N1:'+version, action, benchmark.V4_CONTRACT, reference, profile)
+                    self.assertIn('-Dwayheatmaptracer.benchmark.sourceProfile='+profile, command)
+                    self.assertFalse(any('parameterHash' in item for item in command))
+        with self.assertRaises(benchmark.GateFailure):
+            benchmark.source_profile({'sourceProfile': 'unknown'}, benchmark.V4_CONTRACT)
+        with self.assertRaises(benchmark.GateFailure):
+            benchmark.source_profile({'sourceProfile': next(iter(benchmark.SOURCE_PROFILES))}, benchmark.STRICT_CONTRACT)
+
     def test_current_host_pins_the_actual_native_baseline_reference_for_preview_and_cancel(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

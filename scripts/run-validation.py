@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import json
 import importlib.metadata
+import importlib.util
 import os
 import signal
 import shlex
@@ -270,14 +271,48 @@ def _worktree_identity(value: Any, base: Path, *, role: str) -> str:
                                       "untracked": sorted(untracked_paths)}, sort_keys=True).encode()).hexdigest()
 
 
+def _benchmark_contract_profiles(manifest: dict) -> tuple[str, list[str | None]]:
+    contract = manifest.get('comparisonContract', 'rc6-identical-v1')
+    v4 = 'b-inventory-v4-numerical-readonly-v1'
+    profiles = {'managed-hot-precise-7m01-z15-v1', 'managed-bluered-precise-25m-z15-v1'}
+    if contract not in ('rc6-identical-v1', 'rc10-approved-numerical-readonly-v1', v4):
+        raise ValidationError('unknown benchmark comparisonContract')
+    cases = manifest.get('cases')
+    if not isinstance(cases, list) or len(cases) != 2 or [item.get('id') for item in cases if isinstance(item, dict)] != ['N1', 'N2']:
+        raise ValidationError('benchmark manifest must contain the exact N1 and N2 cases')
+    expected = {'id', 'archive', 'osm', 'tiles'} | ({'sourceProfile'} if contract == v4 else set())
+    for case in cases:
+        if not isinstance(case, dict) or set(case) != expected:
+            raise ValidationError('benchmark case is malformed')
+        if contract == v4 and (not isinstance(case.get('sourceProfile'), str) or case.get('sourceProfile') not in profiles):
+            raise ValidationError('benchmark requires a known sourceProfile')
+    selected = [case.get('sourceProfile') for case in cases]
+    if contract == v4 and set(selected) != profiles:
+        raise ValidationError('benchmark requires exactly one case per sourceProfile')
+    return contract, selected
+
+
 def benchmark_manifest_identity(path: Path) -> str:
     manifest, manifest_hash = _json_file(path)
     root_fields = {"schemaVersion", "warmups", "repetitions", "runTimeoutSeconds",
                    "environment", "baseline", "candidate", "cases"}
-    if set(manifest) != root_fields:
+    if set(manifest) not in (root_fields, root_fields | {'comparisonContract'}):
         raise ValidationError("benchmark manifest fields do not match schema version 1")
     if type(manifest.get("schemaVersion")) is not int or manifest["schemaVersion"] != 1:
         raise ValidationError("unsupported benchmark manifest schema")
+    contract, profiles = _benchmark_contract_profiles(manifest)
+    benchmark_runner = None
+    if contract == 'b-inventory-v4-numerical-readonly-v1':
+        spec = importlib.util.spec_from_file_location('validation_benchmark_contract', ROOT / 'scripts/run-v022-benchmark.py')
+        if spec is None or spec.loader is None:
+            raise ValidationError('benchmark contract validator is unavailable')
+        benchmark_runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(benchmark_runner)
+        baseline = manifest.get('baseline', {})
+        if baseline.get('revision') != benchmark_runner.BASELINE_REVISION:
+            raise ValidationError('benchmark baseline must be exact RC6')
+        if baseline.get('sourceHashes') != benchmark_runner.REVIEWED_RC6_V4_SOURCE_SHA256:
+            raise ValidationError('benchmark baseline adapter pins differ from reviewed V4 registry')
     if (type(manifest.get("warmups")) is not int or manifest["warmups"] < 1
             or type(manifest.get("repetitions")) is not int or manifest["repetitions"] < 3
             or type(manifest.get("runTimeoutSeconds")) is not int
@@ -311,7 +346,8 @@ def benchmark_manifest_identity(path: Path) -> str:
     if environment.get("josmVersion") != expected_josm:
         raise ValidationError("benchmark JOSM version differs from this build")
     josm_jar_hash = _required_file(environment.get("josmJar"), path.parent)
-    pairs = [("environment.java", sha256_file(java_path)),
+    pairs = [("comparisonContract", contract), ("sourceProfiles", profiles),
+             ("environment.java", sha256_file(java_path)),
              ("environment.josmJar", josm_jar_hash)]
     for name in ("baseline", "candidate"):
         worktree = manifest.get(name)
@@ -322,8 +358,13 @@ def benchmark_manifest_identity(path: Path) -> str:
     if not isinstance(cases, list) or len(cases) != 2 or [item.get("id") for item in cases if isinstance(item, dict)] != ["N1", "N2"]:
         raise ValidationError("benchmark manifest must contain the exact N1 and N2 cases")
     for case in cases:
-        if not isinstance(case, dict) or set(case) != {"id", "archive", "osm", "tiles"}:
-            raise ValidationError("benchmark case is malformed")
+        if benchmark_runner is not None:
+            normalized = {**case, **{field: {**case[field], 'path': str(_external_file(case[field]['path'], path.parent))}
+                                     for field in ('archive', 'osm', 'tiles')}}
+            try:
+                benchmark_runner.pinned_case_inputs(normalized, contract)
+            except (benchmark_runner.GateFailure, ValueError, OSError, KeyError, TypeError) as exc:
+                raise ValidationError('benchmark V4 source input pins differ') from exc
         for field in ("archive", "osm", "tiles"):
             if field == "tiles":
                 pairs.extend((f"case.{case['id']}.tiles.{name}", digest)
