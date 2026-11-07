@@ -160,11 +160,30 @@ class V022FixedIntervalEditPlanComposerTest {
     @Test
     void liveAllFrozenSelectionCannotApplyOrConfirm() throws Exception {
         AlignWayAction.IntervalPreviewState state = new AlignWayAction.IntervalPreviewState(
-                batch(288.0, 288.0));
+                noSignalBatch());
         assertFalse(state.applyAvailable());
         assertTrue(state.assessment().plan().isEmpty());
         assertEquals(null, state.review());
         assertThrows(IllegalStateException.class, state::confirmReview);
+        assertThrows(IllegalStateException.class, state::currentPlanForApply);
+    }
+
+    @Test
+    void currentAOffsetSignalRetainsNativeReviewPlanUntilConfirmed() throws Exception {
+        var state = new AlignWayAction.IntervalPreviewState(batch(288.0, 288.0));
+        assertTrue(state.batch().fullRequest().corridorInput().orElseThrow().boundedBridgePolicy());
+        assertTrue(state.assessment().intervals().stream().anyMatch(interval ->
+                interval.disposition() == FixedIntervalEditPlanComposer.Disposition.CHANGED));
+        var plan = state.assessment().plan().orElseThrow();
+        assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED, plan.validation().disposition());
+        assertTrue(state.batch().runs().stream().flatMap(run -> run.routes().stream()).anyMatch(route ->
+                route.quality().disposition() == FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED
+                        && route.quality().directlySupportedLengthMeters() > 0.0));
+        assertFalse(state.applyAvailable());
+        assertThrows(IllegalStateException.class, state::currentPlanForApply);
+        state.confirmReview();
+        assertTrue(state.applyAvailable());
+        assertEquals(plan.canonicalHash(), state.currentPlanForApply().canonicalHash());
     }
 
     @Test
@@ -951,7 +970,7 @@ class V022FixedIntervalEditPlanComposerTest {
 
     @Test
     void allFrozenIntervalsHaveNoApplyPlan() throws Exception {
-        IntervalTraceBatch batch = batch(288.0, 288.0);
+        IntervalTraceBatch batch = noSignalBatch();
         var assessment = new FixedIntervalEditPlanComposer().compose(batch, Map.of());
         assertFalse(assessment.applyAvailable());
         assertTrue(assessment.plan().isEmpty());
@@ -959,6 +978,9 @@ class V022FixedIntervalEditPlanComposerTest {
                 FixedIntervalEditPlanComposer.Disposition.FROZEN_LOCAL_FAILURE),
                 assessment.intervals().stream().map(
                         FixedIntervalEditPlanComposer.IntervalAssessment::disposition).toList());
+        var selected = (DetachedWay) batch.network().primitives().get(batch.fullRequest().selectedWayKey());
+        assertEquals(selected.nodeKeys().stream().map(key -> ((DetachedNode)
+                batch.network().primitives().get(key)).coordinate()).toList(), assessment.selectedWayPreview());
     }
 
     @Test
@@ -2261,9 +2283,22 @@ class V022FixedIntervalEditPlanComposerTest {
                 assertEquals(switch (corruption) {
                     case 0 -> "strict-interval-replay-input-malformed";
                     case 1 -> "strict-interval-production-output-mismatch";
-                    case 2 -> "strict-interval-request-derivation-mismatch";
+                    // Current A freezes origin in its request; the output companion binds that request hash.
+                    case 2 -> "strict-interval-replay-input-malformed";
                     default -> "strict-interval-replay-input-malformed";
                 }, failure.getMessage());
+                if (corruption == 2) {
+                    // Historical archives may lack companions. Derivation must still reject the changed origin.
+                    changed.remove("private/interval-output-components.bin");
+                    changed.remove("private/interval-output-components-summary.json");
+                    Format15BundleWriter.write(new Format15Bundle(replayBundle.buildIdentity(),
+                            replayBundle.sourceIdentityHash(), replayBundle.parameterHash(), changed), replayPath);
+                    var withoutCompanion = Format15ArchiveReader.read(replayPath);
+                    var derivationFailure = assertThrows(ReplayMismatchException.class, () ->
+                            Format15ReplayRunner.replayIntervals(withoutCompanion,
+                                    withoutCompanion.sourceIdentityHash(), withoutCompanion.parameterHash()));
+                    assertEquals("strict-interval-request-derivation-mismatch", derivationFailure.getMessage());
+                }
             }
 
             String index = new String(replayBundle.artifact("interval-production.json").bytes(),
@@ -2371,6 +2406,18 @@ class V022FixedIntervalEditPlanComposerTest {
         return new LiveBPreviewService.VisibleRaster(width, height, argb,
                 -80, -100, 80, 100, 1.2, 1.2, OptionalDouble.of(1.0),
                 "t-visible-test", "EPSG:3857");
+    }
+
+    private static IntervalTraceBatch noSignalBatch() throws Exception {
+        // Put the Gaussian core 50 m from the source, beyond the unchanged 7 m decision search.
+        // A marginal 2 m displacement can legitimately produce a reviewable route under current A.
+        var batch = batch(0.0, 0.0);
+        assertTrue(batch.fullRequest().corridorInput().orElseThrow().boundedBridgePolicy(),
+                "No-signal coverage must retain the current A policy");
+        assertTrue(batch.runs().stream().flatMap(run -> run.routes().stream()).noneMatch(route ->
+                route.quality().directlySupportedLengthMeters() > 0.0),
+                "The all-frozen fixture must have no direct route support");
+        return batch;
     }
 
     private static IntervalTraceBatch batch() throws Exception {

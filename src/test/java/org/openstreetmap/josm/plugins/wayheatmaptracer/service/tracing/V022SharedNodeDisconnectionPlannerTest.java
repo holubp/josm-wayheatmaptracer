@@ -360,7 +360,8 @@ class V022SharedNodeDisconnectionPlannerTest {
                 request.budgets(), request.evidenceSnapshotId(), request.evidenceContentHash(), request.networkSnapshotId(),
                 request.networkContentHash(), request.settingsHash(), request.parameterHash(), request.samplerId(),
                 request.configuredSampleStepMeters(), request.profileChainage(), request.evidenceResolution(),
-                request.corridorInput(), source);
+                // Engine mismatch must reach the batch authority check with a legal engine input.
+                engine == request.engine() ? request.corridorInput() : java.util.Optional.empty(), source);
     }
 
     private static NetworkSnapshotCapture.Specification authorityCopy(NetworkSnapshotCapture.Specification spec,
