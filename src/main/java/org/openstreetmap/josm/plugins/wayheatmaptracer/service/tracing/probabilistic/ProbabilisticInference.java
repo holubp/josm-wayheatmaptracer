@@ -39,6 +39,11 @@ public final class ProbabilisticInference {
         void computed(long pairVisits, long computedScores);
     }
 
+    @FunctionalInterface
+    interface CompletedPassObserver {
+        void completed(CompletedBPassWork work);
+    }
+
     /** Reports available actual work even when the pass is interrupted before producing a result. */
     ProbabilisticInferenceResult solveCached(List<InferenceProfile> profiles,
             EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
@@ -53,6 +58,16 @@ public final class ProbabilisticInference {
             ProbabilisticExecutionPolicy.Mode mode, WorkProgress progress) {
         if (mode == null || !mode.cached()) throw new IllegalArgumentException("A named cached policy is required");
         return solve(profiles,parameters,budgets,decisionRegion,cancellation,owner,mode,progress);
+    }
+
+    /** Opt-in immutable completed-work evidence; old calls allocate no witness. */
+    ProbabilisticInferenceResult solveCachedVersion(List<InferenceProfile> profiles,
+            EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
+            CancellationProbe cancellation, AttemptMemoryLedger.Owner owner,
+            ProbabilisticExecutionPolicy.Mode mode, WorkProgress progress, CompletedPassObserver observer) {
+        if (mode != ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V4 || observer == null)
+            throw new IllegalArgumentException("Completed work requires cached V4 and an observer");
+        return solve(profiles,parameters,budgets,decisionRegion,cancellation,owner,mode,progress,observer);
     }
 
     /**
@@ -105,6 +120,13 @@ public final class ProbabilisticInference {
         EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
         CancellationProbe cancellation, AttemptMemoryLedger.Owner resultOwner,
         ProbabilisticExecutionPolicy.Mode mode, WorkProgress progress) {
+        return solve(profiles,parameters,budgets,decisionRegion,cancellation,resultOwner,mode,progress,null);
+    }
+
+    private ProbabilisticInferenceResult solve(List<InferenceProfile> profiles,
+        EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
+        CancellationProbe cancellation, AttemptMemoryLedger.Owner resultOwner,
+        ProbabilisticExecutionPolicy.Mode mode, WorkProgress progress, CompletedPassObserver observer) {
         if (cancellation == null) {
             throw new IllegalArgumentException("Cancellation probe is required");
         }
@@ -252,6 +274,18 @@ public final class ProbabilisticInference {
                 "inference.rawEnumerationCapped", completion.rawEnumerationCapped() ? 1 : 0);
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
                 "inference.requestedDiversityReached", completion.requestedDiversityReached() ? 1 : 0);
+            if (observer != null && result.completion().isPresent() && !result.rawPaths().isEmpty()
+                    && (status == ProbabilisticInferenceResult.Status.COMPLETE
+                        || status == ProbabilisticInferenceResult.Status.AMBIGUOUS
+                        || status == ProbabilisticInferenceResult.Status.REVIEW_REQUIRED)) {
+                cancellation.checkpoint();
+                MergedWorkCounter completedCounter = (MergedWorkCounter) workCounter;
+                CompletedBPassWork completed = allocated(retainedOwner, AttemptMemoryLedger.objectBytes(32),
+                        "completed pass work", () -> new CompletedBPassWork(messages.transitions(),
+                            completedCounter.headScores, allTransitions, messages.pairVisits()));
+                observer.completed(completed);
+                cancellation.checkpoint();
+            }
             retainedOwner.transferTo(resultOwner);
             return result;
         } catch (MemoryLimit exception) {
