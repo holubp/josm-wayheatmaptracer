@@ -30,12 +30,18 @@ public final class WideCompactQualityMain {
     static final class Capture implements BQualityProbe.Sink {
         final boolean demandCompact;int denseCalls,closedCalls,inferredCalls;long closedBytes=-1,peakBytes,denseStates;
         final List<Integer> widths=new ArrayList<>();final List<BitSet> required=new ArrayList<>();
+        final List<BitSet> sourceFrontiers=new ArrayList<>();
         final Map<Integer,Map<Integer,List<Integer>>> retained=new TreeMap<>();
         final List<int[]> rawStates=new ArrayList<>();final List<Double> rawEnergies=new ArrayList<>();
         DenseBAdmission.Bounds bound;boolean posteriorUsable;String completion="unavailable";
         final TraceBudgets expectedBudgets;
+        final BPolicy expectedPolicy;
         Capture(boolean demandCompact){this(demandCompact,TraceBudgets.defaults());}
-        Capture(boolean demandCompact,TraceBudgets expectedBudgets){this.demandCompact=demandCompact;this.expectedBudgets=expectedBudgets;}
+        Capture(boolean demandCompact,TraceBudgets expectedBudgets){this(demandCompact,expectedBudgets,BPolicy.INVENTORY_PREP_V4);}
+        Capture(boolean demandCompact,TraceBudgets expectedBudgets,BPolicy policy){
+            require(policy==BPolicy.INVENTORY_PREP_V4||policy==BPolicy.INVENTORY_FRONTIER_V5,"Unknown fixture inventory policy");
+            this.demandCompact=demandCompact;this.expectedBudgets=expectedBudgets;this.expectedPolicy=policy;
+        }
         public void dense(List<ProbabilisticProfile> sampled,List<InferenceProfile> dense,TraceBudgets budgets) {
             denseCalls++;require(denseCalls==1,"More than one original preparation");
             require(budgets.equals(expectedBudgets),"Candidate budgets differ from the explicit run input");
@@ -51,6 +57,13 @@ public final class WideCompactQualityMain {
                             &&cell.offsetMeters()<=mode.coreMaximumMeters()+.5*p.sourcePitchMeters())needed.set(i);
                 }
                 required.add(needed);
+                if(expectedPolicy==BPolicy.INVENTORY_FRONTIER_V5) {
+                    var frontier=(BitSet)needed.clone();
+                    for(int seed=needed.nextSetBit(0);seed>=0;seed=needed.nextSetBit(seed+1))
+                        for(int i=0;i<d.cells().size();i++)
+                            if(Math.abs(d.cells().get(i).offsetMeters()-d.cells().get(seed).offsetMeters())<=p.sourcePitchMeters())frontier.set(i);
+                    sourceFrontiers.add(frontier);
+                }
             }
             bound=DenseBAdmission.estimate(widths.size(),widths::get,budgets,CancellationProbe.NONE);
             if(demandCompact)require(!bound.admitted()&&bound.scoresExceeded(),
@@ -74,11 +87,19 @@ public final class WideCompactQualityMain {
             StringBuilder cells=new StringBuilder("pass,row,compact_index,original_index\n");retained.forEach((pass,rs)->rs.forEach((row,is)->{for(int i=0;i<is.size();i++)cells.append(pass).append(',').append(row).append(',').append(i).append(',').append(is.get(i)).append('\n');}));write(out,"retained-indices.csv",cells.toString());
             StringBuilder paths=new StringBuilder("rank,energy,original_graph_state_sequence\n");for(int i=0;i<rawStates.size();i++)paths.append(i).append(',').append(rawEnergies.get(i)).append(",\"").append(Arrays.toString(rawStates.get(i))).append("\"\n");write(out,"native-raw-path-order.csv",paths.toString());
             write(out,"probe.txt","denseCalls="+denseCalls+"\ninferredCalls="+inferredCalls+"\nclosedCalls="+closedCalls+"\nclosedBytes="+closedBytes+"\npeakBytes="+peakBytes+"\ndenseStates="+denseStates+"\nbounds="+bound+"\nposteriorUsable="+posteriorUsable+"\ncompletion="+completion+"\n");
+            if(expectedPolicy==BPolicy.INVENTORY_FRONTIER_V5) {
+                StringBuilder frontier=new StringBuilder("row,original_fine_cells,source_frontier_cells\n");
+                for(int i=0;i<widths.size();i++)frontier.append(i).append(",\"").append(required.get(i)).append("\",\"").append(sourceFrontiers.get(i)).append("\"\n");
+                write(out,"source-frontier-census.csv",frontier.toString());
+            }
         }
     }
     record Run(ModernTracePipeline.PipelineRun pipeline,Capture capture,Map<String,Number> counters) { }
     static Run execute(WideCompactScenes.Scene scene,FrozenReplayInput input,boolean oracle,boolean compact,Path out)throws Exception {
-        return executeInternal(scene,input,oracle,compact,out,TraceBudgets.defaults());
+        return executeInternal(scene,input,oracle,compact,out,TraceBudgets.defaults(),BPolicy.INVENTORY_PREP_V4);
+    }
+    static Run execute(WideCompactScenes.Scene scene,FrozenReplayInput input,boolean oracle,boolean compact,Path out,BPolicy policy)throws Exception {
+        return executeInternal(scene,input,oracle,compact,out,TraceBudgets.defaults(),policy);
     }
     /** Dedicated bounded seam for tiny production-flow tests with a recorded alternate budget. */
     static Run executeTinyTestOnly(WideCompactScenes.Scene scene,FrozenReplayInput input,boolean oracle,boolean compact,
@@ -86,16 +107,17 @@ public final class WideCompactQualityMain {
         require(scene!=null&&scene.id().equals("tiny"),"Non-tiny scene cannot use the test-only budget seam");
         require(input!=null&&expectedBudgets!=null&&input.request().budgets().equals(expectedBudgets),
                 "Tiny test budget does not match the actual frozen request");
-        return executeInternal(scene,input,oracle,compact,out,expectedBudgets);
+        return executeInternal(scene,input,oracle,compact,out,expectedBudgets,BPolicy.INVENTORY_PREP_V4);
     }
     private static Run executeInternal(WideCompactScenes.Scene scene,FrozenReplayInput input,boolean oracle,boolean compact,
-            Path out,TraceBudgets expectedBudgets)throws Exception {
+            Path out,TraceBudgets expectedBudgets,BPolicy policy)throws Exception {
         require(expectedBudgets.equals(TraceBudgets.defaults())||scene.id().equals("tiny"),
                 "Non-default production budget is restricted to the tiny test seam");
         require(input.request().budgets().equals(expectedBudgets),"Run input budgets differ from the pinned execution budget");
-        Files.createDirectories(out);write(out,"input-identity.txt","fixture="+scene.id()+"\ninputHash="+input.canonicalHash()+"\nparameterHash="+input.request().parameterHash()+"\nbackend="+(oracle?BQualityProbe.ORACLE_VERSION:compact?"ordinary recorded INVENTORY_PREP_V4 candidate":"historical full default production")+"\nstrictHistoricalReplay=false\n");
+        if(compact)require(BPolicy.recorded(input.request())==policy&&BPolicy.recorded(scene.input().request())==policy,"Compact fixture policy does not match its actual frozen source");
+        Files.createDirectories(out);write(out,"input-identity.txt","fixture="+scene.id()+"\ninputHash="+input.canonicalHash()+"\nparameterHash="+input.request().parameterHash()+"\nbackend="+(oracle?BQualityProbe.ORACLE_VERSION:compact?"ordinary recorded "+policy+" candidate":"historical full default production")+"\nstrictHistoricalReplay=false\n");
         Files.write(out.resolve("frozen-public-input.bin"),FrozenReplayCodec.encode(input),StandardOpenOption.CREATE_NEW);
-        var capture=new Capture(compact,expectedBudgets);ModernDiagnosticCounters.begin();long start=System.nanoTime();
+        var capture=new Capture(compact,expectedBudgets,policy);ModernDiagnosticCounters.begin();long start=System.nanoTime();
         try(var probe=BQualityProbe.install(oracle,capture);var observer=AdaptiveBObserver.observe(capture::retained)) {
             require(BQualityProbe.fullOracle()==oracle,"Unexpected oracle selector");
             var pipeline=new ModernTracePipeline((r,e,n,c)->{throw new AssertionError("A engine must not execute");});
@@ -115,19 +137,23 @@ public final class WideCompactQualityMain {
         finally{try{write(out,"native-counters.txt",new TreeMap<>(ModernDiagnosticCounters.snapshot())+"\n");capture.dump(out);}finally{ModernDiagnosticCounters.end();}}
     }
     static void candidateProof(Run run,WideCompactScenes.Scene scene) {
-        candidateProof(run,scene,TraceBudgets.defaults());
+        candidateProof(run,scene,TraceBudgets.defaults(),BPolicy.INVENTORY_PREP_V4);
+    }
+    static void candidateProof(Run run,WideCompactScenes.Scene scene,BPolicy policy) {
+        candidateProof(run,scene,TraceBudgets.defaults(),policy);
     }
     static void candidateProofTinyTestOnly(Run run,WideCompactScenes.Scene scene,TraceBudgets expectedBudgets) {
         require(scene!=null&&scene.id().equals("tiny"),"Non-tiny scene cannot use the tiny candidate proof seam");
-        candidateProof(run,scene,expectedBudgets);
+        candidateProof(run,scene,expectedBudgets,BPolicy.INVENTORY_PREP_V4);
     }
-    private static void candidateProof(Run run,WideCompactScenes.Scene scene,TraceBudgets expectedBudgets) {
+    private static void candidateProof(Run run,WideCompactScenes.Scene scene,TraceBudgets expectedBudgets,BPolicy policy) {
         require(run!=null&&expectedBudgets!=null&&run.capture().expectedBudgets.equals(expectedBudgets),
                 "Candidate proof budget differs from the actual captured run");
+        require(run.capture().expectedPolicy==policy&&BPolicy.recorded(scene.input().request())==policy,"Candidate proof policy differs from its actual source capture");
         var result=run.pipeline().result().inference();var c=run.capture();
         require(result.status()==TraceHypothesisSet.Status.AMBIGUOUS,"Conditional compact candidate must remain ambiguous, without COMPLETE/global-certainty claim: "+result.status());
         require(!run.pipeline().result().routes().isEmpty(),"Empty native final geometry");
-        require(result.workAccounting().orElseThrow().hasPolicy(BPolicy.INVENTORY_COMPACT_VERSION),"Candidate was bypassed or used full/oracle backend");
+        require(result.workAccounting().orElseThrow().hasPolicy(policy.compactExecutionVersion()),"Candidate was bypassed or used full/oracle backend");
         require(c.denseCalls==1&&c.inferredCalls==1&&c.closedCalls==1&&c.closedBytes==0,"Native execution or ownership receipt missing");
         require(c.widths.size()==scene.input().request().profileChainage().cumulativeGroundMeters().size(),"Physical profile rows changed");
         require(result.evaluatedStates()==c.denseStates,"Native dense state census mismatch");
@@ -143,6 +169,11 @@ public final class WideCompactQualityMain {
             var indices=rows.get(row);require(indices!=null&&!indices.isEmpty(),"Missing retained row "+row);var set=new BitSet(c.widths.get(row));
             for(int index:indices){require(index>=0&&index<c.widths.get(row),"Foreign original cell");set.set(index);}
             var missing=(BitSet)c.required.get(row).clone();missing.andNot(set);require(missing.isEmpty(),"Measured/mandatory cell omitted");omitted+=c.widths.get(row)-set.cardinality();
+            if(policy==BPolicy.INVENTORY_FRONTIER_V5) {
+                var initial=new BitSet(c.widths.get(row));for(int index:c.retained.get(0).get(row))initial.set(index);
+                var frontier=(BitSet)c.sourceFrontiers.get(row).clone();frontier.andNot(initial);
+                require(frontier.isEmpty(),"Original source frontier omitted before the first solve");
+            }
         }
         require(omitted>0,"Final graph did not genuinely omit original nonmandatory cells");
         var work=result.workAccounting().orElseThrow();require(work.computedTransitions()>0&&work.computedTransitions()==run.pipeline().usage().transitions()

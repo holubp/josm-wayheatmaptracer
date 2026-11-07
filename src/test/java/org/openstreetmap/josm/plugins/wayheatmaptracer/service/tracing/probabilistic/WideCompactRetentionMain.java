@@ -33,6 +33,11 @@ public final class WideCompactRetentionMain {
     static PairEvaluation measurePair(WideCompactScenes.Scene scene, FrozenReplayInput referenceInput,
             WideCompactQualityMain.Run reference, String referenceBackend, FrozenReplayInput candidateInput,
             WideCompactQualityMain.Run candidate, WideCompactRetentionFlow.SceneRecord record, Path output) throws IOException {
+        return measurePair(scene,referenceInput,reference,referenceBackend,candidateInput,candidate,record,output,BPolicy.INVENTORY_PREP_V4);
+    }
+    static PairEvaluation measurePair(WideCompactScenes.Scene scene, FrozenReplayInput referenceInput,
+            WideCompactQualityMain.Run reference, String referenceBackend, FrozenReplayInput candidateInput,
+            WideCompactQualityMain.Run candidate, WideCompactRetentionFlow.SceneRecord record, Path output,BPolicy policy) throws IOException {
         // Preserve factual counters even when a later measurement or filesystem operation fails.
         record.setFacts(facts(referenceBackend,referenceInput,reference),facts("INVENTORY_COMPACT_CANDIDATE",candidateInput,candidate));
         var refExpected=referenceBackend.equals("CACHED_V4_ORACLE_AFTER_HISTORICAL_RESOURCE_LIMIT")
@@ -40,7 +45,7 @@ public final class WideCompactRetentionMain {
         markIdentity(record,WideCompactRetentionFlow.Stage.REFERENCE_IDENTITY,scene,refExpected,referenceInput,reference,"reference");
         markIdentity(record,WideCompactRetentionFlow.Stage.CANDIDATE_IDENTITY,scene,candidateInput,candidateInput,candidate,"candidate");
         verifyReferenceCompletion(reference,referenceInput,referenceBackend,record);
-        verifyCandidateExecution(scene,candidate,candidateInput.request().budgets(),record);
+        verifyCandidateExecution(scene,candidate,candidateInput.request().budgets(),record,policy);
         try { WideCompactQualityMain.safety(reference,scene,referenceInput,output.resolve("reference-safety"));record.mark(WideCompactRetentionFlow.Stage.REFERENCE_NATIVE_AUTHORITY,WideCompactRetentionFlow.Status.PASS,"actual native finalization, assignment, authority and topology checks passed"); }
         catch(Throwable e) { record.fail(WideCompactRetentionFlow.Stage.REFERENCE_NATIVE_AUTHORITY,e); }
         try { WideCompactQualityMain.safety(candidate,scene,candidateInput,output.resolve("candidate-safety"));record.mark(WideCompactRetentionFlow.Stage.CANDIDATE_NATIVE_AUTHORITY,WideCompactRetentionFlow.Status.PASS,"actual native finalization, assignment, authority and topology checks passed");record.mark(WideCompactRetentionFlow.Stage.CANDIDATE_SAFETY,WideCompactRetentionFlow.Status.PASS,"candidate safety passed"); }
@@ -129,11 +134,11 @@ public final class WideCompactRetentionMain {
     }
 
     private static void verifyCandidateExecution(WideCompactScenes.Scene scene,WideCompactQualityMain.Run run,
-            TraceBudgets expectedBudgets,WideCompactRetentionFlow.SceneRecord record) {
+            TraceBudgets expectedBudgets,WideCompactRetentionFlow.SceneRecord record,BPolicy policy) {
         if(run==null) { record.unavailable(WideCompactRetentionFlow.Stage.CANDIDATE_EXECUTION,"candidate execution missing");return; }
         try {
             if(scene.id().equals("tiny")) WideCompactQualityMain.candidateProofTinyTestOnly(run,scene,expectedBudgets);
-            else WideCompactQualityMain.candidateProof(run,scene);
+            else WideCompactQualityMain.candidateProof(run,scene,policy);
             record.mark(WideCompactRetentionFlow.Stage.CANDIDATE_EXECUTION,WideCompactRetentionFlow.Status.PASS,"actual production compact candidate proof passed");
         } catch(Throwable e) { record.fail(WideCompactRetentionFlow.Stage.CANDIDATE_EXECUTION,e); }
     }
@@ -247,10 +252,13 @@ public final class WideCompactRetentionMain {
     }
 
     static WideCompactQualityMain.Run executeReference(WideCompactScenes.Scene scene,Path output) throws Exception {
+        return executeReference(scene,output,BPolicy.INVENTORY_PREP_V4);
+    }
+    static WideCompactQualityMain.Run executeReference(WideCompactScenes.Scene scene,Path output,BPolicy policy) throws Exception {
         var historicalInput=WideCompactQualityMain.historical(scene.input());
-        var reference=WideCompactQualityMain.execute(scene,historicalInput,false,false,output.resolve("historical-full"));
+        var reference=WideCompactQualityMain.execute(scene,historicalInput,false,false,output.resolve("historical-full"),policy);
         if(reference.pipeline().result().inference().status()==TraceHypothesisSet.Status.RESOURCE_LIMIT)
-            return WideCompactQualityMain.execute(scene,scene.input(),true,false,output.resolve("cached-v4-oracle"));
+            return WideCompactQualityMain.execute(scene,scene.input(),true,false,output.resolve("cached-v4-oracle"),policy);
         return reference;
     }
     static String referenceBackend(WideCompactScenes.Scene scene,WideCompactQualityMain.Run run) {
