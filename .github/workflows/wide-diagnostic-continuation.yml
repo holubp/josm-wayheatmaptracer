@@ -1,0 +1,38 @@
+name: Wide diagnostic continuation
+
+on:
+  push:
+    branches: ["codex/v022-wide-diagnostics-20261107"]
+
+permissions:
+  contents: read
+
+jobs:
+  public-wide-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Prepare pinned JOSM 19555 host
+        run: |
+          python3 scripts/prepare-ci-josm19555.py --output-dir "$RUNNER_TEMP/josm19555-host"
+          echo "ORG_GRADLE_PROJECT_josm19555HostJar=$RUNNER_TEMP/josm19555-host/JOSM-Linux-java11-19555.jar" >> "$GITHUB_ENV"
+      - name: Run diagnostic-only continuation
+        run: timeout 4800s sh gradlew --no-daemon --max-workers=1 v022WideCompactDiagnostic -PvalidationProfile=public --console=plain
+      - name: Upload diagnostic-only reports and frozen manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-wide-compact-diagnostic-continuation
+          path: |
+            build/reports/wide-compact-diagnostic/
+            src/test/resources/public-wide-compact-v1.properties
+          if-no-files-found: error
+          retention-days: 5

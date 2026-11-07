@@ -7,6 +7,16 @@ It runs five fixed public analytic scenes and reversed drift, in that order,
 and stops on the first failure. This is separate from public JUnit, GUI,
 Legacy, private-control and repeated performance qualification.
 
+The dedicated `Wide diagnostic continuation` workflow is restricted to push
+on `codex/v022-wide-diagnostics-20261107`. Its separate
+`v022WideCompactDiagnostic` task records completed reference and candidate
+evidence after typed analytic or physical-comparison quality failures, then
+continues to later scenes only when native execution and authority checks are
+valid. It is diagnostic-only, always reports `releaseQualified=false`, and
+exits nonzero if any required assessment fails. The ordinary task and Build
+workflow remain fail-first and unchanged. Its distinct artifact includes the
+same frozen manifest; this report cannot qualify a release.
+
 `src/test/resources/public-wide-compact-v1.properties` freezes all six
 canonical input hashes and the physical specification. Fixture arithmetic uses
 StrictMath. Preflight checks every hash before preparing any scene. The

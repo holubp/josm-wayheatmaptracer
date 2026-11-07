@@ -248,6 +248,16 @@ tasks.register<JavaExec>("v022WideCompactQuality") {
     args(layout.buildDirectory.dir("reports/wide-compact-quality").get().asFile.absolutePath)
 }
 
+tasks.register<JavaExec>("v022WideCompactDiagnostic") {
+    group = "verification"
+    description = "Runs the explicitly non-qualifying wide compact diagnostic continuation"
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.WideCompactQualityMain")
+    jvmArgs("-Xmx512m", "-Djava.awt.headless=true")
+    args("--diagnostic", layout.buildDirectory.dir("reports/wide-compact-diagnostic").get().asFile.absolutePath)
+}
+
 tasks.register<JavaExec>("v022WideCompactSceneManifest") {
     group = "verification"
     description = "Freezes public analytic input hashes without running preparation or inference"
