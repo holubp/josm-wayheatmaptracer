@@ -4,13 +4,19 @@ import java.util.*;
 
 /** Sound one-sided proof for unchanged cached-V4 inference on a nested retained graph. */
 public final class BRefinementBudget {
+    /** UNKNOWN grants no affordability guarantee; only strict excess proves impossibility. */
     public enum Decision { UNKNOWN, PROVEN_UNAFFORDABLE }
+    /** Native completed execution selected by the explicit V6 policy, never an archive instruction. */
     public enum Outcome { DENSE, NOT_NEEDED, ORIGINAL_REFINEMENT, FIRST_GRAPH_PROVEN_UNAFFORDABLE }
     private static final String PREFIX="b-refinement-budget-v1";
     private static final List<String> KEYS=List.of("outcome","forwardBackwardScores","kBestHeadScores",
             "scoredTransitions","pairVisits","remainingScores","lowerBoundScores","originalIndexHash");
 
-    /** Bounded exported evidence. Live execution never parses this evidence to make its decision. */
+    /**
+     * Bounded exported evidence. Live execution never parses this evidence to make its decision.
+     * DENSE has no retained-pass counts; unavailable values are never measured zero.
+     * ORIGINAL_REFINEMENT records an attempted original schedule, not guaranteed affordability.
+     */
     public record Witness(Outcome outcome, Optional<CompletedBPassWork> first,
             OptionalLong remainingScores, OptionalLong lowerBoundScores, String originalIndexHash) {
         public Witness {
@@ -25,6 +31,11 @@ public final class BRefinementBudget {
                         ||remainingScores.getAsLong()<0)
                     throw new IllegalArgumentException("Completed retained pass is required");
                 var work=first.orElseThrow();
+                try {
+                    Math.addExact(work.scoredTransitions(),remainingScores.getAsLong());
+                } catch(ArithmeticException overflow) {
+                    throw new IllegalArgumentException("Original refinement budget overflows",overflow);
+                }
                 long lower=Math.addExact(work.forwardBackwardScores(),work.kBestHeadScores());
                 if(lowerBoundScores.getAsLong()!=lower
                         ||outcome==Outcome.FIRST_GRAPH_PROVEN_UNAFFORDABLE
@@ -34,6 +45,7 @@ public final class BRefinementBudget {
                     throw new IllegalArgumentException("Refinement witness contradicts decision");
             }
         }
+        /** Returns one fixed-key ASCII line, with no coordinates or mutable execution authority. */
         public String canonical() {
             var work=first.orElse(null);
             return PREFIX+"|outcome="+outcome
@@ -52,6 +64,12 @@ public final class BRefinementBudget {
         try{return OptionalLong.of(Long.parseLong(text));}
         catch(NumberFormatException invalid){throw new IllegalArgumentException("Witness count overflow",invalid);}
     }
+    /**
+     * Reads bounded offline evidence, rejecting unknown keys, partial counts and inconsistent decisions.
+     * @param text one canonical witness line of at most 2048 ASCII characters
+     * @return validated immutable evidence; never a live completed-pass capability
+     * @throws IllegalArgumentException for malformed, overflowing or inconsistent evidence
+     */
     public static Witness parse(String text) {
         if(text==null||text.length()>2048||!text.chars().allMatch(c->c>=32&&c<=126))
             throw new IllegalArgumentException("Invalid witness encoding");
@@ -73,6 +91,12 @@ public final class BRefinementBudget {
                 absent?Optional.empty():Optional.of(new CompletedBPassWork(f.getAsLong(),h.getAsLong(),s.getAsLong(),p.getAsLong())),
                 count(fields.get("remainingScores")),count(fields.get("lowerBoundScores")),fields.get("originalIndexHash"));
     }
+    /**
+     * Extracts a single witness line from native explanation metadata.
+     * @param text native explanation, possibly without V6 evidence
+     * @return the witness, or empty when this invocation has no completed V6 attestation
+     * @throws IllegalArgumentException for null input, duplicates or malformed witness text
+     */
     public static Optional<Witness> fromExplanation(String text) {
         if(text==null)throw new IllegalArgumentException("Explanation required");
         Witness found=null;
@@ -82,7 +106,15 @@ public final class BRefinementBudget {
         }
         return Optional.ofNullable(found);
     }
-    /** Checks exported scalar evidence against the actual native cumulative work and frozen limit. */
+    /**
+     * Checks exported scalar evidence against actual native cumulative work and the frozen limit.
+     * Source and policy identities are bound separately by the replay receipt. This check never
+     * authorizes a live fallback.
+     * @param witness completed execution evidence
+     * @param budgets original invocation limits
+     * @param receipt actual cumulative native work
+     * @throws IllegalArgumentException when completion, arithmetic or work counts disagree
+     */
     public static void validateAccounting(Witness witness,
             org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets,
             org.openstreetmap.josm.plugins.wayheatmaptracer.model.ExecutionWorkReceipt receipt) {

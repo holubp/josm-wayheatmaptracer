@@ -6,7 +6,13 @@ import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 
-class V022BudgetedFrontierCompletionTest {
+public class V022BudgetedFrontierCompletionTest {
+    public static <T> T withNativeOwnerRelease(java.util.function.Supplier<T> work,java.util.function.LongConsumer closed) {
+        try(var probe=BQualityProbe.install(false,new BQualityProbe.Sink() {
+            public void dense(List<ProbabilisticProfile> sampled,List<InferenceProfile> dense,TraceBudgets budgets) { }
+            public void closed(long current,long peak) { closed.accept(current); }
+        })) { return work.get(); }
+    }
     static final EvidenceModelParameters DATA=new EvidenceModelParameters("budgeted-fixture",1,0,0,0,0,1,1,0);
     record Fixture(List<ProbabilisticProfile> sampled,List<InferenceProfile> dense,List<ProbabilisticStateLattice> lattices) { }
     static Fixture fixture(boolean narrow) {
@@ -49,6 +55,8 @@ class V022BudgetedFrontierCompletionTest {
             V022ExactStreamMergeTest.parity(old.inference(),next.inference());
             assertEquals(old.inference().credibleSets(),next.inference().credibleSets());
             assertEquals(BRefinementBudget.Outcome.ORIGINAL_REFINEMENT,BRefinementBudget.fromExplanation(next.inference().explanation()).orElseThrow().outcome());
+            assertTrue(BRefinementBudget.fromExplanation(next.inference().explanation()).orElseThrow().lowerBoundScores().orElseThrow()
+                    <=next.secondScores(),"Repeated native reachable work is a lower bound on actual nested second work");
             assertTrue(BRefinementBudget.fromExplanation(old.inference().explanation()).isEmpty());
         }
         assertEquals(0,ledger.currentBytes());
@@ -92,6 +100,11 @@ class V022BudgetedFrontierCompletionTest {
         assertThrows(IllegalArgumentException.class,()->BRefinementBudget.parse(w.canonical()+"|unknown=1"));
         assertThrows(IllegalArgumentException.class,()->BRefinementBudget.parse(w.canonical().replace("lowerBoundScores=15","lowerBoundScores=14")));
         assertThrows(IllegalArgumentException.class,()->BRefinementBudget.parse(w.canonical().replace("remainingScores=14","remainingScores=15")));
+        var original=new BRefinementBudget.Witness(BRefinementBudget.Outcome.ORIGINAL_REFINEMENT,
+                Optional.of(new CompletedBPassWork(10,5,20,1)),OptionalLong.of(100),OptionalLong.of(15),"a".repeat(64));
+        assertThrows(IllegalArgumentException.class,()->BRefinementBudget.parse(original.canonical()
+                .replace("remainingScores=100","remainingScores="+Long.MAX_VALUE)),
+                "Actual first work plus remaining work must represent a non-overflowing original budget");
     }
     @Test void noRefinementStillUsesCompletedNativeFirstGraph() {
         var ledger=AttemptMemoryLedger.production();

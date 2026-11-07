@@ -61,4 +61,58 @@ class V022CompletedBPassWorkTest {
         }
         assertEquals(0,ledger.currentBytes());
     }
+    @Test void sparseLegalEdgesCountOnlyReachableHeadsAndNoRouteHasNoWitness() {
+        var ledger=AttemptMemoryLedger.production();var seen=new ArrayList<CompletedBPassWork>();
+        try(var owner=ledger.rootOwner()) {
+            var p=graph(3,3,3);
+            var sparse=MetricRegion.rectangle(-.1,-.001,2.1,.001);
+            var result=new ProbabilisticInference().solveCachedVersion(p,DATA,TraceBudgets.defaults(),sparse,
+                CancellationProbe.NONE,owner,ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V4,null,seen::add);
+            assertEquals(1,seen.size());assertEquals(1,seen.get(0).kBestHeadScores());
+            assertEquals(result.workAccounting().orElseThrow().forwardBackwardScores(),seen.get(0).forwardBackwardScores());
+            seen.clear();
+            result=new ProbabilisticInference().solveCachedVersion(p,DATA,TraceBudgets.defaults(),MetricRegion.rectangle(-.1,-1,.5,1),
+                CancellationProbe.NONE,owner,ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V4,null,seen::add);
+            assertEquals(ProbabilisticInferenceResult.Status.NO_ROUTE,result.status());assertTrue(seen.isEmpty());
+        }
+        assertEquals(0,ledger.currentBytes());
+    }
+    @Test void unreachablePrefixNeverBecomesAReachableHeadInIndependentEnumeration() {
+        var p=graph(3,3,3,3);
+        var region=new MetricRegion(List.of(MetricRegion.rectangle(-.1,-.001,3.1,.001).polygons().get(0),
+                MetricRegion.rectangle(.9,.039,3.1,.041).polygons().get(0)));
+        boolean[][] reachable=new boolean[3][3];
+        for(int a=0;a<3;a++)for(int b=0;b<3;b++)reachable[a][b]=region.containsSegment(p.get(0).point(a),p.get(1).point(b));
+        long heads=0;
+        for(int row=2;row<p.size();row++) {
+            boolean[][] next=new boolean[3][3];
+            for(int a=0;a<3;a++)for(int b=0;b<3;b++)for(int c=0;c<3;c++)
+                if(reachable[a][b]&&region.containsSegment(p.get(row-1).point(b),p.get(row).point(c))) {
+                    heads++;next[b][c]=true;
+                }
+            reachable=next;
+        }
+        assertEquals(2,heads,"High-strip legal triples lack a reachable original prefix");
+        var ledger=AttemptMemoryLedger.production();var seen=new ArrayList<CompletedBPassWork>();
+        try(var owner=ledger.rootOwner()) {
+            new ProbabilisticInference().solveCachedVersion(p,DATA,TraceBudgets.defaults(),region,
+                    CancellationProbe.NONE,owner,ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V4,null,seen::add);
+            assertEquals(1,seen.size());assertEquals(heads,seen.get(0).kBestHeadScores());
+        }
+        assertEquals(0,ledger.currentBytes());
+    }
+    @Test void nonfiniteNumericalRouteCannotProduceCompletedWork() {
+        var ledger=AttemptMemoryLedger.production();var seen=new ArrayList<CompletedBPassWork>();
+        var p=List.of(V022ExactKBestExecutionTest.profile(0,new double[]{Double.MAX_VALUE},new double[]{1}),
+            V022ExactKBestExecutionTest.profile(1,new double[]{Double.MAX_VALUE},new double[]{1}),
+            V022ExactKBestExecutionTest.profile(2,new double[]{Double.MAX_VALUE},new double[]{1}));
+        try(var owner=ledger.rootOwner()) {
+            var result=new ProbabilisticInference().solveCachedVersion(p,DATA,TraceBudgets.defaults(),null,
+                    CancellationProbe.NONE,owner,ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V4,null,seen::add);
+            assertTrue(result.status()==ProbabilisticInferenceResult.Status.NO_ROUTE
+                ||result.status()==ProbabilisticInferenceResult.Status.NUMERIC_FAILURE);
+            assertTrue(seen.isEmpty());
+        }
+        assertEquals(0,ledger.currentBytes());
+    }
 }

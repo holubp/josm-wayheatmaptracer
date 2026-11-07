@@ -1664,9 +1664,10 @@ public class AlignWayAction extends JosmAction {
                     : modernApplyAvailabilityMessage(assessment[0], preflight);
             List<String> reasons = plan[0] == null
                     ? run.pipeline().routes().get(routeIndex).quality().findings().stream()
-                            .map(finding -> finding.code().name() + " (" + finding.severity().name() + ")")
+                            .map(AlignWayAction::modernFindingSummary)
                             .toList()
-                    : plan[0].validation().findingCodes();
+                    : plan[0].validation().findingCodes().stream()
+                            .map(AlignWayAction::modernPlanFindingSummary).toList();
             String finalDisposition = assessment[0] != null
                     && assessment[0].availability()
                             == ModernSingleWayEditPlanAdapter.ApplyAvailability.MANUAL_JUNCTION
@@ -2452,6 +2453,11 @@ public class AlignWayAction extends JosmAction {
         return finding.code()==FinalGeometryEvaluator.FindingCode.REFINEMENT_NOT_PERFORMED_BUDGET
                 ?tr("Refinement could not fit within the work limit. This preview uses the completed initial search and requires review.")
                 :finding.code().name()+" ("+finding.severity().name()+")";
+    }
+    static String modernPlanFindingSummary(String finding) {
+        return "modern-final:REFINEMENT_NOT_PERFORMED_BUDGET".equals(finding)
+                ?tr("Refinement could not fit within the work limit. This preview uses the completed initial search and requires review.")
+                :finding;
     }
 
     private void requireLiveBCurrent(DataSet dataSet, SelectionContext selection,

@@ -30,8 +30,11 @@ public enum BPolicy {
     public static final String INVENTORY_FRONTIER_VERSION=INVENTORY_PREP_VERSION+"/source-uncertainty-frontier-v1";
     public static final String FRONTIER_FULL_VERSION=INVENTORY_FRONTIER_VERSION+"/full/cached-pair-stream-merge-scored-work-v4";
     public static final String FRONTIER_COMPACT_VERSION=INVENTORY_FRONTIER_VERSION+"/compact/"+FRONTIER_RETENTION_VERSION;
+    /** Explicit V6 contract: unchanged V5 graphs plus one strict completed-work refinement proof. */
     public static final String BUDGETED_FRONTIER_VERSION=INVENTORY_FRONTIER_VERSION+"/proven-unaffordable-refinement-v1";
+    /** V6 policy identity for a completely admitted dense cached-V4 solve. */
     public static final String BUDGETED_FRONTIER_FULL_VERSION=BUDGETED_FRONTIER_VERSION+"/full/cached-pair-stream-merge-scored-work-v4";
+    /** V6 policy identity for the unchanged V5 retained graph and its recorded refinement decision. */
     public static final String BUDGETED_FRONTIER_COMPACT_VERSION=BUDGETED_FRONTIER_VERSION+"/compact/"+FRONTIER_RETENTION_VERSION;
 
     public String version() {

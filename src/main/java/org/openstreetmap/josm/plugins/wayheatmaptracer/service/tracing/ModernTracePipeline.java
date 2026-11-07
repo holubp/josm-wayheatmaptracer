@@ -726,7 +726,8 @@ public final class ModernTracePipeline {
             int branch = quality.has(FinalGeometryEvaluator.FindingCode.BRANCH_SWITCH)
                     || quality.has(FinalGeometryEvaluator.FindingCode.AMBIGUOUS_BRANCH) ? 1 : 0;
             int severe = Math.toIntExact(Math.min(Integer.MAX_VALUE,
-                    quality.findings().size() - branch));
+                    quality.findings().stream().filter(finding -> finding.code()
+                        != FinalGeometryEvaluator.FindingCode.REFINEMENT_NOT_PERFORMED_BUDGET).count() - branch));
             CandidateRankingPolicy.PhysicalQuality physical = new CandidateRankingPolicy.PhysicalQuality(
                     quality.directlySupportedLengthMeters() + 1.0e-6 >= quality.totalLengthMeters(),
                     hard > 0, severe, branch, 0, quality.directlySupportedLengthMeters(),

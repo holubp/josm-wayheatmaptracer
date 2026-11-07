@@ -257,6 +257,9 @@ public final class Format15ProductionBundleFactory {
             else if (digest != null) throw new IllegalArgumentException("numerical-policy-binding-invalid");
         }
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(bundle.artifacts());
+        // Reuse of a frozen bundle must not carry a previous attempt's completed-pass attestation.
+        if(Format15BRefinementBudgetReceipt.required(input.request().parameterHash()))
+            artifacts.remove(Format15BRefinementBudgetReceipt.ARTIFACT);
         if (executedRuns != null) {
             artifacts.put(Format15ExecutionWorkCodec.ARTIFACT, Format15ExecutionWorkCodec.artifact(
                     executedRuns.stream().map(TraceHypothesisSet::workAccounting).toList()));
@@ -284,6 +287,12 @@ public final class Format15ProductionBundleFactory {
                         return run.workAccounting();
                     }).toList());
         receipt = Format15NumericalPolicyReceipt.withLegacySourcePolicy(receipt, computedEngine, input.legacyB());
+        if(computedEngine==TrackerMode.PROBABILISTIC
+                &&Format15BRefinementBudgetReceipt.required(input.request().parameterHash())
+                &&!artifacts.containsKey(Format15BRefinementBudgetReceipt.ARTIFACT)) {
+            receipt=Format15Artifact.text(receipt.name(),new String(receipt.bytes(),StandardCharsets.UTF_8)
+                    .replace("explicit-current-computation","execution-unattested"));
+        }
         artifacts.put(Format15NumericalPolicyReceipt.ARTIFACT, receipt);
         return new Format15Bundle(bundle.buildIdentity(), bundle.sourceIdentityHash(), bundle.parameterHash(), artifacts);
     }
