@@ -107,6 +107,15 @@ public final class ProbabilisticProfileFactory {
         EvidenceSnapshot evidence,ScalarEvidenceField field,EvidenceModelParameters parameters,
         CancellationProbe cancellation,boolean directLongitudinalReliability,double sourceOriginGroundMeters,
         AttemptMemoryLedger.Owner owner,boolean inventoryPreparation) {
+        return create(sourcePolyline,configuredStepMeters,searchHalfWidthMeters,fixedEndpoints,evidence,field,
+                parameters,cancellation,directLongitudinalReliability,sourceOriginGroundMeters,owner,inventoryPreparation,null);
+    }
+
+    private List<ProbabilisticProfile> create(List<MetricPoint> sourcePolyline,
+        double configuredStepMeters,double searchHalfWidthMeters,boolean fixedEndpoints,
+        EvidenceSnapshot evidence,ScalarEvidenceField field,EvidenceModelParameters parameters,
+        CancellationProbe cancellation,boolean directLongitudinalReliability,double sourceOriginGroundMeters,
+        AttemptMemoryLedger.Owner owner,boolean inventoryPreparation,SourceContinuitySnapshot.Collector collector) {
         if (sourcePolyline == null || sourcePolyline.size() < 2 || !positive(configuredStepMeters)
             || !positive(searchHalfWidthMeters) || evidence == null || field == null
             || parameters == null || cancellation == null
@@ -126,7 +135,10 @@ public final class ProbabilisticProfileFactory {
         try {
         if (directLongitudinalReliability) {
             if(inventoryPreparation)org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record("b.prep.inventoryVersion",1L);
-            interval = intervalOwner == null
+            interval = collector != null
+                    ? ProbabilisticInference.allocated(intervalOwner,AttemptMemoryLedger.objectBytes(96),
+                        "source interval observations",()->new SnapshotRasterIntervalEvidence(evidence,field,parameters.localization(),intervalOwner,collector))
+                    : intervalOwner == null
                     ? new RasterIntervalEvidence(evidence, field, parameters.localization(), null)
                     : ProbabilisticInference.allocated(intervalOwner, AttemptMemoryLedger.objectBytes(inventoryPreparation?88:80),
                             "sampled profiles", () -> inventoryPreparation
@@ -241,8 +253,10 @@ public final class ProbabilisticProfileFactory {
             CorroboratedProfiles corroborated = restoreRmsSingletons(frozen, frozenDetails, evidence,
                     field, parameters, cancellation, orientationDescriptor, sharedInterval,
                     intervalOwner, rawOwner, identityOwner);
-            List<ProbabilisticProfile> reliable = LongitudinalModeReliability.apply(corroborated.profiles(),
-                    corroborated.evidence(), cancellation, reliabilityOwner).profiles();
+            var reliability = LongitudinalModeReliability.apply(corroborated.profiles(),
+                    corroborated.evidence(), cancellation, reliabilityOwner,collector);
+            List<ProbabilisticProfile> reliable = reliability.profiles();
+            if(collector!=null){collector.pairs=reliability.pairEvaluations();collector.visits=reliability.supportEdgeVisits();}
             // Only accepted IDs survive the diagnostic lifetime; all copied mode/orientation
             // graphs were co-owned by ordinary reliability before raw inputs are released.
             if (identityOwner != null) identityOwner.transferTo(reliabilityOwner);
@@ -637,6 +651,30 @@ public final class ProbabilisticProfileFactory {
                 parameters,cancellation,directLongitudinalReliability,owner,false);
     }
 
+    /**
+     * Explicit inert source receipt. Existing extraction/query work runs once; only
+     * already-computed observations are copied. Failure publishes no partial receipt
+     * or profiles. The receipt and its profiles remain valid in the caller's owner.
+     */
+    public SourceContinuitySnapshot.Produced createWithContinuity(List<MetricPoint> sourcePolyline,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage profileChainage,
+        double searchHalfWidthMeters,boolean fixedEndpoints,EvidenceSnapshot evidence,ScalarEvidenceField field,
+        EvidenceModelParameters parameters,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner) {
+        if(owner==null||cancellation==null||sourcePolyline==null||evidence==null||field==null||evidence.fields().values().stream().noneMatch(f->f==field))
+            throw new IllegalArgumentException("Owned factual evidence field required");
+        try(var transaction=owner.child("source-continuity-production")) {
+            List<MetricPoint> frozenSource=ProbabilisticInference.allocated(transaction,ProbabilisticInference.listBytes(sourcePolyline.size())+AttemptMemoryLedger.objectBytes(16),
+                    "source selection copy",()->java.util.Collections.unmodifiableList(new ArrayList<>(sourcePolyline)));
+            var collector=ProbabilisticInference.allocated(transaction,AttemptMemoryLedger.objectBytes(48)+AttemptMemoryLedger.objectBytes(32),
+                    "source continuity collector",()->new SourceContinuitySnapshot.Collector(cancellation,transaction));
+            var profiles=createOwned(frozenSource,profileChainage,searchHalfWidthMeters,fixedEndpoints,evidence,field,
+                    parameters,cancellation,true,transaction,false,collector);
+            var snapshot=collector.freeze(evidence,field,frozenSource,profiles,searchHalfWidthMeters,owner);
+            var result=collector.budget.own(64L+profiles.size()*8L,()->new SourceContinuitySnapshot.Produced(profiles,snapshot));
+            cancellation.checkpoint();transaction.transferTo(owner);return result;
+        }
+    }
+
     /** Explicit owned preparation revision; no historical or unowned entry point enables it. */
     public List<ProbabilisticProfile> createWithInventory(List<MetricPoint> sourcePolyline,
         org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage profileChainage,
@@ -651,13 +689,22 @@ public final class ProbabilisticProfileFactory {
         double searchHalfWidthMeters,boolean fixedEndpoints,EvidenceSnapshot evidence,ScalarEvidenceField field,
         EvidenceModelParameters parameters,CancellationProbe cancellation,boolean directLongitudinalReliability,
         AttemptMemoryLedger.Owner owner,boolean inventoryPreparation) {
+        return createOwned(sourcePolyline,profileChainage,searchHalfWidthMeters,fixedEndpoints,evidence,field,
+                parameters,cancellation,directLongitudinalReliability,owner,inventoryPreparation,null);
+    }
+
+    private List<ProbabilisticProfile> createOwned(List<MetricPoint> sourcePolyline,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage profileChainage,
+        double searchHalfWidthMeters,boolean fixedEndpoints,EvidenceSnapshot evidence,ScalarEvidenceField field,
+        EvidenceModelParameters parameters,CancellationProbe cancellation,boolean directLongitudinalReliability,
+        AttemptMemoryLedger.Owner owner,boolean inventoryPreparation,SourceContinuitySnapshot.Collector collector) {
         if (profileChainage == null || owner == null) {
             throw new IllegalArgumentException("Measured profile chainage and memory owner are required");
         }
         List<ProbabilisticProfile> result = create(sourcePolyline,
                 profileChainage.configuredStepMeters(), searchHalfWidthMeters, fixedEndpoints,
                 evidence, field, parameters, cancellation, directLongitudinalReliability,
-                profileChainage.sourceOriginGroundMeters(), owner,inventoryPreparation);
+                profileChainage.sourceOriginGroundMeters(), owner,inventoryPreparation,collector);
         if (result.size() != profileChainage.cumulativeGroundMeters().size()) {
             throw new IllegalArgumentException("Request chainage does not match deterministic profile sampling");
         }
@@ -1522,7 +1569,7 @@ public final class ProbabilisticProfileFactory {
             } finally { if (queryOwner != null) queryOwner.close(); }
         }
 
-        private double supportInternal(ProbabilisticProfile leftProfile,
+        double supportInternal(ProbabilisticProfile leftProfile,
                 ProbabilisticProfile.Mode leftMode, ProbabilisticProfile rightProfile,
                 ProbabilisticProfile.Mode rightMode, int suppressedProfileIndex,
                 LocalScalarProfileExtractor.SuppressedMode suppressed,
@@ -2004,6 +2051,29 @@ public final class ProbabilisticProfileFactory {
                 }
             }
             return maximum;
+        }
+    }
+
+    /** Separate opt-in layout: ordinary interval objects gain no snapshot field or allocation. */
+    private static final class SnapshotRasterIntervalEvidence extends RasterIntervalEvidence {
+        private final SourceContinuitySnapshot.Collector collector;
+        SnapshotRasterIntervalEvidence(EvidenceSnapshot evidence,ScalarEvidenceField field,
+                EvidenceModelParameters.Localization localization,AttemptMemoryLedger.Owner owner,
+                SourceContinuitySnapshot.Collector collector){super(evidence,field,localization,owner);this.collector=collector;}
+        @Override double supportInternal(ProbabilisticProfile left,ProbabilisticProfile.Mode a,
+                ProbabilisticProfile right,ProbabilisticProfile.Mode b,int suppressedIndex,
+                LocalScalarProfileExtractor.SuppressedMode suppressed,CancellationProbe cancellation) {
+            RasterIntervalEvidence base=this;long q=base.queries,s=base.scalarQueries,u=base.samplingUnits,f=base.featureUnits;
+            double value=super.supportInternal(left,a,right,b,suppressedIndex,suppressed,cancellation);
+            collector.interval(left.profileIndex(),a.id(),right.profileIndex(),b.id(),suppressed==null?SourceContinuitySnapshot.QueryKind.MODE_CENTRE:SourceContinuitySnapshot.QueryKind.RMS_CANDIDATE_CENTRE,
+                    value,base.queries-q,base.scalarQueries-s,base.samplingUnits-u,base.featureUnits-f);return value;
+        }
+        @Override boolean observedCensoredBand(ProbabilisticProfile left,ProbabilisticProfile.CensoredMode a,
+                ProbabilisticProfile right,ProbabilisticProfile.CensoredMode b,CancellationProbe cancellation) {
+            RasterIntervalEvidence base=this;long q=base.queries,s=base.scalarQueries,u=base.samplingUnits,f=base.featureUnits;
+            boolean value=super.observedCensoredBand(left,a,right,b,cancellation);
+            collector.interval(left.profileIndex(),a.id(),right.profileIndex(),b.id(),SourceContinuitySnapshot.QueryKind.CENSORED_BAND_SCALAR,
+                    value?1:0,base.queries-q,base.scalarQueries-s,base.samplingUnits-u,base.featureUnits-f);return value;
         }
     }
 

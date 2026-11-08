@@ -26,6 +26,13 @@ final class LongitudinalModeReliability {
                 CancellationProbe cancellation);
     }
 
+    /** Optional sink for already-computed facts; never requests additional interval work. */
+    @FunctionalInterface
+    interface Observer {
+        void relation(int row,int first,int second,double score,boolean mutualBest,
+                boolean intervalEvaluated,double support,double confidence);
+    }
+
     private static final DirectIntervalEvidence ASSUME_OBSERVED =
             (leftProfile, leftMode, rightProfile, rightMode, cancellation) -> 1.0;
 
@@ -64,6 +71,12 @@ final class LongitudinalModeReliability {
     static Result apply(List<ProbabilisticProfile> profiles,
             DirectIntervalEvidence intervalEvidence, CancellationProbe cancellation,
             AttemptMemoryLedger.Owner owner) {
+        return apply(profiles,intervalEvidence,cancellation,owner,null);
+    }
+
+    static Result apply(List<ProbabilisticProfile> profiles,
+            DirectIntervalEvidence intervalEvidence,CancellationProbe cancellation,
+            AttemptMemoryLedger.Owner owner,Observer observer) {
         if (profiles == null || intervalEvidence == null || cancellation == null) {
             throw new IllegalArgumentException("Longitudinal reliability inputs are incomplete");
         }
@@ -98,7 +111,7 @@ final class LongitudinalModeReliability {
                 AttemptMemoryLedger.Owner retainedEdges = associationOwner == null ? null
                         : associationOwner.child("association-pair-edges-" + index);
                 EdgeMaps maps = associate(left, right, intervalEvidence, cancellation,
-                        pairScratch, retainedEdges);
+                        pairScratch, retainedEdges,observer);
                 forward.add(maps.forward());
                 backward.add(maps.backward());
                 if (retainedEdges != null) {
@@ -211,7 +224,7 @@ final class LongitudinalModeReliability {
 
     private static EdgeMaps associate(ProbabilisticProfile left, ProbabilisticProfile right,
             DirectIntervalEvidence intervalEvidence, CancellationProbe cancellation,
-            AttemptMemoryLedger.Owner scratchOwner, AttemptMemoryLedger.Owner retainedOwner) {
+            AttemptMemoryLedger.Owner scratchOwner, AttemptMemoryLedger.Owner retainedOwner,Observer observer) {
         int leftCount = left.modes().size();
         int rightCount = right.modes().size();
         double[][] score = scratchOwner == null ? new double[leftCount][rightCount]
@@ -283,6 +296,7 @@ final class LongitudinalModeReliability {
             }
             double confidence = fromLeft.score() * Math.sqrt(
                     margin(fromLeft) * margin(fromRight)) * intervalSupport;
+            if(observer!=null)observer.relation(left.profileIndex(),leftIndex,fromLeft.index(),fromLeft.score(),true,true,intervalSupport,confidence);
             if (confidence <= 0.0) continue;
             int retainedLeftIndex = leftIndex;
             Edge edge = retainedOwner == null ? new Edge(leftIndex, fromLeft.index(), confidence)
@@ -291,6 +305,11 @@ final class LongitudinalModeReliability {
                         () -> new Edge(retainedLeftIndex, fromLeft.index(), confidence));
             forward.put(leftIndex, edge);
             backward.put(fromLeft.index(), edge);
+        }
+        if(observer!=null)for(int first=0;first<leftCount;first++)for(int second=0;second<rightCount;second++) {
+            cancellation.checkpoint();
+            if(leftBest[first].index()!=second||rightBest[second].index()!=first)
+                observer.relation(left.profileIndex(),first,second,score[first][second],false,false,Double.NaN,0.0);
         }
         return new EdgeMaps(forward, backward);
     }
