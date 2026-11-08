@@ -24,6 +24,89 @@ public final class BudgetedFrontierParity {
         "frozen-edit-plan.bin","2878f403b12c8e089d13e86cef9ab9cd07288370cfd9756ec26622f7f93b77e8");
     private BudgetedFrontierParity() { }
 
+    static void assertQualityTextPreserved(String baseline,String candidate) {
+        var before=baseline.split("\n",-1);var after=candidate.split("\n",-1);
+        require(before.length==after.length,"quality line count");
+        for(int i=0;i<before.length;i++) {
+            if(before[i].startsWith("raw=TraceHypothesis[")||before[i].startsWith("final=TraceHypothesis[")) {
+                String marker=", diagnostics={";
+                int a=before[i].lastIndexOf(marker),b=after[i].lastIndexOf(marker);
+                require(a>=0&&b>=0&&before[i].endsWith("}]")&&after[i].endsWith("}]"),"quality diagnostics envelope");
+                require(before[i].substring(0,a).equals(after[i].substring(0,b)),"complete non-map quality text");
+                require(diagnosticEntries(before[i].substring(a+marker.length(),before[i].length()-2)).equals(
+                    diagnosticEntries(after[i].substring(b+marker.length(),after[i].length()-2))),"exact diagnostic keys/value spellings");
+            } else require(before[i].equals(after[i]),"exact quality/topology line "+i);
+        }
+    }
+    private static Map<String,String> diagnosticEntries(String text) {
+        Map<String,String> entries=new LinkedHashMap<>();
+        if(text.isEmpty())return entries;
+        for(String entry:text.split(", ",-1)) {
+            int separator=entry.indexOf('=');
+            require(separator>0&&separator==entry.lastIndexOf('='),"diagnostic entry");
+            String key=entry.substring(0,separator),value=entry.substring(separator+1);
+            require(key.matches("[A-Za-z][A-Za-z0-9_.-]*")&&!value.isEmpty(),"diagnostic key/value");
+            try {require(Double.isFinite(Double.parseDouble(value)),"finite diagnostic value");}
+            catch(NumberFormatException malformed){throw new AssertionError("diagnostic value",malformed);}
+            require(entries.putIfAbsent(key,value)==null,"duplicate diagnostic key");
+        }
+        return entries;
+    }
+
+    /** Own bindings remain factual; only complete typed semantic components cross the policy boundary. */
+    static void assertSemanticOutputPreserved(Format15Archive baseline,FrozenReplayInput oldInput,
+            Format15Archive candidate,FrozenReplayInput newInput,boolean changed) {
+        assertInputPreserved(oldInput,newInput,changed);
+        var before=boundComponents(baseline,oldInput);var after=boundComponents(candidate,newInput);
+        require(before.binding().rootFingerprint().equals(after.binding().rootFingerprint()),"complete final root fingerprint");
+        var complete=EnumSet.allOf(FinalOutputComponentsCodec.Component.class);
+        require(before.digests().keySet().equals(complete)&&after.digests().keySet().equals(complete)
+            &&before.digests().equals(after.digests()),"every semantic component");
+        require(before.summary().equals(after.summary()),"complete quality summary");
+        for(String name:List.of("raw-route.json","final-route.json"))
+            require(Arrays.equals(baseline.artifact(name).orElseThrow().bytes(),candidate.artifact(name).orElseThrow().bytes()),"exact artifact: "+name);
+        require(Format15NumericalPolicyReceipt.validate(baseline,oldInput,oldInput.canonicalHash())==TrackerMode.PROBABILISTIC
+            &&Format15NumericalPolicyReceipt.validate(candidate,newInput,newInput.canonicalHash())==TrackerMode.PROBABILISTIC,"native numerical attestations");
+        var oldRuns=Format15ExecutionWorkCodec.read(baseline.artifact(Format15ExecutionWorkCodec.ARTIFACT).orElseThrow());
+        var newRuns=Format15ExecutionWorkCodec.read(candidate.artifact(Format15ExecutionWorkCodec.ARTIFACT).orElseThrow());
+        require(oldRuns.size()==1&&newRuns.size()==1,"single native work run");
+        var oldWork=oldRuns.get(0).orElseThrow();var newWork=newRuns.get(0).orElseThrow();
+        require(oldWork.bStages().size()==1&&newWork.bStages().size()==1
+            &&oldWork.otherEngineTransitions()==0&&newWork.otherEngineTransitions()==0,"standalone native B work");
+        var oldStage=oldWork.bStages().get(0);var newStage=newWork.bStages().get(0);
+        if(changed) {
+            require(oldStage.executionPolicy().equals(BPolicy.FRONTIER_COMPACT_VERSION),"baseline native compact V5");
+            require(new InferenceWorkAccounting(BPolicy.BUDGETED_FRONTIER_COMPACT_VERSION,oldStage.forwardBackwardScores(),
+                oldStage.kBestScores(),oldStage.logicalKBestExtensions(),oldStage.refusedScoreAttempts()).equals(newStage),"exact native work with typed V6 lineage");
+        } else require(oldWork.equals(newWork),"same-policy native work");
+        require(oldWork.computedTransitions()==before.output().inference().evaluatedTransitions()
+            &&newWork.computedTransitions()==after.output().inference().evaluatedTransitions(),"components/work binding");
+        String oldExplanation=before.output().inference().explanation(),newExplanation=after.output().inference().explanation();
+        if(changed) {
+            Format15BRefinementBudgetReceipt.validateActual(candidate,List.of(after.output().inference()));
+            var witness=BRefinementBudget.fromExplanation(newExplanation).orElseThrow();
+            require(witness.outcome()==BRefinementBudget.Outcome.ORIGINAL_REFINEMENT,"preservation requires original refinement");
+            String marker="; "+BPolicy.FRONTIER_RETENTION_VERSION+"; posterior=";
+            int index=oldExplanation.indexOf(marker);
+            require(index>=0&&index==oldExplanation.lastIndexOf(marker),"one exact V5 compact explanation lineage");
+            String expected=oldExplanation.substring(0,index)+"; "+BPolicy.BUDGETED_FRONTIER_VERSION+"; posterior="
+                +oldExplanation.substring(index+marker.length())+"\n"+witness.canonical();
+            require(newExplanation.equals(expected),"exact V6 explanation and additive canonical witness");
+            String provenance="originalIndexHash="+witness.originalIndexHash();
+            require(oldExplanation.startsWith(DenseBAdmission.witnessFromExplanation(oldExplanation)+"\n"+provenance+"; ")
+                &&oldExplanation.contains("; refinements=1; "+provenance+"; "),"unchanged native provenance lineage");
+        } else require(oldExplanation.equals(newExplanation),"same-policy explanation");
+    }
+    private static FinalOutputComponentsCodec.Snapshot boundComponents(Format15Archive archive,FrozenReplayInput input) {
+        require(Arrays.equals(archive.artifact("frozen-input.bin").orElseThrow().bytes(),FrozenReplayCodec.encode(input)),"factual frozen archive/input");
+        var expectation=FinalReplayExpectation.read(archive).orElseThrow();
+        expectation.validateBinding(archive,input);
+        require(expectation.capturedEngine()==TrackerMode.PROBABILISTIC&&expectation.requestedEngine()==TrackerMode.PROBABILISTIC,"factual native engine binding");
+        var snapshot=FinalOutputComponentsCodec.decode(archive.artifact(FinalOutputComponentsCodec.ARTIFACT).orElseThrow().bytes(),expectation.componentsBinding());
+        require(expectation.matches(snapshot.output()),"complete own root/output binding");
+        return snapshot;
+    }
+
     /**
      * Fails closed unless the reviewed baseline pins and every native semantic artifact agree.
      * @param baselineDirectory local reviewed baseline; expected bytes are never regenerated
@@ -36,7 +119,9 @@ public final class BudgetedFrontierParity {
     public static void assertPreserved(Path baselineDirectory,Path candidateDirectory,boolean parameterPolicyChanged)throws IOException,Format15ArchiveException {
         for(var pin:PINNED_FILES.entrySet()) {
             require(sha(Files.readAllBytes(baselineDirectory.resolve(pin.getKey()))).equals(pin.getValue()),"baseline pin: "+pin.getKey());
-            require(Files.mismatch(baselineDirectory.resolve(pin.getKey()),candidateDirectory.resolve(pin.getKey()))==-1,"semantic file: "+pin.getKey());
+            if(pin.getKey().equals("quality-topology.txt"))assertQualityTextPreserved(
+                Files.readString(baselineDirectory.resolve(pin.getKey())),Files.readString(candidateDirectory.resolve(pin.getKey())));
+            else require(Files.mismatch(baselineDirectory.resolve(pin.getKey()),candidateDirectory.resolve(pin.getKey()))==-1,"semantic file: "+pin.getKey());
         }
         require(sha(Files.readAllBytes(baselineDirectory.resolve("derived-frozen-input.bin"))).equals(
             "4ed55f11d81817cc7e4defdc79549f8ebf3c0628911be328a8d8eb69d9f1f653"),"baseline derived input");
@@ -52,12 +137,7 @@ public final class BudgetedFrontierParity {
         assertInputPreserved(oldInput,newInput,parameterPolicyChanged);
         Format15NumericalPolicyReceipt.validate(baseline,oldInput,oldInput.canonicalHash());
         Format15NumericalPolicyReceipt.validate(candidate,newInput,newInput.canonicalHash());
-        Map<String,byte[]> before=new LinkedHashMap<>(),after=new LinkedHashMap<>();
-        for(String name:EXACT_ARTIFACTS) {
-            before.put(name,baseline.artifact(name).orElseThrow().bytes());
-            after.put(name,candidate.artifact(name).orElseThrow().bytes());
-        }
-        assertExactArtifacts(before,after);
+        assertSemanticOutputPreserved(baseline,oldInput,candidate,newInput,parameterPolicyChanged);
         var oldPlan=FrozenReplayCodec.decodeEditPlan(baseline.artifact("frozen-edit-plan.bin").orElseThrow().bytes());
         var newPlan=FrozenReplayCodec.decodeEditPlan(candidate.artifact("frozen-edit-plan.bin").orElseThrow().bytes());
         require(oldPlan.canonicalHash().equals("f69ae5493fe131d37bb2ab24c2a8e4a00a3af269844e2e4867614fd1a71c6a0a"),"baseline plan");
