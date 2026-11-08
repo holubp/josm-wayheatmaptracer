@@ -67,8 +67,9 @@ Attested failure work is debited too. Any required missing/failed/refused family
 keeps the aggregate incomplete. A cancellation/deadline at completion discards
 the current conditional value. Prior complete families remain diagnostic only;
 there is no aggregate winner/candidate or global posterior/exactK32 API.
-Reports contain at most8 family receipts. finalCandidateLimit=8 is the downstream
-selection ceiling, not an implemented native candidate-merging/selection stage.
+Reports contain at most8 family receipts. finalCandidateLimit is the accepted
+attempt distinct cap (default8), a downstream ceiling rather than an implemented
+native candidate-merging/selection stage.
 
 Scope limitation is explicit: this ledger accounts pair/score/raw reservations;
 source-specific geometry/sampling caps are not reimplemented, guessed or reset.
@@ -94,3 +95,27 @@ Commands: Java17 JAVA_HOME, shared josm-drasov-gradle.lock, sh ./gradlew
 Native calls0, engines0, samplers0, private/public feature extraction0; only
 fake executor/metadata/ownership operations ran. Legacy58 guard and diff-check
 pass. Source/class/runtime/evidence pins are frozen for one independent review.
+
+## Review repair R1/R2
+
+Independent review found premature manual settlement from inside runAll could
+leave H1 COMPLETE or H2 READY when the callback subsequently threw or returned
+into a second settlement. Four H1/H2 throw/return regressions failed RED. Reduced
+distinct-cap1/4 reports also failed RED (advertised8); default8 and ordinary
+managed/manual success controls passed. The complete RED was8 tests/6 intended
+failures and remains preserved with cdc07 source bytes under repair/.
+
+The managed callback now cannot settle its controller-owned lease. Work already
+attested by the premature outcome is accepted as a cumulative prefix before the
+protocol error is raised. The callback has not returned a final receipt, so the
+failure keeps exact total work UNAVAILABLE, closes per-family scopes and forbids
+subsequent reserveNext/runAll calls. Only the controller settles a returned
+managed outcome; manual reserveNext/finish remains valid outside managed mode.
+Unexpected exits after a revoked lease also cannot retain READY/COMPLETE.
+The immutable report now carries the accepted maximumDistinctAlternatives,
+including reduced1/4 limits, without merging candidates or posterior evidence.
+
+Affected regression receipts, current source/class pins and Legacy58 guard are
+frozen under repair/ for one affected independent review:37/37 (21 ledger and
+16 owner tests),0 failures/errors/skips, BUILD SUCCESSFUL1m38s. No native, engine,
+sampler, source adapter, feature/private operation or new model was added.

@@ -5,6 +5,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import static org.junit.jupiter.api.Assertions.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
@@ -128,5 +131,34 @@ class V022ContinuityAttemptLedgerTest {
     @Test void memoryRefusalAndClosedAttemptCannotMintAWorkLease() {
         var tiny=new AttemptMemoryLedger(64);try(var owner=tiny.rootOwner()){assertThrows(AttemptMemoryLedger.ResourceLimitException.class,()->ContinuityAttemptLedger.plan(families(1),caps(100,100),CancellationProbe.NONE,100,new AtomicLong()::get,owner));assertEquals(0,tiny.currentBytes());}
         var memory=AttemptMemoryLedger.production();var owner=memory.rootOwner();ContinuityAttemptLedger<String> ledger=ContinuityAttemptLedger.plan(families(1),caps(100,100),CancellationProbe.NONE,100,new AtomicLong()::get,owner);var lease=ledger.reserveNext().orElseThrow();owner.close();assertThrows(IllegalStateException.class,lease::limits);assertThrows(IllegalStateException.class,ledger::report);assertEquals(0,memory.currentBytes());
+    }
+    @ParameterizedTest @CsvSource({"1,true","1,false","2,true","2,false"})
+    void managedCallbackCannotSettleThenThrowOrReturnAndPermitLaterCalls(int histories,boolean throwAfterFinish) {
+        var memory=AttemptMemoryLedger.production();try(var owner=memory.rootOwner()) {
+            ContinuityAttemptLedger<String> ledger=ContinuityAttemptLedger.plan(families(histories),caps(100,100),CancellationProbe.NONE,100,new AtomicLong()::get,owner);var calls=new AtomicInteger();List<AttemptMemoryLedger.Owner> scratch=new ArrayList<>();
+            var report=ledger.runAll(lease->{calls.incrementAndGet();scratch.add(lease.scratchOwner());lease.finish(Outcome.complete(new Work(12,1,1),1,1,"early"));if(throwAfterFinish)throw new Exception("failure after premature settlement");return Outcome.complete(new Work(12,1,1),1,1,"returned");});
+            assertFalse(report.allRequiredComplete());assertNotEquals(Status.COMPLETE,report.status());assertNotEquals(Status.READY,ledger.status());assertTrue(report.exactWork().isEmpty());assertEquals(new Work(12,1,1),report.knownPrefix());
+            assertTrue(report.families().get(0).conditionalResult().isEmpty());assertTrue(scratch.stream().allMatch(AttemptMemoryLedger.Owner::isClosed));assertTrue(ledger.reserveNext().isEmpty());
+            ledger.runAll(lease->{calls.incrementAndGet();throw new AssertionError("Failed callback may never retry or run a later family");});assertEquals(1,calls.get());
+        }finally{assertEquals(0,memory.currentBytes());}
+    }
+    @ParameterizedTest @ValueSource(ints={1,4,8})
+    void reportPreservesEffectiveReducedDistinctCandidateCeiling(int distinctCap) {
+        var memory=AttemptMemoryLedger.production();try(var owner=memory.rootOwner()) {
+            ContinuityAttemptLedger<String> ledger=ContinuityAttemptLedger.plan(families(2),new TraceBudgets(96,100,100,32,distinctCap),CancellationProbe.NONE,100,new AtomicLong()::get,owner);
+            var report=ledger.runAll(lease->{assertEquals(distinctCap,lease.limits().maximumDistinctAlternatives());return Outcome.complete(new Work(12,1,1),1,1,"conditional");});
+            assertTrue(report.allRequiredComplete());assertEquals(distinctCap,report.finalCandidateLimit());assertFalse(report.pooledPosteriorAvailable());assertFalse(report.globalExactK32());
+        }finally{assertEquals(0,memory.currentBytes());}
+    }
+    @Test void ordinaryManagedAndManualSettlementBothCompleteExactlyOnce() {
+        for(boolean managed:List.of(false,true)) {
+            var memory=AttemptMemoryLedger.production();try(var owner=memory.rootOwner()) {
+                ContinuityAttemptLedger<String> ledger=ContinuityAttemptLedger.plan(families(1),caps(100,100),CancellationProbe.NONE,100,new AtomicLong()::get,owner);
+                Report<String> report;
+                if(managed)report=ledger.runAll(lease->Outcome.complete(new Work(12,1,1),1,1,"normal"));
+                else {var lease=ledger.reserveNext().orElseThrow();lease.finish(Outcome.complete(new Work(12,1,1),1,1,"normal"));report=ledger.report();}
+                assertEquals(Status.COMPLETE,report.status());assertTrue(report.allRequiredComplete());assertEquals(new Work(12,1,1),report.exactWork().orElseThrow());assertEquals("normal",report.families().get(0).conditionalResult().orElseThrow());assertTrue(ledger.reserveNext().isEmpty());
+            }finally{assertEquals(0,memory.currentBytes());}
+        }
     }
 }

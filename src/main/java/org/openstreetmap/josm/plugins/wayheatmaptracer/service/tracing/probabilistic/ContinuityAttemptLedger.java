@@ -25,11 +25,10 @@ final class ContinuityAttemptLedger<T> implements AutoCloseable {
     record FamilyReceipt<T>(Reservation reservation,Completion completion,Optional<Work> exactWork,Work knownPrefix,
             Optional<Work> rejectedWorkClaim,OptionalInt rawReturned,Optional<T> conditionalResult) { }
     record Report<T>(Status status,String reason,List<FamilyReceipt<T>> families,long plannedPreparationPairs,
-            Work knownPrefix,Optional<Work> exactWork,int rawRequested,OptionalInt rawReturned,boolean allRequiredComplete) {
+            Work knownPrefix,Optional<Work> exactWork,int rawRequested,OptionalInt rawReturned,boolean allRequiredComplete,int finalCandidateLimit) {
         Report {families=List.copyOf(families);}
         boolean pooledPosteriorAvailable(){return false;}
         boolean globalExactK32(){return false;}
-        int finalCandidateLimit(){return 8;}
     }
     @FunctionalInterface interface Executor<T> {Outcome<T> execute(ContinuityAttemptLedger<T>.Lease lease)throws Exception;}
     private final List<Reservation> reservations;
@@ -101,7 +100,7 @@ final class ContinuityAttemptLedger<T> implements AutoCloseable {
         private final AttemptMemoryLedger.Owner scope,scratch,result;
         private Work prefix=new Work(0,0,0);
         private Optional<Work> rejected=Optional.empty();
-        private boolean revoked;
+        private boolean revoked,managed;
         private Lease(Reservation reservation,TraceBudgets limits,AttemptMemoryLedger.Owner scope){this.reservation=reservation;this.limits=limits;this.scope=scope;scratch=scope.child("scratch");result=scope.child("conditional-result");}
         private void usable(){accessible();if(revoked||active!=this||status!=Status.READY)throw new IllegalStateException("Revoked family work lease");}
         TraceBudgets limits(){usable();return limits;}
@@ -113,6 +112,12 @@ final class ContinuityAttemptLedger<T> implements AutoCloseable {
         void progress(Work cumulative){usable();if(!accept(this,cumulative)){settle(this,Completion.UNAVAILABLE,Optional.empty(),OptionalInt.empty(),null,Status.UNAVAILABLE,"invalid-work-receipt");throw new IllegalStateException("Invalid actual-work claim; attempt stopped");}}
         void finish(Outcome<T> outcome) {
             usable();Objects.requireNonNull(outcome);
+            if(managed) {
+                // Already-attested work remains a prefix, but the callback has not
+                // returned a final outcome and cannot settle its controller's lease.
+                if(outcome.exactWork().isPresent())progress(outcome.exactWork().get());
+                throw new IllegalStateException("Managed executor must return its outcome instead of settling the lease");
+            }
             if(outcome.exactWork().isPresent())progress(outcome.exactWork().get());else exactWorkAvailable=false;
             OptionalInt raw=outcome.rawReturned(),distinct=outcome.distinctReturned();
             boolean counts=raw.isPresent()&&distinct.isPresent()&&raw.getAsInt()>=0&&raw.getAsInt()<=reservation.rawQuota()
@@ -168,14 +173,24 @@ final class ContinuityAttemptLedger<T> implements AutoCloseable {
         for(var receipt:receipts){if(receipt.rawReturned().isPresent())raw+=receipt.rawReturned().getAsInt();else rawKnown=false;}
         boolean complete=status==Status.COMPLETE&&receipts.size()==reservations.size();Status reported=status==Status.READY?Status.INCOMPLETE:status;
         Optional<Work> exact=exactWorkAvailable&&active==null?Optional.of(work):Optional.empty();OptionalInt returned=rawKnown?OptionalInt.of(raw):OptionalInt.empty();
-        return own(256L+receipts.size()*16L,()->new Report<>(reported,reason,receipts,plannedPreparationPairs,work,exact,rawRequested,returned,complete));
+        return own(256L+receipts.size()*16L,()->new Report<>(reported,reason,receipts,plannedPreparationPairs,work,exact,rawRequested,returned,complete,caps.maximumDistinctAlternatives()));
     }
     Report<T> runAll(Executor<T> executor) {
         Objects.requireNonNull(executor);Optional<Lease> nextLease;
         while((nextLease=reserveNext()).isPresent()) {
             var lease=nextLease.get();
-            try{lease.finish(executor.execute(lease));}
-            catch(Throwable failure){if(!lease.revoked)abort(lease,"executor-failure-"+failure.getClass().getSimpleName());break;}
+            try {
+                lease.managed=true;Outcome<T> outcome=executor.execute(lease);
+                lease.managed=false;lease.finish(outcome);
+            } catch(Throwable failure) {
+                lease.managed=false;
+                if(!lease.revoked)abort(lease,"executor-failure-"+failure.getClass().getSimpleName());
+                else if(status==Status.COMPLETE||status==Status.READY) {
+                    exactWorkAvailable=false;var stop=boundaryStatus();status=stop==Status.READY?Status.UNAVAILABLE:stop;
+                    reason="unexpected-managed-executor-exit";
+                }
+                break;
+            } finally {lease.managed=false;}
         }
         return report();
     }
