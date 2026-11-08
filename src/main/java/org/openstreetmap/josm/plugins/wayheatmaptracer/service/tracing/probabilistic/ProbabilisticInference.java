@@ -123,10 +123,34 @@ public final class ProbabilisticInference {
         return solve(profiles,parameters,budgets,decisionRegion,cancellation,resultOwner,mode,progress,null);
     }
 
+    /**
+     * Public-fixture model seam; no live policy selects this entry. The predicate
+     * is conjoined with original region authority during cached preparation and
+     * therefore governs forward/backward, posterior and K32 alike. Each call is
+     * an independent attempt; this entry neither pools results nor grants a
+     * shared multi-history budget. Null preserves the historical V4 model.
+     */
+    ProbabilisticInferenceResult solveReservedContinuity(List<InferenceProfile> profiles,
+        EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
+        CancellationProbe cancellation, AttemptMemoryLedger.Owner owner,
+        ProbabilisticExecutionPolicy.Mode mode, BTransitionAdmission additional) {
+        if (mode != ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V4)
+            throw new IllegalArgumentException("Reserved continuity reference supports only cached V4");
+        return solve(profiles,parameters,budgets,decisionRegion,cancellation,owner,mode,null,null,additional);
+    }
+
     private ProbabilisticInferenceResult solve(List<InferenceProfile> profiles,
         EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
         CancellationProbe cancellation, AttemptMemoryLedger.Owner resultOwner,
         ProbabilisticExecutionPolicy.Mode mode, WorkProgress progress, CompletedPassObserver observer) {
+        return solve(profiles,parameters,budgets,decisionRegion,cancellation,resultOwner,mode,progress,observer,null);
+    }
+
+    private ProbabilisticInferenceResult solve(List<InferenceProfile> profiles,
+        EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
+        CancellationProbe cancellation, AttemptMemoryLedger.Owner resultOwner,
+        ProbabilisticExecutionPolicy.Mode mode, WorkProgress progress, CompletedPassObserver observer,
+        BTransitionAdmission additional) {
         if (cancellation == null) {
             throw new IllegalArgumentException("Cancellation probe is required");
         }
@@ -150,7 +174,7 @@ public final class ProbabilisticInference {
                     "execution accounting", () -> new WorkCounter(mode, budgets.maximumTransitions()));
             if (mode.cached()) {
                 PreparedBKernel cache = PreparedBKernel.prepare(profiles, parameters, decisionRegion,
-                        cancellation, workOwner.child("primitive-exact-kernel"));
+                        cancellation, workOwner.child("primitive-exact-kernel"), additional);
                 workCounter = mode == ProbabilisticExecutionPolicy.Mode.CACHED_EXACT_V4
                         ? allocated(workOwner,AttemptMemoryLedger.objectBytes(144),
                             "merged execution accounting",() -> new MergedWorkCounter(mode,budgets.maximumTransitions(),cache))

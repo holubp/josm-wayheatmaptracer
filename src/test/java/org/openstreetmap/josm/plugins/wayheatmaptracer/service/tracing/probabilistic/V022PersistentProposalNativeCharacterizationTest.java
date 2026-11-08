@@ -17,14 +17,14 @@ class V022PersistentProposalNativeCharacterizationTest {
     private static final double STEP=1.56,PITCH=1;
     private static final AtomicInteger NATIVE_CALLS=new AtomicInteger();
     private static final List<String> LABELS=List.of("FULL_REFERENCE","PROPOSAL_UNION","UNION_PLUS_WINNER","UNION_PLUS_K32");
-    private record Fixture(List<Row> rows,List<CertifiedLink> links,List<InferenceProfile> profiles,double[][] unary,double[][][] adjacent) { }
+    record Fixture(List<Row> rows,List<CertifiedLink> links,List<InferenceProfile> profiles,double[][] unary,double[][][] adjacent) { }
     private record Prepared(Fixture fixture,ProposalSet proposals,List<PathResult> paths,List<List<Integer>> union,Work proposalWork,long proposalPeak) { }
     private record PathEvidence(List<Integer> originalIndices,long energyBits,String branch) { }
     private record NativeEvidence(String label,String status,List<PathEvidence> raw,Long pairVisits,Long scores,String work,long peak,boolean spliced,int unsupportedSamples) { }
     private static void require(boolean condition,String message){if(!condition)throw new AssertionError(message);}
     private static double left(double row){return row==0||row==COUNT-1?0:8*StrictMath.pow(StrictMath.sin(StrictMath.PI*row/(COUNT-1)),2);}
     private static double unary(int row,double offset){double delta=offset-left(row);return Math.min((row<10?0:2)+25*offset*offset,(row<10?2:0)+25*delta*delta);}
-    private static Fixture fixture() {
+    static Fixture fixture() {
         List<Row> rows=new ArrayList<>();List<InferenceProfile> profiles=new ArrayList<>();List<CertifiedLink> links=new ArrayList<>();
         for(int row=0;row<COUNT;row++) {
             boolean fixed=row==0||row==COUNT-1;TreeSet<Double> original=new TreeSet<>();

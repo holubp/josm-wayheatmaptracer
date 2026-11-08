@@ -28,7 +28,8 @@ final class PreparedBKernel implements BTransitionAdmission {
     }
 
     static PreparedBKernel prepare(List<InferenceProfile> profiles, EvidenceModelParameters parameters,
-            MetricRegion region, CancellationProbe cancellation, AttemptMemoryLedger.Owner owner) {
+            MetricRegion region, CancellationProbe cancellation, AttemptMemoryLedger.Owner owner,
+            BTransitionAdmission additional) {
         cancellation.checkpoint();
         long beforeBytes = owner.currentBytes();
         var kernel = ProbabilisticInference.allocated(owner, AttemptMemoryLedger.objectBytes(80),
@@ -74,6 +75,7 @@ final class PreparedBKernel implements BTransitionAdmission {
                                     profiles.get(row + 1), first, second, parameters, h);
                         boolean admit = region == null || region.contains(a) && region.contains(b)
                                 && region.containsSegment(a, b);
+                        if (additional != null) admit = additional.allowed(row, first, second, profiles, region) && admit;
                         kernel.allowed[row][index] = (byte) (admit ? 1 : 0);
                         if (admit) legal++;
                     }
@@ -84,6 +86,11 @@ final class PreparedBKernel implements BTransitionAdmission {
         ModernDiagnosticCounters.add("b.cache.legalPairSlots", legal);
         ModernDiagnosticCounters.add("b.cache.retainedBytes", owner.currentBytes() - beforeBytes);
         return kernel;
+    }
+
+    static PreparedBKernel prepare(List<InferenceProfile> profiles, EvidenceModelParameters parameters,
+            MetricRegion region, CancellationProbe cancellation, AttemptMemoryLedger.Owner owner) {
+        return prepare(profiles, parameters, region, cancellation, owner, null);
     }
 
     boolean allowed(int row, int first, int second) { return allowed[row][first * widths[row + 1] + second] != 0; }
