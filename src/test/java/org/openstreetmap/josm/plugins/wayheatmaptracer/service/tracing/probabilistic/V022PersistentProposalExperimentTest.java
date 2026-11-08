@@ -337,4 +337,46 @@ class V022PersistentProposalExperimentTest {
         }
         assertEquals(0,ledger.currentBytes());
     }
+    private static Fixture competingSourceFlanks(boolean renamed) {
+        List<Row> rows=new ArrayList<>();
+        for(int i=0;i<20;i++) {
+            List<Band> modes=new ArrayList<>();
+            if(i<=8||i>=12)modes.add(new Band(new BandRef(i,ordinal(i,0,renamed)),0,0,0,1,List.of(0),BoundaryStatus.OBSERVED));
+            if(i<=10)modes.add(new Band(new BandRef(i,ordinal(i,1,renamed)),1.5,1.5,0,1,List.of(1),BoundaryStatus.OBSERVED));
+            if(renamed)Collections.reverse(modes);
+            rows.add(new Row(i*1.56,new MetricPoint(i*1.56,0),new MetricPoint(0,1),modes,List.of(0.0,1.5),
+                i==0||i==19?OptionalInt.of(0):OptionalInt.empty()));
+        }
+        return costs(rows,List.of());
+    }
+    private static Set<List<MetricPoint>> observedTraceGeometry(Fixture fixture,ProposalSet proposals,boolean reverse) {
+        Set<List<MetricPoint>> traces=new HashSet<>();
+        for(var proposal:proposals.reservations()) {
+            List<MetricPoint> points=new ArrayList<>();
+            for(var ref:proposal.bandTrace()) {
+                var row=fixture.rows().get(ref.row());var band=row.bands().stream().filter(b->b.ref().equals(ref)).findFirst().orElseThrow();
+                double offset=row.originalStateOffsetsM().get(band.originalCoreIndices().get(0));
+                points.add(new MetricPoint(row.originalMetricAnchor().xMeters()+row.originalUnitNormal().xMeters()*offset,
+                    row.originalMetricAnchor().yMeters()+row.originalUnitNormal().yMeters()*offset));
+            }
+            if(reverse)Collections.reverse(points);traces.add(List.copyOf(points));
+        }
+        return traces;
+    }
+    @Test void differentRowSourceFlanksRemainGloballyAmbiguousUnderPermutationAndPhysicalReversal() {
+        Set<List<MetricPoint>> expected=null;
+        for(boolean renamed:new boolean[]{false,true}) {
+            var fixture=competingSourceFlanks(renamed);var forward=solve(fixture);var reverseFixture=reversed(fixture);var backward=solve(reverseFixture);
+            for(var result:List.of(forward,backward)) {
+                assertTrue(result.paths().isEmpty(),"Neither competing geometric bridge may complete a proposal");
+                assertEquals(3,result.set().reservations().size(),"Retain both preceding chains and the resumed chain");
+                assertTrue(result.set().reservations().stream().allMatch(r->r.status()==Status.INCOMPLETE_ASSOCIATION));
+                assertTrue(result.set().reservations().stream().allMatch(r->r.gapRows().isEmpty()),"No traversal-order gap claim");
+                assertFalse(result.set().unresolvedPorts().isEmpty());
+            }
+            var geometry=observedTraceGeometry(fixture,forward.set(),false);
+            if(expected==null)expected=geometry;else assertEquals(expected,geometry,"Local ordinals cannot choose a flank");
+            assertEquals(geometry,observedTraceGeometry(reverseFixture,backward.set(),true),"Original-world trace provenance reverses exactly");
+        }
+    }
 }

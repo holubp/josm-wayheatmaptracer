@@ -47,10 +47,9 @@ Cancellation/work/memory refusals return no partial path; caller closure leaves
 ledger current bytes0. Eight solves are counted; a ninth is refused without a
 charge leak. Cost arrays and full original input inventories remain unchanged.
 
-Review focus/open question: geometric gap reverse-flank uniqueness is currently
-tested over source-row competitors. Different-row competing chain ends deserve
-explicit audit against the global unique-flank wording; no general safe-gap or
-production claim is made from the passing fixture set.
+Independent review R1 confirmed that source-row-only gap uniqueness let an
+earlier bridge consume a target before a different-row source could compete.
+That review and the original17-test source/receipt remain preserved.
 
 Command: Java17 JAVA_HOME plus shared josm-drasov-gradle.lock, sh ./gradlew
 --no-daemon --max-workers=1, official -Pjosm19555HostJar, test
@@ -59,3 +58,21 @@ repeated because only these new pure test-support files changed. No engine,
 sampler, replay, private input, actual second-order characterization or source
 production edit occurred. Independent review is next; second-order/native/model
 integration, accepted Drasov preservation/adoption gates and release stay held.
+
+R1 repair batch: the reviewer's exact20-row A0/B1.5 counterexample failed RED
+because A8→A12 completed before B10→A12 could compete. The new test also checks
+per-row local-ID permutation and exact physical reversal of all three retained
+observed trace geometries. The source now captures all eligible unmatched source
+and destination flanks once, collects every frame-valid/envelope-valid candidate
+within the unchanged20m bound, and installs only mutually unique global edges.
+No incoming/outgoing count or ambiguity flag changes during collection. This
+enforces the existing rule; no new geometric heuristic, threshold or cost exists.
+
+global-gap-red.log/global-gap-red-xml retain1 intended failure. The complete pure
+suite now passes18 tests with0 failures/errors/skips, BUILD SUCCESSFUL30s;
+global-gap-green.log/global-gap-green-xml and global-gap-test-summary.json retain
+the evidence. Existing unique-gap, certified port/gap, clipping, reversal,
+capacity, cost-identity and refusal/ownership controls remain green. Caller
+closure still leaves accounted current bytes0. git diff --check passes.
+The repaired snapshot is frozen for affected Sol review; no native/private or
+second-order characterization has begun and no production gate is waived.

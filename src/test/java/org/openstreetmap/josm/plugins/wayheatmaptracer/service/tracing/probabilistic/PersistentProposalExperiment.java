@@ -92,23 +92,33 @@ final class PersistentProposalExperiment {
                 }
                 for(var e:matched.edges())add(outgoing,incoming,e);
             }
-            // Only unmatched, unblocked flanks can claim a geometric gap; matched rivals keep their identities.
-            for(var from:bands.values())if(from.boundaryStatus()==BoundaryStatus.OBSERVED&&outgoing.get(from.ref()).isEmpty()&&!blocked.contains(from.ref())) {
+            // All candidates see the same pre-gap snapshot; iteration order cannot claim a flank.
+            Set<BandRef> sourceFlanks=new HashSet<>(),targetFlanks=new HashSet<>();
+            for(var band:bands.values())if(band.boundaryStatus()==BoundaryStatus.OBSERVED&&!blocked.contains(band.ref())) {
+                if(outgoing.get(band.ref()).isEmpty())sourceFlanks.add(band.ref());
+                if(incoming.get(band.ref())==0)targetFlanks.add(band.ref());
+            }
+            List<Edge> candidates=new ArrayList<>();
+            Map<BandRef,Integer> sourceCounts=new HashMap<>(),targetCounts=new HashMap<>();
+            for(var from:bands.values())if(sourceFlanks.contains(from.ref())) {
                 for(int next=from.ref().row()+2;next<rows.size();next++) {
                     context.step();
                     if(rows.get(next).chainageM()-rows.get(from.ref().row()).chainageM()>20)break;
                     if(!commonFrame(rows,from.ref().row(),next))break;
-                    var candidates=rows.get(next).bands().stream().filter(b->b.boundaryStatus()==BoundaryStatus.OBSERVED
-                        &&incoming.get(b.ref())==0&&!blocked.contains(b.ref())&&compatible(from,b)).toList();
-                    if(candidates.isEmpty())continue;
-                    if(candidates.size()!=1) {blocked.add(from.ref());candidates.forEach(b->blocked.add(b.ref()));unresolved.add("ambiguous-gap:"+from.ref());break;}
-                    var to=candidates.get(0);
-                    long reverse=rows.get(from.ref().row()).bands().stream().filter(b->b.boundaryStatus()==BoundaryStatus.OBSERVED
-                        &&outgoing.get(b.ref()).isEmpty()&&compatible(b,to)).count();
-                    if(reverse!=1){blocked.add(from.ref());blocked.add(to.ref());unresolved.add("ambiguous-flanks:"+from.ref());break;}
-                    var gap=gapEnvelope(rows,from,to,context);
-                    if(gap!=null)add(outgoing,incoming,context.own(transaction,96,()->new Edge(from.ref(),to.ref(),null,gap)));
-                    break;
+                    for(var to:rows.get(next).bands())if(targetFlanks.contains(to.ref())) {
+                        context.pair();if(!compatible(from,to))continue;
+                        var gap=gapEnvelope(rows,from,to,context);if(gap==null)continue;
+                        candidates.add(context.own(transaction,96,()->new Edge(from.ref(),to.ref(),null,gap)));
+                        sourceCounts.merge(from.ref(),1,Integer::sum);targetCounts.merge(to.ref(),1,Integer::sum);
+                    }
+                }
+            }
+            for(var edge:candidates) {
+                context.step();
+                if(sourceCounts.get(edge.from())==1&&targetCounts.get(edge.to())==1)add(outgoing,incoming,edge);
+                else {
+                    blocked.add(edge.from());blocked.add(edge.to());
+                    unresolved.add("ambiguous-gap:"+edge.from()+"->"+edge.to());
                 }
             }
             var traces=new ArrayList<Trace>();
