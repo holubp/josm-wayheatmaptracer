@@ -91,18 +91,30 @@ public final class SourceContinuitySnapshot {
     public String associationCapability(){open();return "SOURCE_ASSOCIATION_UNAVAILABLE";}
 
     /**
-     * Binds actual original builder/evaluator outputs. No state construction, observation
-     * evaluation, raster read or inferred association occurs here. This validates the
-     * supplied original domain, not cryptographic provenance of arbitrary caller-created values.
+     * Refuses the historical experimental entry lacking original-domain provenance.
+     * Matching retained lattice/evaluated views cannot prove complete original indices.
      */
     public BoundReceipt bind(List<ProbabilisticStateLattice> lattices,List<InferenceProfile> evaluated,
             CancellationProbe cancellation,AttemptMemoryLedger.Owner bindingOwner) {
+        open();throw new IllegalArgumentException("Actual state-builder original-domain handles required");
+    }
+
+    /**
+     * Binds actual evaluator outputs against opaque original domains minted by the
+     * state builder. No state construction, evaluation, raster read or inferred
+     * association occurs here; paired retained views cannot rename original indices.
+     */
+    public BoundReceipt bind(List<ProbabilisticStateBuilder.OriginalDomain> originals,
+            List<ProbabilisticStateLattice> lattices,List<InferenceProfile> evaluated,
+            CancellationProbe cancellation,AttemptMemoryLedger.Owner bindingOwner) {
         open();Objects.requireNonNull(cancellation);Objects.requireNonNull(bindingOwner);
-        if(lattices==null||evaluated==null||lattices.size()!=profiles.size()||evaluated.size()!=profiles.size())throw new IllegalArgumentException("Complete original evaluated row inventory required");
+        if(originals==null||lattices==null||evaluated==null||originals.size()!=profiles.size()||lattices.size()!=profiles.size()||evaluated.size()!=profiles.size())throw new IllegalArgumentException("Complete original evaluated row inventory required");
         try(var transaction=bindingOwner.child("source-continuity-state-binding")) {
             cancellation.checkpoint();var budget=ProbabilisticInference.allocated(transaction,AttemptMemoryLedger.objectBytes(32),"source binding budget",()->new Budget(cancellation,transaction));List<BoundRow> rows=budget.own(64L+profiles.size()*16L,ArrayList::new);
             for(int row=0;row<profiles.size();row++) {
                 budget.step();var source=profiles.get(row);var lattice=lattices.get(row);var actual=evaluated.get(row);
+                if(originals.get(row)==null)throw new IllegalArgumentException("Missing original state-domain handle");
+                originals.get(row).requireOriginal(this,row,lattice);
                 if(actual.chainageMeters()!=source.chainageMeters()||!actual.anchor().equals(source.anchor())||!actual.normalUnit().equals(source.normalUnit())
                     ||actual.cells().size()!=lattice.cells().size()||actual.componentCount()!=lattice.components().size())throw new IllegalArgumentException("Stale or foreign evaluated row/frame");
                 List<StateWitness> states=budget.own(64L+actual.cells().size()*16L,ArrayList::new);

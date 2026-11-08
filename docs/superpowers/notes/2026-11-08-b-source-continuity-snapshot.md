@@ -38,7 +38,8 @@ are local only. Split/rejoin, endpoint-port and gap certificates are explicitly
 missing and no carrier/history is fabricated. SOURCE_ASSOCIATION_UNAVAILABLE
 means persistent authority is unavailable even when adjacent observations exist.
 
-The separate binder consumes the actual original lattice/evaluator outputs.
+The separate binder consumes actual original lattice/evaluator outputs with
+opaque original-domain handles minted by the actual state builder.
 It checks row count, source chainage/anchor/normal, component dimensions,
 original cell-object identity, configured-domain offsets, exact anchors and
 absence of later guide costs. It retains every original cell in order with
@@ -46,8 +47,8 @@ exact measure, position and unary/guide bits; geometric core/neighbour indices
 come from those cells. A local mode/component ID is used only to record actual
 mixture membership, never as a persistent cross-row identity. No reconstruction,
 feature extraction, state-builder invocation or observation evaluation occurs
-inside bind. This validates the supplied original domain; it is not a
-cryptographic attestation of arbitrary caller-constructed evaluator values.
+inside bind. Matching arbitrary lattice/evaluated pairs cannot mint original
+provenance; the historical experimental no-handle bind now refuses explicitly.
 
 Additional snapshot/event/copy work is bounded to1M relation/interval records
 and8M copy units with cancellation, declared ownership and transactional
@@ -94,3 +95,43 @@ populate this live source receipt. The report grants no new frame, geometry,
 association or quality authority. Scheduler, actual source-owned ports/gaps,
 short-selection adoption, accepted Drasov qualification, full CI and release
 remain later gates. This Task1 snapshot stops for independent source review.
+
+## Independent review R1: producer-owned original-domain proof
+
+Review found one real completeness defect in aab52: a coherently retained
+lattice and genuine evaluated retainedView could pass the pairwise checks and
+publish original cell1 as index0. The exact public factory/build/evaluation
+regression failed RED1/1 because the old binder accepted it. aab52 source bytes,
+the RED test/source and XML/log are retained under evidence r1/; the old manifest
+is unchanged and is historical evidence, not a claim that repaired sources still
+match its old source paths.
+
+Ruling: add one narrow producer file, ProbabilisticStateBuilder, because the
+binder cannot infer completeness from arbitrary supplied pairs. Its explicit
+buildOriginalDomain entry pulls the exact captured source row, performs the
+ordinary elementary build once and publishes a final/private-constructor
+OriginalDomain only for a COMPLETE result. The handle binds the exact snapshot,
+row/profile, full returned lattice, effective state limit and baseline sampling
+policy. It has no lattice-input constructor or arbitrary-pair mint API. Existing
+builder methods and their arithmetic/allocation paths are unchanged. No scalar
+sampling, evaluator recomputation or optimizer is added to the handle or binder.
+
+The handle-aware bind verifies every producer-owned original domain and exact
+original lattice before copying cells/indices/cost bits. This rejects paired
+genuine retained domains, one-sided views, foreign cells, wrong rows and stale
+frames while preserving legitimate singleton exact anchors. Prior negative
+controls now pass genuine producer handles, so they still exercise the actual
+validation rather than only the no-handle refusal. Refusal/cancellation/memory
+failure closes the new producer/binding transaction with unchanged caller
+charges; no partial handle or authoritative receipt is returned. Domain access
+also rejects a closed producer/source scope. Binding copies remain independently
+owned inert values under the existing source/binding lifetime contract.
+
+Focused R1 GREEN9/9 passed after the paired-subset RED. Final affected tests add
+the complete/singleton positive, ordinary lattice-value comparison, explicit
+producer STATE_LIMIT, cancellation-at-publication, memory and closed-scope
+controls plus the pure state/observation neighbors: final20/20 (11 snapshot and
+9 state tests),0 failures/errors/skips, BUILD SUCCESSFUL2m2s. Terminal receipts and scoped
+commit/class pins are frozen in r1/ for affected independent review. Existing
+53-test factory/reliability evidence remains valid for those unchanged files;
+no broad/full suite, native inference, engine or private feature run is repeated.

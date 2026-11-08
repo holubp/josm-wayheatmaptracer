@@ -8,9 +8,68 @@ import java.util.Map;
 import java.util.Optional;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /** Constructs a stable bounded full-profile lattice without consulting Corridor A tracks. */
 public final class ProbabilisticStateBuilder {
+    /**
+     * Opaque original-domain proof, minted only by this builder's complete real
+     * build. A caller cannot create one from a retained lattice/evaluated pair.
+     */
+    public static final class OriginalDomain {
+        private final SourceContinuitySnapshot source;
+        private final int row,maximumStates;
+        private final ProbabilisticProfile profile;
+        private final ProbabilisticStateLattice lattice;
+        private final AttemptMemoryLedger.Owner owner;
+        private OriginalDomain(SourceContinuitySnapshot source,int row,int maximumStates,
+                ProbabilisticProfile profile,ProbabilisticStateLattice lattice,AttemptMemoryLedger.Owner owner) {
+            this.source=source;this.row=row;this.maximumStates=maximumStates;this.profile=profile;this.lattice=lattice;this.owner=owner;
+        }
+        private void open(){if(owner.isClosed())throw new IllegalStateException("Closed original-domain owner");source.profiles();}
+        /** Returns the exact complete lattice from the witnessed builder invocation. */
+        public ProbabilisticStateLattice lattice(){open();return lattice;}
+        /** Original source row, including genuine singleton exact-anchor rows. */
+        public int sourceRow(){open();return row;}
+        /** Effective hard state limit used by this actual build, never above96. */
+        public int maximumStates(){open();return maximumStates;}
+        /** The unchanged baseline sampling policy used for this original domain. */
+        public String samplingPolicyVersion(){open();return baselineStateSamplingPolicyVersion();}
+        void requireOriginal(SourceContinuitySnapshot expected,int expectedRow,ProbabilisticStateLattice actual) {
+            open();if(source!=expected||row!=expectedRow||profile!=expected.profiles().get(expectedRow)||lattice!=actual)
+                throw new IllegalArgumentException("Not the producer-owned original state domain");
+        }
+    }
+
+    /** Explicit refusal to publish a domain handle from an incomplete builder result. */
+    public static final class OriginalDomainUnavailableException extends IllegalArgumentException {
+        private final StateSpaceBuildResult.Status status;
+        private OriginalDomainUnavailableException(StateSpaceBuildResult.Status status){super("Original state domain unavailable: "+status);this.status=status;}
+        /** Existing builder refusal status; no partial domain is published. */
+        public StateSpaceBuildResult.Status status(){return status;}
+    }
+
+    /**
+     * Builds the elementary family once from the exact captured source row and publishes an opaque full
+     * original-domain handle transactionally. No existing builder path calls this
+     * opt-in entry. Refusal/cancellation leaves caller charges unchanged.
+     */
+    public OriginalDomain buildOriginalDomain(SourceContinuitySnapshot source,int row,int maximumStates,
+            CancellationProbe cancellation,AttemptMemoryLedger.Owner owner) {
+        if(source==null||cancellation==null||owner==null)throw new IllegalArgumentException("Original-domain source/control inputs required");
+        cancellation.checkpoint();var profiles=source.profiles();
+        if(row<0||row>=profiles.size())throw new IllegalArgumentException("Original source row required");
+        var profile=profiles.get(row);
+        try(var transaction=owner.child("source-original-state-domain")) {
+            var built=build(profile,maximumStates,transaction);
+            cancellation.checkpoint();
+            if(built.status()!=StateSpaceBuildResult.Status.COMPLETE)throw new OriginalDomainUnavailableException(built.status());
+            var lattice=built.lattice().orElseThrow();
+            var domain=ProbabilisticInference.allocated(transaction,AttemptMemoryLedger.objectBytes(64),"original state-domain handle",
+                    ()->new OriginalDomain(source,row,Math.min(maximumStates,96),profile,lattice,owner));
+            cancellation.checkpoint();source.profiles();transaction.transferTo(owner);return domain;
+        }
+    }
     /** Version of the unaugmented half-native baseline lattice built here. */
     public static String baselineStateSamplingPolicyVersion() {
         return "half-native-baseline-v1";
