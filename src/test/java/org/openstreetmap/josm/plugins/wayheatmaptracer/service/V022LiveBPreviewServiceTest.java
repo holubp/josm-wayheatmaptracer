@@ -1551,8 +1551,15 @@ class V022LiveBPreviewServiceTest {
             var command = new org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand(
                     dataSet, plan, validator, "Apply admitted A preview");
             assertTrue(command.executeCommand());
+            var after = state(dataSet);
+            assertNotEquals(before, after, "the admitted preview must actually change the dataset");
             command.undoCommand();
             assertEquals(before, state(dataSet));
+            assertTrue(command.executeCommand(), "Redo must replay the same immutable A plan");
+            assertEquals(after, state(dataSet),
+                    "Redo must restore exact geometry, primitive identities, membership and flags");
+            command.undoCommand();
+            assertEquals(before, state(dataSet), "a second Undo must restore the original dataset");
         });
         var frozen = new FrozenReplayInput(computed.request(), computed.evidence(), captured[0].network(), computed.options());
         var bundle = Format15ProductionBundleFactory.createLive("live-a-admitted", frozen, computed.pipeline(),
