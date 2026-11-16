@@ -102,6 +102,7 @@ def test_other_public_validation_gui_and_legacy_gate_mappings_are_preserved() ->
     assert gui["strategy"]["matrix"]["include"] == [
         {"engine": "PROBABILISTIC", "report": "public-gui-smoke"},
         {"engine": "LEGACY_THEN_B", "report": "public-gui-smoke-hybrid"},
+        {"engine": "CORRIDOR_AWARE", "report": "public-gui-smoke-corridor-aware"},
     ]
 
     normal = jobs["legacy-normal-performance"]

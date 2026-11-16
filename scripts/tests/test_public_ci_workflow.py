@@ -76,6 +76,7 @@ def test_public_gui_smoke_is_xvfb_gated_and_failure_remains_a_job_failure() -> N
         "matrix": {"include": [
             {"engine": "PROBABILISTIC", "report": "public-gui-smoke"},
             {"engine": "LEGACY_THEN_B", "report": "public-gui-smoke-hybrid"},
+            {"engine": "CORRIDOR_AWARE", "report": "public-gui-smoke-corridor-aware"},
         ]},
     }
     steps = smoke["steps"]
