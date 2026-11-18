@@ -129,12 +129,16 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
                     var context=certificate.bind(cancellation);
                     CorridorAwareTracker.PreparedCorrespondencePolicy policy=domain->org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorWorkingSchedule.prepare(
                         domain,context,nativePitch,cancellation);
-                    tracker=input.certifiedGapDomainPolicy()
+                    tracker=input.observedShoulderPolicy()
+                        ?CorridorAwareTracker.withTargetOwnedObservedShoulderDomain(optimizer,context,policy,request.permissions().ordinaryRadiusMeters())
+                        :input.certifiedGapDomainPolicy()
                         ?CorridorAwareTracker.withTargetOwnedGapDomain(optimizer,context,policy,request.permissions().ordinaryRadiusMeters())
                         :CorridorAwareTracker.withTargetOwnedBridgeCorrespondence(optimizer,context,policy);
                 }else{
                     CorridorAwareTracker.PreparedCorrespondencePolicy unavailable=domain->org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorWorkingSchedule.refusal(certificate.status());
-                    tracker=input.certifiedGapDomainPolicy()
+                    tracker=input.observedShoulderPolicy()
+                        ?CorridorAwareTracker.withTargetOwnedObservedShoulderDomainWithoutAuthority(optimizer,unavailable)
+                        :input.certifiedGapDomainPolicy()
                         ?CorridorAwareTracker.withTargetOwnedGapDomainWithoutAuthority(optimizer,unavailable)
                         :CorridorAwareTracker.withTargetOwnedBridgeCorrespondence(optimizer,unavailable);
                 }
@@ -376,6 +380,9 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
             throw new IllegalArgumentException("Corridor request does not match immutable snapshots");
         }
         CorridorTraceInput input = request.corridorInput().orElseThrow();
+        if(input.observedShoulderPolicy()
+                && request.geometryMode()!=org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.PRECISE_SHAPE)
+            throw new IllegalArgumentException("R5 observed shoulder policy requires Precise Shape");
         if (input.profileLocations().size() != request.profileChainage().cumulativeGroundMeters().size()) {
             throw new IllegalArgumentException("Corridor locations do not match measured profile chainage");
         }

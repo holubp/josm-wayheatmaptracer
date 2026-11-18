@@ -99,11 +99,27 @@ the preview before applying.
 - Access values are kept out of docs and diagnostics, but the current plugin stores them in JOSM preferences rather than OS-backed secure storage.
 - Heatmap interpretation is strongest for `hot`, `bluered`, and `purple`. `gray` and `blue` are supported but may still need additional tuning in difficult cases. `gray` is treated as a dual-color scheme because high-activity traces can become pink/magenta rather than merely brighter gray; `purple` uses the real purple/lavender palette path rather than strict old magenta-only hue matching.
 - Strava's current public access appears to expose signed rendered PNG tiles, not the old raw numeric heat-density tile feed used by Strava Slide. Direct intensity modes therefore operate on rendered pixel channels and are intended for scalar imagery, diagnostics, and future compatible sources.
-- The corridor-aware tracker is the default from `0.20.0`. Sparse-corridor parents remain hypotheses for review, not declarations that several traces are one OSM way. The legacy tracker remains available for compatibility and comparison.
+- Legacy v0.2-compatible is the default method; Corridor-aware (A) is optional. Sparse-corridor parents remain hypotheses for review, not declarations that several traces are one OSM way.
 - Parallel-way awareness is opt-in and applies only to the corridor-aware tracker. It uses downloaded nearby `highway=*` ways as read-only ranking context; it never edits those ways and cannot prove lane or carriageway semantics on its own.
 - With complete managed Strava access values, `Stable fixed scale` and `Raw high-resolution` align from fetched source tiles rather than the current screen capture. This makes sliding independent of the current JOSM zoom and allows the selected way to extend outside the current viewport.
 - Without managed Strava access values, alignment falls back to the legacy visible rendered-layer path. In that fallback mode, the plugin temporarily renders the selected segment plus the search corridor through a normal-resolution virtual JOSM viewport. If one viewport would be too large, it pans that virtual viewport over the extent and stitches the rendered chunks for sampling, then restores the user's previous viewport.
 - Fixed source-tile inference uses the configured inference zoom, validation zoom, search half-width meters, and sample step meters. The fixed-scale sampling reference remains source tile z15, 6.0x reference raster, 0.389 m/px reference view, and about 1.56 m sampling step. New or missing search-width preferences default to a 25 m half-width, allowing realistic lateral displacement beyond the earlier 7.01 m search. Explicitly saved widths are preserved.
+
+## Corridor A Tracing Policy
+
+New Corridor A Precise Shape captures use the explicit `corridor-a-r5-owned-observed-shoulder-v1`
+policy. Historical owned correspondence has priority and keeps its exact prepared solve.
+After a legitimate correspondence refusal, R5 can remove existing interior states outside
+a directly measured complete shoulder when the effective tube has zero native motion
+support and lies outside that shoulder. Parent measurements require their actual direct
+child union; predicted, conflicting, censored, protected and endpoint-approach evidence
+cannot authorize restriction. No state is added or clamped. An empty intersection retains
+the historical row with a typed refusal; missing source certification skips the restriction.
+The ordinary gap preparation, exact optimizer and final geometry/assignment validation
+remain in force. R3/R4 replay policies and other engines/modes retain their own behavior.
+Execution receipts expose R5 membership work, removed states and relative row dispositions
+separately from native objective/transition work. Public synthetic shape tests establish
+implementation evidence; they do not establish private-case or release qualification.
 
 ## Offline Confidence Calibration
 

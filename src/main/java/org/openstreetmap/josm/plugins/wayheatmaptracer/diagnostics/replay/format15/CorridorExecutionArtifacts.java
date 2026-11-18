@@ -201,9 +201,14 @@ public final class CorridorExecutionArtifacts {
             csv.row("sampling",scope,"construction_ns",work.constructionNanos());csv.row("sampling",scope,"sampling_ns",work.samplingNanos());csv.row("sampling",scope,"selection_ns",work.selectionNanos());
         });
         var t=receipt.totals();
-        if(receipt.executionPolicy()==org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1){
+        if(receipt.executionPolicy()==org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1
+                || receipt.executionPolicy()==org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1){
             csv.row("receipt",scope,"a_execution_policy",receipt.executionPolicy());
             csv.row("totals",scope,"gap_source_admission_units",t.gapAdmissionUnits().isPresent()?t.gapAdmissionUnits().getAsLong():"UNAVAILABLE");
+        }
+        if(receipt.executionPolicy()==org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1){
+            csv.row("receipt",scope,"observed_shoulder_schema",1);
+            csv.row("totals",scope,"observed_membership_admission_units",t.observedAdmissionUnits().isPresent()?t.observedAdmissionUnits().getAsLong():"UNAVAILABLE");
         }
         csv.row("totals",scope,"original_generated_states",t.originalStates());csv.row("totals",scope,"retained_unaries",t.retainedUnaryEvaluations());
         csv.row("totals",scope,"bridge_unaries",t.bridgeUnaryEvaluations());csv.row("totals",scope,"admission_contacts",t.admissionContacts());
@@ -234,6 +239,26 @@ public final class CorridorExecutionArtifacts {
                     csv.row("gap_row",rowKey,"envelope_min_px",Double.isFinite(row.envelopeMin())?row.envelopeMin():"UNAVAILABLE");
                     csv.row("gap_row",rowKey,"envelope_max_px",Double.isFinite(row.envelopeMax())?row.envelopeMax():"UNAVAILABLE");
                     csv.row("gap_row",rowKey,"added_offsets_px",row.addedOffsets());csv.row("gap_row",rowKey,"rejected_points",row.rejectedPoints());
+                }
+            });
+            p.observedWork().ifPresent(observed->{
+                csv.row("observed_shoulder",key,"outcome",observed.outcome());
+                csv.row("observed_shoulder",key,"rows_examined",observed.rowsExamined());
+                csv.row("observed_shoulder",key,"state_membership_checks",observed.statesExamined());
+                csv.row("observed_shoulder",key,"restricted_rows",observed.restrictedRows());
+                csv.row("observed_shoulder",key,"removed_states",observed.removedStates());
+                csv.row("observed_shoulder",key,"retained_estimate_bytes",observed.retainedBytes());
+                csv.row("observed_shoulder",key,"memory_scope","COMBINED_WITH_GAP_AND_NATIVE_METRIC_TABLES_NOT_WHOLE_HEAP");
+                for(var row:observed.rows()){
+                    String rowKey=key+":"+row.originalRow();
+                    csv.row("observed_shoulder_row",rowKey,"original_row",row.originalRow());
+                    csv.row("observed_shoulder_row",rowKey,"disposition",row.disposition());
+                    csv.row("observed_shoulder_row",rowKey,"old_count",row.oldCount());
+                    csv.row("observed_shoulder_row",rowKey,"retained_count",row.retainedCount());
+                    csv.row("observed_shoulder_row",rowKey,"evidence_kind",row.evidenceKind());
+                    csv.row("observed_shoulder_row",rowKey,"shoulder_min_px",Double.isFinite(row.shoulderMinPx())?row.shoulderMinPx():"UNAVAILABLE");
+                    csv.row("observed_shoulder_row",rowKey,"shoulder_max_px",Double.isFinite(row.shoulderMaxPx())?row.shoulderMaxPx():"UNAVAILABLE");
+                    csv.row("observed_shoulder_row",rowKey,"removed_offsets_px",row.removedOffsets());
                 }
             });
             work.mapping().ifPresent(map->{csv.row("mapping",key,"original_count",map.originalCount());csv.row("mapping",key,"left_original_row",map.leftOriginalRow());csv.row("mapping",key,"right_original_row",map.rightOriginalRow());csv.row("mapping",key,"working_count",map.workingCount());});

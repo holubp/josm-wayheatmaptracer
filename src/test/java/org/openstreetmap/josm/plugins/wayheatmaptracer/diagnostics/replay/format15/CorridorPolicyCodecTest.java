@@ -7,6 +7,25 @@ import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 
 class CorridorPolicyCodecTest {
+    @Test void r5CannotBeAttachedToBHybridOrLegacyManualRequests() {
+        var input=modern(Set.of(),CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1); var r=input.request();
+        for(var engine:List.of(TrackerMode.PROBABILISTIC,TrackerMode.LEGACY_V02,TrackerMode.HYBRID,TrackerMode.LEGACY_THEN_B))
+            assertThrows(IllegalArgumentException.class,()->new TraceRequest(r.selectedWayKey(),r.selectedRange(),engine,r.geometryMode(),r.permissions(),r.budgets(),
+                r.evidenceSnapshotId(),r.evidenceContentHash(),r.networkSnapshotId(),r.networkContentHash(),r.settingsHash(),r.parameterHash(),r.samplerId(),
+                r.configuredSampleStepMeters(),r.profileChainage(),r.evidenceResolution(),r.corridorInput()));
+    }
+    @Test void r5AppendsObservedShoulderPolicyWithoutChangingR3R4Encoding() {
+        assertEquals(3,CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1.ordinal());
+        var r5=modern(Set.of(0),CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1);
+        var bytes=FrozenReplayCodec.encode(r5); var decoded=FrozenReplayCodec.decode(bytes);
+        assertEquals(9,FrozenReplayCodec.encodedVersion(bytes)); assertEquals(r5.request(),decoded.request());
+        assertArrayEquals(bytes,FrozenReplayCodec.encode(decoded));
+        assertEquals(r5.request(),FrozenReplayCodec.decodeRequestOnly(FrozenReplayCodec.encodeRequestOnly(r5.request()),r5.evidence()));
+        var input=decoded.request().corridorInput().orElseThrow();
+        assertTrue(input.observedShoulderPolicy()); assertTrue(input.certifiedGapDomainPolicy()); assertTrue(input.boundedBridgePolicy());
+        assertFalse(modern(Set.of(),CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1).request().corridorInput().orElseThrow().observedShoulderPolicy());
+        assertNotEquals(r5.canonicalHash(),modern(Set.of(0),CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1).canonicalHash());
+    }
     @Test void r4HasAnAppendedTypedIdentityAndKeepsR3WireNative() {
         var r3 = modern(Set.of());
         var r4 = modern(Set.of(), CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1);

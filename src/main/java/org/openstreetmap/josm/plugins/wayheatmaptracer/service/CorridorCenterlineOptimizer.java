@@ -40,7 +40,12 @@ public final class CorridorCenterlineOptimizer {
     public long preparedAdjacentObjectiveEntries(){return preparedCounters.adjacentObjectives;}
     public record PreparedWork(long originalStates,long retainedUnaryEvaluations,long bridgeUnaryEvaluations,
         java.util.OptionalLong estimatedPreparedTableBytes,String outcome,long originalRows,long copiedProfileRows,long solverStarts,
-        java.util.Optional<CorridorGapDomain.Work> gapWork){
+        java.util.Optional<CorridorGapDomain.Work> gapWork, java.util.Optional<CorridorObservedShoulderDomain.Work> observedWork){
+        public PreparedWork(long originalStates,long retainedUnaryEvaluations,long bridgeUnaryEvaluations,
+            java.util.OptionalLong estimatedPreparedTableBytes,String outcome,long originalRows,long copiedProfileRows,long solverStarts,
+            java.util.Optional<CorridorGapDomain.Work> gapWork){
+            this(originalStates,retainedUnaryEvaluations,bridgeUnaryEvaluations,estimatedPreparedTableBytes,outcome,originalRows,copiedProfileRows,solverStarts,gapWork,java.util.Optional.empty());
+        }
         public PreparedWork(long originalStates,long retainedUnaryEvaluations,long bridgeUnaryEvaluations,
             java.util.OptionalLong estimatedPreparedTableBytes,String outcome,long originalRows,long copiedProfileRows,long solverStarts){
             this(originalStates,retainedUnaryEvaluations,bridgeUnaryEvaluations,estimatedPreparedTableBytes,outcome,originalRows,copiedProfileRows,solverStarts,java.util.Optional.empty());
@@ -49,8 +54,9 @@ public final class CorridorCenterlineOptimizer {
     private static final class PreparedCounters{
         long original,retained,bridge,rows,copied,solves,adjacentObjectives;long bytes=-1;String outcome="UNSTARTED";
         java.util.Optional<CorridorGapDomain.Work> gap=java.util.Optional.empty();
-        void reset(){original=retained=bridge=rows=copied=solves=adjacentObjectives=0;bytes=-1;outcome="UNSTARTED";gap=java.util.Optional.empty();}
-        PreparedWork snapshot(){return new PreparedWork(original,retained,bridge,bytes<0?java.util.OptionalLong.empty():java.util.OptionalLong.of(bytes),outcome,rows,copied,solves,gap);}
+        java.util.Optional<CorridorObservedShoulderDomain.Work> observed=java.util.Optional.empty();
+        void reset(){original=retained=bridge=rows=copied=solves=adjacentObjectives=0;bytes=-1;outcome="UNSTARTED";gap=java.util.Optional.empty();observed=java.util.Optional.empty();}
+        PreparedWork snapshot(){return new PreparedWork(original,retained,bridge,bytes<0?java.util.OptionalLong.empty():java.util.OptionalLong.of(bytes),outcome,rows,copied,solves,gap,observed);}
     }
 
     /**
@@ -103,17 +109,30 @@ public final class CorridorCenterlineOptimizer {
         private final List<List<Double>> states;private final org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets;
         private final CorridorWorkingSchedule.BoundContext context;private final PreparedWork generationWork;
         private final CorridorGapDomain.Plan gapPlan;
+        private final CorridorObservedShoulderDomain.Plan observedPlan;
         private OriginalDomain(CorridorTrack track,List<CorridorProfile> profiles,double sourcePixel,JunctionContext junctions,
             Map<String,BandScaleEvidence> scales,LongitudinalCorridorTube tube,EndpointApproachModel approaches,
             List<List<Double>> states,org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets,
             CorridorWorkingSchedule.BoundContext context,Object token,PreparedWork work,CorridorGapDomain.Plan gapPlan){
+            this(track,profiles,sourcePixel,junctions,scales,tube,approaches,states,budgets,context,token,work,gapPlan,null);
+        }
+        private OriginalDomain(CorridorTrack track,List<CorridorProfile> profiles,double sourcePixel,JunctionContext junctions,
+            Map<String,BandScaleEvidence> scales,LongitudinalCorridorTube tube,EndpointApproachModel approaches,
+            List<List<Double>> states,org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets,
+            CorridorWorkingSchedule.BoundContext context,Object token,PreparedWork work,CorridorGapDomain.Plan gapPlan,
+            CorridorObservedShoulderDomain.Plan observedPlan){
             this.track=track;this.profiles=List.copyOf(profiles);this.sourcePixel=sourcePixel;this.junctions=junctions;
             this.scales=Map.copyOf(scales);this.tube=tube;this.approaches=approaches;
-            this.states=gapPlan==null?states.stream().map(List::copyOf).toList():gapPlan.states();this.gapPlan=gapPlan;
+            this.states=gapPlan!=null?gapPlan.states():observedPlan!=null?observedPlan.states():states.stream().map(List::copyOf).toList();this.gapPlan=gapPlan;
+            this.observedPlan=observedPlan;
             this.budgets=budgets;this.context=context;this.token=token;generationWork=work;
             if(gapPlan!=null){
                 if(states!=gapPlan.states())throw new IllegalArgumentException("Finalized ordered gap states differ");
                 gapPlan.requireBinding(this);
+            }
+            if(observedPlan!=null){
+                if(gapPlan==null && states!=observedPlan.states())throw new IllegalArgumentException("Finalized observed states differ");
+                observedPlan.requireBinding(this);
             }
         }
         public CorridorTrack track(){return track;}
@@ -124,6 +143,7 @@ public final class CorridorCenterlineOptimizer {
         public EndpointApproachModel approaches(){return approaches;} public List<List<Double>> states(){return states;}
         public org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets(){return budgets;}
         public java.util.Optional<CorridorGapDomain.Plan> gapPlan(){return java.util.Optional.ofNullable(gapPlan);}
+        public java.util.Optional<CorridorObservedShoulderDomain.Plan> observedPlan(){return java.util.Optional.ofNullable(observedPlan);}
         Object token(){return token;} CorridorWorkingSchedule.BoundContext context(){return context;}
         List<CorridorProfile> frozenProfiles(){return profiles;}
     }
@@ -170,7 +190,35 @@ public final class CorridorCenterlineOptimizer {
         catch(IllegalArgumentException corrupt){preparedCounters.outcome="BINDING_OR_INPUT_FAILURE";throw corrupt;}
     }
 
-    /** R4 only: reserves and certifies extra geometric choices, debiting source checks once. */
+    /** R5 only, after historical correspondence refusal: retains measured existing states. */
+    public OriginalDomain prepareObservedShoulderDomain(OriginalDomain d,Map<String,CorridorTrack> tracksById,
+            java.util.Optional<SparseCorridorBundle> bundle){
+        if(d.observedPlan!=null || d.gapPlan!=null)throw new IllegalArgumentException("Observed restriction already prepared or out of order");
+        if(d.context()!=null && (hardGeometryTransform==null || !hardGeometryTransform.equals(d.context().frame())))
+            throw new IllegalArgumentException("Observed source/optimizer frame binding differs");
+        try{
+        var plan=CorridorObservedShoulderDomain.restrict(d,tracksById,bundle,hardGeometryCancellation,
+            work->preparedCounters.observed=java.util.Optional.of(work));
+        var b=d.budgets(); long spent=plan.work().admissionUnits();
+        // Restriction may finish exactly at the cap, but no zero solver budget can be admitted.
+        // Its completed PREPARED receipt remains factual; this optimizer boundary is RESOURCE_LIMIT.
+        if(spent>=b.maximumPairVisits())throw new CorridorResourceLimitException("Observed membership exhausted pair admission work",
+            CorridorResourceLimitException.Stage.ORIGINAL_ADMISSION,CorridorResourceLimitException.Reason.PAIR_WORK_CAP,
+            Map.of(CorridorResourceLimitException.Metric.CONSUMED_PAIR_WORK,spent,
+                CorridorResourceLimitException.Metric.LIMIT_PAIRS,b.maximumPairVisits()));
+        var remaining=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets(b.maximumStatesPerProfile(),
+            b.maximumPairVisits()-spent,b.maximumTransitions(),b.maximumRawAlternatives(),b.maximumDistinctAlternatives());
+        return new OriginalDomain(d.track(),d.profiles,d.sourcePixel(),d.junctions(),d.scales(),d.tube(),d.approaches(),
+            plan.states(),remaining,d.context,d.token,preparedCounters.snapshot(),null,plan);
+        }catch(CorridorResourceLimitException limited){preparedCounters.outcome="RESOURCE_LIMIT";throw limited;}
+    }
+    /** Records R5 precedence without examining any observed state. */
+    void observedCorrespondencePriority(){
+        preparedCounters.observed=java.util.Optional.of(CorridorObservedShoulderDomain.Work.skipped(
+            CorridorObservedShoulderDomain.Disposition.SKIPPED_OWNED_CORRESPONDENCE_PRIORITY));
+    }
+
+    /** R4/R5: reserves and certifies extra geometric choices, debiting source checks once. */
     public OriginalDomain prepareGapDomain(OriginalDomain d,double ordinaryRadiusMeters){
         if(d.gapPlan().isPresent())throw new IllegalArgumentException("Gap domain already prepared");
         if(hardGeometryTransform==null||d.context()==null||!hardGeometryTransform.equals(d.context().frame()))
@@ -181,9 +229,9 @@ public final class CorridorCenterlineOptimizer {
             var b=d.budgets();long spent=plan.work().admissionUnits();
             var remaining=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets(b.maximumStatesPerProfile(),
                 b.maximumPairVisits()-spent,b.maximumTransitions(),b.maximumRawAlternatives(),b.maximumDistinctAlternatives());
-            preparedCounters.original=plan.states().stream().mapToLong(List::size).sum();
+            if(d.observedPlan==null)preparedCounters.original=plan.states().stream().mapToLong(List::size).sum();
             var result=new OriginalDomain(d.track(),d.profiles,d.sourcePixel(),d.junctions(),d.scales(),d.tube(),d.approaches(),
-                plan.states(),remaining,d.context,d.token,preparedCounters.snapshot(),plan);
+                plan.states(),remaining,d.context,d.token,preparedCounters.snapshot(),plan,d.observedPlan);
             plan.requireBinding(result);return result;
         }catch(java.util.concurrent.CancellationException cancelled){preparedCounters.outcome="CANCELLED";throw cancelled;}
         catch(CorridorResourceLimitException limited){preparedCounters.outcome="RESOURCE_LIMIT";throw limited;}
@@ -195,8 +243,12 @@ public final class CorridorCenterlineOptimizer {
         beginInference(d);
         try{
         d.gapPlan().ifPresent(plan->plan.requireBinding(d));
+        d.observedPlan().ifPresent(plan->plan.requireBinding(d));
         if(d.gapPlan!=null&&(hardGeometryTransform==null||!hardGeometryTransform.equals(d.context.frame())))
             throw new IllegalArgumentException("Gap inference frame differs from native authority");
+        if(d.observedPlan!=null && d.context()!=null
+                &&(hardGeometryTransform==null||!hardGeometryTransform.equals(d.context.frame())))
+            throw new IllegalArgumentException("Observed inference frame differs from native authority");
         long pairs=0,transitions=0;
         for(int i=0;i<d.states().size();i++){
             int count=d.states().get(i).size();
@@ -210,7 +262,7 @@ public final class CorridorCenterlineOptimizer {
         var ripple=new UnsupportedRippleEvaluator().evaluate(d.track(),d.tube(),d.sourcePixel(),cleanup.rippleScaleMeters(),false);
         var gates=rippleEndpointGates(d.profiles().size(),d.approaches());
         preparedCounters.solves++;
-        var solution=d.gapPlan==null?solveExact(d.track(),d.profiles,d.states(),d.sourcePixel(),d.junctions(),d.scales(),d.tube(),d.approaches(),ripple,gates,0)
+        var solution=d.gapPlan==null && (d.observedPlan==null || d.observedPlan.work().retainedBytes()==0)?solveExact(d.track(),d.profiles,d.states(),d.sourcePixel(),d.junctions(),d.scales(),d.tube(),d.approaches(),ripple,gates,0)
             :solveExactGap(d,ripple,gates);
         var result=finishOptimization(d.track(),d.profiles,d.sourcePixel(),d.junctions(),d.scales(),d.tube(),cleanup,d.approaches(),ripple,gates,0,solution);
         preparedCounters.retained=result.profileCostEvaluations();preparedCounters.outcome=result.disposition().name();return result;
@@ -220,19 +272,21 @@ public final class CorridorCenterlineOptimizer {
     }
 
     static OriginalDomain withBudgets(OriginalDomain d,org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets budgets){
-        return new OriginalDomain(d.track(),d.profiles,d.sourcePixel(),d.junctions(),d.scales(),d.tube(),d.approaches(),d.states(),budgets,d.context,d.token,d.generationWork,d.gapPlan);
+        return new OriginalDomain(d.track(),d.profiles,d.sourcePixel(),d.junctions(),d.scales(),d.tube(),d.approaches(),d.states(),budgets,d.context,d.token,d.generationWork,d.gapPlan,d.observedPlan);
     }
 
     private void beginInference(OriginalDomain d){
         preparedCounters.reset();preparedCounters.original=d.generationWork.originalStates();preparedCounters.rows=d.generationWork.originalRows();
         preparedCounters.copied=d.generationWork.copiedProfileRows();preparedCounters.outcome="INFERENCE_PREPARING";
         preparedCounters.gap=d.generationWork.gapWork();
+        preparedCounters.observed=d.generationWork.observedWork();
         hardGeometryWork=new HardGeometryWork(HardGeometryOutcome.DISABLED,0,0,0,0,0,0,0,0);
     }
 
     /** Explicitly selected prepared schedule; no original-domain fallback on failure. */
     public PreparedOptimization optimizePrepared(OriginalDomain d,CorridorWorkingSchedule.Preparation p){
         beginInference(d);
+        if(d.observedPlan!=null)throw new IllegalArgumentException("Historical correspondence must precede observed restriction");
         d.gapPlan().ifPresent(plan->{plan.requireBinding(d);if(plan.hasAdditions())throw new IllegalArgumentException("Expanded gap domain cannot be compressed");});
         try{p.requireBound(d,hardGeometryTransform);}catch(IllegalArgumentException corrupt){preparedCounters.outcome="BINDING_REFUSED";throw corrupt;}
         if(!p.admitted())throw new IllegalArgumentException("Prepared correspondence was not admitted: "+p.status());
@@ -660,7 +714,7 @@ public final class CorridorCenterlineOptimizer {
     private ExactSolution solveExactGap(OriginalDomain d,List<UnsupportedRippleEvaluator.RippleSupport> ripple,double[] gates){
         var work=new HardGeometryCounters();
         try{return solveExactInternal(d.track(),d.profiles,d.states(),d.sourcePixel(),d.junctions(),d.scales(),d.tube(),
-            d.approaches(),ripple,gates,0,work,null,d.gapPlan);}
+            d.approaches(),ripple,gates,0,work,null,d.gapPlan,d.observedPlan==null?0:d.observedPlan.work().retainedBytes());}
         catch(java.util.concurrent.CancellationException cancelled){work.outcome=HardGeometryOutcome.CANCELLED;throw new HardGeometryCancelledException(work.snapshot(),cancelled);}
         finally{hardGeometryWork=work.snapshot();}
     }
@@ -689,6 +743,14 @@ public final class CorridorCenterlineOptimizer {
         Map<String,BandScaleEvidence> scaleEvidence,LongitudinalCorridorTube tube,
         EndpointApproachModel endpointApproaches,List<UnsupportedRippleEvaluator.RippleSupport> rippleSupport,
         double[] rippleEndpointGates,double rippleStrength,HardGeometryCounters work,PreparedTables prepared,CorridorGapDomain.Plan gapPlan) {
+        return solveExactInternal(track,profiles,allowed,sourcePixel,junctionContext,scaleEvidence,tube,endpointApproaches,
+            rippleSupport,rippleEndpointGates,rippleStrength,work,prepared,gapPlan,0);
+    }
+    private ExactSolution solveExactInternal(CorridorTrack track,List<CorridorProfile> profiles,
+        List<List<Double>> allowed,double sourcePixel,JunctionContext junctionContext,
+        Map<String,BandScaleEvidence> scaleEvidence,LongitudinalCorridorTube tube,
+        EndpointApproachModel endpointApproaches,List<UnsupportedRippleEvaluator.RippleSupport> rippleSupport,
+        double[] rippleEndpointGates,double rippleStrength,HardGeometryCounters work,PreparedTables prepared,CorridorGapDomain.Plan gapPlan,long observedBytes) {
         List<List<OffsetState>> stateTables = prepared==null?buildStateTables(track, profiles, allowed, sourcePixel,
             junctionContext, scaleEvidence, tube, endpointApproaches, rippleSupport,
             rippleEndpointGates, rippleStrength):prepared.states();
@@ -697,7 +759,7 @@ public final class CorridorCenterlineOptimizer {
         MetricEdge[][][] metricEdges = null;
         if (work != null) {
             work.profileCosts = profileCostEvaluations;
-            metricEdges = metricEdgeCache(stateTables, work,gapPlan==null?0:gapPlan.work().retainedBytes());
+            metricEdges = metricEdgeCache(stateTables, work,Math.addExact(observedBytes,gapPlan==null?0:gapPlan.work().retainedBytes()));
         }
         if (profiles.size() == 1) {
             OffsetState best = stateTables.get(0).stream().min(Comparator

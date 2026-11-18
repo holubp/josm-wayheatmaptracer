@@ -26,6 +26,7 @@ public final class CorridorAwareTracker {
     private final CorridorWorkingSchedule.BoundContext correspondenceContext;
     private final double gapRadiusMeters;
     private final boolean gapAdmissionPolicy;
+    private final boolean observedShoulderPolicy;
     private final Map<String,CorridorWorkingSchedule.Preparation> preparations=new LinkedHashMap<>();
     private final Map<String,CorridorCenterlineOptimizer.PreparedOptimization> preparedOptimizations=new LinkedHashMap<>();
     private final Map<String,TrackPreparationWork> preparationWork=new LinkedHashMap<>();
@@ -73,12 +74,32 @@ public final class CorridorAwareTracker {
     }
     private CorridorAwareTracker(CorridorCenterlineOptimizer optimizer,CorridorTubeBuilder tubeBuilder,
         PreparedCorrespondencePolicy preparedCorrespondence,CorridorWorkingSchedule.BoundContext context,double gapRadiusMeters,boolean gapAdmissionPolicy){
+        this(optimizer,tubeBuilder,preparedCorrespondence,context,gapRadiusMeters,gapAdmissionPolicy,false);
+    }
+    private CorridorAwareTracker(CorridorCenterlineOptimizer optimizer,CorridorTubeBuilder tubeBuilder,
+        PreparedCorrespondencePolicy preparedCorrespondence,CorridorWorkingSchedule.BoundContext context,double gapRadiusMeters,
+        boolean gapAdmissionPolicy,boolean observedShoulderPolicy){
         this.optimizer = java.util.Objects.requireNonNull(optimizer);
         this.tubeBuilder = java.util.Objects.requireNonNull(tubeBuilder);
         this.preparedCorrespondence=preparedCorrespondence;
         correspondenceContext=context;
         this.gapRadiusMeters=gapRadiusMeters;
         this.gapAdmissionPolicy=gapAdmissionPolicy;
+        this.observedShoulderPolicy=observedShoulderPolicy;
+    }
+
+    /** Explicit R5 policy: historical correspondence first, then measured shoulders and certified gaps. */
+    public static CorridorAwareTracker withTargetOwnedObservedShoulderDomain(CorridorCenterlineOptimizer optimizer,
+        CorridorWorkingSchedule.BoundContext context,PreparedCorrespondencePolicy policy,double ordinaryRadiusMeters){
+        if(!(ordinaryRadiusMeters>0)||!Double.isFinite(ordinaryRadiusMeters))throw new IllegalArgumentException("Finite ordinary radius required");
+        return new CorridorAwareTracker(optimizer,new CorridorTubeBuilder(CorridorTubeBuilder.MotionPolicy.TARGET_OWNED_APEX),
+            java.util.Objects.requireNonNull(policy),java.util.Objects.requireNonNull(context),ordinaryRadiusMeters,true,true);
+    }
+    /** R5 identity remains explicit when missing native authority forbids observed restriction. */
+    public static CorridorAwareTracker withTargetOwnedObservedShoulderDomainWithoutAuthority(CorridorCenterlineOptimizer optimizer,
+        PreparedCorrespondencePolicy policy){
+        return new CorridorAwareTracker(optimizer,new CorridorTubeBuilder(CorridorTubeBuilder.MotionPolicy.TARGET_OWNED_APEX),
+            java.util.Objects.requireNonNull(policy),null,Double.NaN,true,true);
     }
 
     /** R4 only: frozen native authority and physical request radius for geometric gap choices. */
@@ -444,6 +465,8 @@ public final class CorridorAwareTracker {
         Map<String, BandScaleEvidence> effectiveScaleEvidence = parentScaleEvidence(grouped.tracks(), scaleEvidence);
         Map<String, SparseCorridorBundle> bundlesById = grouped.bundles().stream()
             .collect(java.util.stream.Collectors.toMap(SparseCorridorBundle::id, value -> value));
+        Map<String,CorridorTrack> tracksById=observedShoulderPolicy?grouped.tracks().stream()
+            .collect(java.util.stream.Collectors.toMap(CorridorTrack::id,value->value, (a,b)->{throw new IllegalArgumentException("Duplicate grouped track id");},LinkedHashMap::new)):Map.of();
         org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupSamplingFrame cleanupFrame =
             CleanupEvidenceFactory.samplingFrame(
                 detectorMode, corridorProfiles, sourcePixelSizePx, groundMetersPerRasterPixel);
@@ -483,6 +506,10 @@ public final class CorridorAwareTracker {
                     var solveLimits=new TraceBudgets(currentLimits.maximumStatesPerProfile(),currentLimits.maximumPairVisits()-spent,
                         currentLimits.maximumTransitions(),currentLimits.maximumRawAlternatives(),currentLimits.maximumDistinctAlternatives());
                     original=CorridorCenterlineOptimizer.withBudgets(original,solveLimits);
+                    if(observedShoulderPolicy){
+                        original=optimizer.prepareObservedShoulderDomain(original,tracksById,java.util.Optional.ofNullable(bundlesById.get(track.id())));
+                        correspondencePairWork=Math.addExact(correspondencePairWork,original.observedPlan().orElseThrow().work().admissionUnits());
+                    }
                     if(gapAdmissionPolicy && correspondenceContext!=null){
                         original=optimizer.prepareGapDomain(original,gapRadiusMeters);
                         correspondencePairWork=Math.addExact(correspondencePairWork,original.gapPlan().orElseThrow().work().admissionUnits());
@@ -505,6 +532,9 @@ public final class CorridorAwareTracker {
                     if(!optimizer.preparedWork().outcome().equals("BINDING_REFUSED"))optimizer.preparationFailed("BINDING_OR_EXECUTION_FAILURE");
                     throw corrupt;
                 }finally{
+                    var admittedPreparation=preparations.get(track.id());
+                    if(observedShoulderPolicy && admittedPreparation!=null && admittedPreparation.admitted())
+                        optimizer.observedCorrespondencePriority();
                     preparationWork.put(track.id(),new TrackPreparationWork(optimizer.preparedWork(),
                         java.util.Optional.ofNullable(preparations.get(track.id())),optimizer.hardGeometryWork(),optimizer.preparedAdjacentObjectiveEntries(),java.util.Optional.ofNullable(gapDisposition)));
                 }

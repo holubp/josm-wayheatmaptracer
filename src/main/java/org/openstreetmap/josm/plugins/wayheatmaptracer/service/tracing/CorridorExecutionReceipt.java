@@ -31,9 +31,10 @@ public final class CorridorExecutionReceipt {
         Optional<CorridorAwareTracker.GapDomainDisposition> gapDisposition){ }
     public record Totals(long originalStates,long retainedUnaryEvaluations,long bridgeUnaryEvaluations,
         long admissionContacts,long admissionPairs,long adjacentObjectiveEntries,long solverStarts,
-        long attemptedTransitions,long testedTriples,long rejectedTriples,long scoredTransitions,OptionalLong gapAdmissionUnits){
+        long attemptedTransitions,long testedTriples,long rejectedTriples,long scoredTransitions,OptionalLong gapAdmissionUnits,
+        OptionalLong observedAdmissionUnits){
         public long unaryEvaluations(){return Math.addExact(retainedUnaryEvaluations,bridgeUnaryEvaluations);}
-        public long pairVisits(){return Math.addExact(Math.addExact(Math.addExact(admissionContacts,admissionPairs),adjacentObjectiveEntries),gapAdmissionUnits.orElse(0));}
+        public long pairVisits(){return Math.addExact(Math.addExact(Math.addExact(Math.addExact(admissionContacts,admissionPairs),adjacentObjectiveEntries),gapAdmissionUnits.orElse(0)),observedAdmissionUnits.orElse(0));}
     }
 
     /** Sealed provenance from an actual prepared optimization, never an interpreted diagnostic flag. */
@@ -100,7 +101,7 @@ public final class CorridorExecutionReceipt {
         return new Mapping(schedule.originalCount(),schedule.leftOriginalRow(),schedule.rightOriginalRow());
     }
     static Totals totals(CorridorAwareTracker tracker){
-        long[] sums=new long[12];boolean[] gapAvailable={false};
+        long[] sums=new long[13];boolean[] gapAvailable={false}, observedAvailable={false};
         if(tracker!=null)tracker.visitCorrespondenceWork((id,item)->{
             var p=item.preparation();var h=item.hardGeometry();var a=item.admission();
             // These are two snapshots of the SAME retained-unary quantity. Ordinary resource
@@ -110,8 +111,9 @@ public final class CorridorExecutionReceipt {
                 item.adjacentObjectiveEntries(),p.solverStarts(),h.attemptedTransitions(),h.testedTriples(),h.rejectedTriples(),h.scoredTransitions()};
             for(int i=0;i<values.length;i++)sums[i]=Math.addExact(sums[i],values[i]);
             p.gapWork().ifPresent(gap->{gapAvailable[0]=true;sums[11]=Math.addExact(sums[11],gap.admissionUnits());});
+            p.observedWork().ifPresent(observed->{observedAvailable[0]=true;sums[12]=Math.addExact(sums[12],observed.admissionUnits());});
         });
-        return new Totals(sums[0],sums[1],sums[2],sums[3],sums[4],sums[5],sums[6],sums[7],sums[8],sums[9],sums[10],gapAvailable[0]?OptionalLong.of(sums[11]):OptionalLong.empty());
+        return new Totals(sums[0],sums[1],sums[2],sums[3],sums[4],sums[5],sums[6],sums[7],sums[8],sums[9],sums[10],gapAvailable[0]?OptionalLong.of(sums[11]):OptionalLong.empty(),observedAvailable[0]?OptionalLong.of(sums[12]):OptionalLong.empty());
     }
     static CorridorExecutionReceipt freeze(TraceRequest request,EvidenceSnapshot evidence,NetworkSnapshot network,
         TraceHypothesisSet result,Phase phase,Optional<DetachedScalarProfileSampler.RadiusThreeWork> sampling,

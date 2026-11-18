@@ -79,6 +79,7 @@ public final class CorridorGapDomain {
         }
         long maskBytes = estimateMaskBytes(n, points, checks);
         long combined = Math.addExact(maskBytes, estimateMetricBytes(n, points, pairs));
+        combined=Math.addExact(combined,d.observedPlan().map(p->p.work().retainedBytes()).orElse(0L));
         if (combined > CACHE_LIMIT || Math.addExact(Math.addExact(newPoints, checks), pairs) > d.budgets().maximumPairVisits())
             throw limit("Combined gap mask/metric cache or source/solver work cap");
         var rows = new ArrayList<Row>(); var states = new ArrayList<List<Double>>(n);

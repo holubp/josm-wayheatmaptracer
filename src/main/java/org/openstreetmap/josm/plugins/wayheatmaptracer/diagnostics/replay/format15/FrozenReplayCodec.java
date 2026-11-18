@@ -657,7 +657,8 @@ public final class FrozenReplayCodec {
             if (aPolicy) {
                 var policy = en(in, CorridorTraceInput.ExecutionPolicy.class);
                 if (policy != CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1
-                        && policy != CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1)
+                        && policy != CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1
+                        && policy != CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1)
                     throw new IllegalArgumentException("Explicit new A request requires its versioned policy");
                 int fixedCount = count(in); var fixed = new java.util.TreeSet<Integer>();
                 for (int i = 0; i < fixedCount; i++) if (!fixed.add(in.readInt()))
