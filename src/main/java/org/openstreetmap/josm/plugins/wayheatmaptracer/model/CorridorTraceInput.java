@@ -18,7 +18,7 @@ public record CorridorTraceInput(
     Set<Integer> additionalFixedOccurrences
 ) {
     /** Versioned frozen A behavior; historical inputs never opt in implicitly. */
-    public enum ExecutionPolicy { HISTORICAL_V1, R3_OWNED_BOUNDED_BRIDGE_V1 }
+    public enum ExecutionPolicy { HISTORICAL_V1, R3_OWNED_BOUNDED_BRIDGE_V1, R4_OWNED_GAP_DOMAIN_V1 }
 
     /** Preserves historical constructors, behavior and wire encoding. */
     public CorridorTraceInput(List<DetachedProfileSamplingLocation> profileLocations, double lateralStepMeters) {
@@ -44,7 +44,9 @@ public record CorridorTraceInput(
         return new CorridorTraceInput(profileLocations, lateralStepMeters, policy, fixedOccurrences);
     }
 
-    public boolean boundedBridgePolicy() { return executionPolicy == ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1; }
+    public boolean boundedBridgePolicy() { return executionPolicy == ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1
+            || executionPolicy == ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1; }
+    public boolean certifiedGapDomainPolicy() { return executionPolicy == ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1; }
 
 
     /**

@@ -48,7 +48,7 @@ jobs:
             ${{ runner.temp }}/josm-public-validation/reports/java/html/
             ${{ runner.temp }}/josm-public-validation/summary.json
             ${{ runner.temp }}/josm-public-validation/status.json
-            ${{ runner.temp }}/josm-public-validation/stages/java-build.log
+            ${{ runner.temp }}/josm-public-validation/stages/*.log
           if-no-files-found: ignore
           retention-days: 5
       - name: Upload validated plugin jar

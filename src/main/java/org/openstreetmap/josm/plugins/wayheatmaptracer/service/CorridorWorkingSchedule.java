@@ -96,6 +96,8 @@ public final class CorridorWorkingSchedule {
         public String evidenceIdentity(){return evidenceIdentity;}
         public String protectionIdentity(){return protectionIdentity;}
         public RasterMetricTransform frame(){return nativeAuthority.frame();}
+        SourceProtection sourceProtection(){return protection;}
+        SegmentAuthority sourceAuthority(){return nativeAuthority;}
         void requireProfileFrame(ProfileSamplingLocation location){
             if(location instanceof DetachedProfileSamplingLocation detached&&(!frame().equals(detached.rasterTransform())
                 ||!coordinateFrame.equals(detached.coordinateFrame())))throw new IllegalArgumentException("Original sampled/native frame binding differs");

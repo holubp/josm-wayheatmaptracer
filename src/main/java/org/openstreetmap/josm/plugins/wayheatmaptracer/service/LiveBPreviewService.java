@@ -1868,12 +1868,14 @@ public final class LiveBPreviewService {
         String currentA = newCaptureParameterHash(TrackerMode.CORRIDOR_AWARE, AlignmentMode.PRECISE_SHAPE, managed);
         String otherA = newCaptureParameterHash(TrackerMode.CORRIDOR_AWARE, AlignmentMode.PRECISE_SHAPE, !managed);
         boolean current = captured.parameterHash().equals(currentA);
-        if ((current || captured.parameterHash().equals(otherA))
-                && (!current || captured.engine() != TrackerMode.CORRIDOR_AWARE
+        String r3 = r3CaptureParameterHash(managed), otherR3 = r3CaptureParameterHash(!managed);
+        boolean currentR3 = captured.parameterHash().equals(r3), owned = current || currentR3;
+        if ((owned || captured.parameterHash().equals(otherA) || captured.parameterHash().equals(otherR3))
+                && (!owned || captured.engine() != TrackerMode.CORRIDOR_AWARE
                         || captured.geometryMode() != AlignmentMode.PRECISE_SHAPE)) {
             throw new IllegalArgumentException("Corridor A capture identity contradicts its source or mode");
         }
-        if (current) {
+        if (owned) {
             Set<Integer> fixed = new java.util.TreeSet<>();
             if (partition != null) {
                 for (var island : partition.fixedIslands()) {
@@ -1883,14 +1885,15 @@ public final class LiveBPreviewService {
                 }
             }
             corridorInput = Optional.of(corridorInput.orElseThrow().withPolicy(
-                    CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1, fixed));
+                    current ? CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1
+                            : CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1, fixed));
         }
         return new TraceRequest(captured.specification().selectedWayKey(),
                 captured.specification().selectedRange(), captured.engine(),
                 captured.geometryMode(), captured.specification().permissions(),
                 TraceBudgets.defaults(), evidence.snapshotId(), evidence.canonicalHash(),
                 captured.network().snapshotId(), captured.network().canonicalHash(),
-                captured.settingsHash(), captured.parameterHash(), current ? CORRIDOR_A_CAPTURE_ID : "visible-"
+                captured.settingsHash(), captured.parameterHash(), owned ? (current ? CORRIDOR_A_CAPTURE_ID : CORRIDOR_A_R3_CAPTURE_ID) : "visible-"
                         + captured.engine().name().toLowerCase(java.util.Locale.ROOT) + "-v1",
                 captured.sampleStepMeters(), chainage, evidence.resolution(), corridorInput,
                 captured.specification().permissions().sharedNodeDisconnectionIntent().isEmpty()
@@ -2241,7 +2244,13 @@ public final class LiveBPreviewService {
                 (argb >>> 8) & 0xff, argb & 0xff, alpha, mode);
     }
 
-    private static final String CORRIDOR_A_CAPTURE_ID = "corridor-a-r3-owned-bounded-bridge-v1";
+    private static final String CORRIDOR_A_R3_CAPTURE_ID = "corridor-a-r3-owned-bounded-bridge-v1";
+    private static final String CORRIDOR_A_CAPTURE_ID = "corridor-a-r4-owned-gap-domain-v1";
+
+    private static String r3CaptureParameterHash(boolean managed) {
+        return hash(CORRIDOR_A_R3_CAPTURE_ID, hash((managed ? "managed-live-" : "live-") + "corridor_aware-v2",
+                parameterIdentity(TrackerMode.CORRIDOR_AWARE)));
+    }
 
     private static String newCaptureParameterHash(TrackerMode engine, AlignmentMode mode, boolean managed) {
         String historical=hash((managed?"managed-live-":"live-")+engine.name().toLowerCase(java.util.Locale.ROOT)+"-v2",parameterIdentity(engine));

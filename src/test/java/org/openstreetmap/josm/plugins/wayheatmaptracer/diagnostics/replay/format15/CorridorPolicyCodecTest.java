@@ -7,6 +7,21 @@ import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 
 class CorridorPolicyCodecTest {
+    @Test void r4HasAnAppendedTypedIdentityAndKeepsR3WireNative() {
+        var r3 = modern(Set.of());
+        var r4 = modern(Set.of(), CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1);
+        assertEquals(1, CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1.ordinal());
+        assertEquals(2, CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1.ordinal());
+        assertNotEquals(r3.canonicalHash(), r4.canonicalHash());
+        for (var input : List.of(r3, r4)) {
+            var bytes = FrozenReplayCodec.encode(input);
+            var decoded = FrozenReplayCodec.decode(bytes);
+            assertEquals(9, FrozenReplayCodec.encodedVersion(bytes));
+            assertEquals(input.request(), decoded.request());
+            assertArrayEquals(bytes, FrozenReplayCodec.encode(decoded));
+            assertArrayEquals(FrozenReplayCodec.encodeRequestOnly(input.request()), FrozenReplayCodec.encodeRequestOnly(decoded.request()));
+        }
+    }
     @Test void historicalPublicFixtureRetainsPrePolicyGoldenBytesAndRequestHash() {
         var old=V022ProductionReplayTest.syntheticRidgeInput();
         // Generated with immutable pre-policy4855 runtime b61044ee..., no inference.
@@ -50,8 +65,11 @@ class CorridorPolicyCodecTest {
     }
 
     private static FrozenReplayInput modern(Set<Integer> fixed) {
+        return modern(fixed, CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1);
+    }
+    private static FrozenReplayInput modern(Set<Integer> fixed, CorridorTraceInput.ExecutionPolicy policy) {
         var b=V022ProductionReplayTest.syntheticRidgeInput();var r=b.request();
-        var c=r.corridorInput().orElseThrow().withPolicy(CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1,fixed);
+        var c=r.corridorInput().orElseThrow().withPolicy(policy,fixed);
         var request=new TraceRequest(r.selectedWayKey(),r.selectedRange(),TrackerMode.CORRIDOR_AWARE,r.geometryMode(),r.permissions(),r.budgets(),
             r.evidenceSnapshotId(),r.evidenceContentHash(),r.networkSnapshotId(),r.networkContentHash(),r.settingsHash(),r.parameterHash(),r.samplerId(),
             r.configuredSampleStepMeters(),r.profileChainage(),r.evidenceResolution(),Optional.of(c));

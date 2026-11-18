@@ -51,7 +51,7 @@ def test_public_artifact_upload_is_exactly_allowlisted_and_gated() -> None:
         f"{ARTIFACT_OUTPUT}/reports/java/html/",
         f"{ARTIFACT_OUTPUT}/summary.json",
         f"{ARTIFACT_OUTPUT}/status.json",
-        f"{ARTIFACT_OUTPUT}/stages/java-build.log",
+        f"{ARTIFACT_OUTPUT}/stages/*.log",
     ]
     assert report_upload["with"]["if-no-files-found"] == "ignore"
 

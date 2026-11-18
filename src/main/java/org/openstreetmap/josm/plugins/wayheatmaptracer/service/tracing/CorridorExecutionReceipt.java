@@ -30,9 +30,9 @@ public final class CorridorExecutionReceipt {
         long pairTests,long rayTests,long nativeChecks,long adjacentObjectiveEntries,Optional<Mapping> mapping){ }
     public record Totals(long originalStates,long retainedUnaryEvaluations,long bridgeUnaryEvaluations,
         long admissionContacts,long admissionPairs,long adjacentObjectiveEntries,long solverStarts,
-        long attemptedTransitions,long testedTriples,long rejectedTriples,long scoredTransitions){
+        long attemptedTransitions,long testedTriples,long rejectedTriples,long scoredTransitions,OptionalLong gapAdmissionUnits){
         public long unaryEvaluations(){return Math.addExact(retainedUnaryEvaluations,bridgeUnaryEvaluations);}
-        public long pairVisits(){return Math.addExact(Math.addExact(admissionContacts,admissionPairs),adjacentObjectiveEntries);}
+        public long pairVisits(){return Math.addExact(Math.addExact(Math.addExact(admissionContacts,admissionPairs),adjacentObjectiveEntries),gapAdmissionUnits.orElse(0));}
     }
 
     /** Sealed provenance from an actual prepared optimization, never an interpreted diagnostic flag. */
@@ -60,17 +60,20 @@ public final class CorridorExecutionReceipt {
     private final int visitedTracks;
     private final Map<String,CandidateProvenance> candidates;
     private final Totals totals;
+    private final CorridorTraceInput.ExecutionPolicy executionPolicy;
     private CorridorExecutionReceipt(String requestHash,String evidenceHash,String networkHash,String resultHash,
         String certificateStatus,Optional<String> certificateIdentity,String networkSnapshotId,String settingsHash,
         OptionalInt sourceOccurrences,OptionalInt fixedSourceCoordinates,Phase phase,
         Optional<DetachedScalarProfileSampler.RadiusThreeWork> sampling,OptionalInt discoveredTracks,
-        Map<String,TrackWork> tracks,int visitedTracks,Map<String,CandidateProvenance> candidates,Totals totals){
+        Map<String,TrackWork> tracks,int visitedTracks,Map<String,CandidateProvenance> candidates,Totals totals,CorridorTraceInput.ExecutionPolicy executionPolicy){
         this.requestHash=requestHash;this.evidenceHash=evidenceHash;this.networkHash=networkHash;this.resultHash=resultHash;
         this.certificateStatus=certificateStatus;this.certificateIdentity=certificateIdentity;this.phase=phase;this.sampling=sampling;
         this.networkSnapshotId=networkSnapshotId;this.settingsHash=settingsHash;this.sourceOccurrences=sourceOccurrences;this.fixedSourceCoordinates=fixedSourceCoordinates;
         this.discoveredTracks=discoveredTracks;this.tracks=Map.copyOf(tracks);this.visitedTracks=visitedTracks;
         this.candidates=Map.copyOf(candidates);this.totals=totals;
+        this.executionPolicy=executionPolicy;
     }
+    public CorridorTraceInput.ExecutionPolicy executionPolicy(){return executionPolicy;}
     public String requestHash(){return requestHash;} public String evidenceHash(){return evidenceHash;}
     public String networkHash(){return networkHash;} public String resultHash(){return resultHash;}
     public String networkSnapshotId(){return networkSnapshotId;} public String settingsHash(){return settingsHash;}
@@ -96,7 +99,7 @@ public final class CorridorExecutionReceipt {
         return new Mapping(schedule.originalCount(),schedule.leftOriginalRow(),schedule.rightOriginalRow());
     }
     static Totals totals(CorridorAwareTracker tracker){
-        long[] sums=new long[11];
+        long[] sums=new long[12];boolean[] gapAvailable={false};
         if(tracker!=null)tracker.visitCorrespondenceWork((id,item)->{
             var p=item.preparation();var h=item.hardGeometry();var a=item.admission();
             // These are two snapshots of the SAME retained-unary quantity. Ordinary resource
@@ -104,9 +107,10 @@ public final class CorridorExecutionReceipt {
             long[] values={p.originalStates(),Math.max(p.retainedUnaryEvaluations(),h.profileCostEvaluations()),p.bridgeUnaryEvaluations(),
                 a.map(CorridorWorkingSchedule.Preparation::contactTests).orElse(0L),a.map(CorridorWorkingSchedule.Preparation::pairTests).orElse(0L),
                 item.adjacentObjectiveEntries(),p.solverStarts(),h.attemptedTransitions(),h.testedTriples(),h.rejectedTriples(),h.scoredTransitions()};
-            for(int i=0;i<sums.length;i++)sums[i]=Math.addExact(sums[i],values[i]);
+            for(int i=0;i<values.length;i++)sums[i]=Math.addExact(sums[i],values[i]);
+            p.gapWork().ifPresent(gap->{gapAvailable[0]=true;sums[11]=Math.addExact(sums[11],gap.admissionUnits());});
         });
-        return new Totals(sums[0],sums[1],sums[2],sums[3],sums[4],sums[5],sums[6],sums[7],sums[8],sums[9],sums[10]);
+        return new Totals(sums[0],sums[1],sums[2],sums[3],sums[4],sums[5],sums[6],sums[7],sums[8],sums[9],sums[10],gapAvailable[0]?OptionalLong.of(sums[11]):OptionalLong.empty());
     }
     static CorridorExecutionReceipt freeze(TraceRequest request,EvidenceSnapshot evidence,NetworkSnapshot network,
         TraceHypothesisSet result,Phase phase,Optional<DetachedScalarProfileSampler.RadiusThreeWork> sampling,
@@ -138,6 +142,6 @@ public final class CorridorExecutionReceipt {
             certificate==null?Optional.empty():Optional.of(certificate.identity()),network.snapshotId(),request.settingsHash(),
             certificate==null?OptionalInt.empty():OptionalInt.of(certificate.occurrences().size()),
             certificate==null?OptionalInt.empty():OptionalInt.of((int)certificate.occurrences().stream().filter(CorridorSourceProtection.Occurrence::fixedCoordinate).count()),phase,sampling,
-            tracker==null?OptionalInt.empty():tracker.correspondenceDiscoveredTracks(),work,visited[0],provenance,totals(tracker));
+            tracker==null?OptionalInt.empty():tracker.correspondenceDiscoveredTracks(),work,visited[0],provenance,totals(tracker),request.corridorInput().orElseThrow().executionPolicy());
     }
 }

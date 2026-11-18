@@ -338,4 +338,5 @@ def test_workflow_pins_same_host_for_validation_and_both_gui_engines() -> None:
     assert jobs["public-gui-smoke"]["strategy"]["matrix"]["include"] == [
         {"engine": "PROBABILISTIC", "report": "public-gui-smoke"},
         {"engine": "LEGACY_THEN_B", "report": "public-gui-smoke-hybrid"},
+        {"engine": "CORRIDOR_AWARE", "report": "public-gui-smoke-corridor-aware"},
     ]

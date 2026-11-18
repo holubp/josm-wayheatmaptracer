@@ -201,6 +201,10 @@ public final class CorridorExecutionArtifacts {
             csv.row("sampling",scope,"construction_ns",work.constructionNanos());csv.row("sampling",scope,"sampling_ns",work.samplingNanos());csv.row("sampling",scope,"selection_ns",work.selectionNanos());
         });
         var t=receipt.totals();
+        if(receipt.executionPolicy()==org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1){
+            csv.row("receipt",scope,"a_execution_policy",receipt.executionPolicy());
+            csv.row("totals",scope,"gap_source_admission_units",t.gapAdmissionUnits().isPresent()?t.gapAdmissionUnits().getAsLong():"UNAVAILABLE");
+        }
         csv.row("totals",scope,"original_generated_states",t.originalStates());csv.row("totals",scope,"retained_unaries",t.retainedUnaryEvaluations());
         csv.row("totals",scope,"bridge_unaries",t.bridgeUnaryEvaluations());csv.row("totals",scope,"admission_contacts",t.admissionContacts());
         csv.row("totals",scope,"admission_pairs",t.admissionPairs());csv.row("totals",scope,"adjacent_objective_entries",t.adjacentObjectiveEntries());
@@ -216,6 +220,21 @@ public final class CorridorExecutionArtifacts {
             csv.row("track",key,"metric_cache_reserved_bytes",h.metricCacheReservedBytes());
             csv.row("track",key,"memory_estimate_scope","PREPARED_TABLES_AND_METRIC_CACHE_NOT_WHOLE_HEAP");
             csv.row("track",key,"attempted_transitions",h.attemptedTransitions());csv.row("track",key,"rejected_triples",h.rejectedTriples());csv.row("track",key,"scored_transitions",h.scoredTransitions());
+            p.gapWork().ifPresent(gap->{
+                csv.row("gap",key,"point_checks",gap.pointChecks());csv.row("gap",key,"edge_checks",gap.edgeChecks());
+                csv.row("gap",key,"rejected_points",gap.rejectedPoints());csv.row("gap",key,"rejected_edges",gap.rejectedEdges());
+                csv.row("gap",key,"added_states",gap.addedStates());csv.row("gap",key,"admission_units",gap.admissionUnits());
+                csv.row("gap",key,"plan_estimate_bytes",gap.retainedBytes());
+                csv.row("gap",key,"memory_scope","COMBINED_WITH_METRIC_OR_PREPARED_TABLES_NOT_WHOLE_HEAP");
+                for(var row:gap.rows()){
+                    String rowKey=key+":"+row.originalRow();
+                    csv.row("gap_row",rowKey,"original_row",row.originalRow());csv.row("gap_row",rowKey,"historical_offset_px",row.historicalOffset());
+                    csv.row("gap_row",rowKey,"raw_ownership","INFERRED_GAP");csv.row("gap_row",rowKey,"status",row.status());
+                    csv.row("gap_row",rowKey,"envelope_min_px",Double.isFinite(row.envelopeMin())?row.envelopeMin():"UNAVAILABLE");
+                    csv.row("gap_row",rowKey,"envelope_max_px",Double.isFinite(row.envelopeMax())?row.envelopeMax():"UNAVAILABLE");
+                    csv.row("gap_row",rowKey,"added_offsets_px",row.addedOffsets());csv.row("gap_row",rowKey,"rejected_points",row.rejectedPoints());
+                }
+            });
             work.mapping().ifPresent(map->{csv.row("mapping",key,"original_count",map.originalCount());csv.row("mapping",key,"left_original_row",map.leftOriginalRow());csv.row("mapping",key,"right_original_row",map.rightOriginalRow());csv.row("mapping",key,"working_count",map.workingCount());});
         }
         for(var entry:new TreeMap<>(receipt.candidates()).entrySet()){

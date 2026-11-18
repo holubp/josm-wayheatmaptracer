@@ -1263,9 +1263,9 @@ class V022LiveBPreviewServiceTest {
 
         LiveBPreviewService.Computed result = service.compute(captured[0], CancellationProbe.NONE);
 
-        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1,
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1,
                 result.request().corridorInput().orElseThrow().executionPolicy());
-        assertEquals("corridor-a-r3-owned-bounded-bridge-v1", result.request().samplerId());
+        assertEquals("corridor-a-r4-owned-gap-domain-v1", result.request().samplerId());
         assertTrue(result.request().corridorInput().orElseThrow().additionalFixedOccurrences().isEmpty());
 
         assertEquals(TrackerMode.CORRIDOR_AWARE, result.pipeline().inference().engine());
@@ -1344,6 +1344,8 @@ class V022LiveBPreviewServiceTest {
         });
         assertNotEquals(v[0].parameterHash(), v[1].parameterHash());
         assertNotEquals(m[0].parameterHash(), m[1].parameterHash());
+        assertEquals(independentHash("corridor-a-r4-owned-gap-domain-v1", v[1].parameterHash()), v[0].parameterHash());
+        assertEquals(independentHash("corridor-a-r4-owned-gap-domain-v1", m[1].parameterHash()), m[0].parameterHash());
     }
 
     @Test
@@ -1392,8 +1394,8 @@ class V022LiveBPreviewServiceTest {
                     CredentialSnapshot.fromConfig(null), CancellationProbe.NONE);
             var computed = service.compute(service.attachManagedSources(seed[0], sources, coordinator), CancellationProbe.NONE);
             assertEquals(seed[0].parameterHash(), computed.request().parameterHash());
-            assertEquals("corridor-a-r3-owned-bounded-bridge-v1", computed.request().samplerId());
-            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1,
+            assertEquals("corridor-a-r4-owned-gap-domain-v1", computed.request().samplerId());
+            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1,
                     computed.request().corridorInput().orElseThrow().executionPolicy());
             assertTrue(computed.request().corridorInput().orElseThrow().additionalFixedOccurrences().isEmpty());
         }
@@ -1556,7 +1558,7 @@ class V022LiveBPreviewServiceTest {
         assertEquals(fixed, batch.fullRequest().corridorInput().orElseThrow().additionalFixedOccurrences());
         for (var run : batch.runs()) {
             var input = run.request().corridorInput().orElseThrow();
-            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1, input.executionPolicy());
+            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1, input.executionPolicy());
             var expected = new java.util.TreeSet<Integer>();
             for (int i : fixed) if (i >= run.request().selectedRange().firstIndex()
                     && i <= run.request().selectedRange().lastIndex()) expected.add(i);

@@ -127,12 +127,16 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
                 var optimizer=new CorridorCenterlineOptimizer().withLocalHardBacktrackGuard(evidence.transform(),cancellation);
                 if(certificate.available()){
                     var context=certificate.bind(cancellation);
-                    tracker=CorridorAwareTracker.withTargetOwnedBridgeCorrespondence(optimizer,context,
-                        domain->org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorWorkingSchedule.prepare(
-                            domain,context,nativePitch,cancellation));
+                    CorridorAwareTracker.PreparedCorrespondencePolicy policy=domain->org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorWorkingSchedule.prepare(
+                        domain,context,nativePitch,cancellation);
+                    tracker=input.certifiedGapDomainPolicy()
+                        ?CorridorAwareTracker.withTargetOwnedGapDomain(optimizer,context,policy,request.permissions().ordinaryRadiusMeters())
+                        :CorridorAwareTracker.withTargetOwnedBridgeCorrespondence(optimizer,context,policy);
                 }else{
-                    tracker=CorridorAwareTracker.withTargetOwnedBridgeCorrespondence(optimizer,
-                        domain->org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorWorkingSchedule.refusal(certificate.status()));
+                    CorridorAwareTracker.PreparedCorrespondencePolicy unavailable=domain->org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorWorkingSchedule.refusal(certificate.status());
+                    tracker=input.certifiedGapDomainPolicy()
+                        ?CorridorAwareTracker.withTargetOwnedGapDomainWithoutAuthority(optimizer,unavailable)
+                        :CorridorAwareTracker.withTargetOwnedBridgeCorrespondence(optimizer,unavailable);
                 }
                 phase=CorridorExecutionReceipt.Phase.TRACKING;
                 double outputPitch=evidence.resolution().outputRasterPitchMeters();

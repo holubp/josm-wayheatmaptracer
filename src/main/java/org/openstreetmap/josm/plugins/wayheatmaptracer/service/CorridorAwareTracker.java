@@ -24,6 +24,8 @@ public final class CorridorAwareTracker {
     private final CorridorCenterlineOptimizer optimizer;
     private final PreparedCorrespondencePolicy preparedCorrespondence;
     private final CorridorWorkingSchedule.BoundContext correspondenceContext;
+    private final double gapRadiusMeters;
+    private final boolean gapAdmissionPolicy;
     private final Map<String,CorridorWorkingSchedule.Preparation> preparations=new LinkedHashMap<>();
     private final Map<String,CorridorCenterlineOptimizer.PreparedOptimization> preparedOptimizations=new LinkedHashMap<>();
     private final Map<String,TrackPreparationWork> preparationWork=new LinkedHashMap<>();
@@ -62,10 +64,31 @@ public final class CorridorAwareTracker {
     }
     private CorridorAwareTracker(CorridorCenterlineOptimizer optimizer,CorridorTubeBuilder tubeBuilder,
         PreparedCorrespondencePolicy preparedCorrespondence,CorridorWorkingSchedule.BoundContext context){
+        this(optimizer,tubeBuilder,preparedCorrespondence,context,Double.NaN,false);
+    }
+    private CorridorAwareTracker(CorridorCenterlineOptimizer optimizer,CorridorTubeBuilder tubeBuilder,
+        PreparedCorrespondencePolicy preparedCorrespondence,CorridorWorkingSchedule.BoundContext context,double gapRadiusMeters,boolean gapAdmissionPolicy){
         this.optimizer = java.util.Objects.requireNonNull(optimizer);
         this.tubeBuilder = java.util.Objects.requireNonNull(tubeBuilder);
         this.preparedCorrespondence=preparedCorrespondence;
         correspondenceContext=context;
+        this.gapRadiusMeters=gapRadiusMeters;
+        this.gapAdmissionPolicy=gapAdmissionPolicy;
+    }
+
+    /** R4 only: frozen native authority and physical request radius for geometric gap choices. */
+    public static CorridorAwareTracker withTargetOwnedGapDomain(CorridorCenterlineOptimizer optimizer,
+        CorridorWorkingSchedule.BoundContext context,PreparedCorrespondencePolicy policy,double ordinaryRadiusMeters){
+        if(!(ordinaryRadiusMeters>0)||!Double.isFinite(ordinaryRadiusMeters))throw new IllegalArgumentException("Finite ordinary radius required");
+        return new CorridorAwareTracker(optimizer,new CorridorTubeBuilder(CorridorTubeBuilder.MotionPolicy.TARGET_OWNED_APEX),
+            java.util.Objects.requireNonNull(policy),java.util.Objects.requireNonNull(context),ordinaryRadiusMeters,true);
+    }
+
+    /** R4 admission remains explicit when unavailable source authority forbids all extra states. */
+    public static CorridorAwareTracker withTargetOwnedGapDomainWithoutAuthority(CorridorCenterlineOptimizer optimizer,
+        PreparedCorrespondencePolicy policy){
+        return new CorridorAwareTracker(optimizer,new CorridorTubeBuilder(CorridorTubeBuilder.MotionPolicy.TARGET_OWNED_APEX),
+            java.util.Objects.requireNonNull(policy),null,Double.NaN,true);
     }
 
     /** Bound public experiment; admission and inference share the actual frozen context token. */
@@ -404,7 +427,8 @@ public final class CorridorAwareTracker {
         CorridorGrouping.GroupingResult grouped = grouping.group(elementary, corridorProfiles, sourcePixelSizePx);
         if(preparedCorrespondence!=null)correspondenceDiscoveredTracks=java.util.OptionalInt.of(grouped.tracks().size());
         if (budgets != null) {
-            enforceSolverBudgets(grouped.tracks().size(), corridorProfiles.size(), budgets);
+            if(gapAdmissionPolicy)enforceGapSolverBudgets(grouped.tracks().size(), corridorProfiles.size(), budgets);
+            else enforceSolverBudgets(grouped.tracks().size(), corridorProfiles.size(), budgets);
         }
         long trackingNanos = System.nanoTime() - trackingStart;
         long optimizationStart = System.nanoTime();
@@ -442,15 +466,21 @@ public final class CorridorAwareTracker {
                     limits.maximumTransitions()-correspondenceTransitions,limits.maximumRawAlternatives(),limits.maximumDistinctAlternatives());
                 var original=optimizer.prepareOriginalDomain(track,corridorProfiles,sourcePixelSizePx,
                     junctionContext,effectiveScaleEvidence,tube,remaining,correspondenceContext);
-                var admission=preparedCorrespondence.prepare(original);
+                if(gapAdmissionPolicy && correspondenceContext!=null){
+                    original=optimizer.prepareGapDomain(original,gapRadiusMeters);
+                    correspondencePairWork=Math.addExact(correspondencePairWork,original.gapPlan().orElseThrow().work().admissionUnits());
+                }
+                var currentLimits=original.budgets();
+                var admission=original.gapPlan().filter(CorridorGapDomain.Plan::hasAdditions).isPresent()
+                    ?CorridorWorkingSchedule.refusal("REFUSED_EXPANDED_GAP_DOMAIN_COMPRESSION"):preparedCorrespondence.prepare(original);
                 preparations.put(track.id(),admission);
                 long spent=Math.addExact(admission.contactTests(),admission.pairTests());
                 correspondencePairWork=Math.addExact(correspondencePairWork,spent);
                 if("RESOURCE_LIMIT".equals(admission.status()))throw new CorridorResourceLimitException("Prepared admission work cap", CorridorResourceLimitException.Stage.PREPARED_ADMISSION, CorridorResourceLimitException.Reason.ADMISSION_RESOURCE_LIMIT, java.util.Map.of(CorridorResourceLimitException.Metric.CONSUMED_CONTACT_TESTS,admission.contactTests(), CorridorResourceLimitException.Metric.CONSUMED_PAIR_TESTS,admission.pairTests()));
                 if("NO_TRIGGER".equals(admission.status())||admission.status().startsWith("REFUSED_")&&!admission.status().contains("BINDING")){
-                    if(spent>=remaining.maximumPairVisits())throw new CorridorResourceLimitException("Prepared admission exhausted pair work", CorridorResourceLimitException.Stage.PREPARED_ADMISSION, CorridorResourceLimitException.Reason.PAIR_WORK_CAP, java.util.Map.of(CorridorResourceLimitException.Metric.CONSUMED_CONTACT_TESTS,admission.contactTests(), CorridorResourceLimitException.Metric.CONSUMED_PAIR_TESTS,admission.pairTests(), CorridorResourceLimitException.Metric.LIMIT_PAIRS,remaining.maximumPairVisits()));
-                    var solveLimits=new TraceBudgets(remaining.maximumStatesPerProfile(),remaining.maximumPairVisits()-spent,
-                        remaining.maximumTransitions(),remaining.maximumRawAlternatives(),remaining.maximumDistinctAlternatives());
+                    if(spent>=currentLimits.maximumPairVisits())throw new CorridorResourceLimitException("Prepared admission exhausted pair work", CorridorResourceLimitException.Stage.PREPARED_ADMISSION, CorridorResourceLimitException.Reason.PAIR_WORK_CAP, java.util.Map.of(CorridorResourceLimitException.Metric.CONSUMED_CONTACT_TESTS,admission.contactTests(), CorridorResourceLimitException.Metric.CONSUMED_PAIR_TESTS,admission.pairTests(), CorridorResourceLimitException.Metric.LIMIT_PAIRS,currentLimits.maximumPairVisits()));
+                    var solveLimits=new TraceBudgets(currentLimits.maximumStatesPerProfile(),currentLimits.maximumPairVisits()-spent,
+                        currentLimits.maximumTransitions(),currentLimits.maximumRawAlternatives(),currentLimits.maximumDistinctAlternatives());
                     optimized=optimizer.optimizeOriginalDomain(CorridorCenterlineOptimizer.withBudgets(original,solveLimits));
                 }
                 else if(admission.admitted()){
@@ -519,6 +549,33 @@ public final class CorridorAwareTracker {
         return new TrackingResult(sorted, corridorProfiles, grouped.tracks(), grouped.decisions(), grouped.bundles(), optimizations,
             tubes, multiScaleProfiles, effectiveScaleEvidence, sourcePixelSizePx,
             new TrackingTiming(extractionNanos, scaleAssociationNanos, trackingNanos, optimizationNanos));
+    }
+
+    record DeclaredGapSolverWork(long pairs,long transitions) { }
+    static DeclaredGapSolverWork gapSolverWork(int trackCount,int profileCount){
+        if(trackCount<0||profileCount<0)throw new IllegalArgumentException("Nonnegative inventory required");
+        long s=CorridorOptimizationParameters.defaults().maxOffsetStates(),square=Math.multiplyExact(s,s);
+        long pairs=profileCount<=1?s:Math.multiplyExact(profileCount-1L,square);
+        long transitions=profileCount<=1?s:Math.addExact(square,Math.multiplyExact(profileCount-2L,Math.multiplyExact(square,s)));
+        return new DeclaredGapSolverWork(Math.multiplyExact(trackCount,pairs),Math.multiplyExact(trackCount,transitions));
+    }
+    /** R4 only: conservative adjacent-pair inventory and DP transition inventory have distinct units. */
+    static void enforceGapSolverBudgets(int trackCount,int profileCount,TraceBudgets budgets){
+        int states=CorridorOptimizationParameters.defaults().maxOffsetStates();
+        try{
+            var work=gapSolverWork(trackCount,profileCount);
+            if(states>budgets.maximumStatesPerProfile()||trackCount>budgets.maximumRawAlternatives()
+                ||work.pairs()>budgets.maximumPairVisits()||work.transitions()>budgets.maximumTransitions())
+                throw new CorridorResourceLimitException("R4 declared solver work cap",trackCount,
+                    CorridorResourceLimitException.Stage.TRACKER_ADMISSION,CorridorResourceLimitException.Reason.DECLARED_WORK_CAP,
+                    Map.of(CorridorResourceLimitException.Metric.DECLARED_STATES,(long)states,
+                        CorridorResourceLimitException.Metric.LIMIT_STATES,(long)budgets.maximumStatesPerProfile(),
+                        CorridorResourceLimitException.Metric.OBSERVED_TRACKS,(long)trackCount,
+                        CorridorResourceLimitException.Metric.LIMIT_RAW_ALTERNATIVES,(long)budgets.maximumRawAlternatives(),
+                        CorridorResourceLimitException.Metric.DECLARED_PAIRS,work.pairs(),CorridorResourceLimitException.Metric.LIMIT_PAIRS,budgets.maximumPairVisits(),
+                        CorridorResourceLimitException.Metric.DECLARED_TRANSITIONS,work.transitions(),CorridorResourceLimitException.Metric.LIMIT_TRANSITIONS,budgets.maximumTransitions()));
+        }catch(ArithmeticException overflow){throw new CorridorResourceLimitException("R4 solver bound overflow",trackCount,
+            CorridorResourceLimitException.Stage.TRACKER_ADMISSION,CorridorResourceLimitException.Reason.ARITHMETIC_OVERFLOW,Map.of());}
     }
 
     private static void enforceSolverBudgets(int trackCount, int profileCount, TraceBudgets budgets) {
