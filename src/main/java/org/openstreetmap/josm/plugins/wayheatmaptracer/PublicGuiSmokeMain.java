@@ -336,8 +336,9 @@ public final class PublicGuiSmokeMain {
 
     static TrackerMode guiEngine(String name) {
         TrackerMode engine = TrackerMode.valueOf(name);
-        if (engine != TrackerMode.PROBABILISTIC && engine != TrackerMode.LEGACY_THEN_B) {
-            throw new IllegalArgumentException("GUI smoke requires independent B or sequential Hybrid");
+        if (engine != TrackerMode.PROBABILISTIC && engine != TrackerMode.LEGACY_THEN_B
+                && engine != TrackerMode.CORRIDOR_AWARE) {
+            throw new IllegalArgumentException("GUI smoke requires Corridor A, independent B, or sequential Hybrid");
         }
         return engine;
     }
@@ -491,7 +492,7 @@ public final class PublicGuiSmokeMain {
         JComboBox<LiveBPreviewService.PreviewChoice> choices = visibleChoiceCombo(
                 preview.getContentPane(), LiveBPreviewService.PreviewChoice.class);
         if (!choices.isShowing() || choices.getItemCount() < 1 || choices.getSelectedIndex() != 0) {
-            throw new IllegalStateException("Expected visible initial Engine B route choices");
+            throw new IllegalStateException("Expected visible initial production route choices");
         }
         if (choices.getItemCount() != production.size()) {
             throw new IllegalStateException("Displayed routes differ from the production run");

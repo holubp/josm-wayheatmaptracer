@@ -21,7 +21,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 
 /** Canonical, bounded scalar replay output fingerprint. */
-final class ScalarReplayFingerprint {
+public final class ScalarReplayFingerprint {
     static final int SCHEMA_VERSION = 1;
     private static final int MAX_HYPOTHESES = 4_096;
     private static final int MAX_AGGREGATE_ITEMS = 500_000;
@@ -31,7 +31,7 @@ final class ScalarReplayFingerprint {
     }
 
     /** Hashes authoritative scalar semantics without retaining another serialized output copy. */
-    static String sha256(TraceHypothesisSet output) {
+    public static String sha256(TraceHypothesisSet output) {
         if (output == null || output.hypotheses().size() > MAX_HYPOTHESES) {
             throw new IllegalArgumentException("scalar-output-budget");
         }

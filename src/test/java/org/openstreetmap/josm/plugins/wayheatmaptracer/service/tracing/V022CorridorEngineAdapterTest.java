@@ -54,6 +54,54 @@ class V022CorridorEngineAdapterTest {
     private static final String FIELD = "native";
 
     @Test
+    void explicitNewPolicyRunsRadiusThreeOwnedAllTrackPath() {
+        var f = fixture(true); var r = f.request();
+        var input = r.corridorInput().orElseThrow().withPolicy(
+            CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1, Set.of());
+        var request = new TraceRequest(r.selectedWayKey(), r.selectedRange(), r.engine(), r.geometryMode(),
+            r.permissions(), r.budgets(), r.evidenceSnapshotId(), r.evidenceContentHash(), r.networkSnapshotId(),
+            r.networkContentHash(), r.settingsHash(), r.parameterHash(), r.samplerId(), r.configuredSampleStepMeters(),
+            r.profileChainage(), r.evidenceResolution(), Optional.of(input));
+        var run = new CorridorEngineAdapter(FIELD).traceWithUsage(request, f.evidence(), f.network(), CancellationProbe.NONE);
+        assertFalse(run.result().hypotheses().isEmpty());
+        for (var hypothesis : run.result().hypotheses())
+            assertEquals(Double.valueOf(3.0), hypothesis.diagnostics().get("sourceSecantRadiusProfiles"));
+        var receipt=run.corridorReceipt().orElseThrow();
+        assertEquals(CorridorExecutionReceipt.Availability.COMPLETE,receipt.samplingAvailability());
+        assertTrue(receipt.discoveredTracks().isPresent());
+        assertTrue(receipt.totals().solverStarts()>0);
+        assertEquals(receipt.totals().unaryEvaluations(),run.result().evaluatedStates());
+        assertEquals(receipt.totals().pairVisits(),run.usage().pairVisits());
+        assertEquals(receipt.totals().attemptedTransitions(),run.result().evaluatedTransitions());
+        receipt.requireBinding(request,f.evidence(),f.network(),run.result());
+    }
+
+    @Test
+    void ownedPreAdmissionRefusalExplainsTypedResourceCauseBeforeSolverStarts() {
+        var f = fixture(true);
+        var input = f.request().corridorInput().orElseThrow().withPolicy(
+            CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1, Set.of());
+        var request = withBudgets(withInput(f.request(), input), new TraceBudgets(1, 1, 1, 1, 1));
+        var run = new CorridorEngineAdapter(FIELD).traceWithUsage(request, f.evidence(), f.network(), CancellationProbe.NONE);
+        assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT, run.result().status());
+        assertTrue(run.result().explanation().contains("family=CORRIDOR_RESOURCE_LIMIT"), run.result().explanation());
+        assertTrue(run.result().explanation().contains("stage=TRACKER_ADMISSION reason=DECLARED_WORK_CAP"), run.result().explanation());
+        assertTrue(run.result().explanation().contains("LIMIT_STATES=1_count"), run.result().explanation());
+        assertTrue(run.result().explanation().contains("DECLARED_TRANSITIONS="), run.result().explanation());
+        assertEquals(0, run.corridorReceipt().orElseThrow().totals().solverStarts());
+    }
+
+    @Test
+    void resourceExplanationNeverUsesExceptionTextAndKeepsUnknownUnavailable() {
+        var failure = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorResourceLimitException("Cookie: synthetic-secret");
+        var explanation = CorridorEngineAdapter.resourceExplanation(failure);
+        assertFalse(explanation.contains("synthetic-secret"));
+        assertTrue(explanation.contains("stage=UNAVAILABLE"));
+        assertTrue(explanation.contains("reason=UNAVAILABLE"));
+        assertFalse(explanation.contains("rawAlternatives"));
+    }
+
+    @Test
     void productionAdapterMatchesDirectSamplerAndTrackerOnFrozenIrregularAnchors() {
         Fixture fixture = fixture(true);
         TraceHypothesisSet actual = new CorridorEngineAdapter(FIELD).trace(

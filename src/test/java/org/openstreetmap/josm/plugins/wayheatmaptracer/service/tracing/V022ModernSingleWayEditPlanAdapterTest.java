@@ -2326,10 +2326,11 @@ class V022ModernSingleWayEditPlanAdapterTest {
         assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
     }
 
-    @Test
-    void T117_malformedOccurrenceAssignmentsAndBlockedQualityFailClosed() throws Exception {
+    @ParameterizedTest
+    @EnumSource(value = TrackerMode.class, names = {"PROBABILISTIC", "CORRIDOR_AWARE"})
+    void T117_malformedOccurrenceAssignmentsAndBlockedQualityFailClosed(TrackerMode engine) throws Exception {
         Fixture fixture = fixture();
-        LiveBPreviewService.Computed computed = compute(fixture, TrackerMode.PROBABILISTIC);
+        LiveBPreviewService.Computed computed = compute(fixture, engine);
         ModernTracePipeline.Route route = computed.pipeline().routes().get(0);
         ModernSingleWayEditPlanAdapter adapter = new ModernSingleWayEditPlanAdapter();
         ExistingWayNodeOccurrence first = (ExistingWayNodeOccurrence) route.pointIds().get(0);

@@ -52,6 +52,119 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.image.Dir
 /** Common detached post-processing regressions for all modern tracing engines. */
 class V022ModernTracePipelineTest {
     @Test
+    void frozenAdditionalFixedMismatchFailsBeforeEngineCall() {
+        var f = fixture(TrackerMode.CORRIDOR_AWARE);
+        var r = authorityRequest(f, Set.of(0));
+        var calls = new AtomicInteger();
+        TraceEngine engine = (request, evidence, network, cancellation) -> {
+            calls.incrementAndGet();
+            return new TraceHypothesisSet(request.engine(), List.of(), TraceHypothesisSet.Status.NO_ROUTE,
+                false, 0, 0, "test no route");
+        };
+        assertThrows(IllegalArgumentException.class, () -> new ModernTracePipeline(engine).run(r,
+            f.evidence, f.network, options(GeometryCleanupConfig.disabled()), CancellationProbe.NONE, Set.of()));
+        assertEquals(0, calls.get());
+    }
+
+    @Test
+    void sourceCertificateProtectsBetweenRowOccurrencesAndCopiesFrozenAuthority() {
+        var f = fixture(TrackerMode.CORRIDOR_AWARE, 0.1, 1.0, false, true);
+        var mutable = new java.util.TreeSet<Integer>(); mutable.add(1);
+        var fixed = authorityRequest(f, mutable); mutable.clear();
+        assertEquals(Set.of(1), fixed.corridorInput().orElseThrow().additionalFixedOccurrences());
+        assertThrows(UnsupportedOperationException.class, () -> fixed.corridorInput().orElseThrow()
+            .additionalFixedOccurrences().clear());
+        var certificate = CorridorSourceProtection.inspect(fixed, f.evidence, f.network, "native", CancellationProbe.NONE);
+        assertTrue(certificate.available(), certificate.status());
+        assertEquals(3, certificate.occurrences().size());
+        assertEquals(2, fixed.corridorInput().orElseThrow().profileLocations().size());
+        var middle = certificate.occurrences().get(1);
+        assertEquals(1, middle.originalIndex()); assertTrue(middle.additionalFixed());
+        assertTrue(middle.fixedCoordinate()); assertTrue(middle.movableMembership());
+        assertTrue(certificate.protection().orElseThrow().protectedChainages().contains(middle.localChainageMeters()));
+        var movable = CorridorSourceProtection.inspect(authorityRequest(f, Set.of()), f.evidence, f.network, "native", CancellationProbe.NONE);
+        assertFalse(movable.occurrences().get(1).fixedCoordinate());
+        assertFalse(movable.protection().orElseThrow().protectedChainages().contains(middle.localChainageMeters()));
+        assertFalse(certificate.identity().equals(movable.identity()));
+        assertFalse(certificate.bind(CancellationProbe.NONE).requestIdentity().equals(movable.bind(CancellationProbe.NONE).requestIdentity()));
+        assertThrows(CancellationException.class, () -> CorridorSourceProtection.inspect(fixed, f.evidence, f.network, "native", () -> true));
+    }
+
+    @Test
+    void taggedBetweenRowOccurrenceIsProtectedWithoutAProfileRowFlag() {
+        var f = fixture(TrackerMode.CORRIDOR_AWARE, 0.1, 1.0, true, false);
+        var r = authorityRequest(f, Set.of());
+        var certificate = CorridorSourceProtection.inspect(r, f.evidence, f.network, "native", CancellationProbe.NONE);
+        assertTrue(certificate.available(), certificate.status());
+        var middle = certificate.occurrences().get(1);
+        assertEquals(Map.of("barrier", "gate"), middle.tags());
+        assertTrue(middle.protectedMembership() && middle.fixedCoordinate());
+        assertEquals(3, certificate.protection().orElseThrow().protectedChainages().size());
+    }
+
+    @Test
+    void incompleteExtraProofRefusesButStaleBindingRemainsTerminal() {
+        var f = fixture(TrackerMode.CORRIDOR_AWARE); var old = f.network.closure();
+        assertThrows(IllegalArgumentException.class, () -> new ClosureDescriptor(old.scope(), old.queryVersion(), old.primitiveKeys(), old.editableExistingKeys(),
+            old.movableExistingNodeKeys(), old.protectedExistingNodeKeys(), old.removableExistingNodeKeys(),
+            old.editableWayOccurrences(), old.externalPorts(), old.collisionEnvelope(), old.editRegion(), old.mayCreateNodes(), false, true, true));
+        var original = authorityRequest(f, Set.of());
+        var distances = new java.util.ArrayList<>(original.profileChainage().cumulativeGroundMeters());
+        distances.set(distances.size() - 1, Math.nextDown(distances.get(distances.size() - 1)));
+        var chainage = new ProfileChainage(distances, original.configuredSampleStepMeters());
+        var selected = (DetachedWay) f.network.primitives().get(original.selectedWayKey());
+        var geo = selected.nodeKeys().stream().map(k -> ((DetachedNode) f.network.primitives().get(k)).coordinate()).toList();
+        var metric = geo.stream().map(f.evidence.coordinateFrame()::toMetric).toList();
+        var c = IntervalTraceRequestFactory.corridorForAnchors(chainage, metric, geo, f.evidence)
+            .withPolicy(original.corridorInput().orElseThrow().executionPolicy(), Set.of());
+        var unresolved = new TraceRequest(original.selectedWayKey(), original.selectedRange(), original.engine(), original.geometryMode(),
+            original.permissions(), original.budgets(), original.evidenceSnapshotId(), original.evidenceContentHash(), original.networkSnapshotId(),
+            original.networkContentHash(), original.settingsHash(), original.parameterHash(), original.samplerId(), original.configuredSampleStepMeters(),
+            chainage, original.evidenceResolution(), java.util.Optional.of(c));
+        var certificate = CorridorSourceProtection.inspect(unresolved, f.evidence, f.network, "native", CancellationProbe.NONE);
+        assertEquals("REFUSED_SOURCE_PROTECTION_CHAINAGE_OWNERSHIP", certificate.status());
+        assertFalse(certificate.available()); assertTrue(certificate.protection().isEmpty());
+        assertEquals(2, certificate.occurrences().size());
+        assertThrows(IllegalStateException.class, () -> certificate.bind(CancellationProbe.NONE));
+        var stale = new NetworkSnapshot("different-capture", f.network.role(), f.network.datasetIdentity(), f.network.sourceGeneration(),
+            f.network.closure(), f.network.primitives(), f.network.incomingReferrerWatches());
+        assertThrows(IllegalArgumentException.class, () -> CorridorSourceProtection.inspect(original, f.evidence, stale, "native", CancellationProbe.NONE));
+    }
+
+    @Test
+    void frozenConveniencePipelineUsesSameFixedAuthorityForFinalization() {
+        var f = fixture(TrackerMode.CORRIDOR_AWARE, 0.1, 1.0, false, true);
+        var r = authorityRequest(f, Set.of(1)); var calls = new AtomicInteger();
+        TraceEngine engine = (request, evidence, network, cancellation) -> {
+            calls.incrementAndGet(); return routes(request.engine(), route("frozen", 0.7));
+        };
+        var pipeline = new ModernTracePipeline(engine); var opts = options(GeometryCleanupConfig.disabled());
+        var implicit = pipeline.run(r, f.evidence, f.network, opts, CancellationProbe.NONE).routes().get(0);
+        var explicit = pipeline.run(r, f.evidence, f.network, opts, CancellationProbe.NONE, Set.of(1)).routes().get(0);
+        var id = new ExistingWayNodeOccurrence(way(3), node(-4), 1);
+        assertEquals(f.evidence.coordinateFrame().toMetric(((DetachedNode) f.network.primitives().get(node(-4))).coordinate()), implicit.existingAssignments().get(id));
+        assertEquals(implicit.existingAssignments(), explicit.existingAssignments());
+        assertEquals(ObservationOwnership.FIXED_TOPOLOGY_ONLY, implicit.sourceOwnership().get(id));
+        assertEquals(2, calls.get());
+    }
+
+    private static TraceRequest authorityRequest(Fixture f, Set<Integer> fixed) {
+        var r = f.request; var w = (DetachedWay) f.network.primitives().get(r.selectedWayKey());
+        var metric = w.nodeKeys().subList(r.selectedRange().firstIndex(), r.selectedRange().lastIndex() + 1)
+            .stream().map(k -> f.evidence.coordinateFrame().toMetric(((DetachedNode) f.network.primitives().get(k)).coordinate())).toList();
+        var geographic = w.nodeKeys().subList(r.selectedRange().firstIndex(), r.selectedRange().lastIndex() + 1)
+            .stream().map(k -> ((DetachedNode) f.network.primitives().get(k)).coordinate()).toList();
+        var chainage = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory()
+            .profileChainage(metric, r.configuredSampleStepMeters());
+        var c = IntervalTraceRequestFactory.corridorForAnchors(chainage, metric, geographic, f.evidence)
+            .withPolicy(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1, fixed);
+        return new TraceRequest(r.selectedWayKey(), r.selectedRange(), r.engine(), r.geometryMode(), r.permissions(),
+            r.budgets(), r.evidenceSnapshotId(), r.evidenceContentHash(), r.networkSnapshotId(), r.networkContentHash(),
+            r.settingsHash(), r.parameterHash(), r.samplerId(), r.configuredSampleStepMeters(), chainage,
+            r.evidenceResolution(), java.util.Optional.of(c), r.disconnectionSource());
+    }
+
+    @Test
     void intervalFixedOccurrenceIsExactWhileUnprotectedOriginalEndpointKeepsMovementAuthority() {
         Fixture base = fixture(TrackerMode.CORRIDOR_AWARE);
         var original = base.network.closure();
@@ -396,6 +509,9 @@ class V022ModernTracePipelineTest {
         assertThrows(IllegalArgumentException.class, () -> new ModernTracePipeline(a).run(
                 repeatedRequest, fixture.evidence, repeatedNetwork,
                 options(GeometryCleanupConfig.disabled()), CancellationProbe.NONE));
+        var repeatedFixture = new Fixture(repeatedRequest, fixture.evidence, repeatedNetwork);
+        assertThrows(IllegalArgumentException.class, () -> CorridorSourceProtection.inspect(
+            authorityRequest(repeatedFixture, Set.of()), fixture.evidence, repeatedNetwork, "native", CancellationProbe.NONE));
     }
 
     @Test
@@ -642,6 +758,12 @@ class V022ModernTracePipelineTest {
         assertFalse(result.quality().has(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.
                 FinalGeometryEvaluator.FindingCode.NONADJACENT_TOUCH),
                 "Distinct coincident adjacent occurrences are a valid zero-length connector: " + result.quality());
+        var certificate = CorridorSourceProtection.inspect(authorityRequest(test, Set.of()), test.evidence,
+            test.network, "native", CancellationProbe.NONE);
+        assertTrue(certificate.available(), certificate.status());
+        assertTrue(certificate.occurrences().get(1).ambiguousSourceFraction());
+        assertTrue(certificate.occurrences().get(2).ambiguousSourceFraction());
+        assertTrue(certificate.occurrences().get(1).fixedCoordinate() && certificate.occurrences().get(2).fixedCoordinate());
     }
 
     private static Fixture replaceNetwork(Fixture base, ClosureDescriptor closure,

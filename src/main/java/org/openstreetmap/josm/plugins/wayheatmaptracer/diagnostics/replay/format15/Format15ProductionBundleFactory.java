@@ -30,7 +30,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSin
 
 /** Produces the named, checksummed frozen inputs consumed by strict production replay. */
 public final class Format15ProductionBundleFactory {
-    private static final String INTERVAL_INDEX_ARTIFACT = "interval-production.json";
+    static final String INTERVAL_INDEX_ARTIFACT = "interval-production.json";
     private static final String INTERVAL_PREVIEW_ARTIFACT = "private/interval-composed-preview.json";
     public static final String PLAN_AVAILABILITY_ARTIFACT = "plan-availability.json";
 

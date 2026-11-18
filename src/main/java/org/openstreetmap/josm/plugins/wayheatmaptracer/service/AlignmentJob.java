@@ -29,6 +29,17 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
  * @param <R> immutable preview payload type
  */
 public final class AlignmentJob<R> implements AutoCloseable {
+    /** Bounded cancellation evidence; only this job can construct a delivery event. */
+    public static final class CancellationDiagnosticEvent {
+        private final long sequence;private final AttemptSnapshot snapshot;
+        private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorCancellationDiagnostics summary;
+        private CancellationDiagnosticEvent(long sequence,AttemptSnapshot snapshot,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorCancellationDiagnostics summary){
+            this.sequence=sequence;this.snapshot=snapshot;this.summary=summary;
+        }
+        public long sequence(){return sequence;}public AttemptSnapshot snapshot(){return snapshot;}
+        public org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorCancellationDiagnostics summary(){return summary;}
+    }
     /** Explicit observable lifecycle states for an individual attempt. */
     public enum State {
         CAPTURING, ACQUIRING, INFERRING, REFINING, VALIDATING, PREVIEW_READY, CANCELLED, FAILED;
@@ -250,9 +261,17 @@ public final class AlignmentJob<R> implements AutoCloseable {
     /** Starts one attempt whose complete typed payload is captured before worker submission. */
     public <I> StartResult<R> startDetached(DetachedCapture<I> capture,
             DetachedWorker<I, R> worker, PreviewPublisher<R> publisher) {
+        return startDetached(capture, worker, publisher, ignored -> { });
+    }
+
+    /** Starts detached work with a cancellation-only, bounded diagnostic delivery channel. */
+    public <I> StartResult<R> startDetached(DetachedCapture<I> capture,
+            DetachedWorker<I, R> worker, PreviewPublisher<R> publisher,
+            Consumer<CancellationDiagnosticEvent> diagnostics) {
         Objects.requireNonNull(capture, "capture");
         Objects.requireNonNull(worker, "worker");
         Objects.requireNonNull(publisher, "publisher");
+        Objects.requireNonNull(diagnostics, "diagnostics");
         requireOpen();
         Attempt<R> existing = current.get();
         if (existing != null && !existing.state().terminal()) {
@@ -282,7 +301,7 @@ public final class AlignmentJob<R> implements AutoCloseable {
             return new StartResult<>(abandoned, true, false);
         }
         try {
-            executor.execute(() -> runDetachedWorker(acquiring, captured.input(), worker, publisher));
+            executor.execute(() -> runDetachedWorker(acquiring, captured.input(), worker, publisher, diagnostics));
         } catch (java.util.concurrent.RejectedExecutionException exception) {
             transitionIfCurrent(next, State.FAILED, null, safeFailure(exception));
             throw exception;
@@ -349,7 +368,8 @@ public final class AlignmentJob<R> implements AutoCloseable {
     }
 
     private <I> void runDetachedWorker(Attempt<R> started, I input,
-            DetachedWorker<I, R> worker, PreviewPublisher<R> publisher) {
+            DetachedWorker<I, R> worker, PreviewPublisher<R> publisher,
+            Consumer<CancellationDiagnosticEvent> diagnostics) {
         JobContext context = new JobContext(() -> isCancelled(started.sequence()),
             state -> transitionIfCurrent(started.sequence(), state, null, ""));
         contexts.put(started.sequence(), context);
@@ -368,6 +388,19 @@ public final class AlignmentJob<R> implements AutoCloseable {
             dispatcher.dispatch(() -> publishIfCurrent(started.sequence(), result, publisher));
         } catch (CancellationException exception) {
             cancelAttempt(started, "cancelled");
+            if (exception instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorFinalizationCancelledException cancelled
+                    && cancellationDiagnosticCurrent(started.sequence(), started.snapshot())) {
+                var summary = cancelled.diagnostics();
+                if (summary.matchesSource(started.snapshot().attemptId(), started.snapshot().settingsHash(),
+                        started.snapshot().contentHash())) {
+                    var event = new CancellationDiagnosticEvent(started.sequence(), started.snapshot(), summary);
+                    dispatcher.dispatch(() -> {
+                        if (cancellationDiagnosticCurrent(event.sequence(), event.snapshot())) {
+                            diagnostics.accept(event);
+                        }
+                    });
+                }
+            }
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             cancelAttempt(started, "interrupted");
@@ -378,6 +411,14 @@ public final class AlignmentJob<R> implements AutoCloseable {
         } finally {
             contexts.remove(started.sequence(), context);
         }
+    }
+
+    /** Checks the latest terminal owner without changing the attempt or cancellation CAS. */
+    boolean cancellationDiagnosticCurrent(long expectedSequence, AttemptSnapshot snapshot) {
+        Attempt<R> attempt = current.get();
+        return !closed.get() && attempt != null && attempt.sequence() == expectedSequence
+            && attempt.snapshot().equals(snapshot) && attempt.state() == State.CANCELLED
+            && attempt.cancelled() && attempt.result() == null;
     }
 
     private void publishIfCurrent(long attemptSequence, R result, PreviewPublisher<R> publisher) {

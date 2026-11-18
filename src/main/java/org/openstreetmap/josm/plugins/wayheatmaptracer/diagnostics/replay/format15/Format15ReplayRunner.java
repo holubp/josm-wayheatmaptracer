@@ -220,6 +220,8 @@ public final class Format15ReplayRunner {
                 fixedOccurrences.add(interval.endBoundary().occurrenceIndex());
             }
             ModernTracePipeline.PipelineRun production;
+            if (request.corridorInput().filter(c -> c.boundedBridgePolicy()).isPresent())
+                fixedOccurrences = request.corridorInput().orElseThrow().additionalFixedOccurrences();
             try {
                 production = pipeline.runWithUsage(request, shared.evidence(), shared.network(),
                         shared.options(), CancellationProbe.NONE, fixedOccurrences);
@@ -265,7 +267,7 @@ public final class Format15ReplayRunner {
                 choices.put(position, expected.chosenRouteIndex());
             }
             actualRuns.add(new IntervalTraceBatch.IntervalRun(interval, request,
-                    replayed, usage));
+                    replayed, usage,production.corridorReceipt()));
         }
         IntervalTraceBatch batch = new IntervalTraceBatch(shared.request(), shared.evidence(),
                 shared.network(), partition, actualRuns, shared.options(), payload.authority());
@@ -393,7 +395,8 @@ public final class Format15ReplayRunner {
         }
     }
 
-    private static Format15ProductionBundleFactory.IntervalSourceReceipt sourceReceipt(Object value) {
+    /** Shared bounded native source-receipt parser; export binding grants no replay capability. */
+    static Format15ProductionBundleFactory.IntervalSourceReceipt sourceReceipt(Object value) {
         if (!(value instanceof Map<?, ?> map) || !(map.get("kind") instanceof String kind)) {
             throw new ReplayMismatchException("strict-interval-source-receipt-mismatch");
         }

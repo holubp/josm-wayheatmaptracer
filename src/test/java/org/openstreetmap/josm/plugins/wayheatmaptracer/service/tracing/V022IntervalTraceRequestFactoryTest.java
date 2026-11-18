@@ -152,10 +152,37 @@ class V022IntervalTraceRequestFactoryTest {
         var evidence = batch.evidence();
         var intervals = batch.partition().slideIntervals();
         var factory = new IntervalTraceRequestFactory();
+        var modernInput = full.corridorInput().orElseThrow().withPolicy(
+            CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1, Set.of(2, 4));
+        var modern = new TraceRequest(full.selectedWayKey(), full.selectedRange(), full.engine(), full.geometryMode(),
+            full.permissions(), full.budgets(), full.evidenceSnapshotId(), full.evidenceContentHash(), full.networkSnapshotId(),
+            full.networkContentHash(), full.settingsHash(), full.parameterHash(), full.samplerId(), full.configuredSampleStepMeters(),
+            full.profileChainage().withSourceOrigin(11.0), full.evidenceResolution(), java.util.Optional.of(modernInput), full.disconnectionSource());
+        var modernLeft = factory.create(modern, captured, evidence, captured.network(), intervals.get(0));
+        var modernRight = factory.create(modern, captured, evidence, captured.network(), intervals.get(1));
+        assertEquals(Set.of(2, 3), modernLeft.corridorInput().orElseThrow().additionalFixedOccurrences());
+        assertEquals(Set.of(3, 4), modernRight.corridorInput().orElseThrow().additionalFixedOccurrences());
+        assertEquals(CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1,
+            modernRight.corridorInput().orElseThrow().executionPolicy());
+        assertEquals(0.0, modernRight.profileChainage().cumulativeGroundMeters().get(0));
+        assertEquals(11.0, modernLeft.profileChainage().sourceOriginGroundMeters());
+        assertEquals(modernLeft, factory.createDetached(modern, evidence, captured.network(), intervals.get(0), modern.budgets()));
+        assertEquals(modernRight, factory.createDetached(modern, evidence, captured.network(), intervals.get(1), modern.budgets()));
+        for (var frozenRequest : List.of(modern, modernRight)) {
+            var frozen = new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput(
+                frozenRequest, evidence, captured.network(), batch.options());
+            var decoded = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec.decode(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec.encode(frozen));
+            assertEquals(frozenRequest, decoded.request());
+        }
         var first = factory.create(full, captured, evidence,
                 captured.network(), intervals.get(0));
         var second = factory.create(full, captured, evidence,
                 captured.network(), intervals.get(1));
+        double expectedOrigin = 11.0;
+        for (int i = 1; i <= intervals.get(1).traceRange().firstIndex() - full.selectedRange().firstIndex(); i++)
+            expectedOrigin += captured.sourceMetric().get(i - 1).distanceTo(captured.sourceMetric().get(i));
+        assertEquals(expectedOrigin, modernRight.profileChainage().sourceOriginGroundMeters());
         var way = (DetachedWay) captured.network().primitives().get(first.selectedWayKey());
 
         assertEquals(intervals.get(0).traceRange(), first.selectedRange());

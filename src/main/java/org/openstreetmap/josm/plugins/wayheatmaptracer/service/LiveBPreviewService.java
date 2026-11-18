@@ -417,10 +417,17 @@ public final class LiveBPreviewService {
             ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options,
             Map<String, Number> counters, IntervalTraceBatch intervalBatch,
             String settingsResolutionJson, List<DetectorAttempt> sourceAttempts,
-            LegacyBComputation legacyB) {
+            LegacyBComputation legacyB,
+            java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorExecutionReceipt> corridorReceipt) {
+        public Computed(Captured captured,EvidenceSnapshot evidence,TraceRequest request,ModernTracePipeline.Result pipeline,
+            ModernTracePipeline.Options options,Map<String,Number> counters,IntervalTraceBatch intervalBatch,
+            String settingsResolutionJson,List<DetectorAttempt> sourceAttempts,LegacyBComputation legacyB){
+            this(captured,evidence,request,pipeline,options,counters,intervalBatch,settingsResolutionJson,sourceAttempts,legacyB,java.util.Optional.empty());
+        }
         public Computed {
             if (captured == null || evidence == null || request == null || options == null
-                    || (pipeline == null) == (intervalBatch == null)) {
+                    || (pipeline == null) == (intervalBatch == null) || corridorReceipt == null
+                    || pipeline == null && corridorReceipt.isPresent()) {
                 throw new IllegalArgumentException("Exactly one live preview result variant is required");
             }
             if (pipeline != null && pipeline.inference().engine() != request.engine()) {
@@ -437,6 +444,7 @@ public final class LiveBPreviewService {
                 throw new IllegalArgumentException("Interval result must retain its frozen capture");
             }
             counters = Map.copyOf(counters);
+            corridorReceipt.ifPresent(receipt->receipt.requireBinding(request,evidence,captured.network(),pipeline.inference()));
             sourceAttempts = List.copyOf(sourceAttempts);
             if (sourceAttempts.stream().anyMatch(attempt -> attempt.owner() != null
                     && (attempt.owner().captured() != captured
@@ -474,7 +482,10 @@ public final class LiveBPreviewService {
         }
         public Computed withSourceAttempts(List<DetectorAttempt> attempts) {
             return new Computed(captured, evidence, request, pipeline, options, counters,
-                    intervalBatch, settingsResolutionJson, attempts, legacyB);
+                    intervalBatch, settingsResolutionJson, attempts, legacyB,corridorReceipt);
+        }
+        public Computed withCorridorReceipt(java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorExecutionReceipt> receipt){
+            return new Computed(captured,evidence,request,pipeline,options,counters,intervalBatch,settingsResolutionJson,sourceAttempts,legacyB,receipt);
         }
         public Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
                 ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options,
@@ -491,7 +502,7 @@ public final class LiveBPreviewService {
                             attempt.sourceTier(), attempt.status(),
                             attempt.owner().withSettingsResolution(redactedJson))).toList();
             return new Computed(captured, evidence, request, pipeline, options, counters,
-                    intervalBatch, redactedJson, updated, legacyB);
+                    intervalBatch, redactedJson, updated, legacyB,corridorReceipt);
         }
         /** Whether this result contains production interval runs instead of a full-way run. */
         public boolean partitioned() {
@@ -594,8 +605,7 @@ public final class LiveBPreviewService {
         TrackerMode engine = config.heatmap().trackerMode();
         String settingsHash = hash(config.heatmap().toRedactedJson(), config.cleanup().toRedactedJson(),
                 permissions.canonicalIdentity());
-        String parameterHash = hash("live-" + engine.name().toLowerCase(java.util.Locale.ROOT)
-                + "-v2", parameterIdentity(engine));
+        String parameterHash = newCaptureParameterHash(engine, config.heatmap().alignmentMode(), false);
         String snapshotId = "live-modern-network-" + hash(Long.toString(selection.way().getUniqueId()),
                 source.toString(), settingsHash).substring(0, 16);
         NetworkSnapshotCapture.Specification specification = new NetworkSnapshotCapture.Specification(
@@ -1149,6 +1159,7 @@ public final class LiveBPreviewService {
             throw new IllegalArgumentException("Managed preview recovery permissions are required");
         }
         requireManagedSupported(selection, config);
+        String parameterHash = newCaptureParameterHash(config.heatmap().trackerMode(), config.heatmap().alignmentMode(), true);
         List<GeographicPoint> source = selection.segmentNodes().stream()
                 .map(LiveBPreviewService::geographic).toList();
         LocalMetricFrame frame = ManagedModernPreviewSource.managedFrame(source,
@@ -1210,9 +1221,7 @@ public final class LiveBPreviewService {
             }
             return new ManagedCaptureSeed(specification, network, source, metric, frame,
                     config.heatmap().color(), radius, config.heatmap().sampleStepMeters(),
-                    settingsHash, hash("managed-live-" + config.heatmap().trackerMode().name()
-                            .toLowerCase(java.util.Locale.ROOT) + "-v2",
-                            parameterIdentity(config.heatmap().trackerMode())),
+                    settingsHash, parameterHash,
                     config.cleanup(), config.heatmap().alignmentMode(),
                     config.heatmap().trackerMode(), sourceIdentity,
                     ProjectionRegistry.getProjection().toCode(), null, intervalPartition,
@@ -1240,9 +1249,7 @@ public final class LiveBPreviewService {
         return new ManagedCaptureSeed(specification, network,
                 source, metric, frame, config.heatmap().color(), radius,
                 config.heatmap().sampleStepMeters(), settingsHash,
-                hash("managed-live-" + config.heatmap().trackerMode().name()
-                        .toLowerCase(java.util.Locale.ROOT) + "-v2",
-                        parameterIdentity(config.heatmap().trackerMode())),
+                parameterHash,
                 config.cleanup(), config.heatmap().alignmentMode(),
                 config.heatmap().trackerMode(), sourceIdentity,
                 ProjectionRegistry.getProjection().toCode(), junction, null,
@@ -1588,9 +1595,11 @@ public final class LiveBPreviewService {
             }
             TraceRequest request = withBudgets(fullRequest(captured, evidence), budget);
             ModernTracePipeline.PipelineRun run = new ModernTracePipeline(new CorridorEngineAdapter(FIELD))
-                    .runWithUsage(request, evidence, captured.network(), options, cancellation, Set.of());
+                    .runWithUsage(request, evidence, captured.network(), options, cancellation,
+                            request.corridorInput().filter(CorridorTraceInput::boundedBridgePolicy)
+                                    .map(CorridorTraceInput::additionalFixedOccurrences).orElse(Set.of()));
             return new ChoiceRun(new Computed(captured, evidence, request, run.result(), options,
-                    ModernDiagnosticCounters.snapshot()), run.usage());
+                    ModernDiagnosticCounters.snapshot()).withCorridorReceipt(run.corridorReceipt()), run.usage());
         } finally {
             ModernDiagnosticCounters.end();
         }
@@ -1790,7 +1799,7 @@ public final class LiveBPreviewService {
             throw new IllegalArgumentException("Interval partition does not match the frozen capture");
         }
         cancellation.checkpoint();
-            TraceRequest fullRequest = withBudgets(fullRequest(captured, evidence), budget);
+            TraceRequest fullRequest = withBudgets(fullRequest(captured, evidence, partition), budget);
             ModernTracePipeline pipeline = new ModernTracePipeline(new CorridorEngineAdapter(FIELD));
             IntervalTraceRequestFactory factory = new IntervalTraceRequestFactory();
             List<IntervalTraceBatch.IntervalRun> runs = new ArrayList<>();
@@ -1818,6 +1827,8 @@ public final class LiveBPreviewService {
                         == SelectedWayIntervalPartitioner.BoundaryKind.FIXED_ISLAND) {
                     fixedOccurrences.add(interval.endBoundary().occurrenceIndex());
                 }
+                if (request.corridorInput().filter(c -> c.boundedBridgePolicy()).isPresent())
+                    fixedOccurrences = request.corridorInput().orElseThrow().additionalFixedOccurrences();
                 ModernTracePipeline.PipelineRun production = pipeline.runWithUsage(request, evidence,
                         captured.network(), options, cancellation, fixedOccurrences);
                 cancellation.checkpoint();
@@ -1833,7 +1844,7 @@ public final class LiveBPreviewService {
                 remainingTransitions -= usage.transitions();
                 retainedRoutes += production.result().routes().size();
                 runs.add(new IntervalTraceBatch.IntervalRun(interval, request,
-                        production.result(), usage));
+                        production.result(), usage,production.corridorReceipt()));
             }
             cancellation.checkpoint();
             return new IntervalTraceBatch(fullRequest, evidence, captured.network(), partition,
@@ -1841,6 +1852,11 @@ public final class LiveBPreviewService {
     }
 
     private static TraceRequest fullRequest(Captured captured, EvidenceSnapshot evidence) {
+        return fullRequest(captured, evidence, null);
+    }
+
+    private static TraceRequest fullRequest(Captured captured, EvidenceSnapshot evidence,
+            SelectedWayIntervalPartitioner.Partition partition) {
         ProfileChainage chainage = new ProbabilisticProfileFactory().profileChainage(
                 captured.sourceMetric(), captured.sampleStepMeters());
         Optional<CorridorTraceInput> corridorInput =
@@ -1848,12 +1864,33 @@ public final class LiveBPreviewService {
                 ? Optional.of(IntervalTraceRequestFactory.corridorForAnchors(chainage, captured.sourceMetric(),
                         captured.sourceGeographic(), evidence))
                 : Optional.empty();
+        boolean managed = captured.managedRaster() != null;
+        String currentA = newCaptureParameterHash(TrackerMode.CORRIDOR_AWARE, AlignmentMode.PRECISE_SHAPE, managed);
+        String otherA = newCaptureParameterHash(TrackerMode.CORRIDOR_AWARE, AlignmentMode.PRECISE_SHAPE, !managed);
+        boolean current = captured.parameterHash().equals(currentA);
+        if ((current || captured.parameterHash().equals(otherA))
+                && (!current || captured.engine() != TrackerMode.CORRIDOR_AWARE
+                        || captured.geometryMode() != AlignmentMode.PRECISE_SHAPE)) {
+            throw new IllegalArgumentException("Corridor A capture identity contradicts its source or mode");
+        }
+        if (current) {
+            Set<Integer> fixed = new java.util.TreeSet<>();
+            if (partition != null) {
+                for (var island : partition.fixedIslands()) {
+                    for (int occurrence = island.range().firstIndex(); occurrence <= island.range().lastIndex(); occurrence++) {
+                        fixed.add(occurrence);
+                    }
+                }
+            }
+            corridorInput = Optional.of(corridorInput.orElseThrow().withPolicy(
+                    CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1, fixed));
+        }
         return new TraceRequest(captured.specification().selectedWayKey(),
                 captured.specification().selectedRange(), captured.engine(),
                 captured.geometryMode(), captured.specification().permissions(),
                 TraceBudgets.defaults(), evidence.snapshotId(), evidence.canonicalHash(),
                 captured.network().snapshotId(), captured.network().canonicalHash(),
-                captured.settingsHash(), captured.parameterHash(), "visible-"
+                captured.settingsHash(), captured.parameterHash(), current ? CORRIDOR_A_CAPTURE_ID : "visible-"
                         + captured.engine().name().toLowerCase(java.util.Locale.ROOT) + "-v1",
                 captured.sampleStepMeters(), chainage, evidence.resolution(), corridorInput,
                 captured.specification().permissions().sharedNodeDisconnectionIntent().isEmpty()
@@ -2202,6 +2239,14 @@ public final class LiveBPreviewService {
         }
         return RenderedHeatmapSampler.directIntensity((argb >>> 16) & 0xff,
                 (argb >>> 8) & 0xff, argb & 0xff, alpha, mode);
+    }
+
+    private static final String CORRIDOR_A_CAPTURE_ID = "corridor-a-r3-owned-bounded-bridge-v1";
+
+    private static String newCaptureParameterHash(TrackerMode engine, AlignmentMode mode, boolean managed) {
+        String historical=hash((managed?"managed-live-":"live-")+engine.name().toLowerCase(java.util.Locale.ROOT)+"-v2",parameterIdentity(engine));
+        if(engine==TrackerMode.CORRIDOR_AWARE && mode==AlignmentMode.PRECISE_SHAPE) return hash(CORRIDOR_A_CAPTURE_ID, historical);
+        return historical;
     }
 
     static String parameterIdentity(TrackerMode engine) {

@@ -24,9 +24,12 @@ public record IntervalTraceBatch(TraceRequest fullRequest, EvidenceSnapshot evid
     public static final int MAX_RETAINED_ROUTES = 128;
     /** One original interval and its unmodified production inference and ranked routes. */
     public record IntervalRun(SelectedWayIntervalPartitioner.SlideInterval interval,
-            TraceRequest request, ModernTracePipeline.Result result, TraceWorkUsage usage) {
+            TraceRequest request, ModernTracePipeline.Result result, TraceWorkUsage usage,
+            java.util.Optional<CorridorExecutionReceipt> corridorReceipt) {
+        public IntervalRun(SelectedWayIntervalPartitioner.SlideInterval interval,TraceRequest request,
+            ModernTracePipeline.Result result,TraceWorkUsage usage){this(interval,request,result,usage,java.util.Optional.empty());}
         public IntervalRun {
-            if (interval == null || request == null || result == null || usage == null
+            if (interval == null || request == null || result == null || usage == null || corridorReceipt == null
                     || !interval.traceRange().equals(request.selectedRange())
                     || result.inference().engine() != request.engine()) {
                 throw new IllegalArgumentException("Interval result does not match its request");
@@ -75,6 +78,8 @@ public record IntervalTraceBatch(TraceRequest fullRequest, EvidenceSnapshot evid
         runs = List.copyOf(runs);
         for (int index = 0; index < runs.size(); index++) {
             IntervalRun run = runs.get(index);
+            run.corridorReceipt().ifPresent(receipt -> receipt.requireBinding(
+                run.request(), evidence, network, run.result().inference()));
             if (!run.interval().equals(partition.slideIntervals().get(index))
                     || !run.request().selectedWayKey().equals(fullRequest.selectedWayKey())
                     || run.request().engine() != fullRequest.engine()

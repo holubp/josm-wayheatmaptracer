@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.ArrayList;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
@@ -83,6 +84,106 @@ public final class DetachedScalarProfileSampler {
         return new RenderedHeatmapSampler().sampleMultiScaleProfilesOnDetachedField(
             levelZero, retainedAnchors, halfWidthRasterPixels, stepRasterPixels,
             sourcePitchRasterPixels, evidence, cancellation);
+    }
+
+    /**
+     * Explicit detached-A radius-three secant sampling; historical sample overloads stay unchanged.
+     * Original anchors are validated before temporary, non-route contexts are materialized. The
+     * existing numerical sampler builds one pyramid and samples every temporary row; only each
+     * original context's center survives. No field or normal is modified after sampling.
+     *
+     * @return original-row profiles and actual successful materialization work/timings; estimates
+     *         cover this sampler's temporary tables, not whole-process heap ownership
+     */
+    public RadiusThreeSampling sampleRadiusThree(EvidenceSnapshot evidence, String fieldName,
+            List<DetachedProfileSamplingLocation> anchors, double searchHalfWidthMeters,
+            double lateralStepMeters, CancellationProbe cancellation, double sourceOriginGroundMeters) {
+        validateInputs(evidence, fieldName, anchors, searchHalfWidthMeters, lateralStepMeters,
+            cancellation, sourceOriginGroundMeters);
+        cancellation.checkpoint();
+        var source = evidence.fields().get(fieldName);
+        double pitch = evidence.resolution().outputRasterPitchMeters();
+        double sourcePitch = maximumSourcePitch(evidence, anchors, sourceOriginGroundMeters) / pitch;
+        if (!Double.isFinite(sourcePitch) || sourcePitch <= 0 || sourcePitch > Integer.MAX_VALUE / 4.0)
+            throw new IllegalArgumentException("Source pitch cannot be represented on the output raster");
+        double width = searchHalfWidthMeters / pitch, step = lateralStepMeters / pitch;
+        int reduction = Math.max(4, (int) Math.ceil(4 * sourcePitch));
+        long estimate = radiusThreeMaterializationBytes(source.width(), source.height(), reduction,
+            anchors.size(), width, step);
+        if (estimate > maximumEstimatedBytes)
+            throw new IllegalArgumentException("Radius-three temporary profile materialization exceeds its component budget");
+        long started = System.nanoTime();
+        var contexts = radiusThreeContexts(anchors, cancellation);
+        long construction = System.nanoTime() - started;
+        cancellation.checkpoint();
+        started = System.nanoTime();
+        var scalar = ScalarIntensityField.fromEvidence(source, cancellation::checkpoint);
+        var temporary = new RenderedHeatmapSampler().sampleMultiScaleProfilesOnDetachedField(
+            scalar, contexts.anchors(), width, step, sourcePitch, evidence, cancellation);
+        long sampling = System.nanoTime() - started;
+        started = System.nanoTime();
+        var retained = retainContextCenters(temporary, contexts.centers(), cancellation);
+        long selection = System.nanoTime() - started;
+        long sampled = temporary.levels().stream().mapToLong(level -> level.profiles().size()).sum();
+        long kept = retained.levels().stream().mapToLong(level -> level.profiles().size()).sum();
+        return new RadiusThreeSampling(retained, new RadiusThreeWork(anchors.size(), contexts.anchors().size(),
+            sampled, kept, estimate, construction, sampling, selection));
+    }
+
+    /** Successful explicit sampling output; no inference or engine execution is represented. */
+    public record RadiusThreeSampling(MultiScaleProfileSet profiles, RadiusThreeWork work) { }
+
+    /** Actual temporary/retained row work; sampling time includes scalar and single pyramid creation. */
+    public record RadiusThreeWork(int originalAnchorCount, int temporaryAnchorCount,
+        long sampledProfileCount, long retainedProfileCount, long materializationEstimateBytes,
+        long constructionNanos, long samplingNanos, long selectionNanos) { }
+
+    private record SecantContexts(List<DetachedProfileSamplingLocation> anchors, int[] centers) { }
+
+    private static SecantContexts radiusThreeContexts(List<DetachedProfileSamplingLocation> anchors,
+            CancellationProbe cancellation) {
+        int count = anchors.size();
+        var flattened = new ArrayList<DetachedProfileSamplingLocation>(Math.subtractExact(Math.multiplyExact(3, count), 2));
+        int[] centers = new int[count];
+        for (int i = 0; i < count; i++) {
+            cancellation.checkpoint();
+            if (i > 0) flattened.add(anchors.get(Math.max(0, i - 3)));
+            centers[i] = flattened.size();
+            flattened.add(anchors.get(i));
+            if (i < count - 1) flattened.add(anchors.get(Math.min(count - 1, i + 3)));
+        }
+        return new SecantContexts(flattened, centers);
+    }
+
+    private static MultiScaleProfileSet retainContextCenters(MultiScaleProfileSet temporary,
+            int[] centers, CancellationProbe cancellation) {
+        var levels = new ArrayList<MultiScaleProfileSet.ScaleProfileLevel>();
+        for (var level : temporary.levels()) {
+            cancellation.checkpoint();
+            var rows = new ArrayList<RenderedHeatmapSampler.CrossSectionProfile>(centers.length);
+            for (int center : centers) {
+                cancellation.checkpoint();
+                rows.add(level.profiles().get(center));
+            }
+            levels.add(new MultiScaleProfileSet.ScaleProfileLevel(level.level(), level.reduction(),
+                level.effectiveSigmaL0(), rows));
+        }
+        return new MultiScaleProfileSet(levels, temporary.pyramidBuildNanos(), temporary.estimatedBytes());
+    }
+
+    static long radiusThreeMaterializationBytes(int width, int height, int maximumReduction,
+            int originalCount, double halfWidth, double step) {
+        try {
+            int temporaryCount = Math.subtractExact(Math.multiplyExact(3, originalCount), 2);
+            long profiles = estimatedMaterializationBytes(width, height, maximumReduction, temporaryCount, halfWidth, step);
+            // References/copies for flattened contexts, centers, three selected level lists and
+            // immutable wrappers coexist with ALL temporary full rows. Existing profile estimate
+            // already charges three scales, full sample objects and two pyramid-sized buffers.
+            long references = Math.addExact(Math.multiplyExact(64L, temporaryCount), Math.multiplyExact(128L, originalCount));
+            return Math.addExact(profiles, Math.addExact(references, 65_536L));
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException("Radius-three materialization estimate overflowed", overflow);
+        }
     }
 
     private static void validateInputs(EvidenceSnapshot evidence, String fieldName,

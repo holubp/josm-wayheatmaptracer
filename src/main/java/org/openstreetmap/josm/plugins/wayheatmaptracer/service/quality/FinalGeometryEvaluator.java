@@ -458,14 +458,23 @@ public final class FinalGeometryEvaluator {
             while (incomingIndex > 0 && points.get(incomingIndex).equals(points.get(index))) incomingIndex--;
             MetricPoint incoming = subtract(points.get(index), points.get(incomingIndex));
             MetricPoint outgoing = subtract(points.get(index + 1), points.get(index));
-            double product = norm(incoming) * norm(outgoing);
-            if (product > 0.0 && dot(incoming, outgoing) < -0.25 * product) {
+            if (hardBacktrackEdges(incoming.xMeters(), incoming.yMeters(), norm(incoming),
+                    outgoing.xMeters(), outgoing.yMeters(), norm(outgoing))) {
                 findings.add(hard(FindingCode.ADJACENT_BACKTRACK, incomingIndex, index + 1, 0));
                 if (index == points.size() - 2) {
                     findings.add(hard(FindingCode.TERMINAL_OVERSHOOT, incomingIndex, index + 1, 0));
                 }
             }
         }
+    }
+
+    /** Existing strict metric backtrack predicate; lengths must be the StrictMath.hypot of
+     * the corresponding metric edge components. Exposes identical arithmetic for bounded caches. */
+    public static boolean hardBacktrackEdges(double incomingEast, double incomingNorth,
+            double incomingLength, double outgoingEast, double outgoingNorth, double outgoingLength) {
+        double product = incomingLength * outgoingLength;
+        return product > 0.0
+            && incomingEast * outgoingEast + incomingNorth * outgoingNorth < -0.25 * product;
     }
 
     private static void inspectLocalExcursions(Request request, List<Finding> findings,
@@ -1656,6 +1665,17 @@ public final class FinalGeometryEvaluator {
             result[index] = result[index - 1] + points.get(index - 1).distanceTo(points.get(index));
         }
         return result;
+    }
+
+    /**
+     * Tests definite proper segment crossing with the unchanged native intersection arithmetic.
+     * MetricPoint construction enforces finite coordinates; null inputs are rejected explicitly.
+     * Touches, overlaps and near/uncertain contacts do not satisfy this predicate.
+     */
+    public static boolean properIntersection(MetricPoint a, MetricPoint b, MetricPoint c, MetricPoint d) {
+        java.util.Objects.requireNonNull(a); java.util.Objects.requireNonNull(b);
+        java.util.Objects.requireNonNull(c); java.util.Objects.requireNonNull(d);
+        return intersection(a, b, c, d) == IntersectionKind.PROPER;
     }
 
     private static IntersectionKind intersection(MetricPoint a, MetricPoint b, MetricPoint c, MetricPoint d) {

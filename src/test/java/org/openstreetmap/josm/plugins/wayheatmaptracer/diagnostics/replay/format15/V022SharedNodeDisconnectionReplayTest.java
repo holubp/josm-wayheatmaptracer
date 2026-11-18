@@ -287,15 +287,31 @@ class V022SharedNodeDisconnectionReplayTest {
                 2, SharedNodeWorkflowFixture.key(fixture.nodes().get(2))));
         var input = new FrozenReplayInput(computed.request(), computed.evidence(), computed.captured().network(), computed.options());
         byte[] encoded = FrozenReplayCodec.encode(input);
+        assertTrue(computed.request().corridorInput().orElseThrow().boundedBridgePolicy());
+        assertEquals(9, java.nio.ByteBuffer.wrap(encoded).getInt(4));
         var decoded = assertDoesNotThrow(() -> FrozenReplayCodec.decode(encoded));
         byte[] falseLegacy = encoded.clone(); falseLegacy[7] = 4;
         var invalid = assertThrows(IllegalArgumentException.class, () -> FrozenReplayCodec.decode(falseLegacy));
-        assertEquals("Legacy frozen schema cannot carry disconnection authority", invalid.getCause().getMessage());
+        assertEquals("Frozen A policy version differs from request schema", invalid.getCause().getMessage());
         assertEquals(input.canonicalHash(), decoded.canonicalHash());
         assertEquals(computed.request().disconnectionSource(), decoded.request().disconnectionSource());
         var plan = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
         var copied = FrozenReplayCodec.decodeEditPlan(FrozenReplayCodec.encodeEditPlan(plan));
         assertEquals(plan.canonicalHash(), copied.canonicalHash());
         assertEquals(plan.disconnectedOccurrenceReplacements(), copied.disconnectedOccurrenceReplacements());
+    }
+
+    @Test void historicalFrozenSchemaStillRejectsDisconnectionAuthority() throws Exception {
+        var fixture = SharedNodeWorkflowFixture.create(AlignmentMode.MOVE_EXISTING_NODES, false);
+        var computed = fixture.compute(Map.of(1, SharedNodeWorkflowFixture.key(fixture.nodes().get(1)),
+                2, SharedNodeWorkflowFixture.key(fixture.nodes().get(2))));
+        assertFalse(computed.request().corridorInput().orElseThrow().boundedBridgePolicy());
+        var input = new FrozenReplayInput(computed.request(), computed.evidence(),
+                computed.captured().network(), computed.options());
+        byte[] encoded = FrozenReplayCodec.encode(input);
+        assertEquals(input.canonicalHash(), FrozenReplayCodec.decode(encoded).canonicalHash());
+        encoded[7] = 4;
+        var invalid = assertThrows(IllegalArgumentException.class, () -> FrozenReplayCodec.decode(encoded));
+        assertEquals("Legacy frozen schema cannot carry disconnection authority", invalid.getCause().getMessage());
     }
 }

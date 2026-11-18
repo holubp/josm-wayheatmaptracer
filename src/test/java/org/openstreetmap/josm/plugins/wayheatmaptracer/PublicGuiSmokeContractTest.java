@@ -62,8 +62,9 @@ class PublicGuiSmokeContractTest {
     }
     @Test void smokeEngineAdmissionNeverSubstitutesAnotherEngine() {
         assertEquals(TrackerMode.PROBABILISTIC, PublicGuiSmokeMain.guiEngine("PROBABILISTIC"));
+        assertEquals(TrackerMode.CORRIDOR_AWARE, PublicGuiSmokeMain.guiEngine("CORRIDOR_AWARE"));
         assertEquals(TrackerMode.LEGACY_THEN_B, PublicGuiSmokeMain.guiEngine("LEGACY_THEN_B"));
-        for (String other : List.of("LEGACY_V02", "HYBRID", "CORRIDOR_AWARE", "DIRECTIONAL_IMAGE", "unknown"))
+        for (String other : List.of("LEGACY_V02", "HYBRID", "DIRECTIONAL_IMAGE", "unknown"))
             assertThrows(IllegalArgumentException.class, () -> PublicGuiSmokeMain.guiEngine(other));
     }
     @TempDir Path temporary;
@@ -106,6 +107,19 @@ class PublicGuiSmokeContractTest {
         var selectedPlan = new ModernSingleWayEditPlanAdapter().assess(computed, selected).plan().orElseThrow();
         assertEquals(choices.get(selected).candidate().id(), selectedPlan.routeIdentity());
         PublicGuiSmokeOracle.verifyFinalGeometry(selectedPlan.finalPreviewWays().get(selectedPlan.selectedWayKey()));
+    }
+
+    @Test
+    void publicNativeHotRasterDrivesActualCorridorAwareChoiceToAnalyticRidge() throws Exception {
+        var computed = publicComputed(TrackerMode.CORRIDOR_AWARE);
+        assertEquals(TrackerMode.CORRIDOR_AWARE, computed.request().engine());
+        assertEquals(TrackerMode.CORRIDOR_AWARE, computed.pipeline().inference().engine());
+        var choices = new LiveBPreviewService().adaptChoices(computed, point -> ProjectionRegistry.getProjection()
+                .latlon2eastNorth(new LatLon(point.latitudeDegrees(), point.longitudeDegrees())));
+        int selected = PublicGuiSmokeMain.oraclePassingRouteIndex(choices);
+        var plan = new ModernSingleWayEditPlanAdapter().assess(computed, selected).plan().orElseThrow();
+        assertEquals(choices.get(selected).candidate().id(), plan.routeIdentity());
+        PublicGuiSmokeOracle.verifyFinalGeometry(plan.finalPreviewWays().get(plan.selectedWayKey()));
     }
 
     @Test
