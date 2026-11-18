@@ -213,6 +213,7 @@ public final class CorridorExecutionArtifacts {
         for(var entry:new TreeMap<>(receipt.tracks()).entrySet()){
             var key=scope+":"+entry.getKey();var work=entry.getValue();var p=work.preparation();var h=work.hardGeometry();
             csv.row("track",key,"admission",work.admissionStatus());csv.row("track",key,"outcome",p.outcome());
+            work.gapDisposition().ifPresent(disposition->csv.row("track",key,"gap_domain_disposition",disposition));
             csv.row("track",key,"original_states",p.originalStates());csv.row("track",key,"retained_unaries",p.retainedUnaryEvaluations());
             csv.row("track",key,"bridge_unaries",p.bridgeUnaryEvaluations());csv.row("track",key,"solver_starts",p.solverStarts());
             csv.row("track",key,"adjacent_objective_entries",work.adjacentObjectiveEntries());csv.row("track",key,"physical_cached_edges",h.metricEdges());

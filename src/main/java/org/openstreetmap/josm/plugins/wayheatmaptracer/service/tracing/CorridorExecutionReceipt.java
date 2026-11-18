@@ -27,7 +27,8 @@ public final class CorridorExecutionReceipt {
     }
     public record TrackWork(String trackId,CorridorCenterlineOptimizer.PreparedWork preparation,
         CorridorCenterlineOptimizer.HardGeometryWork hardGeometry,String admissionStatus,long contactTests,
-        long pairTests,long rayTests,long nativeChecks,long adjacentObjectiveEntries,Optional<Mapping> mapping){ }
+        long pairTests,long rayTests,long nativeChecks,long adjacentObjectiveEntries,Optional<Mapping> mapping,
+        Optional<CorridorAwareTracker.GapDomainDisposition> gapDisposition){ }
     public record Totals(long originalStates,long retainedUnaryEvaluations,long bridgeUnaryEvaluations,
         long admissionContacts,long admissionPairs,long adjacentObjectiveEntries,long solverStarts,
         long attemptedTransitions,long testedTriples,long rejectedTriples,long scoredTransitions,OptionalLong gapAdmissionUnits){
@@ -123,7 +124,7 @@ public final class CorridorExecutionReceipt {
                 var a=item.admission().orElse(null);
                 work.put(id,new TrackWork(id,item.preparation(),item.hardGeometry(),a==null?"UNAVAILABLE":a.status(),
                     a==null?0:a.contactTests(),a==null?0:a.pairTests(),a==null?0:a.rayTests(),a==null?0:a.nativeChecks(),item.adjacentObjectiveEntries(),
-                    a==null||!a.admitted()?Optional.empty():Optional.of(mapping(a.schedule()))));
+                    a==null||!a.admitted()?Optional.empty():Optional.of(mapping(a.schedule())),item.gapDisposition()));
             });
         }
         var provenance=new LinkedHashMap<String,CandidateProvenance>();

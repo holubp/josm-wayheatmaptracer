@@ -29,6 +29,16 @@ public final class CorridorPolicyFixture {
         }
         return create(points,true,false,Set.of(),1.5,-1);
     }
+    /** Public separated straight prefix; all original admitted-fold coordinates remain unchanged. */
+    static Fixture admittedParabolaWithStraightPrefix(){
+        var points=new ArrayList<MetricPoint>();
+        for(int i=0;i<=22;i++)points.add(new MetricPoint(10+1.5*i,64));
+        for(int j=-10;j<=10;j++){
+            double u=1.5*j;
+            points.add(new MetricPoint(64+u,64-9.7+u*u/(2*8.5)));
+        }
+        return create(points,true,false,Set.of(),1.5,-1);
+    }
     public static Fixture parabolaWithProtectedBetweenRows(){
         var points=new ArrayList<MetricPoint>();
         for(int j=-15;j<=15;j++){

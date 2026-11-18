@@ -11,6 +11,26 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 class CorridorBridgeBindingTest {
     static final RasterMetricTransform FRAME=RasterMetricTransform.metricGrid(new MetricPoint(0,0),1,0,0,1);
 
+    @Test void r4TerminalCorrespondenceFailuresNeverPrepareOptionalGapFallback()throws Exception{
+        var f=PhysicalGeometryFixture.parallelFrame(.95);
+        for(int kind=0;kind<3;kind++){
+            var calls=new java.util.concurrent.atomic.AtomicInteger();int failure=kind;
+            var tracker=CorridorAwareTracker.withTargetOwnedGapDomain(guarded(CancellationProbe.NONE),
+                (CorridorWorkingSchedule.BoundContext)context(),domain->{
+                    calls.incrementAndGet();assertTrue(domain.gapPlan().isEmpty(),"Owned admission must precede optional states");
+                    if(failure==0)throw new CorridorResourceLimitException("synthetic terminal resource");
+                    if(failure==1)throw new IllegalArgumentException("synthetic binding failure");
+                    throw new java.util.concurrent.CancellationException("synthetic terminal cancellation");
+                },7.01);
+            Class<? extends RuntimeException> type=kind==0?CorridorResourceLimitException.class:
+                kind==1?IllegalArgumentException.class:java.util.concurrent.CancellationException.class;
+            assertThrows(type,()->tracker.trackDetailed(f.profileSet(),f.sourcePixelPitch(),JunctionContext.empty()));
+            assertEquals(1,calls.get());assertEquals(1,tracker.correspondenceWork().size());
+            var work=tracker.correspondenceWork().values().iterator().next().preparation();
+            assertEquals(0,work.solverStarts());assertTrue(work.gapWork().isEmpty());
+        }
+    }
+
     @Test void objectiveAdjacencyReportMatchesSuccessAndResetsForNextTrack()throws Exception{
         var f=fixture();var optimizer=guarded(CancellationProbe.NONE);var context=context();
         var domain=original(optimizer,f,context);var result=optimizer.optimizeOriginalDomain(domain);

@@ -9,6 +9,51 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format
 
 /** Detached public finite-width faint strands; invokes the actual frozen R4 adapter. */
 class CorridorGapProductionTest {
+    @Test void admittedOwnedCorrespondencePrecedesDisjointOptionalGapDomain() {
+        var f = CorridorPolicyFixture.admittedParabolaWithStraightPrefix(); var e = f.evidence(); var field = e.fields().get("native");
+        var values = field.copiedValues();
+        // The original fold image (x>=40) stays exact. A small prefix jog separates its
+        // robust tube from historical interpolation at a finite, independently bridged gap.
+        for (int y = 0; y < field.height(); y++) for (int x = 0; x < 40; x++) {
+            double center = 64 + .6 * Math.sin((x - 10) / 5.0);
+            values[y * field.width() + x] = x >= 22 && x <= 25 ? 0 : Math.exp(-.5 * Math.pow((y - center) / .8, 2));
+        }
+        var evidence = new EvidenceSnapshot("public-owned-fold-gap", e.coordinateFrame(), e.transform(), e.resolution(),
+                e.decisionRegion(), e.evidenceRegion(), Map.of("native", new ScalarEvidenceField(field.width(), field.height(),
+                        values, field.copiedValidity(), field.lineage())), "public-owned-fold-gap");
+        var r = f.request(); var runs = new ArrayList<ModernTracePipeline.PipelineRun>(); var inputs = new ArrayList<FrozenReplayInput>();
+        for (var policy : List.of(CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1,
+                CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1)) {
+            var request = new TraceRequest(r.selectedWayKey(), r.selectedRange(), r.engine(), r.geometryMode(), r.permissions(), r.budgets(),
+                    evidence.snapshotId(), evidence.canonicalHash(), r.networkSnapshotId(), r.networkContentHash(), r.settingsHash(), r.parameterHash(),
+                    r.samplerId(), r.configuredSampleStepMeters(), r.profileChainage(), r.evidenceResolution(),
+                    Optional.of(r.corridorInput().orElseThrow().withPolicy(policy, Set.of())));
+            runs.add(new ModernTracePipeline(new CorridorEngineAdapter("native")).runWithUsage(request, evidence, f.network(), f.options(), CancellationProbe.NONE));
+            inputs.add(new FrozenReplayInput(request, evidence, f.network(), f.options()));
+        }
+        var old = runs.get(0); var current = runs.get(1);
+        var oldReceipt = old.corridorReceipt().orElseThrow(); var currentReceipt = current.corridorReceipt().orElseThrow();
+        assertTrue(oldReceipt.tracks().values().stream().anyMatch(t -> t.mapping().isPresent()), oldReceipt.tracks()::toString);
+        assertTrue(currentReceipt.tracks().values().stream().anyMatch(t -> t.mapping().isPresent()),
+                () -> "Optional disjoint gaps must not destroy admitted native correspondence: " + currentReceipt.tracks());
+        assertEquals(oldReceipt.candidates().keySet(), currentReceipt.candidates().keySet());
+        assertEquals(old.result().inference().hypotheses().stream().map(TraceHypothesis::points).toList(),
+                current.result().inference().hypotheses().stream().map(TraceHypothesis::points).toList());
+        assertEquals(old.result().routes().stream().map(t -> t.hypothesis().points()).toList(),
+                current.result().routes().stream().map(t -> t.hypothesis().points()).toList());
+        assertEquals(old.usage(), current.usage());
+        assertEquals(oldReceipt.totals().bridgeUnaryEvaluations(), currentReceipt.totals().bridgeUnaryEvaluations());
+        assertEquals(oldReceipt.totals(), currentReceipt.totals());
+        assertTrue(currentReceipt.tracks().values().stream().allMatch(t -> t.preparation().gapWork().isEmpty()));
+        assertTrue(currentReceipt.tracks().values().stream().filter(t -> t.mapping().isPresent()).allMatch(t ->
+                t.gapDisposition().orElseThrow().name().equals("SKIPPED_OWNED_CORRESPONDENCE_PRIORITY")));
+        assertTrue(current.result().inference().hypotheses().stream().anyMatch(h -> h.support().contains(ObservationOwnership.INFERRED_GAP)));
+        var bundle = Format15ProductionBundleFactory.createLive("public-owned-gap-priority", inputs.get(1), current.result(),
+                "preview", "synthetic", 0, null, false, false);
+        bundle = CorridorExecutionArtifacts.attach(bundle, inputs.get(1), current.result().inference(), currentReceipt);
+        assertTrue(new String(bundle.artifact("corridor-execution.csv").bytes(), java.nio.charset.StandardCharsets.UTF_8)
+                .contains("SKIPPED_OWNED_CORRESPONDENCE_PRIORITY"));
+    }
     @Test void unavailableCertificateKeepsR4AdmissionPolicyButAddsNoGapStates() {
         var f = CorridorPolicyFixture.straight(true, false, Set.of()); var r = f.request();
         var way = (DetachedWay)f.network().primitives().get(r.selectedWayKey());
