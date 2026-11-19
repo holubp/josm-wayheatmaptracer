@@ -28,8 +28,8 @@ public final class CorridorExecutionArtifacts {
     public static Format15Bundle attach(Format15Bundle bundle,FrozenReplayInput input,
             TraceHypothesisSet result,CorridorExecutionReceipt receipt){
         receipt.requireBinding(input.request(),input.evidence(),input.network(),result);
-        String outputBinding=requireSingleBundle(bundle,input,result);
-        var csv=new Csv();bindingRows(csv,"VALIDATED",outputBinding);append(csv,"engine-request",receipt);
+        var csv=new Csv();String outputBinding=requireSingleBundle(bundle,input,result,csv);
+        bindingRows(csv,"VALIDATED",outputBinding);append(csv,"engine-request",receipt);
         return attachCsv(bundle,csv.text());
     }
     public static Format15Bundle attachIntervals(Format15Bundle bundle,IntervalTraceBatch batch){
@@ -42,6 +42,7 @@ public final class CorridorExecutionArtifacts {
                 var receipt=run.corridorReceipt().orElseThrow();
                 receipt.requireBinding(run.request(),batch.evidence(),batch.network(),run.result().inference());
                 append(csv,"interval-"+index,receipt);
+                appendLineage(csv,"interval-"+index,run.routes());
             }
             index++;
         }
@@ -73,7 +74,7 @@ public final class CorridorExecutionArtifacts {
         require(status instanceof String && Set.of("AVAILABLE","UNAVAILABLE","UNAVAILABLE_BUDGET").contains(status)
             &&"AVAILABLE".equals(status)==bundle.artifacts().containsKey(component));
     }
-    private static String requireSingleBundle(Format15Bundle bundle,FrozenReplayInput input,TraceHypothesisSet result){
+    private static String requireSingleBundle(Format15Bundle bundle,FrozenReplayInput input,TraceHypothesisSet result,Csv csv){
         String hash=input.canonicalHash();var frozen=bundle.artifact("frozen-input.bin");
         require(hash.equals(frozen.sha256())&&hash.equals(bundle.sourceIdentityHash())
             &&input.request().parameterHash().equals(bundle.parameterHash()));
@@ -104,10 +105,19 @@ public final class CorridorExecutionArtifacts {
                 var decoded=FinalOutputComponentsCodec.decode(components.bytes(),finalExpected.get().componentsBinding());
                 require(finalExpected.get().matches(decoded.output())
                     &&ScalarReplayFingerprint.sha256(result).equals(ScalarReplayFingerprint.sha256(decoded.output().inference())));
+                appendLineage(csv,"engine-request",decoded.output().routes());
                 nativeOutput=true;
             }else require(components==null);
             return nativeOutput?"VALIDATED":"UNAVAILABLE";
         }catch(ReplayMismatchException malformed){throw new IllegalArgumentException("A sidecar destination native result differs",malformed);}
+    }
+
+    private static void appendLineage(Csv csv,String scope,List<ModernTracePipeline.Route> routes) {
+        for(var route:routes)if(route.lineage().variant()!=ModernTracePipeline.RouteVariant.BASE) {
+            csv.row("final_variant",scope+":"+route.hypothesis().id(),"native_parent",route.lineage().nativeParentId());
+            csv.row("final_variant",scope+":"+route.hypothesis().id(),"variant",route.lineage().variant());
+            csv.row("final_variant",scope+":"+route.hypothesis().id(),"native_origin_count",route.lineage().nativeAliases().size());
+        }
     }
 
     private static Map<String,Long> range(OccurrenceRange value){

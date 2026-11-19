@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -51,6 +53,167 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.image.Dir
 
 /** Common detached post-processing regressions for all modern tracing engines. */
 class V022ModernTracePipelineTest {
+    @Test void nativeSmoothingRetainsExactRawFinalAndAddsOneReviewedChildWithoutSecondEngineRun() {
+        var f=nativeSmoothingFixture();
+        var points=java.util.stream.IntStream.rangeClosed(0,20).mapToObj(i->
+                new MetricPoint(i*.2,i==0||i==20 ? 0 : .04*Math.sin(i*1.7))).toList();
+        var nativeRaw=new TraceHypothesis("native-parent","native-branch",points,
+                java.util.Collections.nCopies(points.size(),ObservationOwnership.DIRECT_TWO_SIDED),1,.7,Map.of());
+        var calls=new AtomicInteger();
+        TraceEngine engine=(r,e,n,c)->{ calls.incrementAndGet(); return routes(r.engine(),nativeRaw); };
+        var pipeline=new ModernTracePipeline(engine);
+        var off=pipeline.run(f.request,f.evidence,f.network,options(GeometryCleanupConfig.disabled()),CancellationProbe.NONE);
+        calls.set(0);
+        var smoothed=pipeline.run(f.request,f.evidence,f.network,
+                options(org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset.BALANCED
+                    .apply(GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE)),CancellationProbe.NONE);
+        assertEquals(1,calls.get()); assertEquals(2,smoothed.routes().size(),smoothed.toString());
+        var raw=smoothed.routes().stream().filter(r->r.lineage().variant()==ModernTracePipeline.RouteVariant.BASE).findFirst().orElseThrow();
+        var child=smoothed.routes().stream().filter(r->r.lineage().variant()==ModernTracePipeline.RouteVariant.LONG_SCALE_SMOOTHED).findFirst().orElseThrow();
+        assertEquals(off.routes().get(0),raw); assertSame(nativeRaw,child.rawHypothesis());
+        assertEquals(List.of(nativeRaw),smoothed.inference().hypotheses());
+        assertNotEquals(raw.hypothesis().id(),child.hypothesis().id());
+        assertNotEquals(raw.hypothesis().points(),child.hypothesis().points());
+        assertEquals(nativeRaw.id(),child.lineage().nativeParentId());
+        assertEquals(points.size(),child.lineage().nativeAliases().size());
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED,
+                child.quality().disposition());
+        for(var id:child.pointIds())if(id instanceof GeneratedCandidatePoint generated) {
+            assertEquals(child.hypothesis().id(),generated.candidateId());
+            assertEquals(id,child.pointIds().get(child.lineage().nativeAliases().get(generated.originalPointIndex())));
+        }
+        assertEquals(child.hypothesis().points(),child.pointIds().stream().map(child.assignments()::get).toList());
+        int childIndex=smoothed.routes().indexOf(child);
+        var plan=new ModernSingleWayEditPlanAdapter().adaptFrozen(f.request,f.evidence,f.network,
+                options(GeometryCleanupConfig.disabled().withMode(GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE)),
+                smoothed,childIndex,4);
+        assertTrue(plan.validation().reviewRequired());
+        var adapted=new ModernCandidateAdapter().adaptRoutes(smoothed.routes(),f.request.engine(),f.evidence,"native",
+                List.of(new MetricPoint(0,0),new MetricPoint(4,0)),geo->new EastNorth(geo.longitudeDegrees(),geo.latitudeDegrees()));
+        assertEquals(smoothed.routes().stream().map(r->r.hypothesis().id()).toList(),adapted.stream().map(c->c.id()).toList());
+    }
+
+    @Test void retainedRouteCapKeepsAllNativeParentsAndReportsOmittedActualChildWork() {
+        var raw=route("cap-parent",0);var childPoints=List.of(raw.points().get(0),new MetricPoint(2,.01),raw.points().get(2));
+        var ids=java.util.stream.IntStream.range(0,3).mapToObj(i->(org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId)
+                new GeneratedCandidatePoint(raw.id(),i)).toList();
+        var assignments=new LinkedHashMap<org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId,MetricPoint>();
+        var ownership=new LinkedHashMap<org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId,ObservationOwnership>();
+        for(int i=0;i<3;i++){assignments.put(ids.get(i),raw.points().get(i));ownership.put(ids.get(i),raw.support().get(i));}
+        var baseQuality=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result(raw.id(),
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Disposition.APPLICABLE,List.of(),4,4,0,0,0);
+        var base=new ModernTracePipeline.Route(raw,raw,ids,assignments,ownership,baseQuality,ImageSupportedLocalCleanup.Status.SKIPPED,false);
+        var childIds=java.util.stream.IntStream.range(0,3).mapToObj(i->(org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId)
+                new GeneratedCandidatePoint("cap-child",i)).toList();
+        var childAssignments=new LinkedHashMap<org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId,MetricPoint>();
+        var childOwnership=new LinkedHashMap<org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId,ObservationOwnership>();
+        for(int i=0;i<3;i++){childAssignments.put(childIds.get(i),childPoints.get(i));childOwnership.put(childIds.get(i),raw.support().get(i));}
+        var child=new ModernTracePipeline.Route(raw,new TraceHypothesis("cap-child","cap",childPoints,raw.support(),1,.5,
+                Map.of("longScaleWorkVisits",7.,"longScaleSourceCells",11.)),childIds,childAssignments,childOwnership,
+                new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result("cap-child",
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED,List.of(),4,4,0,0,0),
+                ImageSupportedLocalCleanup.Status.CLEANED,true,new ModernTracePipeline.RouteLineage(raw.id(),
+                    ModernTracePipeline.RouteVariant.LONG_SCALE_SMOOTHED,Map.of(0,0,1,1,2,2)));
+        var inference=routes(TrackerMode.CORRIDOR_AWARE,raw);
+        var paired=new ModernTracePipeline.Result(inference,List.of(base,child));
+        var retained=ModernTracePipeline.retainNativeRoutesWithinBudget(java.util.Collections.nCopies(65,paired),128);
+        assertEquals(65,retained.stream().mapToInt(r->r.routes().size()).sum());
+        assertEquals(raw,retained.get(0).inference().hypotheses().get(0));
+        var kept=retained.get(0).routes().get(0);
+        assertEquals(base.hypothesis().points(),kept.hypothesis().points());
+        assertEquals(7.,kept.hypothesis().diagnostics().get("smoothingOmittedChildWorkVisits"));
+        assertEquals(11.,kept.hypothesis().diagnostics().get("smoothingOmittedChildSourceCells"));
+        assertEquals(1.,kept.hypothesis().diagnostics().get("smoothingOmittedRetainedRouteCap"));
+        assertThrows(IntervalTraceBatch.ResourceLimitException.class,()->ModernTracePipeline.retainNativeRoutesWithinBudget(
+                java.util.Collections.nCopies(129,new ModernTracePipeline.Result(inference,List.of(base))),128));
+    }
+
+    @Test void smoothedSelectedSubrangePreservesFarawayUntouchedPrefixWithoutMetricConversion() {
+        var base=nativeSmoothingFixture();var values=new LinkedHashMap<>(base.network.primitives());
+        var selected=(DetachedWay)values.get(way(3));var prefix=node(99);
+        var distant=new GeographicPoint(42,18.0);
+        values.put(prefix,new DetachedNode(prefix,distant,Map.of(),false,false));
+        values.put(selected.key(),new DetachedWay(selected.key(),List.of(prefix,node(1),node(2)),selected.tags(),false,false));
+        var old=base.network.closure();var fixed=new java.util.LinkedHashSet<>(old.protectedExistingNodeKeys());fixed.add(prefix);
+        var range=new OccurrenceRange(1,2);
+        var closure=new ClosureDescriptor(old.scope(),old.queryVersion(),values.keySet(),old.editableExistingKeys(),
+                old.movableExistingNodeKeys(),fixed,Set.of(),Map.of(way(3),List.of(range)),old.externalPorts(),
+                old.collisionEnvelope(),old.editRegion(),true,true,true,true);
+        var network=new NetworkSnapshot("far-prefix",SnapshotRole.CAPTURED_BEFORE,"dataset",1,closure,values,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.V022SnapshotFixtures.closedWorldReferrerWatches(values));
+        var r=base.request;var request=new TraceRequest(r.selectedWayKey(),range,r.engine(),r.geometryMode(),r.permissions(),r.budgets(),
+                r.evidenceSnapshotId(),r.evidenceContentHash(),network.snapshotId(),network.canonicalHash(),r.settingsHash(),r.parameterHash(),
+                r.samplerId(),r.configuredSampleStepMeters(),r.profileChainage(),r.evidenceResolution());
+        var points=java.util.stream.IntStream.rangeClosed(0,20).mapToObj(i->new MetricPoint(i*.2,
+                i==0||i==20?0:.04*Math.sin(i*1.7))).toList();
+        var raw=new TraceHypothesis("subrange-parent","branch",points,
+                java.util.Collections.nCopies(points.size(),ObservationOwnership.DIRECT_TWO_SIDED),1,.7,Map.of());
+        var opts=options(GeometryCleanupConfig.disabled().withMode(GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE));
+        var result=new ModernTracePipeline((q,e,n,c)->routes(q.engine(),raw)).run(request,base.evidence,network,opts,CancellationProbe.NONE);
+        assertEquals(2,result.routes().size(),result.toString());
+        for(int i=0;i<result.routes().size();i++) {
+            var plan=new ModernSingleWayEditPlanAdapter().adaptFrozen(request,base.evidence,network,opts,result,i,4);
+            assertEquals(distant,plan.finalPreviewWays().get(way(3)).get(0));
+            assertEquals(values.get(prefix),plan.after().primitives().get(prefix));
+        }
+    }
+
+    private static Fixture nativeSmoothingFixture() {
+        var base=fixture(TrackerMode.CORRIDOR_AWARE); var old=base.network.closure();
+        var closure=new ClosureDescriptor(ClosureDescriptor.Scope.EDIT_COMPONENT,old.queryVersion(),old.primitiveKeys(),old.editableExistingKeys(),
+                old.movableExistingNodeKeys(),old.protectedExistingNodeKeys(),old.removableExistingNodeKeys(),
+                old.editableWayOccurrences(),old.externalPorts(),old.collisionEnvelope(),old.editRegion(),true,true,true,true);
+        var network=replaceNetwork(base,closure,base.network.primitives(),1).network;
+        int size=81;double[] intensity=new double[size*size];boolean[] valid=new boolean[intensity.length];
+        for(int y=0;y<size;y++)for(int x=0;x<size;x++){
+            double lateral=(y-40)*.5;intensity[y*size+x]=.01+.8*Math.exp(-.5*lateral*lateral);valid[y*size+x]=true;
+        }
+        var scalar=new ScalarEvidenceField(size,size,intensity,valid,new EvidenceFieldLineage(
+                EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,
+                "native-smoothing",EvidenceCorrelationGroup.SYNTHETIC_TRUTH,false));
+        var evidence=new EvidenceSnapshot("native-smoothing",base.evidence.coordinateFrame(),
+                new RasterMetricTransform("native-smoothing",RasterMetricTransform.OriginKind.VISIBLE_FIRST_PIXEL_CENTER,
+                    new MetricPoint(-20,-20),.5,0,0,.5,1),EvidenceResolution.nativeSource(.5,.5),
+                MetricRegion.rectangle(-19,-19,19,19),MetricRegion.rectangle(-19,-19,19,19),Map.of("native",scalar),"source");
+        var r=base.request;
+        var request=new TraceRequest(r.selectedWayKey(),r.selectedRange(),r.engine(),r.geometryMode(),r.permissions(),r.budgets(),
+                evidence.snapshotId(),evidence.canonicalHash(),network.snapshotId(),network.canonicalHash(),r.settingsHash(),
+                r.parameterHash(),r.samplerId(),r.configuredSampleStepMeters(),r.profileChainage(),evidence.resolution());
+        return new Fixture(request,evidence,network);
+    }
+    @Test void historicalSeedDoesNotAdmitOrBuildLongScaleBasis() {
+        var f = fixture(TrackerMode.CORRIDOR_AWARE);
+        var points = java.util.stream.IntStream.rangeClosed(0, 32_768)
+                .mapToObj(i -> new MetricPoint(i / 8192., 0)).toList();
+        var raw = new TraceHypothesis("large-native", "large", points,
+                java.util.Collections.nCopies(points.size(), ObservationOwnership.DIRECT_TWO_SIDED),
+                1, .5, Map.of());
+        var authority = SharedNodeDisconnectionPlanner.forRequest(f.request, f.network);
+        var old = ModernTracePipeline.seedGeometry(raw, f.evidence, f.network, f.request, Set.of(), authority);
+        assertEquals(ModernTracePipeline.ProvenanceFailure.NOT_REQUESTED, old.controlProvenance().failure());
+        assertTrue(old.controlProvenance().nativeAliases().isEmpty());
+        var enriched = ModernTracePipeline.seedGeometryWithNativeControls(raw, f.evidence,
+                f.network, f.request, Set.of(), authority);
+        assertEquals(ModernTracePipeline.ProvenanceFailure.RESOURCE_LIMIT, enriched.controlProvenance().failure());
+        assertEquals(old.points(), enriched.points());
+    }
+
+    @Test void nativeCoincidentAliasKeepsTaggedOffRidgeCoordinateTopologyOnly() {
+        var f = fixture(TrackerMode.CORRIDOR_AWARE, .1, 1., true, false);
+        var raw = route("alias", .7);
+        var seed = ModernTracePipeline.seedGeometryWithNativeControls(raw, f.evidence, f.network,
+                f.request, Set.of(), SharedNodeDisconnectionPlanner.forRequest(f.request, f.network));
+        var provenance = seed.controlProvenance();
+        assertTrue(provenance.basis().isPresent());
+        assertEquals(raw.points().size(), provenance.nativeAliases().size());
+        for (var entry : provenance.nativeAliases().entrySet())
+            assertTrue(provenance.basis().orElseThrow().rows().get(entry.getValue()).independent());
+        var middle = new ExistingWayNodeOccurrence(way(3), node(4), 1);
+        int slot = seed.pointIds().indexOf(middle);
+        assertTrue(seed.protectedIndices().contains(slot));
+        assertEquals(ObservationOwnership.FIXED_TOPOLOGY_ONLY, seed.sourceOwnership().get(middle));
+        assertEquals(seed.points(), provenance.basis().orElseThrow().lift(seed.points()));
+    }
     @Test
     void frozenAdditionalFixedMismatchFailsBeforeEngineCall() {
         var f = fixture(TrackerMode.CORRIDOR_AWARE);

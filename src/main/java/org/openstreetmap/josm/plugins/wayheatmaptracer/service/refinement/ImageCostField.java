@@ -520,6 +520,65 @@ public final class ImageCostField {
         return sample(point).isPresent();
     }
 
+    /** Exact interpolation-cell support, distinct from sampled scalar fit. */
+    public enum SegmentSupport { COMPLETE, UNAVAILABLE, RESOURCE_LIMIT }
+
+    /** One caller-owned budget shared across every segment and validation trial. */
+    public static final class SegmentSupportBudget {
+        private final long maximumCells;
+        private long visitedCells;
+        public SegmentSupportBudget(long maximumCells) {
+            if (maximumCells < 0) throw new IllegalArgumentException("Negative cell budget");
+            this.maximumCells = maximumCells;
+        }
+        public long visitedCells() { return visitedCells; }
+        private boolean visit() {
+            if (visitedCells >= maximumCells) return false;
+            visitedCells++; return true;
+        }
+    }
+
+    /**
+     * Certifies all bilinear cells touched by the affine source-pixel segment. Grid-edge
+     * and corner contacts conservatively include cells on both sides (supercover), even
+     * when a single point sample would choose only the cell on its positive side.
+     * No scale inference, extrapolation or point-sampling approximation is used.
+     */
+    public SegmentSupport certifySegmentSupport(MetricPoint first, MetricPoint last,
+            SegmentSupportBudget budget, CancellationProbe cancellation) {
+        java.util.Objects.requireNonNull(budget); java.util.Objects.requireNonNull(cancellation);
+        cancellation.checkpoint();
+        if (!decisionRegion.containsSegment(first,last)) return SegmentSupport.UNAVAILABLE;
+        RasterPoint a=transform.metricToPixelCenter(first), b=transform.metricToPixelCenter(last);
+        double minX=Math.min(a.x(),b.x()), maxX=Math.max(a.x(),b.x());
+        double minY=Math.min(a.y(),b.y()), maxY=Math.max(a.y(),b.y());
+        if (!Double.isFinite(minX) || !Double.isFinite(maxX) || !Double.isFinite(minY)
+                || !Double.isFinite(maxY) || minX < 0 || minY < 0
+                || maxX >= width-1 || maxY >= height-1) return SegmentSupport.UNAVAILABLE;
+        int firstX=(int)Math.ceil(minX)-1, lastX=(int)Math.floor(maxX);
+        double dx=b.x()-a.x(), dy=b.y()-a.y();
+        for (int x=firstX; x<=lastX; x++) {
+            cancellation.checkpoint();
+            double lo=0, hi=1;
+            if (dx != 0) {
+                double t0=(x-a.x())/dx, t1=(x+1.-a.x())/dx;
+                lo=Math.max(0,Math.min(t0,t1)); hi=Math.min(1,Math.max(t0,t1));
+                if (lo>hi) continue;
+            }
+            double y0=a.y()+lo*dy, y1=a.y()+hi*dy;
+            int low=(int)Math.ceil(Math.min(y0,y1))-1, high=(int)Math.floor(Math.max(y0,y1));
+            for(int y=low; y<=high; y++) {
+                cancellation.checkpoint();
+                if (!budget.visit()) return SegmentSupport.RESOURCE_LIMIT;
+                if (x<0 || y<0 || x+1>=width || y+1>=height
+                        || !interpolationValid[y*(width-1)+x]
+                        || !isValid(x,y) || !isValid(x+1,y) || !isValid(x,y+1) || !isValid(x+1,y+1))
+                    return SegmentSupport.UNAVAILABLE;
+            }
+        }
+        return SegmentSupport.COMPLETE;
+    }
+
     /**
      * Re-extracts shared scalar features along the supplied route tangent.
      * A valid query with no complete two-sided mode is returned as unknown, not as localization.

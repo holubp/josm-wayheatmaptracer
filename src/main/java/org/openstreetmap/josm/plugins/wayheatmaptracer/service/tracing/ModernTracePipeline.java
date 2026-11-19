@@ -30,6 +30,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.CandidateRankingPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.FinalControlBasis;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedLocalCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedRefitter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.image.DirectionalImageTraceEngine;
@@ -58,17 +59,41 @@ public final class ModernTracePipeline {
     }
 
     /** One final route and the common physical evidence used to rank it. */
+    public enum RouteVariant { BASE, LONG_SCALE_SMOOTHED }
+
+    /** Native origins use raw/profile indexes, including existing-occurrence aliases. */
+    public record RouteLineage(String nativeParentId, RouteVariant variant,
+            Map<Integer,Integer> nativeAliases) {
+        public RouteLineage {
+            if (nativeParentId == null || nativeParentId.isBlank() || variant == null)
+                throw new IllegalArgumentException("Missing native lineage");
+            nativeAliases = Map.copyOf(nativeAliases);
+            if (variant == RouteVariant.BASE && !nativeAliases.isEmpty())
+                throw new IllegalArgumentException("Historical base lineage has no derived origin map");
+        }
+        public static RouteLineage base(String id) { return new RouteLineage(id,RouteVariant.BASE,Map.of()); }
+    }
+
     public record Route(TraceHypothesis rawHypothesis, TraceHypothesis hypothesis,
             List<FinalRoutePointId> pointIds, Map<FinalRoutePointId, MetricPoint> assignments,
             Map<FinalRoutePointId, ObservationOwnership> sourceOwnership,
             FinalGeometryEvaluator.Result quality,
-            ImageSupportedLocalCleanup.Status cleanupStatus, boolean geometryChanged) {
+            ImageSupportedLocalCleanup.Status cleanupStatus, boolean geometryChanged, RouteLineage lineage) {
+        /** Preserves the historical BASE constructor and identity contract. */
+        public Route(TraceHypothesis rawHypothesis, TraceHypothesis hypothesis,
+                List<FinalRoutePointId> pointIds, Map<FinalRoutePointId,MetricPoint> assignments,
+                Map<FinalRoutePointId,ObservationOwnership> sourceOwnership, FinalGeometryEvaluator.Result quality,
+                ImageSupportedLocalCleanup.Status cleanupStatus, boolean geometryChanged) {
+            this(rawHypothesis,hypothesis,pointIds,assignments,sourceOwnership,quality,cleanupStatus,geometryChanged,
+                    rawHypothesis==null?null:RouteLineage.base(rawHypothesis.id()));
+        }
         /** Validates aligned immutable raw/final geometry, identity and source provenance. */
         public Route {
             if (rawHypothesis == null || hypothesis == null || pointIds == null
                     || assignments == null || sourceOwnership == null || quality == null
                     || cleanupStatus == null || !quality.id().equals(hypothesis.id())
-                    || !rawHypothesis.id().equals(hypothesis.id())) {
+                    || lineage == null || !rawHypothesis.id().equals(lineage.nativeParentId())
+                    || (lineage.variant() == RouteVariant.BASE) != rawHypothesis.id().equals(hypothesis.id())) {
                 throw new IllegalArgumentException("Modern final route is inconsistent");
             }
             pointIds = List.copyOf(pointIds);
@@ -83,6 +108,25 @@ public final class ModernTracePipeline {
             }
             if (!aligned) {
                 throw new IllegalArgumentException("Modern final route provenance is incomplete or reordered");
+            }
+            if (lineage.variant() != RouteVariant.BASE) {
+                if (!geometryChanged || quality.disposition() != FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED)
+                    throw new IllegalArgumentException("Derived geometry must require review");
+                int previousRaw=-1, previousSlot=-1;
+                for(var entry:new java.util.TreeMap<>(lineage.nativeAliases()).entrySet()) {
+                    int raw=entry.getKey(), slot=entry.getValue();
+                    if(raw<0 || raw>=rawHypothesis.points().size() || raw<=previousRaw
+                            || slot<=previousSlot || slot>=pointIds.size())
+                        throw new IllegalArgumentException("Invalid native origin order or bounds");
+                    if(pointIds.get(slot) instanceof GeneratedCandidatePoint generated
+                            && (generated.originalPointIndex()!=raw || !generated.candidateId().equals(hypothesis.id())))
+                        throw new IllegalArgumentException("Generated origin differs from native lineage");
+                    previousRaw=raw;previousSlot=slot;
+                }
+                for(int slot=0;slot<pointIds.size();slot++) if(pointIds.get(slot) instanceof GeneratedCandidatePoint generated
+                        && (!generated.candidateId().equals(hypothesis.id())
+                            || !Integer.valueOf(slot).equals(lineage.nativeAliases().get(generated.originalPointIndex()))))
+                    throw new IllegalArgumentException("Generated origin is missing");
             }
         }
 
@@ -106,7 +150,58 @@ public final class ModernTracePipeline {
                 throw new IllegalArgumentException("Modern pipeline result is incomplete");
             }
             routes = List.copyOf(routes);
+            Set<String> identities=new LinkedHashSet<>();
+            Map<String,Integer> children=new LinkedHashMap<>();
+            for(var route:routes) {
+                if(!identities.add(route.hypothesis().id())) throw new IllegalArgumentException("Duplicate final route identity");
+                if(route.lineage().variant()!=RouteVariant.BASE && (!inference.hypotheses().contains(route.rawHypothesis())
+                        || children.merge(route.lineage().nativeParentId(),1,Integer::sum)>1))
+                    throw new IllegalArgumentException("Derived route has no unique native owner");
+            }
+            for(var child:routes)if(child.lineage().variant()!=RouteVariant.BASE) {
+                var parent=routes.stream().filter(r->r.lineage().variant()==RouteVariant.BASE
+                        &&r.hypothesis().id().equals(child.lineage().nativeParentId())).findFirst();
+                if(parent.isEmpty() || !parent.orElseThrow().rawHypothesis().equals(child.rawHypothesis())
+                        || parent.orElseThrow().hypothesis().points().equals(child.hypothesis().points()))
+                    throw new IllegalArgumentException("Derived route omitted or did not change its actual raw parent");
+            }
         }
+    }
+
+    /**
+     * Applies the existing publication cap without discarding native alternatives. If optional
+     * children alone overflow, retain every BASE route and record the actual omitted child work.
+     * Native-only overflow keeps the existing explicit resource refusal.
+     */
+    public static List<Result> retainNativeRoutesWithinBudget(List<Result> results,int maximumRoutes) {
+        if(maximumRoutes<0)throw new IllegalArgumentException("Negative retained-route cap");
+        long total=0,nativeCount=0;
+        for(var result:results)for(var route:result.routes()) {
+            total++;if(route.lineage().variant()==RouteVariant.BASE)nativeCount++;
+        }
+        if(nativeCount>maximumRoutes)throw new IntervalTraceBatch.ResourceLimitException("native routes exceed retained-route budget");
+        if(total<=maximumRoutes)return List.copyOf(results);
+        List<Result> retained=new ArrayList<>();
+        for(var result:results) {
+            Map<String,Route> children=new LinkedHashMap<>();
+            for(var route:result.routes())if(route.lineage().variant()!=RouteVariant.BASE)
+                children.put(route.lineage().nativeParentId(),route);
+            List<Route> bases=new ArrayList<>();
+            for(var route:result.routes())if(route.lineage().variant()==RouteVariant.BASE) {
+                var child=children.get(route.hypothesis().id());
+                if(child==null){bases.add(route);continue;}
+                var diagnostics=new LinkedHashMap<>(route.hypothesis().diagnostics());
+                diagnostics.put("smoothingOmittedRetainedRouteCap",1.);
+                diagnostics.put("smoothingOmittedChildWorkVisits",child.hypothesis().diagnostics().getOrDefault("longScaleWorkVisits",0.));
+                diagnostics.put("smoothingOmittedChildSourceCells",child.hypothesis().diagnostics().getOrDefault("longScaleSourceCells",0.));
+                var old=route.hypothesis();var finalHypothesis=new TraceHypothesis(old.id(),old.branchSignature(),old.points(),old.support(),
+                        old.objective(),old.posteriorProbability(),diagnostics);
+                bases.add(new Route(route.rawHypothesis(),finalHypothesis,route.pointIds(),route.assignments(),route.sourceOwnership(),
+                        route.quality(),route.cleanupStatus(),route.geometryChanged(),route.lineage()));
+            }
+            retained.add(new Result(result.inference(),bases));
+        }
+        return List.copyOf(retained);
     }
 
     /** Production result with actual engine work for an outer attempt-wide budget. */
@@ -226,11 +321,20 @@ public final class ModernTracePipeline {
         ImageCostField image = new ImageCostField(scalar, evidence.transform(),
                 evidence.decisionRegion(), pitch);
         List<Route> routes = new ArrayList<>();
+        ImageCostField.SegmentSupportBudget sourceBudget=new ImageCostField.SegmentSupportBudget(8_000_000);
         long finalizationNanos = 0L;
         for (TraceHypothesis hypothesis : inference.hypotheses()) {
             cancellation.checkpoint();
             long routeStarted = System.nanoTime();
-            routes.add(finalizeRoute(hypothesis, inference, image, evidence, network,
+            if(longScaleEnabled(request,options)) {
+                Options rawOptions=new Options(options.fieldName(),GeometryCleanupConfig.disabled(),options.sourceTier(),options.mappingPreference());
+                Route raw=finalizeRoute(hypothesis,inference,image,evidence,network,request,rawOptions,pitch,
+                        cancellation,exactFixed,disconnections,corridorReceipt.map(r->r.candidates().get(hypothesis.id())));
+                routes.add(raw);
+                smoothedRoute(raw,inference,image,evidence,network,request,options,pitch,cancellation,exactFixed,
+                        disconnections,corridorReceipt.map(r->r.candidates().get(hypothesis.id())),sourceBudget)
+                    .ifPresent(routes::add);
+            } else routes.add(finalizeRoute(hypothesis, inference, image, evidence, network,
                     request, options, pitch, cancellation, exactFixed, disconnections,
                     corridorReceipt.map(receipt->receipt.candidates().get(hypothesis.id()))));
             finalizationNanos += System.nanoTime() - routeStarted;
@@ -253,6 +357,86 @@ public final class ModernTracePipeline {
             if(corridorReceipt.isPresent())throw new CorridorFinalizationCancelledException(engineRun,cancelled);
             throw cancelled;
         }
+    }
+
+    private static boolean longScaleEnabled(TraceRequest request, Options options) {
+        return request.engine()==TrackerMode.CORRIDOR_AWARE && request.geometryMode()==AlignmentMode.PRECISE_SHAPE
+                && options.cleanup().mode()==GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE;
+    }
+
+    private static java.util.Optional<Route> smoothedRoute(Route raw,TraceHypothesisSet inference,ImageCostField image,
+            EvidenceSnapshot evidence,NetworkSnapshot network,TraceRequest request,Options options,double pitch,
+            CancellationProbe cancellation,Set<Integer> fixedOccurrences,SharedNodeDisconnectionPlanner.Authority disconnections,
+            java.util.Optional<CorridorExecutionReceipt.CandidateProvenance> provenance,
+            ImageCostField.SegmentSupportBudget sourceBudget) {
+        if(provenance.filter(CorridorExecutionReceipt.CandidateProvenance::cleanupUnavailable).isPresent())return java.util.Optional.empty();
+        long initialSourceCells=sourceBudget.visitedCells();
+        SeedGeometry seed=seedGeometryWithNativeControls(raw.rawHypothesis(),evidence,network,request,fixedOccurrences,disconnections);
+        if(seed.controlProvenance().basis().isEmpty())return java.util.Optional.empty();
+        ImageSupportedRefitter.GeometryValidator safety=points->{
+            cancellation.checkpoint();
+            for(int i=1;i<points.size();i++) {
+                if(points.get(i-1).equals(seed.points().get(i-1)) && points.get(i).equals(seed.points().get(i)))continue;
+                var support=image.certifySegmentSupport(points.get(i-1),points.get(i),sourceBudget,cancellation);
+                if(support!=ImageCostField.SegmentSupport.COMPLETE)
+                    return ImageSupportedRefitter.Validation.rejected("exact-source-cell-"+support.name());
+                if(!network.closure().editRegion().containsSegment(points.get(i-1),points.get(i)))
+                    return ImageSupportedRefitter.Validation.rejected("source-edit-envelope");
+            }
+            var assignments=new LinkedHashMap<FinalRoutePointId,MetricPoint>();
+            for(int i=0;i<points.size();i++)assignments.put(seed.pointIds().get(i),points.get(i));
+            var quality=evaluate(raw.rawHypothesis().id(),points,seed.pointIds(),protectedAssignments(seed,seed.pointIds(),assignments),
+                    image,pitch,inference,cancellation);
+            if(quality.disposition()==FinalGeometryEvaluator.Disposition.HARD_BLOCKED)
+                return ImageSupportedRefitter.Validation.rejected("final-geometry-hard-block");
+            var trial=new Route(raw.rawHypothesis(),new TraceHypothesis(raw.rawHypothesis().id(),raw.rawHypothesis().branchSignature(),
+                    points,freshSupport(points,seed.protectedIndices(),image),raw.rawHypothesis().objective(),
+                    raw.rawHypothesis().posteriorProbability(),raw.rawHypothesis().diagnostics()),seed.pointIds(),assignments,
+                    seed.sourceOwnership(),quality,ImageSupportedLocalCleanup.Status.UNCHANGED,true);
+            return ModernSingleWayEditPlanAdapter.validateCleanupTrial(request,evidence,network,options,inference,raw,trial,cancellation);
+        };
+        var cleanupRequest=new ImageSupportedLocalCleanup.Request(seed.pointIds(),seed.points(),seed.retainedIndices(),
+                seed.protectedIndices(),image,evidence.decisionRegion(),ImageSupportedLocalCleanup.Mode.REFIT_AND_REDUCE,
+                ImageSupportedRefitter.Config.defaults(pitch),options.cleanup().simplificationDeviationMeters(),seed.assignments(),List.of());
+        var cleanup=new ImageSupportedLocalCleanup().cleanLongScale(new ImageSupportedLocalCleanup.LongScaleRequest(cleanupRequest,
+                seed.controlProvenance().basis().orElseThrow(),seed.controlProvenance().nativeAliases(),
+                seed.pointIds().stream().map(seed.sourceOwnership()::get).toList(),true,8_000_000,safety,java.util.Optional.empty()),cancellation);
+        cancellation.checkpoint();
+        if(!cleanup.reviewRequired() || cleanup.cleanup().points().equals(raw.hypothesis().points()))return java.util.Optional.empty();
+        validateFinalProvenance(seed,cleanup.cleanup(),network.closure().removableExistingNodeKeys());
+        String childId=raw.hypothesis().id()+":long-scale-smoothed";
+        while(inference.hypotheses().stream().map(TraceHypothesis::id).toList().contains(childId))childId+=":derived";
+        List<FinalRoutePointId> ids=new ArrayList<>();var assignments=new LinkedHashMap<FinalRoutePointId,MetricPoint>();
+        var ownership=new LinkedHashMap<FinalRoutePointId,ObservationOwnership>();
+        for(int i=0;i<cleanup.cleanup().occurrenceIds().size();i++) {
+            FinalRoutePointId old=cleanup.cleanup().occurrenceIds().get(i);
+            FinalRoutePointId id=old instanceof GeneratedCandidatePoint generated
+                    ? new GeneratedCandidatePoint(childId,generated.originalPointIndex()) : old;
+            ids.add(id);assignments.put(id,cleanup.cleanup().points().get(i));ownership.put(id,seed.sourceOwnership().get(old));
+        }
+        var diagnostics=new LinkedHashMap<>(raw.rawHypothesis().diagnostics());
+        diagnostics.put("longScaleSmoothing",1.);diagnostics.put("longScaleWorkVisits",(double)cleanup.proposal().orElseThrow().workVisits());
+        diagnostics.put("longScaleSourceCells",(double)(sourceBudget.visitedCells()-initialSourceCells));
+        diagnostics.put("longScaleReductionValidationUnavailable",1.);
+        var points=cleanup.cleanup().points();var protectedPoints=protectedAssignments(seed,cleanup.cleanup().occurrenceIds(),cleanup.cleanup().assignments());
+        var quality=evaluate(childId,points,ids,protectedPoints,image,pitch,inference,cancellation);
+        if(quality.disposition()==FinalGeometryEvaluator.Disposition.HARD_BLOCKED)return java.util.Optional.empty();
+        quality=new FinalGeometryEvaluator.Result(quality.id(),FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED,quality.findings(),
+                quality.totalLengthMeters(),quality.directlySupportedLengthMeters(),quality.worstUnsupportedSpanMeters(),
+                quality.meanImageCenterCost(),quality.bendPreservingRoughness());
+        var child=new Route(raw.rawHypothesis(),new TraceHypothesis(childId,raw.rawHypothesis().branchSignature(),points,
+                freshSupport(points,protectedPoints.keySet(),image),raw.rawHypothesis().objective(),raw.rawHypothesis().posteriorProbability(),diagnostics),
+                ids,assignments,ownership,quality,cleanup.cleanup().status(),true,
+                new RouteLineage(raw.rawHypothesis().id(),RouteVariant.LONG_SCALE_SMOOTHED,seed.controlProvenance().nativeAliases()));
+        var validation=ModernSingleWayEditPlanAdapter.validateCleanupTrial(request,evidence,network,options,inference,raw,child,cancellation);
+        return validation.feasible()?java.util.Optional.of(child):java.util.Optional.empty();
+    }
+
+    private static FinalGeometryEvaluator.Result evaluate(String id,List<MetricPoint> points,List<FinalRoutePointId> ids,
+            Map<Integer,MetricPoint> protectedPoints,ImageCostField image,double pitch,TraceHypothesisSet inference,CancellationProbe cancellation) {
+        return new FinalGeometryEvaluator().evaluate(new FinalGeometryEvaluator.Request(id,points,ids,image,pitch,protectedPoints,List.of(),true,
+                inference.status()==TraceHypothesisSet.Status.AMBIGUOUS,inference.alternativesTruncated(),
+                inference.status()==TraceHypothesisSet.Status.RESOURCE_LIMIT),cancellation);
     }
 
     private static long millis(long nanos) {
@@ -383,9 +567,22 @@ public final class ModernTracePipeline {
                 retainedSource, quality, cleanup.status(), changed);
     }
 
-    private static SeedGeometry seedGeometry(TraceHypothesis source, EvidenceSnapshot evidence,
+    static SeedGeometry seedGeometry(TraceHypothesis source, EvidenceSnapshot evidence,
             NetworkSnapshot network, TraceRequest request, Set<Integer> fixedOccurrences,
             SharedNodeDisconnectionPlanner.Authority disconnections) {
+        return seedGeometry(source, evidence, network, request, fixedOccurrences, disconnections, false);
+    }
+
+    /** Explicit enriched seed for the later long-scale route; historical callers incur no basis limits. */
+    static SeedGeometry seedGeometryWithNativeControls(TraceHypothesis source, EvidenceSnapshot evidence,
+            NetworkSnapshot network, TraceRequest request, Set<Integer> fixedOccurrences,
+            SharedNodeDisconnectionPlanner.Authority disconnections) {
+        return seedGeometry(source, evidence, network, request, fixedOccurrences, disconnections, true);
+    }
+
+    private static SeedGeometry seedGeometry(TraceHypothesis source, EvidenceSnapshot evidence,
+            NetworkSnapshot network, TraceRequest request, Set<Integer> fixedOccurrences,
+            SharedNodeDisconnectionPlanner.Authority disconnections, boolean nativeControls) {
         DetachedPrimitive selectedPrimitive = network.primitives().get(request.selectedWayKey());
         if (!(selectedPrimitive instanceof DetachedWay selected)
                 || request.selectedRange().lastIndex() >= selected.nodeKeys().size()) {
@@ -436,7 +633,19 @@ public final class ModernTracePipeline {
         }
         entries.sort(Comparator.comparingDouble(SeedEntry::fraction)
                 .thenComparingInt(SeedEntry::priority).thenComparingInt(SeedEntry::ordinal));
+        // Bind native identities before the generated entries can be suppressed. A retained
+        // occurrence aliases a native control, but its coordinate/ownership remains its own.
+        Map<Integer, FinalRoutePointId> nativeIdentities = new LinkedHashMap<>();
+        for (int raw = 0; nativeControls && raw < candidateFractions.length; raw++) {
+            FinalRoutePointId alias = new GeneratedCandidatePoint(source.id(), raw);
+            int existing = lowerBound(sourceFractions, candidateFractions[raw] - FRACTION_TOLERANCE);
+            if (existing < sourceFractions.length
+                    && sourceFractions[existing] <= candidateFractions[raw] + FRACTION_TOLERANCE)
+                alias = existingIds.get(existing);
+            nativeIdentities.put(raw, alias);
+        }
         List<FinalRoutePointId> pointIds = new ArrayList<>();
+        List<Double> finalFractions = new ArrayList<>();
         List<MetricPoint> points = new ArrayList<>();
         Set<Integer> retainedIndices = new LinkedHashSet<>();
         Set<Integer> protectedIndices = new LinkedHashSet<>();
@@ -452,6 +661,7 @@ public final class ModernTracePipeline {
                 throw new IllegalArgumentException("Duplicate final route point identity");
             }
             pointIds.add(entry.id());
+            if (nativeControls) finalFractions.add(entry.fraction());
             points.add(entry.point());
             ownership.put(entry.id(), entry.sourceOwnership());
             if (entry.retained()) {
@@ -464,9 +674,16 @@ public final class ModernTracePipeline {
         if (points.size() < 2) {
             throw new IllegalArgumentException("Final route provenance has fewer than two points");
         }
+        Map<Integer, Integer> aliases = new LinkedHashMap<>();
+        Map<FinalRoutePointId, Integer> finalSlots = new LinkedHashMap<>();
+        for (int slot = 0; nativeControls && slot < pointIds.size(); slot++) finalSlots.put(pointIds.get(slot), slot);
+        nativeIdentities.forEach((raw, id) -> aliases.put(raw, finalSlots.get(id)));
+        ControlProvenance provenance = nativeControls ? controlProvenance(points, finalFractions, aliases,
+                source.points().size(), protectedIndices) : new ControlProvenance(java.util.Optional.empty(),
+                        Map.of(), ProvenanceFailure.NOT_REQUESTED);
         return new SeedGeometry(List.copyOf(pointIds), List.copyOf(points),
                 Set.copyOf(retainedIndices), Set.copyOf(protectedIndices),
-                Map.copyOf(assignments), Map.copyOf(ownership));
+                Map.copyOf(assignments), Map.copyOf(ownership), provenance);
     }
 
     static void validateSelectedOccurrenceIdentity(DetachedWay selected,
@@ -699,10 +916,62 @@ public final class ModernTracePipeline {
             boolean retained, boolean protectedCoordinate) {
     }
 
-    private record SeedGeometry(List<FinalRoutePointId> pointIds, List<MetricPoint> points,
+    record SeedGeometry(List<FinalRoutePointId> pointIds, List<MetricPoint> points,
             Set<Integer> retainedIndices, Set<Integer> protectedIndices,
             Map<FinalRoutePointId, MetricPoint> assignments,
-            Map<FinalRoutePointId, ObservationOwnership> sourceOwnership) {
+            Map<FinalRoutePointId, ObservationOwnership> sourceOwnership,
+            ControlProvenance controlProvenance) {
+    }
+
+    enum ProvenanceFailure { NONE, NOT_REQUESTED, MISSING_NATIVE_ALIAS, AMBIGUOUS_FRACTION, RESOURCE_LIMIT }
+
+    /** Factual native-index aliases, never reconstructed from output coordinates or IDs. */
+    record ControlProvenance(java.util.Optional<FinalControlBasis> basis,
+            Map<Integer, Integer> nativeAliases, ProvenanceFailure failure) {
+        ControlProvenance { nativeAliases = Map.copyOf(nativeAliases); }
+    }
+
+    static ControlProvenance controlProvenance(List<MetricPoint> points, List<Double> fractions,
+            Map<Integer, Integer> nativeAliases, int nativeCount, Set<Integer> protectedSlots) {
+        Map<Integer, Integer> aliases = new LinkedHashMap<>(nativeAliases);
+        if (points.size() > FinalControlBasis.MAX_FINAL_POINTS)
+            return new ControlProvenance(java.util.Optional.empty(), Map.of(), ProvenanceFailure.RESOURCE_LIMIT);
+        int previousSlot = -1;
+        for (int raw = 0; raw < nativeCount; raw++) {
+            Integer slot = aliases.get(raw);
+            if (slot == null || slot < 0 || slot >= points.size())
+                return new ControlProvenance(java.util.Optional.empty(), Map.of(),
+                        ProvenanceFailure.MISSING_NATIVE_ALIAS);
+            if (slot <= previousSlot) return new ControlProvenance(java.util.Optional.empty(), aliases,
+                    ProvenanceFailure.AMBIGUOUS_FRACTION);
+            previousSlot = slot;
+        }
+        boolean invalid = fractions.size() != points.size() || aliases.size() != nativeCount
+                || new LinkedHashSet<>(aliases.values()).size() != nativeCount;
+        for (int i = 0; i < fractions.size(); i++)
+            invalid |= !Double.isFinite(fractions.get(i)) || i > 0
+                    && fractions.get(i) - fractions.get(i - 1) <= FRACTION_TOLERANCE;
+        if (invalid) return new ControlProvenance(java.util.Optional.empty(), aliases,
+                ProvenanceFailure.AMBIGUOUS_FRACTION);
+        Set<Integer> independent = new java.util.TreeSet<>(aliases.values());
+        independent.addAll(protectedSlots);
+        independent.add(0); independent.add(points.size() - 1);
+        List<Integer> controls = List.copyOf(independent);
+        List<FinalControlBasis.Row> rows = new ArrayList<>();
+        int bracket = 0;
+        for (int slot = 0; slot < points.size(); slot++) {
+            if (independent.contains(slot)) {
+                rows.add(FinalControlBasis.Row.independent(slot));
+                while (bracket + 1 < controls.size() && controls.get(bracket + 1) <= slot) bracket++;
+            } else {
+                int left = controls.get(bracket), right = controls.get(bracket + 1);
+                rows.add(FinalControlBasis.Row.dependent(slot, left, right,
+                        (fractions.get(slot) - fractions.get(left))
+                                / (fractions.get(right) - fractions.get(left))));
+            }
+        }
+        return new ControlProvenance(java.util.Optional.of(new FinalControlBasis(points, rows,
+                protectedSlots)), aliases, ProvenanceFailure.NONE);
     }
 
     /** Reuses common physical ranking for already assessed production compositions. */

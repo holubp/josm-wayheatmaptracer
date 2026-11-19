@@ -987,6 +987,20 @@ class V022LiveBPreviewServiceTest {
                 locations.get(locations.size() - 1).geographicPoint());
     }
 
+    @Test void ordinaryLiveAPreciseSmoothingCaptureRetainsActualEditAndCreationAuthority() throws Exception {
+        Fixture fixture=intervalFixture();var service=new LiveBPreviewService();
+        var base=config(TrackerMode.CORRIDOR_AWARE);
+        var configured=new AlignmentConfig(base.heatmap(),GeometryCleanupConfig.disabled()
+                .withMode(org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE));
+        LiveBPreviewService.Captured[] captured=new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(()->captured[0]=service.capture(fixture.dataSet(),fixture.selection(),raster(),configured));
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.ClosureDescriptor.Scope.EDIT_COMPONENT,
+                captured[0].network().closure().scope());
+        assertTrue(captured[0].network().closure().mayCreateNodes());
+        assertEquals(AlignmentMode.PRECISE_SHAPE,captured[0].geometryMode());
+        assertEquals(configured.cleanup(),captured[0].cleanup());
+    }
+
     @Test
     void productionEnginesTraceBothOriginalOccurrenceIntervalsAndRetainEveryAlternative() throws Exception {
         Fixture fixture = intervalFixture();

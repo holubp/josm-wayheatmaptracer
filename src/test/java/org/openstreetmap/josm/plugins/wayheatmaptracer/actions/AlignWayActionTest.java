@@ -90,6 +90,58 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 /** Verifies action-level candidate selection before the modeless preview opens. */
 class AlignWayActionTest {
     @Test
+    void intervalRouteLabelsKeepTypedBeforeAfterAcrossSourceRebuild() throws Exception {
+        List<ModernTracePipeline.Route> paired=smoothingLabelRoutes();
+        List<ModernTracePipeline.Route> nativeOnly=List.of(paired.get(1));
+        SwingUtilities.invokeAndWait(()->{
+            var firstInterval=new javax.swing.JComboBox<String>();
+            var secondInterval=new javax.swing.JComboBox<String>();
+            AlignWayAction.populateIntervalRouteChoices(firstInterval,paired);
+            AlignWayAction.populateIntervalRouteChoices(secondInterval,nativeOnly);
+            assertEquals(2,firstInterval.getItemCount());
+            assertEquals("Route 1 (recommended) — After smoothing",firstInterval.getItemAt(0));
+            assertEquals("Route 2 — Before smoothing",firstInterval.getItemAt(1));
+            assertEquals("Route 1 (recommended)",secondInterval.getItemAt(0));
+            firstInterval.setSelectedIndex(1);
+            // A source change rebuilds the same controls with that source's actual routes.
+            AlignWayAction.populateIntervalRouteChoices(firstInterval,nativeOnly);
+            AlignWayAction.populateIntervalRouteChoices(secondInterval,paired);
+            assertEquals(1,firstInterval.getItemCount());
+            assertEquals("Route 1 (recommended)",firstInterval.getItemAt(0));
+            assertEquals(0,firstInterval.getSelectedIndex());
+            assertEquals("Route 1 (recommended) — After smoothing",secondInterval.getItemAt(0));
+            assertEquals("Route 2 — Before smoothing",secondInterval.getItemAt(1));
+            AlignWayAction.populateIntervalRouteChoices(firstInterval,List.of());
+            assertEquals("No production route",firstInterval.getItemAt(0));assertFalse(firstInterval.isEnabled());
+        });
+    }
+
+    private static List<ModernTracePipeline.Route> smoothingLabelRoutes() {
+        var points=List.of(new MetricPoint(0,0),new MetricPoint(1,.1),new MetricPoint(2,0));
+        var raw=new TraceHypothesis("label-parent","branch",points,
+                java.util.Collections.nCopies(3,ObservationOwnership.DIRECT_TWO_SIDED),1,.5,Map.of());
+        List<ModernTracePipeline.Route> routes=new java.util.ArrayList<>();
+        for(boolean child:List.of(false,true)) {
+            String id=child?"label-child":raw.id();
+            var geometry=child?List.of(points.get(0),new MetricPoint(1,.05),points.get(2)):points;
+            var ids=java.util.stream.IntStream.range(0,3)
+                    .mapToObj(i->(FinalRoutePointId)new FinalRoutePointId.GeneratedCandidatePoint(id,i)).toList();
+            var assignments=new java.util.LinkedHashMap<FinalRoutePointId,MetricPoint>();
+            var ownership=new java.util.LinkedHashMap<FinalRoutePointId,ObservationOwnership>();
+            for(int i=0;i<3;i++){assignments.put(ids.get(i),geometry.get(i));ownership.put(ids.get(i),raw.support().get(i));}
+            routes.add(new ModernTracePipeline.Route(raw,new TraceHypothesis(id,raw.branchSignature(),geometry,raw.support(),
+                    raw.objective(),raw.posteriorProbability(),Map.of()),ids,assignments,ownership,
+                    new FinalGeometryEvaluator.Result(id,child?FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED:
+                        FinalGeometryEvaluator.Disposition.APPLICABLE,List.of(),2,2,0,.1,.1),
+                    child?ImageSupportedLocalCleanup.Status.CLEANED:ImageSupportedLocalCleanup.Status.SKIPPED,child,
+                    child?new ModernTracePipeline.RouteLineage(raw.id(),ModernTracePipeline.RouteVariant.LONG_SCALE_SMOOTHED,
+                        Map.of(0,0,1,1,2,2)):ModernTracePipeline.RouteLineage.base(raw.id())));
+        }
+        return new ModernTracePipeline.Result(new TraceHypothesisSet(TrackerMode.CORRIDOR_AWARE,List.of(raw),
+                TraceHypothesisSet.Status.COMPLETE,false,3,2,"native"),List.of(routes.get(1),routes.get(0))).routes();
+    }
+
+    @Test
     void sequentialHybridMoveNodesIsRejectedBeforeSourceWork() {
         ManagedHeatmapConfig hybrid = configuredCorridor()
                 .withTrackerMode(TrackerMode.fromPreference("LEGACY_THEN_B"))

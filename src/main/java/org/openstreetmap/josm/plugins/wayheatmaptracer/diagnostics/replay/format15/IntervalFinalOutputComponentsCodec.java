@@ -59,7 +59,7 @@ final class IntervalFinalOutputComponentsCodec {
                 Format15ReplayRunner.Result result = result(run, requestHash);
                 var binding = new FinalOutputComponentsCodec.Binding(buildIdentity, requestHash,
                         run.request().parameterHash(), run.request().engine(), run.request().engine(),
-                        ReplayLevel.FINAL_GEOMETRY, FinalReplayFingerprint.SCHEMA_VERSION,
+                        ReplayLevel.FINAL_GEOMETRY, FinalReplayFingerprint.schema(result),
                         FinalReplayFingerprint.sha256(result));
                 prepared.add(FinalOutputComponentsCodec.prepare(binding, result, maximumBytes));
             }
@@ -127,10 +127,14 @@ final class IntervalFinalOutputComponentsCodec {
                 }
                 int offset = sealed.length - data.available();
                 if (length > data.available()) throw new IllegalArgumentException("snapshot-truncated");
+                if(length<8)throw new IllegalArgumentException("snapshot-header");
+                // This bounded wire schema selects the decoder only; expected.finalHash
+                // independently binds the actual canonical output and native input.
+                int schema=java.nio.ByteBuffer.wrap(sealed,offset+4,4).getInt();
                 FinalOutputComponentsCodec.Binding binding = new FinalOutputComponentsCodec.Binding(
                         buildIdentity, expectedRequestHash, frozen.shared().request().parameterHash(),
                         expected.request().engine(), expected.request().engine(), ReplayLevel.FINAL_GEOMETRY,
-                        FinalReplayFingerprint.SCHEMA_VERSION, expected.finalHash());
+                        schema, expected.finalHash());
                 admitted.add(FinalOutputComponentsCodec.preflight(sealed, offset, length, binding, budget));
                 data.skipNBytes(length);
             }

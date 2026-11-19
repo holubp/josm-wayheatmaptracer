@@ -67,7 +67,7 @@ final class FinalReplayExpectation {
             if (!object.keySet().equals(KEYS)
                     || !SCHEMA.equals(ScalarReplayExpectation.string(object, "schema"))
                     || ScalarReplayExpectation.integer(object, "fingerprintSchema") < 1
-                    || ScalarReplayExpectation.integer(object, "fingerprintSchema") > 2
+                    || ScalarReplayExpectation.integer(object, "fingerprintSchema") > 3
                     || !ReplayLevel.FINAL_GEOMETRY.name().equals(
                         ScalarReplayExpectation.string(object, "replayLevel"))) {
                 throw new IllegalArgumentException("schema");

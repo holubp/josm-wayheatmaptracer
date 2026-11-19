@@ -24,6 +24,7 @@ final class FinalReplayFingerprint {
     static final int SCHEMA_VERSION = 1;
     static final int DISCONNECTION_SCHEMA_VERSION = 2;
     static int schema(Format15ReplayRunner.Result output) {
+        if(output.routes().stream().anyMatch(route->route.lineage().variant()!=ModernTracePipeline.RouteVariant.BASE))return 3;
         return output.disconnectionPlanReviews().isEmpty() ? SCHEMA_VERSION : DISCONNECTION_SCHEMA_VERSION;
     }
     private static final int MAX_ROUTES = 4_096;

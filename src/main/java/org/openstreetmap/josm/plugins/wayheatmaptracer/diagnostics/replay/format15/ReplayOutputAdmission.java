@@ -73,6 +73,7 @@ final class ReplayOutputAdmission {
                 items(route.sourceOwnership().size());
                 retain(Math.multiplyExact(768L, route.pointIds().size()));
                 findings(route.quality().findings().size());
+                origins(route.lineage().nativeAliases().size());
             }
         }
 
@@ -95,6 +96,7 @@ final class ReplayOutputAdmission {
         void diagnostics(int count) { items(count); retain(Math.multiplyExact(192L, count)); }
         void rows(int count) { items(Math.multiplyExact(3L, count)); retain(Math.multiplyExact(768L, count)); }
         void findings(int count) { items(count); retain(Math.multiplyExact(192L, count)); }
+        void origins(int count) { items(Math.multiplyExact(2L,count)); retain(Math.multiplyExact(128L,count)); }
         void metadata(int utf8Bytes) { retain(Math.multiplyExact(4L, utf8Bytes)); }
         void payload(long bytes, int simultaneousCopies) {
             retain(Math.multiplyExact(bytes, simultaneousCopies));

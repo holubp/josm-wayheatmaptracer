@@ -993,15 +993,8 @@ public class AlignWayAction extends JosmAction {
             IntervalTraceBatch.IntervalRun run = state.batch().runs().get(index);
             intervalControls.add(new JLabel(tr("Interval {0} ({1}–{2})", index + 1,
                     run.interval().range().firstIndex(), run.interval().range().lastIndex())));
-            String[] routeLabels = run.routes().isEmpty()
-                    ? new String[] {tr("No production route")}
-                    : java.util.stream.IntStream.range(0, run.routes().size())
-                            .mapToObj(route -> route == 0
-                                    ? tr("Route {0} (recommended)", route + 1)
-                                    : tr("Route {0}", route + 1))
-                            .toArray(String[]::new);
-            JComboBox<String> choice = new JComboBox<>(routeLabels);
-            choice.setEnabled(!run.routes().isEmpty());
+            JComboBox<String> choice = new JComboBox<>();
+            populateIntervalRouteChoices(choice, run.routes());
             intervalControls.add(choice);
             choices.add(choice);
         }
@@ -1116,14 +1109,7 @@ public class AlignWayAction extends JosmAction {
                     for (int index = 0; index < choices.size(); index++) {
                         var run = state.batch().runs().get(index);
                         var choice = choices.get(index);
-                        choice.removeAllItems();
-                        if (run.routes().isEmpty()) choice.addItem(tr("No production route"));
-                        else for (int route = 0; route < run.routes().size(); route++) {
-                            choice.addItem(route == 0 ? tr("Route {0} (recommended)", route + 1)
-                                    : tr("Route {0}", route + 1));
-                        }
-                        choice.setEnabled(!run.routes().isEmpty());
-                        choice.setSelectedIndex(0);
+                        populateIntervalRouteChoices(choice, run.routes());
                     }
                 } finally {
                     rebuildingChoices[0] = false;
@@ -1390,6 +1376,24 @@ public class AlignWayAction extends JosmAction {
             org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint point) {
         return ProjectionRegistry.getProjection().latlon2eastNorth(
                 new LatLon(point.latitudeDegrees(), point.longitudeDegrees()));
+    }
+
+    /** Populates both initial and source-rebuilt interval controls from actual route lineage. */
+    static void populateIntervalRouteChoices(JComboBox<String> choice, List<ModernTracePipeline.Route> routes) {
+        choice.removeAllItems();
+        if (routes.isEmpty()) choice.addItem(tr("No production route"));
+        for (int index = 0; index < routes.size(); index++) {
+            var route = routes.get(index);
+            String label = index == 0 ? tr("Route {0} (recommended)", index + 1) : tr("Route {0}", index + 1);
+            boolean child = route.lineage().variant() != ModernTracePipeline.RouteVariant.BASE;
+            boolean paired = child || routes.stream().anyMatch(other ->
+                    other.lineage().variant() != ModernTracePipeline.RouteVariant.BASE
+                        && other.lineage().nativeParentId().equals(route.hypothesis().id()));
+            if (paired) label = tr("{0} — {1}", label, child ? tr("After smoothing") : tr("Before smoothing"));
+            choice.addItem(label);
+        }
+        choice.setEnabled(!routes.isEmpty());
+        choice.setSelectedIndex(0);
     }
 
     /** Formats fixed-island guidance and typed interval outcomes for the modeless preview. */

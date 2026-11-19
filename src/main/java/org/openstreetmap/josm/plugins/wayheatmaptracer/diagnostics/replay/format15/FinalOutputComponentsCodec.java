@@ -67,7 +67,7 @@ final class FinalOutputComponentsCodec {
             Format15Safety.requiredHash(rootFingerprint, "rootFingerprint");
             if (capturedEngine == null || requestedEngine == null
                     || replayLevel != ReplayLevel.FINAL_GEOMETRY
-                    || fingerprintSchema < 1 || fingerprintSchema > 2) {
+                    || fingerprintSchema < 1 || fingerprintSchema > 3) {
                 throw new IllegalArgumentException("final-components-binding-invalid");
             }
         }
@@ -177,6 +177,7 @@ final class FinalOutputComponentsCodec {
                 || output.level() != binding.replayLevel()
                 || output.capturedEngine() != binding.capturedEngine()
                 || output.engine() != binding.requestedEngine()
+                || FinalReplayFingerprint.schema(output)!=binding.fingerprintSchema()
                 || !output.inputHash().equals(binding.inputHash())) {
             throw new IllegalArgumentException("final-components-output-binding-mismatch");
         }
@@ -250,8 +251,9 @@ final class FinalOutputComponentsCodec {
                 throw new IllegalArgumentException("header");
             }
             int version = data.readInt();
-            if (version < 1 || version > 2) throw new IllegalArgumentException("header");
+            if (version < 1 || version > 3) throw new IllegalArgumentException("header");
             Binding binding = readBinding(data);
+            if(version!=binding.fingerprintSchema())throw new IllegalArgumentException("schema-binding");
             if (!sameNonRootBinding(binding, expectedBinding)) {
                 throw new IllegalArgumentException("binding");
             }
@@ -268,14 +270,9 @@ final class FinalOutputComponentsCodec {
                 if (encodedDigests.put(component, digest) != null) throw new IllegalArgumentException("duplicate");
             }
             if (data.read() != -1) throw new IllegalArgumentException("trailing");
-            if (output.level() != binding.replayLevel()
-                    || output.capturedEngine() != binding.capturedEngine()
-                    || output.engine() != binding.requestedEngine()
-                    || !output.inputHash().equals(binding.inputHash())) {
-                throw new IllegalArgumentException("output-binding");
-            }
-            String root = FinalReplayFingerprint.sha256(output);
-            if (!root.equals(binding.rootFingerprint())) throw new IllegalArgumentException("root");
+            // Byte consistency is not native ownership. Apply exactly the encoder's
+            // complete binding/schema/metadata and cross-route lineage contract.
+            validate(binding, output);
             Map<Component, String> actualDigests = componentDigests(output);
             if (!actualDigests.equals(encodedDigests)) throw new IllegalArgumentException("component-digests");
             return new Snapshot(binding, output, actualDigests, qualitySummary(output));
@@ -388,6 +385,8 @@ final class FinalOutputComponentsCodec {
                     ReplayOutputCanonical.writePointId(data, id);
                     writeString(data, route.sourceOwnership().get(id).name());
                 }
+                if(route.lineage().variant()!=ModernTracePipeline.RouteVariant.BASE)
+                    ReplayOutputCanonical.writeLineage(data,route.lineage());
             }
             if (!output.disconnectionPlanReviews().isEmpty())
                 ReplayOutputCanonical.writePlanReviews(data, output.disconnectionPlanReviews());
@@ -497,6 +496,10 @@ final class FinalOutputComponentsCodec {
     }
 
     static void validateOutputMetadata(TraceHypothesisSet inference, List<ModernTracePipeline.Route> routes) {
+        if(routes.stream().anyMatch(route->route.lineage().variant()!=ModernTracePipeline.RouteVariant.BASE)) {
+            if(inference.engine()!=TrackerMode.CORRIDOR_AWARE)throw new IllegalArgumentException("derived-engine");
+            new ModernTracePipeline.Result(inference,routes);
+        }
         safe(inference.explanation());
         for (TraceHypothesis hypothesis : inference.hypotheses()) {
             safe(hypothesis.id());
@@ -555,11 +558,12 @@ final class FinalOutputComponentsCodec {
         try (DataInputStream data = new DataInputStream(new ByteArrayInputStream(sealed, offset, length))) {
             if (data.readInt() != MAGIC) throw new IllegalArgumentException("header");
             int version = data.readInt();
-            if (version < 1 || version > 2) throw new IllegalArgumentException("header");
+            if (version < 1 || version > 3) throw new IllegalArgumentException("header");
             Binding binding = new Binding(readString(data, budget), readHash(data), readHash(data),
                     enumValue(TrackerMode.class, readString(data, budget)),
                     enumValue(TrackerMode.class, readString(data, budget)),
                     enumValue(ReplayLevel.class, readString(data, budget)), data.readInt(), readHash(data));
+            if(version!=binding.fingerprintSchema())throw new IllegalArgumentException("schema-binding");
             if (!sameNonRootBinding(binding, expected)) throw new IllegalArgumentException("binding");
             if (!binding.rootFingerprint().equals(expected.rootFingerprint())) {
                 throw new ReplayMismatchException("final-output-mismatch");
@@ -578,10 +582,10 @@ final class FinalOutputComponentsCodec {
             int hypotheses = readCount(data, MAX_HYPOTHESES, "hypothesis-count");
             for (int index = 0; index < hypotheses; index++) scanHypothesis(data, budget);
             int routes = readCount(data, MAX_ROUTES, "route-count");
-            for (int index = 0; index < routes; index++) scanRoute(data, budget);
+            for (int index = 0; index < routes; index++) scanRoute(data, budget,version);
             if (version >= 2) {
                 int reviews = readCount(data, MAX_ROUTES, "plan-review-count");
-                if (reviews != routes) throw new IllegalArgumentException("plan-review-count");
+                if (reviews != routes && !(version>=3 && reviews==0)) throw new IllegalArgumentException("plan-review-count");
                 for (int index = 0; index < reviews; index++) readString(data, budget);
             }
             int digests = readCount(data, Component.values().length, "digest-count");
@@ -624,12 +628,12 @@ final class FinalOutputComponentsCodec {
         return id;
     }
 
-    private static void scanRoute(DataInputStream data, ReplayOutputAdmission.Budget budget)
+    private static void scanRoute(DataInputStream data, ReplayOutputAdmission.Budget budget,int version)
             throws IOException {
         budget.route();
         String rawId = scanHypothesis(data, budget);
         String finalId = scanHypothesis(data, budget);
-        if (!rawId.equals(finalId)) throw new IllegalArgumentException("route-identity");
+        if (version<3 && !rawId.equals(finalId)) throw new IllegalArgumentException("route-identity");
         int rows = readCount(data, MAX_ITEMS, "route-point-count");
         budget.rows(rows); // Ordered IDs + assignments + ownership, exactly three root items.
         for (int index = 0; index < rows; index++) {
@@ -665,6 +669,20 @@ final class FinalOutputComponentsCodec {
         readFiniteDouble(data);
         enumValue(ImageSupportedLocalCleanup.Status.class, readString(data, budget));
         data.readBoolean();
+        if(version>=3) {
+            String parent=readString(data,budget);
+            var variant=enumValue(ModernTracePipeline.RouteVariant.class,readString(data,budget));
+            int origins=readCount(data,rows,"origin-count");budget.origins(origins);
+            if(!parent.equals(rawId) || (variant==ModernTracePipeline.RouteVariant.BASE)!=rawId.equals(finalId)
+                    || variant==ModernTracePipeline.RouteVariant.BASE && origins!=0)
+                throw new IllegalArgumentException("route-lineage");
+            int previousRaw=-1,previousSlot=-1;
+            for(int i=0;i<origins;i++) {
+                int raw=data.readInt(),slot=data.readInt();
+                if(raw<=previousRaw || slot<=previousSlot || slot>=rows)throw new IllegalArgumentException("origin-order");
+                previousRaw=raw;previousSlot=slot;
+            }
+        }
     }
 
     private static void writeBinding(DataOutputStream data, Binding binding) throws IOException {
@@ -709,8 +727,9 @@ final class FinalOutputComponentsCodec {
         writeString(data, inference.explanation());
         writeHypotheses(data, inference.hypotheses());
         data.writeInt(output.routes().size());
-        for (ModernTracePipeline.Route route : output.routes()) writeRoute(data, route);
-        if (!output.disconnectionPlanReviews().isEmpty())
+        int version=FinalReplayFingerprint.schema(output);
+        for (ModernTracePipeline.Route route : output.routes()) writeRoute(data, route,version);
+        if (version>=3 || !output.disconnectionPlanReviews().isEmpty())
             ReplayOutputCanonical.writePlanReviews(data, output.disconnectionPlanReviews());
     }
 
@@ -730,7 +749,7 @@ final class FinalOutputComponentsCodec {
                 status, truncated, states, transitions, explanation);
         int routeCount = readCount(data, MAX_ROUTES, "route-count");
         List<ModernTracePipeline.Route> routes = new ArrayList<>(routeCount);
-        for (int index = 0; index < routeCount; index++) routes.add(readRoute(data));
+        for (int index = 0; index < routeCount; index++) routes.add(readRoute(data,version));
         List<String> reviews = new ArrayList<>();
         if (version >= 2) {
             int n = readCount(data, MAX_ROUTES, "plan-review-count");
@@ -801,7 +820,7 @@ final class FinalOutputComponentsCodec {
         return new TraceHypothesis(id, branch, points, support, objective, posterior, diagnostics);
     }
 
-    private static void writeRoute(DataOutputStream data, ModernTracePipeline.Route route)
+    private static void writeRoute(DataOutputStream data, ModernTracePipeline.Route route,int version)
             throws IOException {
         writeHypothesis(data, route.rawHypothesis());
         writeHypothesis(data, route.hypothesis());
@@ -829,9 +848,10 @@ final class FinalOutputComponentsCodec {
         ReplayOutputCanonical.writeFiniteDouble(data, quality.bendPreservingRoughness());
         writeString(data, route.cleanupStatus().name());
         data.writeBoolean(route.geometryChanged());
+        if(version>=3)ReplayOutputCanonical.writeLineage(data,route.lineage());
     }
 
-    private static ModernTracePipeline.Route readRoute(DataInputStream data)
+    private static ModernTracePipeline.Route readRoute(DataInputStream data,int version)
             throws IOException {
         TraceHypothesis raw = readHypothesis(data);
         TraceHypothesis hypothesis = readHypothesis(data);
@@ -871,8 +891,16 @@ final class FinalOutputComponentsCodec {
         ImageSupportedLocalCleanup.Status cleanup = enumValue(
                 ImageSupportedLocalCleanup.Status.class, readString(data));
         boolean changed = data.readBoolean();
+        ModernTracePipeline.RouteLineage lineage=ModernTracePipeline.RouteLineage.base(raw.id());
+        if(version>=3) {
+            String parent=readString(data);var variant=enumValue(ModernTracePipeline.RouteVariant.class,readString(data));
+            int count=readCount(data,pointCount,"origin-count");Map<Integer,Integer> origins=new LinkedHashMap<>();
+            for(int i=0;i<count;i++)if(origins.put(data.readInt(),data.readInt())!=null)
+                throw new IllegalArgumentException("duplicate-native-origin");
+            lineage=new ModernTracePipeline.RouteLineage(parent,variant,origins);
+        }
         return new ModernTracePipeline.Route(raw, hypothesis, ids, assignments, ownership,
-                quality, cleanup, changed);
+                quality, cleanup, changed,lineage);
     }
 
     private static FinalRoutePointId readPointId(DataInputStream data) throws IOException {

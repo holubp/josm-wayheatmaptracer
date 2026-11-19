@@ -672,6 +672,25 @@ public final class ModernSingleWayEditPlanAdapter {
                 route.hypothesis().id());
     }
 
+    /** Reuses the exact detached replacement/protection/topology checks for a complete cleanup trial. */
+    static org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedRefitter.Validation validateCleanupTrial(
+            TraceRequest request,EvidenceSnapshot evidence,NetworkSnapshot before,ModernTracePipeline.Options options,
+            TraceHypothesisSet inference,ModernTracePipeline.Route rawParent,ModernTracePipeline.Route route,CancellationProbe cancellation) {
+        cancellation.checkpoint();
+        try {
+            DetachedWay selected=requireSupportedBoundary(request,before,options.cleanup());
+            var result=draftPrepared(request,evidence,before,options,new ModernTracePipeline.Result(inference,
+                    route.lineage().variant()==ModernTracePipeline.RouteVariant.BASE ? List.of(route) : List.of(rawParent,route)),
+                    request.permissions().ordinaryRadiusMeters(),route,selected,null);
+            cancellation.checkpoint();
+            return result.validation().disposition()==ValidationReport.Disposition.HARD_BLOCKED
+                    ? org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedRefitter.Validation.rejected("final-topology-or-protection")
+                    : org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedRefitter.Validation.accepted();
+        } catch(IllegalArgumentException invalid) {
+            return org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedRefitter.Validation.rejected("final-source-or-protection");
+        }
+    }
+
     /** Builds one exact plan from ordered, candidate-owned interval geometry. */
     AlignmentEditPlan adaptComposite(IntervalTraceBatch batch, List<FinalRoutePointId> ids,
             Map<FinalRoutePointId, MetricPoint> assignments, String identity,
@@ -1007,8 +1026,28 @@ public final class ModernSingleWayEditPlanAdapter {
                         computed.pipeline().inference().alternativesTruncated(),
                         computed.pipeline().inference().status()
                                 == TraceHypothesisSet.Status.RESOURCE_LIMIT));
+        ModernTracePipeline.RouteLineage lineage=route.lineage();
+        if(lineage.variant()!=ModernTracePipeline.RouteVariant.BASE) {
+            Map<FinalRoutePointId,Integer> slots=new LinkedHashMap<>();
+            for(int i=0;i<kept.size();i++)slots.put(kept.get(i),i);
+            Map<Integer,Integer> origins=new LinkedHashMap<>();
+            for(var entry:lineage.nativeAliases().entrySet()) {
+                Integer slot=slots.get(route.pointIds().get(entry.getValue()));
+                if(slot!=null)origins.put(entry.getKey(),slot);
+            }
+            lineage=new ModernTracePipeline.RouteLineage(lineage.nativeParentId(),lineage.variant(),origins);
+            var sourceBudget=new ImageCostField.SegmentSupportBudget(8_000_000);
+            for(int i=1;i<positions.size();i++)if(image.certifySegmentSupport(positions.get(i-1),positions.get(i),
+                    sourceBudget,CancellationProbe.NONE)!=ImageCostField.SegmentSupport.COMPLETE)
+                throw new IllegalArgumentException("Reconstructed smoothed manual arm lacks exact source cells");
+            if(quality.disposition()==FinalGeometryEvaluator.Disposition.HARD_BLOCKED)
+                throw new IllegalArgumentException("Reconstructed smoothed manual arm is unsafe");
+            quality=new FinalGeometryEvaluator.Result(quality.id(),FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED,quality.findings(),
+                    quality.totalLengthMeters(),quality.directlySupportedLengthMeters(),quality.worstUnsupportedSpanMeters(),
+                    quality.meanImageCenterCost(),quality.bendPreservingRoughness());
+        }
         return new ModernTracePipeline.Route(route.rawHypothesis(), finalHypothesis, kept,
-                assignments, ownership, quality, route.cleanupStatus(), route.geometryChanged());
+                assignments, ownership, quality, route.cleanupStatus(), route.geometryChanged(),lineage);
     }
 
     private static void requireSafeManualOutside(NetworkSnapshot before,

@@ -1835,20 +1835,29 @@ public final class LiveBPreviewService {
                 TraceWorkUsage usage = production.usage();
                 if (usage.pairVisits() > remainingPairs
                         || usage.transitions() > remainingTransitions
-                        || (long) retainedRoutes + production.result().routes().size()
+                        || (long) retainedRoutes + production.result().routes().stream()
+                                .filter(r->r.lineage().variant()==ModernTracePipeline.RouteVariant.BASE).count()
                                 > IntervalTraceBatch.MAX_RETAINED_ROUTES) {
                     throw new IntervalTraceBatch.ResourceLimitException(
                             "interval inference exceeded remaining work or retained-route budget");
                 }
                 remainingPairs -= usage.pairVisits();
                 remainingTransitions -= usage.transitions();
-                retainedRoutes += production.result().routes().size();
+                retainedRoutes += production.result().routes().stream()
+                        .filter(r->r.lineage().variant()==ModernTracePipeline.RouteVariant.BASE).count();
                 runs.add(new IntervalTraceBatch.IntervalRun(interval, request,
                         production.result(), usage,production.corridorReceipt()));
             }
             cancellation.checkpoint();
+            var bounded=ModernTracePipeline.retainNativeRoutesWithinBudget(runs.stream()
+                    .map(IntervalTraceBatch.IntervalRun::result).toList(),IntervalTraceBatch.MAX_RETAINED_ROUTES);
+            List<IntervalTraceBatch.IntervalRun> retained=new ArrayList<>(runs.size());
+            for(int i=0;i<runs.size();i++) {
+                var run=runs.get(i);retained.add(new IntervalTraceBatch.IntervalRun(run.interval(),run.request(),
+                        bounded.get(i),run.usage(),run.corridorReceipt()));
+            }
             return new IntervalTraceBatch(fullRequest, evidence, captured.network(), partition,
-                    runs, options, captured.specification());
+                    retained, options, captured.specification());
     }
 
     private static TraceRequest fullRequest(Captured captured, EvidenceSnapshot evidence) {
@@ -2101,6 +2110,7 @@ public final class LiveBPreviewService {
         public PreviewChoice {
             if (owner == null || owner.partitioned() || candidate == null
                     || localRouteIndex < 0 || localRouteIndex >= owner.pipeline().routes().size()
+                    || !candidate.id().equals(owner.pipeline().routes().get(localRouteIndex).hypothesis().id())
                     || sourceLabel == null || sourceLabel.isBlank()) {
                 throw new IllegalArgumentException("Preview route owner is incomplete");
             }
@@ -2126,7 +2136,13 @@ public final class LiveBPreviewService {
                             : "Selected palette";
             List<CenterlineCandidate> candidates = adapt(run, projector);
             for (int index = 0; index < candidates.size(); index++) {
-                choices.add(new PreviewChoice(run, index, candidates.get(index), label));
+                var route=run.pipeline().routes().get(index);
+                boolean paired=run.pipeline().routes().stream().anyMatch(r->
+                        r.lineage().nativeParentId().equals(route.lineage().nativeParentId())
+                            && r.lineage().variant()!=ModernTracePipeline.RouteVariant.BASE);
+                String variant=route.lineage().variant()!=ModernTracePipeline.RouteVariant.BASE?" — After smoothing"
+                        : paired?" — Before smoothing":"";
+                choices.add(new PreviewChoice(run, index, candidates.get(index), label+variant));
             }
         }
         return List.copyOf(choices);

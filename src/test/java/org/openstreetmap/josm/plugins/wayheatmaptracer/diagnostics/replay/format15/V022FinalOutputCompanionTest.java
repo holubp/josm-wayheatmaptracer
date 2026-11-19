@@ -33,6 +33,76 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTra
 class V022FinalOutputCompanionTest {
     private static final String COMPANION = "private/final-output-components.bin";
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"orphan","absent-native","duplicate-child","wrong-engine"})
+    void decoderRejectsSelfConsistentInvalidCrossRouteLineage(String malformed) throws Exception {
+        var raw=new TraceHypothesis("parent","branch",List.of(new MetricPoint(0,0),new MetricPoint(1,.1),new MetricPoint(2,0)),
+                java.util.Collections.nCopies(3,ObservationOwnership.DIRECT_TWO_SIDED),1,.5,Map.of());
+        var base=lineageRoute(raw,raw.id(),raw.points(),false);
+        var child=lineageRoute(raw,"parent:child",List.of(new MetricPoint(0,0),new MetricPoint(1,.05),new MetricPoint(2,0)),true);
+        var engine=malformed.equals("wrong-engine")?TrackerMode.PROBABILISTIC:TrackerMode.CORRIDOR_AWARE;
+        var inference=new TraceHypothesisSet(engine,malformed.equals("absent-native")?List.of():List.of(raw),
+                malformed.equals("absent-native")?TraceHypothesisSet.Status.NO_ROUTE:TraceHypothesisSet.Status.COMPLETE,false,3,2,"native");
+        List<ModernTracePipeline.Route> routes=malformed.equals("orphan")?List.of(child)
+                :malformed.equals("duplicate-child")?List.of(base,child,lineageRoute(raw,"parent:child-two",
+                    List.of(new MetricPoint(0,0),new MetricPoint(1,.06),new MetricPoint(2,0)),true)):List.of(base,child);
+        var output=new Format15ReplayRunner.Result(ReplayLevel.FINAL_GEOMETRY,engine,engine,inference,routes,"a".repeat(64));
+        var binding=new FinalOutputComponentsCodec.Binding("decoder-adversary","a".repeat(64),"b".repeat(64),engine,engine,
+                ReplayLevel.FINAL_GEOMETRY,3,FinalReplayFingerprint.sha256(output));
+        // Deliberately bypass prepare/encode validation: every checksum matches the malformed
+        // wire. Decoder authority must come from structural validation, not these checksums.
+        var prepared=new FinalOutputComponentsCodec.Prepared(binding,output,FinalOutputComponentsCodec.componentDigests(output),
+                FinalOutputComponentsCodec.qualitySummary(output),0);
+        var bytes=new java.io.ByteArrayOutputStream();
+        try(var data=new java.io.DataOutputStream(bytes)){FinalOutputComponentsCodec.writeSnapshot(data,prepared);}
+        assertThrows(ReplayMismatchException.class,()->FinalOutputComponentsCodec.decode(bytes.toByteArray(),binding));
+    }
+
+    @Test void derivedNativeLineageHasVersionedRoundTripWithoutChangingBaseBytes() throws Exception {
+        var raw=new TraceHypothesis("parent","branch",List.of(new MetricPoint(0,0),new MetricPoint(1,.1),new MetricPoint(2,0)),
+                java.util.Collections.nCopies(3,ObservationOwnership.DIRECT_TWO_SIDED),1,.5,Map.of());
+        var inference=new TraceHypothesisSet(TrackerMode.CORRIDOR_AWARE,List.of(raw),TraceHypothesisSet.Status.COMPLETE,false,3,2,"native");
+        var base=lineageRoute(raw,raw.id(),raw.points(),false);
+        var output=new Format15ReplayRunner.Result(ReplayLevel.FINAL_GEOMETRY,TrackerMode.CORRIDOR_AWARE,
+                TrackerMode.CORRIDOR_AWARE,inference,List.of(base),"a".repeat(64));
+        var baseBinding=binding("base-build","b".repeat(64),output);
+        byte[] before=FinalOutputComponentsCodec.encode(baseBinding,output).bytes();
+        assertEquals(1,ByteBuffer.wrap(before).getInt(4));
+        var child=lineageRoute(raw,"parent:smoothed",List.of(new MetricPoint(0,0),new MetricPoint(1,.05),new MetricPoint(2,0)),true);
+        var derived=new Format15ReplayRunner.Result(output.level(),output.capturedEngine(),output.engine(),inference,List.of(base,child),output.inputHash());
+        assertEquals(3,FinalReplayFingerprint.schema(derived));
+        var derivedBinding=new FinalOutputComponentsCodec.Binding("child-build",derived.inputHash(),"b".repeat(64),
+                derived.capturedEngine(),derived.engine(),derived.level(),3,FinalReplayFingerprint.sha256(derived));
+        var wrongSchema=new FinalOutputComponentsCodec.Binding("child-build",derived.inputHash(),"b".repeat(64),
+                derived.capturedEngine(),derived.engine(),derived.level(),1,FinalReplayFingerprint.sha256(derived));
+        assertThrows(IllegalArgumentException.class,()->FinalOutputComponentsCodec.encode(wrongSchema,derived));
+        byte[] bytes=FinalOutputComponentsCodec.encode(derivedBinding,derived).bytes();
+        assertEquals(3,ByteBuffer.wrap(bytes).getInt(4));
+        var restored=FinalOutputComponentsCodec.decode(bytes,derivedBinding).output();
+        assertEquals(child,restored.routes().get(1));assertEquals(raw,restored.routes().get(1).rawHypothesis());
+        assertEquals(FinalReplayFingerprint.sha256(derived),FinalReplayFingerprint.sha256(restored));
+        org.junit.jupiter.api.Assertions.assertArrayEquals(before,FinalOutputComponentsCodec.encode(baseBinding,output).bytes());
+        assertEquals(output,FinalOutputComponentsCodec.decode(before,baseBinding).output());
+        assertThrows(IllegalArgumentException.class,()->new ModernTracePipeline.Route(raw,child.hypothesis(),child.pointIds(),
+                child.assignments(),child.sourceOwnership(),child.quality(),child.cleanupStatus(),true,
+                new ModernTracePipeline.RouteLineage(raw.id(),ModernTracePipeline.RouteVariant.LONG_SCALE_SMOOTHED,Map.of(0,0,2,2))));
+    }
+
+    private static ModernTracePipeline.Route lineageRoute(TraceHypothesis raw,String id,List<MetricPoint> points,boolean derived) {
+        var ids=java.util.stream.IntStream.range(0,points.size()).mapToObj(i->
+                (FinalRoutePointId)new FinalRoutePointId.GeneratedCandidatePoint(id,i)).toList();
+        var assignments=new LinkedHashMap<FinalRoutePointId,MetricPoint>();
+        var ownership=new LinkedHashMap<FinalRoutePointId,ObservationOwnership>();
+        for(int i=0;i<ids.size();i++){assignments.put(ids.get(i),points.get(i));ownership.put(ids.get(i),raw.support().get(i));}
+        var quality=new FinalGeometryEvaluator.Result(id,derived?FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED:
+                FinalGeometryEvaluator.Disposition.APPLICABLE,List.of(),2,2,0,.1,.1);
+        return new ModernTracePipeline.Route(raw,new TraceHypothesis(id,raw.branchSignature(),points,raw.support(),raw.objective(),
+                raw.posteriorProbability(),Map.of()),ids,assignments,ownership,quality,derived?
+                ImageSupportedLocalCleanup.Status.CLEANED:ImageSupportedLocalCleanup.Status.SKIPPED,derived,
+                derived?new ModernTracePipeline.RouteLineage(raw.id(),ModernTracePipeline.RouteVariant.LONG_SCALE_SMOOTHED,
+                    Map.of(0,0,1,1,2,2)):ModernTracePipeline.RouteLineage.base(raw.id()));
+    }
+
     @Test
     void liveExportCarriesTheExactAlreadyProducedFinalOutput(@TempDir Path directory)
             throws Exception {

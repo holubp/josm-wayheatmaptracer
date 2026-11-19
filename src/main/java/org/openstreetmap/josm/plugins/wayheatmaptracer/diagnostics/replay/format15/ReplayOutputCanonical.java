@@ -88,6 +88,16 @@ final class ReplayOutputCanonical {
         writeQuality(data, route.quality());
         ScalarReplayFingerprint.writeString(data, route.cleanupStatus().name());
         data.writeBoolean(route.geometryChanged());
+        if (route.lineage().variant()!=ModernTracePipeline.RouteVariant.BASE) writeLineage(data,route.lineage());
+    }
+
+    static void writeLineage(DataOutputStream data,ModernTracePipeline.RouteLineage lineage) throws IOException {
+        ScalarReplayFingerprint.writeString(data,lineage.nativeParentId());
+        ScalarReplayFingerprint.writeString(data,lineage.variant().name());
+        data.writeInt(lineage.nativeAliases().size());
+        for(var entry:new java.util.TreeMap<>(lineage.nativeAliases()).entrySet()) {
+            data.writeInt(entry.getKey());data.writeInt(entry.getValue());
+        }
     }
 
     static void writePointId(DataOutputStream data, FinalRoutePointId id) throws IOException {

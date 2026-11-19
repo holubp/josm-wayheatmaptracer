@@ -13,6 +13,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.E
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupInterval;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /** Cleans independently measurable image-supported intervals without moving frozen islands. */
@@ -132,6 +134,261 @@ public final class ImageSupportedLocalCleanup {
     }
 
     private final ImageSupportedRefitter refitter = new ImageSupportedRefitter();
+
+    /** Explicit native-control entry. A retained identity alone never fixes a coordinate.
+     * The mandatory safety guard must certify topology, the source envelope, and exact
+     * changed-segment raster-cell validity on the complete stored output. Discrete source
+     * probes below are fit checks, not a continuous cell-support certificate. The optional reduction
+     * certificate must additionally certify broad features on that reduced polyline.
+     */
+    public record LongScaleRequest(Request cleanup, FinalControlBasis basis,
+            Map<Integer, Integer> nativeAliases, List<ObservationOwnership> sourceOwnership,
+            boolean sourceAvailable, long maximumWorkVisits,
+            ImageSupportedRefitter.GeometryValidator safetyGuard,
+            java.util.Optional<ImageSupportedRefitter.GeometryValidator> reductionCertificate) {
+        public LongScaleRequest {
+            Objects.requireNonNull(cleanup); Objects.requireNonNull(basis);
+            Objects.requireNonNull(safetyGuard); Objects.requireNonNull(reductionCertificate);
+            nativeAliases = Map.copyOf(nativeAliases);
+            sourceOwnership = List.copyOf(sourceOwnership);
+            Set<Integer> nativeSlots = new LinkedHashSet<>(nativeAliases.values());
+            if (!basis.initialCoordinates().equals(cleanup.points())
+                    || sourceOwnership.size() != basis.size() || maximumWorkVisits < 0
+                    || !basis.protectedIndices().containsAll(cleanup.protectedIndices())
+                    || Math.abs(cleanup.image().sourcePitchMeters()
+                        - cleanup.refitConfig().sourcePitchMeters()) > 1e-9
+                    || nativeSlots.size() != nativeAliases.size())
+                throw new IllegalArgumentException("Native cleanup authority is inconsistent");
+            for (int raw = 0; raw < nativeAliases.size(); raw++) {
+                Integer slot = nativeAliases.get(raw);
+                if (slot == null || slot < 0 || slot >= basis.size()
+                        || !basis.rows().get(slot).independent())
+                    throw new IllegalArgumentException("Native aliases must be complete independent slots");
+                if (cleanup.occurrenceIds().get(slot) instanceof FinalRoutePointId.GeneratedCandidatePoint generated
+                        && generated.originalPointIndex() != raw)
+                    throw new IllegalArgumentException("Generated occurrence contradicts native origin");
+            }
+            for (int slot : basis.independentIndices())
+                if (!nativeSlots.contains(slot) && !basis.protectedIndices().contains(slot))
+                    throw new IllegalArgumentException("Unowned independent control");
+        }
+    }
+
+    /** Proposal-only wrapper. Changed output always needs session-local review and revalidation. */
+    public record LongScaleResult(Result cleanup,
+            java.util.Optional<LongScaleNormalFairing.Result> proposal,
+            boolean reviewRequired, List<CleanupInterval> eligibility) {
+        public LongScaleResult { eligibility = List.copyOf(eligibility); }
+    }
+
+    /** Runs one budgeted native proposal without changing the historical cleanup entry. */
+    public LongScaleResult cleanLongScale(LongScaleRequest nativeRequest, CancellationProbe cancellation) {
+        Objects.requireNonNull(nativeRequest); Objects.requireNonNull(cancellation);
+        cancellation.checkpoint();
+        Request request = nativeRequest.cleanup();
+        if (request.mode() != Mode.REFIT_AND_REDUCE)
+            return new LongScaleResult(clean(request, cancellation), java.util.Optional.empty(), false, List.of());
+        if (!nativeRequest.sourceAvailable())
+            return unavailableLongScale(request, "source-cleanup-unavailable");
+        double[] chainage = new double[request.points().size()];
+        for (int i = 1; i < chainage.length; i++)
+            chainage[i] = chainage[i-1] + request.points().get(i-1).distanceTo(request.points().get(i));
+        double spacing = Math.min(1., request.image().sourcePitchMeters() * .5);
+        long count = 0;
+        for (int i = 1; i < chainage.length; i++) {
+            double needed = Math.max(1., Math.ceil((chainage[i]-chainage[i-1])/spacing));
+            if (!Double.isFinite(needed) || needed > 65_536 || (count += (long)needed + 1) > 65_536)
+                return unavailableLongScale(request, "source-probe-resource-limit");
+        }
+        double halfWidth = Math.max(4 * request.image().sourcePitchMeters(),
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters
+                    .defaults().localization().routeProfileHalfWidthMeters());
+        double samples = Math.ceil(2 * halfWidth / (request.image().sourcePitchMeters() * .25)) + 2;
+        // Reserve conservatively for retained profile arrays, sample objects and transient
+        // extraction storage before asking ImageCostField to allocate any frozen profile.
+        if (!Double.isFinite(samples) || samples > 65_536
+                || (count + 2) * (512 + 64 * samples) > 64L * 1024 * 1024)
+            return unavailableLongScale(request, "source-profile-resource-limit");
+        // Profile authority is frozen at the original native slots, before any trial. Unknown
+        // curvature is deliberately absent from this eligibility rule.
+        var controls = nativeRequest.basis().independentIndices();
+        var frozen = new java.util.TreeSet<>(nativeRequest.basis().protectedIndices());
+        frozen.add(0); frozen.add(request.points().size()-1);
+        var nativeSlots = new LinkedHashSet<>(nativeRequest.nativeAliases().values());
+        for (int c = 0; c < controls.size(); c++) {
+            cancellation.checkpoint(); int slot = controls.get(c);
+            boolean direct = nativeSlots.contains(slot)
+                    && nativeRequest.sourceOwnership().get(slot) == ObservationOwnership.DIRECT_TWO_SIDED;
+            MetricPoint direction = tangent(request.points(), slot);
+            if (direction.distanceTo(new MetricPoint(0,0)) <= 1e-12)
+                return unavailableLongScale(request, "source-degenerate-tangent");
+            var profile = request.image().freezeProfile(request.points().get(slot), direction, cancellation);
+            if (!direct || profile.support() != ImageCostField.FrozenSupport.MEASURED
+                    || profile.observedModeStatus() != ImageCostField.ObservedModeStatus.OBSERVED_UNIQUE) {
+                frozen.add(slot);
+                // The nearest observed controls bound the missing/censored island; a moved
+                // neighboring endpoint must not modify an uncertified segment into that island.
+                if (c > 0) frozen.add(controls.get(c-1));
+                if (c+1 < controls.size()) frozen.add(controls.get(c+1));
+            }
+        }
+        List<CleanupInterval> intervals = new ArrayList<>();
+        List<Integer> boundaries = List.copyOf(frozen);
+        for (int i = 1; i < boundaries.size(); i++) {
+            int first = boundaries.get(i-1), last = boundaries.get(i);
+            int direct = 0;
+            for (int slot : controls) if (slot > first && slot < last && !frozen.contains(slot)) direct++;
+            intervals.add(new CleanupInterval(first, last, chainage[first], chainage[last],
+                    direct, direct > 0, direct > 0, direct > 0,
+                    List.of(direct > 0 ? "native-source-island" : "frozen-source-boundary")));
+        }
+        List<SourceProbe> probes = new ArrayList<>();
+        for (int i = 1; i < chainage.length; i++) {
+            int divisions = Math.max(1, (int)Math.ceil((chainage[i]-chainage[i-1])/spacing));
+            MetricPoint direction = difference(request.points().get(i), request.points().get(i-1));
+            if (direction.distanceTo(new MetricPoint(0,0)) <= 1e-12)
+                return unavailableLongScale(request, "source-degenerate-segment");
+            for (int j = 0; j <= divisions; j++) {
+                cancellation.checkpoint(); double t = (double)j/divisions;
+                MetricPoint point = interpolate(request.points().get(i-1), request.points().get(i), t);
+                var profile = request.image().freezeProfile(point, direction, cancellation);
+                probes.add(new SourceProbe(i-1, t, point, profile));
+            }
+        }
+        ImageSupportedRefitter.GeometryValidator sourceGuard = points -> validateNativeSource(
+                nativeRequest, probes, request.occurrenceIds(), points, chainage, cancellation);
+        List<ImageSupportedRefitter.GeometryValidator> guards = new ArrayList<>(request.validators());
+        guards.add(sourceGuard); guards.add(nativeRequest.safetyGuard());
+        var proposal = LongScaleNormalFairing.propose(new LongScaleNormalFairing.Request(
+                nativeRequest.basis(), request.image().sourcePitchMeters(), intervals,
+                guards, nativeRequest.maximumWorkVisits()), cancellation);
+        List<MetricPoint> points = proposal.points();
+        List<FinalRoutePointId> ids = request.occurrenceIds();
+        String reductionReason = "reduction-not-requested";
+        if (request.reductionToleranceMeters() > 0
+                && proposal.status() != LongScaleNormalFairing.Status.REJECTED
+                && proposal.status() != LongScaleNormalFairing.Status.REFUSED_RESOURCE) {
+            reductionReason = "reduction-validation-unavailable";
+            if (nativeRequest.reductionCertificate().isPresent()) {
+                Set<Integer> keep = new LinkedHashSet<>(request.retainedIndices());
+                keep.addAll(frozen); keep.addAll(request.protectedIndices());
+                Reduction reduced = reduce(ids, points, keep, request.image(), request.branchCorridor(),
+                        request.reductionToleranceMeters(), cancellation);
+                var validation = validateNativeSource(nativeRequest, probes, reduced.ids(),
+                        reduced.points(), chainage, cancellation);
+                if (validation.feasible()) validation = nativeRequest.reductionCertificate().orElseThrow()
+                        .validate(reduced.points());
+                if (validation.feasible()) validation = nativeRequest.safetyGuard().validate(reduced.points());
+                if (validation.feasible()) validation = validateWholeGeometry(request, reduced.points());
+                reductionReason = validation.feasible() ? "stored-reduction-certified" : validation.code();
+                if (validation.feasible()) { ids = reduced.ids(); points = reduced.points(); }
+            }
+        }
+        String failure = validateRetainedAndProtected(request, ids, points);
+        if (failure != null) return unavailableLongScale(request, failure);
+        boolean changed = !ids.equals(request.occurrenceIds()) || !points.equals(request.points());
+        List<IntervalResult> diagnostics = new ArrayList<>();
+        for (CleanupInterval interval : intervals) if (!interval.smoothingEligible())
+            diagnostics.add(new IntervalResult(interval.startIndex(), interval.endIndex(),
+                    IntervalDisposition.FROZEN_MISSING_EVIDENCE, false, List.of(), "frozen-source-boundary"));
+        for (var interval : proposal.intervals()) diagnostics.add(new IntervalResult(interval.firstIndex(),
+                interval.lastIndex(), switch(interval.disposition()) {
+                    case FROZEN -> IntervalDisposition.FROZEN_MISSING_EVIDENCE;
+                    case REJECTED -> IntervalDisposition.REJECTED;
+                    case UNCHANGED -> IntervalDisposition.UNCHANGED;
+                    case PROPOSED -> IntervalDisposition.CLEANED;
+                }, interval.disposition() == LongScaleNormalFairing.Disposition.PROPOSED,
+                List.of(), interval.reason()));
+        diagnostics.add(new IntervalResult(0, request.points().size()-1, IntervalDisposition.SKIPPED,
+                false, List.of(), reductionReason));
+        boolean partial = diagnostics.stream().anyMatch(i -> i.disposition() == IntervalDisposition.FROZEN_MISSING_EVIDENCE
+                || i.disposition() == IntervalDisposition.REJECTED);
+        Status status = changed ? partial ? Status.PARTIALLY_CLEANED : Status.CLEANED
+                : proposal.status() == LongScaleNormalFairing.Status.REJECTED
+                    || proposal.status() == LongScaleNormalFairing.Status.REFUSED_RESOURCE ? Status.REJECTED : Status.UNCHANGED;
+        return new LongScaleResult(result(status, ids, points, diagnostics), java.util.Optional.of(proposal),
+                changed, intervals);
+    }
+
+    private static LongScaleResult unavailableLongScale(Request request, String reason) {
+        return new LongScaleResult(result(Status.SKIPPED, request.occurrenceIds(), request.points(),
+                List.of(new IntervalResult(0, request.points().size()-1,
+                        IntervalDisposition.FROZEN_MISSING_EVIDENCE, false, List.of(), reason))),
+                java.util.Optional.empty(), false, List.of());
+    }
+
+    private record SourceProbe(int segment, double fraction, MetricPoint origin,
+            ImageCostField.FrozenProfile profile) { }
+
+    private static ImageSupportedRefitter.Validation validateNativeSource(LongScaleRequest nativeRequest,
+            List<SourceProbe> probes, List<FinalRoutePointId> ids, List<MetricPoint> points,
+            double[] chainage, CancellationProbe cancellation) {
+        Request request = nativeRequest.cleanup();
+        Map<FinalRoutePointId,Integer> original = new LinkedHashMap<>();
+        for (int i=0; i<request.occurrenceIds().size(); i++) original.put(request.occurrenceIds().get(i), i);
+        int reducedSegment = 0;
+        for (SourceProbe probe : probes) {
+            cancellation.checkpoint();
+            double s = chainage[probe.segment()] + probe.fraction()
+                    * (chainage[probe.segment()+1]-chainage[probe.segment()]);
+            while (reducedSegment+2 < ids.size()
+                    && chainage[original.get(ids.get(reducedSegment+1))] < s) reducedSegment++;
+            int a = original.get(ids.get(reducedSegment)), b = original.get(ids.get(reducedSegment+1));
+            if (b == a+1 && points.get(reducedSegment).equals(request.points().get(a))
+                    && points.get(reducedSegment+1).equals(request.points().get(b))) continue;
+            double width = chainage[b]-chainage[a];
+            if (!(width > 0)) return ImageSupportedRefitter.Validation.rejected("source-degenerate-segment");
+            MetricPoint point = interpolate(points.get(reducedSegment), points.get(reducedSegment+1),
+                    (s-chainage[a])/width);
+            // Frozen exterior/missing islands need no invented certificate when exact.
+            if (point.equals(probe.origin())) continue;
+            var actualFit = validateActualSourceSample(request.image(), probe.origin(), point);
+            if (!actualFit.feasible()) return actualFit;
+            var profile = probe.profile();
+            var before = profile.evaluate(probe.origin()); var after = profile.evaluate(point);
+            if (profile.support() != ImageCostField.FrozenSupport.MEASURED
+                    || profile.observedModeStatus() != ImageCostField.ObservedModeStatus.OBSERVED_UNIQUE
+                    || before.isEmpty() || after.isEmpty()
+                    || point.distanceTo(probe.origin()) > 1.25 * request.image().sourcePitchMeters()
+                    || after.orElseThrow().cost() > before.orElseThrow().cost() + .02)
+                return ImageSupportedRefitter.Validation.rejected("frozen-native-branch-fit");
+        }
+        for (int i=1; i<points.size(); i++) {
+            cancellation.checkpoint(); int a=original.get(ids.get(i-1)), b=original.get(ids.get(i));
+            if (b == a+1 && points.get(i-1).equals(request.points().get(a))
+                    && points.get(i).equals(request.points().get(b))) continue;
+            double before = request.image().meanPolylineCost(request.points().subList(a,b+1));
+            double after = request.image().meanSegmentCost(points.get(i-1),points.get(i));
+            if (!request.branchCorridor().containsSegment(points.get(i-1),points.get(i))
+                    || !Double.isFinite(before) || !Double.isFinite(after) || after > before+.02)
+                return ImageSupportedRefitter.Validation.rejected("stored-segment-source-fit");
+        }
+        return ImageSupportedRefitter.Validation.accepted();
+    }
+
+    /** Actual 2D source fit, kept separate from the one-dimensional frozen branch field. */
+    static ImageSupportedRefitter.Validation validateActualSourceSample(ImageCostField image,
+            MetricPoint origin, MetricPoint point) {
+        var before = image.sample(origin); var after = image.sample(point);
+        if (before.isEmpty() || after.isEmpty())
+            return ImageSupportedRefitter.Validation.rejected("actual-source-sample-unavailable");
+        double originalCost = before.orElseThrow().presenceCost() + before.orElseThrow().centerCost();
+        double proposedCost = after.orElseThrow().presenceCost() + after.orElseThrow().centerCost();
+        return Double.isFinite(originalCost) && Double.isFinite(proposedCost) && proposedCost <= originalCost + .02
+                ? ImageSupportedRefitter.Validation.accepted()
+                : ImageSupportedRefitter.Validation.rejected("actual-source-sample-fit");
+    }
+
+    private static MetricPoint tangent(List<MetricPoint> points, int slot) {
+        return difference(points.get(Math.min(points.size()-1,slot+1)), points.get(Math.max(0,slot-1)));
+    }
+    private static MetricPoint difference(MetricPoint a, MetricPoint b) {
+        return new MetricPoint(a.xMeters()-b.xMeters(),a.yMeters()-b.yMeters());
+    }
+    private static MetricPoint interpolate(MetricPoint a, MetricPoint b, double t) {
+        if (t == 0) return a; if (t == 1) return b;
+        return new MetricPoint(a.xMeters()+t*(b.xMeters()-a.xMeters()), a.yMeters()+t*(b.yMeters()-a.yMeters()));
+    }
 
     /** Evaluates and cleans each directly measurable interval independently. */
     public Result clean(Request request) {
