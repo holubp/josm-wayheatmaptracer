@@ -62,9 +62,24 @@ public final class CertifiedContextSegmentClipper {
         BigDecimal lengthSquared() { return lengthSquared; }
 
         ExactChord shifted(BigDecimal eastShift) {
+            if (eastShift.signum() == 0) return this;
             // Unlimited-precision east translation leaves length and north bounds exact.
-            return new ExactChord(start.shifted(eastShift), end.shifted(eastShift),
-                    lengthSquared, minNorth, maxNorth, separationRadius);
+            return new ExactChord(this, eastShift);
+        }
+
+        private ExactChord(ExactChord original, BigDecimal eastShift) {
+            start = original.start.shifted(eastShift);
+            end = original.end.shifted(eastShift);
+            lengthSquared = original.lengthSquared;
+            minNorth = original.minNorth;
+            maxNorth = original.maxNorth;
+            minEastLower = Math.nextDown(min(start.east(), end.east()).doubleValue());
+            maxEastUpper = Math.nextUp(max(start.east(), end.east()).doubleValue());
+            // Translation changes no north coordinate, so these are the identical
+            // outward-rounded binary64 bounds, not newly estimated bounds.
+            minNorthLower = original.minNorthLower;
+            maxNorthUpper = original.maxNorthUpper;
+            separationRadius = original.separationRadius;
         }
     }
 
@@ -196,9 +211,49 @@ public final class CertifiedContextSegmentClipper {
                 || certifiedNorthSeparation(first, second);
     }
 
-    /** Invocation-local exact shifts;32 reference payload bytes plus all3 decimal graphs. */
-    record OriginalContactFrame(LocalMetricFrame frame, BigDecimal negativeShift,
-            BigDecimal zeroShift, BigDecimal positiveShift) { }
+    /** Thread-confined assessment-local preparation; cached chord values are immutable. */
+    static final class OriginalContactFrame {
+        static final int MAX_CACHED_CONTEXTS = 4096;
+        private final LocalMetricFrame frame;
+        private final BigDecimal negativeShift;
+        private final BigDecimal zeroShift;
+        private final BigDecimal positiveShift;
+        private long branchPreparations;
+        private final java.util.IdentityHashMap<ExactChord, ExactChord[]> branches =
+                new java.util.IdentityHashMap<>();
+
+        OriginalContactFrame(LocalMetricFrame frame, BigDecimal negativeShift,
+                BigDecimal zeroShift, BigDecimal positiveShift) {
+            this.frame = frame;
+            this.negativeShift = negativeShift;
+            this.zeroShift = zeroShift;
+            this.positiveShift = positiveShift;
+        }
+
+        LocalMetricFrame frame() { return frame; }
+        BigDecimal negativeShift() { return negativeShift; }
+        BigDecimal zeroShift() { return zeroShift; }
+        BigDecimal positiveShift() { return positiveShift; }
+        long branchPreparations() { return branchPreparations; }
+        int cachedContexts() { return branches.size(); }
+
+        ExactChord branch(ExactChord context, int shift) {
+            if (shift < -1 || shift > 1) throw new IllegalArgumentException("Invalid longitude branch");
+            if (shift == 0) return context;
+            ExactChord[] cached = branches.get(context);
+            if (cached == null && branches.size() < MAX_CACHED_CONTEXTS) {
+                cached = new ExactChord[] {context.shifted(negativeShift), context,
+                        context.shifted(positiveShift)};
+                branchPreparations += 2;
+                branches.put(context, cached);
+            }
+            if (cached != null) return cached[shift + 1];
+            // Retention is bounded; overflow uses the same exact predicate without
+            // caching, never refusing or omitting any contact test.
+            branchPreparations++;
+            return context.shifted(shift < 0 ? negativeShift : positiveShift);
+        }
+    }
 
     static OriginalContactFrame prepareOriginalContactFrame(LocalMetricFrame frame) {
         BigDecimal fullTurnMetres = FULL_TURN.multiply(RADIANS_PER_DEGREE)
@@ -281,9 +336,7 @@ public final class CertifiedContextSegmentClipper {
         ContactEvidence result = new ContactEvidence(false, false, false, false,
                 java.util.List.of());
         for (int shift = -1; shift <= 1; shift++) {
-            BigDecimal eastShift = shift < 0 ? prepared.negativeShift()
-                    : shift == 0 ? prepared.zeroShift() : prepared.positiveShift();
-            ExactChord branch = context.shifted(eastShift);
+            ExactChord branch = prepared.branch(context, shift);
             ContactEvidence contact = branchEvidence(changed, changedStart, changedEnd,
                     branch, contextStart, contextEnd, shift);
             result = result.union(contact);

@@ -127,6 +127,13 @@ class V022CertifiedContextInvariantReuseTest {
             PrimitiveKey bEnd, LocalMetricFrame frame) {
         var actual = CertifiedContextSegmentClipper.originalContactEvidence(a, aStart, aEnd,
                 b, bStart, bEnd, frame);
+        var prepared = CertifiedContextSegmentClipper.prepareOriginalContactFrame(frame);
+        for (int repeat = 0; repeat < 2; repeat++) {
+            var cached = CertifiedContextSegmentClipper.originalContactEvidencePrepared(
+                    a, aStart, aEnd, b, bStart, bEnd, frame, prepared);
+            assertEquals(actual, cached, "all flags and ordered endpoint witnesses must agree");
+            assertEquals(actual.displayDefect(), cached.displayDefect());
+        }
         var expected = FrozenCertifiedContextSegmentClipperReference.originalContactEvidence(
                 frozenChord(a.start(), a.end()), aStart, aEnd,
                 frozenChord(b.start(), b.end()), bStart, bEnd, frame);
