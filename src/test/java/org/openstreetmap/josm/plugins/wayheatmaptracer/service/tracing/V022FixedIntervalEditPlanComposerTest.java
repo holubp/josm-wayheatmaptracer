@@ -1441,7 +1441,37 @@ class V022FixedIntervalEditPlanComposerTest {
         var overlapLeft = withGeneratedPositions(batch, flatLeft, Map.of(
                 left.pointIds().get(left.pointIds().size() - 2),
                 new MetricPoint(fixed.xMeters(), fixed.yMeters() + 1.5)));
-        var overlapRight = right;
+        var rightFirst = right.pointIds().get(1);
+        assertTrue(rightFirst instanceof GeneratedCandidatePoint);
+        var nativeRightFirst = right.assignments().get(rightFirst);
+        var overlapRight = withGeneratedPositions(batch, right, Map.of(rightFirst,
+                new MetricPoint(fixed.xMeters(), nativeRightFirst.yMeters())));
+        assertEquals(right.pointIds(), overlapRight.pointIds());
+        for (var id : right.pointIds()) if (!id.equals(rightFirst))
+            assertEquals(right.assignments().get(id), overlapRight.assignments().get(id));
+        var shared = overlapLeft.pointIds().get(overlapLeft.pointIds().size() - 1);
+        assertTrue(shared instanceof FinalRoutePointId.ExistingWayNodeOccurrence);
+        var fixedOccurrence = (FinalRoutePointId.ExistingWayNodeOccurrence) shared;
+        assertEquals(3, fixedOccurrence.originalOccurrenceIndex());
+        assertEquals(shared, overlapRight.pointIds().get(0));
+        assertEquals(fixed, overlapLeft.assignments().get(shared));
+        assertEquals(fixed, overlapRight.assignments().get(shared));
+        var leftApproach = overlapLeft.assignments().get(overlapLeft.pointIds().get(overlapLeft.pointIds().size() - 2));
+        var rightApproach = overlapRight.assignments().get(rightFirst);
+        assertEquals(fixed.xMeters(), leftApproach.xMeters());
+        assertEquals(fixed.xMeters(), rightApproach.xMeters());
+        assertEquals(nativeRightFirst.yMeters(), rightApproach.yMeters());
+        assertTrue(rightApproach.yMeters() > leftApproach.yMeters());
+        assertEquals(1.5, leftApproach.yMeters() - fixed.yMeters(), 1e-12);
+        var frame = batch.evidence().coordinateFrame();
+        var fixedGeo = ((DetachedNode)batch.network().primitives().get(fixedOccurrence.nodeKey())).coordinate();
+        var leftChord = CertifiedContextSegmentClipper.originalChord(frame.toGeographic(leftApproach), fixedGeo, frame);
+        var rightChord = CertifiedContextSegmentClipper.originalChord(fixedGeo, frame.toGeographic(rightApproach), frame);
+        var contact = CertifiedContextSegmentClipper.originalContactEvidence(leftChord, null, fixedOccurrence.nodeKey(),
+                rightChord, fixedOccurrence.nodeKey(), null, frame);
+        assertTrue(contact.positiveOverlap(), contact.toString());
+        assertFalse(contact.properCrossing(), contact.toString());
+        assertFalse(contact.soleOwnedContact(), contact.toString());
         assertNotEquals(FinalGeometryEvaluator.Disposition.HARD_BLOCKED,
                 overlapLeft.quality().disposition(), overlapLeft.quality().toString());
         assertNotEquals(FinalGeometryEvaluator.Disposition.HARD_BLOCKED,
