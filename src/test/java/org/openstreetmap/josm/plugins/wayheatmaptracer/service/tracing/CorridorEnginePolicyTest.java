@@ -7,8 +7,34 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedLocalCleanup;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorCenterlineOptimizer;
 
 class CorridorEnginePolicyTest {
+    private static TraceRequest policyRequest(TraceRequest r,CorridorTraceInput.ExecutionPolicy policy){
+        var input=r.corridorInput().orElseThrow().withPolicy(policy,Set.of());
+        return new TraceRequest(r.selectedWayKey(),r.selectedRange(),r.engine(),r.geometryMode(),r.permissions(),r.budgets(),
+            r.evidenceSnapshotId(),r.evidenceContentHash(),r.networkSnapshotId(),r.networkContentHash(),r.settingsHash(),r.parameterHash(),r.samplerId(),
+            r.configuredSampleStepMeters(),r.profileChainage(),r.evidenceResolution(),Optional.of(input));
+    }
+    @Test void measuredCoreReceiptReportsActualDomainIncludingAdmittedHistorical(){
+        var adapter=new CorridorEngineAdapter("native");
+        var ordinary=CorridorPolicyFixture.straight(true,false,Set.of());
+        var policy=CorridorTraceInput.ExecutionPolicy.R7_OWNED_MEASURED_CORE_COST_V1;
+        var r=policyRequest(ordinary.request(),policy);
+        var receipt=adapter.traceWithUsage(r,ordinary.evidence(),ordinary.network(),CancellationProbe.NONE).corridorReceipt().orElseThrow();
+        assertTrue(receipt.originalCostPolicies().orElseThrow().containsValue(CorridorCenterlineOptimizer.OriginalCostPolicy.DIRECT_MEASURED_CORE_V2));
+        assertTrue(receipt.originalCostPolicyMetadataBytes().orElseThrow()>0);
+        assertThrows(UnsupportedOperationException.class,()->receipt.originalCostPolicies().orElseThrow().clear());
+        var admitted=CorridorPolicyFixture.admittedParabola();
+        var a=adapter.traceWithUsage(policyRequest(admitted.request(),policy),admitted.evidence(),admitted.network(),CancellationProbe.NONE).corridorReceipt().orElseThrow();
+        assertTrue(a.originalCostPolicies().orElseThrow().containsValue(CorridorCenterlineOptimizer.OriginalCostPolicy.HISTORICAL));
+        var early=adapter.traceWithUsage(r,ordinary.evidence(),ordinary.network(),()->true).corridorReceipt().orElseThrow();
+        assertTrue(early.originalCostPolicies().isEmpty());assertTrue(early.originalCostPolicyMetadataBytes().isEmpty());
+        var r6=policyRequest(ordinary.request(),CorridorTraceInput.ExecutionPolicy.R6_OWNED_DIRECT_POSITION_COST_V1);
+        var six=adapter.traceWithUsage(r6,ordinary.evidence(),ordinary.network(),CancellationProbe.NONE).corridorReceipt().orElseThrow();
+        assertTrue(six.originalCostPolicies().orElseThrow().containsValue(CorridorCenterlineOptimizer.OriginalCostPolicy.DIRECT_POSITION_V1));
+        assertTrue(run(ordinary,CancellationProbe.NONE).corridorReceipt().orElseThrow().originalCostPolicies().isEmpty());
+    }
     private static TraceEngineRun run(CorridorPolicyFixture.Fixture f,CancellationProbe probe){
         return new CorridorEngineAdapter("native").traceWithUsage(f.request(),f.evidence(),f.network(),probe);
     }

@@ -18,7 +18,7 @@ public record CorridorTraceInput(
     Set<Integer> additionalFixedOccurrences
 ) {
     /** Versioned frozen A behavior; historical inputs never opt in implicitly. */
-    public enum ExecutionPolicy { HISTORICAL_V1, R3_OWNED_BOUNDED_BRIDGE_V1, R4_OWNED_GAP_DOMAIN_V1, R5_OWNED_OBSERVED_SHOULDER_V1 }
+    public enum ExecutionPolicy { HISTORICAL_V1, R3_OWNED_BOUNDED_BRIDGE_V1, R4_OWNED_GAP_DOMAIN_V1, R5_OWNED_OBSERVED_SHOULDER_V1, R6_OWNED_DIRECT_POSITION_COST_V1, R7_OWNED_MEASURED_CORE_COST_V1 }
 
     /** Preserves historical constructors, behavior and wire encoding. */
     public CorridorTraceInput(List<DetachedProfileSamplingLocation> profileLocations, double lateralStepMeters) {
@@ -45,8 +45,10 @@ public record CorridorTraceInput(
     }
 
     public boolean boundedBridgePolicy() { return executionPolicy == ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1
-            || executionPolicy == ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1 || observedShoulderPolicy(); }
-    public boolean certifiedGapDomainPolicy() { return executionPolicy == ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1 || observedShoulderPolicy(); }
+            || executionPolicy == ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1 || observedShoulderPolicy() || directPositionCostPolicy(); }
+    public boolean certifiedGapDomainPolicy() { return executionPolicy == ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1 || observedShoulderPolicy() || directPositionCostPolicy(); }
+    public boolean directPositionCostPolicy() { return executionPolicy == ExecutionPolicy.R6_OWNED_DIRECT_POSITION_COST_V1 || measuredCoreCostPolicy(); }
+    public boolean measuredCoreCostPolicy() { return executionPolicy == ExecutionPolicy.R7_OWNED_MEASURED_CORE_COST_V1; }
     public boolean observedShoulderPolicy() { return executionPolicy == ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1; }
 
 

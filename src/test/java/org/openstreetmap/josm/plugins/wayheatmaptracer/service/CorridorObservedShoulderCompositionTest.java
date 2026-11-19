@@ -269,7 +269,7 @@ class CorridorObservedShoulderCompositionTest {
         }
     }
 
-    private CorridorPolicyFixture.Fixture field(boolean shallow) {
+    CorridorPolicyFixture.Fixture field(boolean shallow) {
         int width = 241, height = 81; var values = new double[width * height]; var valid = new boolean[values.length]; Arrays.fill(valid, true);
         for (int x = 0; x < width; x++) {
             double profile = (x - 20) / 2.0;

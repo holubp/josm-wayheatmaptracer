@@ -201,14 +201,23 @@ public final class CorridorExecutionArtifacts {
             csv.row("sampling",scope,"construction_ns",work.constructionNanos());csv.row("sampling",scope,"sampling_ns",work.samplingNanos());csv.row("sampling",scope,"selection_ns",work.selectionNanos());
         });
         var t=receipt.totals();
+        boolean costPolicy=receipt.executionPolicy()==CorridorTraceInput.ExecutionPolicy.R6_OWNED_DIRECT_POSITION_COST_V1
+                || receipt.executionPolicy()==CorridorTraceInput.ExecutionPolicy.R7_OWNED_MEASURED_CORE_COST_V1;
         if(receipt.executionPolicy()==org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1
-                || receipt.executionPolicy()==org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1){
+                || receipt.executionPolicy()==org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1 || costPolicy){
             csv.row("receipt",scope,"a_execution_policy",receipt.executionPolicy());
             csv.row("totals",scope,"gap_source_admission_units",t.gapAdmissionUnits().isPresent()?t.gapAdmissionUnits().getAsLong():"UNAVAILABLE");
         }
         if(receipt.executionPolicy()==org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1){
             csv.row("receipt",scope,"observed_shoulder_schema",1);
             csv.row("totals",scope,"observed_membership_admission_units",t.observedAdmissionUnits().isPresent()?t.observedAdmissionUnits().getAsLong():"UNAVAILABLE");
+        }
+        if(costPolicy){
+            var policies=receipt.originalCostPolicies();
+            csv.row("receipt",scope,"original_cost_policy_schema",1);
+            csv.row("receipt",scope,"original_cost_policy_availability",policies.isPresent()?"AVAILABLE":"UNAVAILABLE");
+            csv.row("receipt",scope,"original_cost_policy_retained_entries",policies.map(Map::size).orElse(0));
+            csv.row("receipt",scope,"original_cost_policy_metadata_bytes",receipt.originalCostPolicyMetadataBytes().isPresent()?receipt.originalCostPolicyMetadataBytes().getAsLong():"UNAVAILABLE");
         }
         csv.row("totals",scope,"original_generated_states",t.originalStates());csv.row("totals",scope,"retained_unaries",t.retainedUnaryEvaluations());
         csv.row("totals",scope,"bridge_unaries",t.bridgeUnaryEvaluations());csv.row("totals",scope,"admission_contacts",t.admissionContacts());
@@ -217,6 +226,7 @@ public final class CorridorExecutionArtifacts {
         csv.row("totals",scope,"tested_triples",t.testedTriples());csv.row("totals",scope,"rejected_triples",t.rejectedTriples());csv.row("totals",scope,"scored_transitions",t.scoredTransitions());
         for(var entry:new TreeMap<>(receipt.tracks()).entrySet()){
             var key=scope+":"+entry.getKey();var work=entry.getValue();var p=work.preparation();var h=work.hardGeometry();
+            if(costPolicy)csv.row("track",key,"original_cost_policy",receipt.originalCostPolicies().map(m->m.get(entry.getKey())).map(Object::toString).orElse("UNAVAILABLE"));
             csv.row("track",key,"admission",work.admissionStatus());csv.row("track",key,"outcome",p.outcome());
             work.gapDisposition().ifPresent(disposition->csv.row("track",key,"gap_domain_disposition",disposition));
             csv.row("track",key,"original_states",p.originalStates());csv.row("track",key,"retained_unaries",p.retainedUnaryEvaluations());

@@ -1870,8 +1870,10 @@ public final class LiveBPreviewService {
         boolean current = captured.parameterHash().equals(currentA);
         String r3 = r3CaptureParameterHash(managed), otherR3 = r3CaptureParameterHash(!managed);
         String r4 = r4CaptureParameterHash(managed), otherR4 = r4CaptureParameterHash(!managed);
-        boolean currentR3 = captured.parameterHash().equals(r3), currentR4=captured.parameterHash().equals(r4), owned = current || currentR3 || currentR4;
-        if ((owned || captured.parameterHash().equals(otherA) || captured.parameterHash().equals(otherR3) || captured.parameterHash().equals(otherR4))
+        String r5 = r5CaptureParameterHash(managed), otherR5 = r5CaptureParameterHash(!managed);
+        boolean currentR3 = captured.parameterHash().equals(r3), currentR4=captured.parameterHash().equals(r4),
+                currentR5=captured.parameterHash().equals(r5), owned = current || currentR3 || currentR4 || currentR5;
+        if ((owned || captured.parameterHash().equals(otherA) || captured.parameterHash().equals(otherR3) || captured.parameterHash().equals(otherR4) || captured.parameterHash().equals(otherR5))
                 && (!owned || captured.engine() != TrackerMode.CORRIDOR_AWARE
                         || captured.geometryMode() != AlignmentMode.PRECISE_SHAPE)) {
             throw new IllegalArgumentException("Corridor A capture identity contradicts its source or mode");
@@ -1886,7 +1888,8 @@ public final class LiveBPreviewService {
                 }
             }
             corridorInput = Optional.of(corridorInput.orElseThrow().withPolicy(
-                    current ? CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1
+                    current ? CorridorTraceInput.ExecutionPolicy.R7_OWNED_MEASURED_CORE_COST_V1
+                            : currentR5 ? CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1
                             : currentR4 ? CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1
                             : CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1, fixed));
         }
@@ -1895,7 +1898,7 @@ public final class LiveBPreviewService {
                 captured.geometryMode(), captured.specification().permissions(),
                 TraceBudgets.defaults(), evidence.snapshotId(), evidence.canonicalHash(),
                 captured.network().snapshotId(), captured.network().canonicalHash(),
-                captured.settingsHash(), captured.parameterHash(), owned ? (current ? CORRIDOR_A_CAPTURE_ID : currentR4 ? CORRIDOR_A_R4_CAPTURE_ID : CORRIDOR_A_R3_CAPTURE_ID) : "visible-"
+                captured.settingsHash(), captured.parameterHash(), owned ? (current ? CORRIDOR_A_CAPTURE_ID : currentR5 ? CORRIDOR_A_R5_CAPTURE_ID : currentR4 ? CORRIDOR_A_R4_CAPTURE_ID : CORRIDOR_A_R3_CAPTURE_ID) : "visible-"
                         + captured.engine().name().toLowerCase(java.util.Locale.ROOT) + "-v1",
                 captured.sampleStepMeters(), chainage, evidence.resolution(), corridorInput,
                 captured.specification().permissions().sharedNodeDisconnectionIntent().isEmpty()
@@ -2248,7 +2251,13 @@ public final class LiveBPreviewService {
 
     private static final String CORRIDOR_A_R3_CAPTURE_ID = "corridor-a-r3-owned-bounded-bridge-v1";
     private static final String CORRIDOR_A_R4_CAPTURE_ID = "corridor-a-r4-owned-gap-domain-v1";
-    private static final String CORRIDOR_A_CAPTURE_ID = "corridor-a-r5-owned-observed-shoulder-v1";
+    private static final String CORRIDOR_A_R5_CAPTURE_ID = "corridor-a-r5-owned-observed-shoulder-v1";
+    private static final String CORRIDOR_A_CAPTURE_ID = "corridor-a-r7-owned-measured-core-cost-v1";
+
+    private static String r5CaptureParameterHash(boolean managed) {
+        return hash(CORRIDOR_A_R5_CAPTURE_ID, hash((managed ? "managed-live-" : "live-") + "corridor_aware-v2",
+                parameterIdentity(TrackerMode.CORRIDOR_AWARE)));
+    }
 
     private static String r4CaptureParameterHash(boolean managed) {
         return hash(CORRIDOR_A_R4_CAPTURE_ID, hash((managed ? "managed-live-" : "live-") + "corridor_aware-v2",

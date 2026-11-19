@@ -75,6 +75,50 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 class V022LiveBPreviewServiceTest {
     @TempDir Path managedTileCache;
 
+    private static LiveBPreviewService.Captured identityCopy(LiveBPreviewService.Captured c,String hash,
+            AlignmentMode mode,TrackerMode engine) {
+        return new LiveBPreviewService.Captured(c.raster(),c.managedRaster(),c.specification(),c.network(),
+            c.sourceGeographic(),c.sourceMetric(),c.outputGrid(),c.palette(),c.searchRadiusMeters(),c.sampleStepMeters(),
+            c.settingsHash(),hash,c.cleanup(),mode,engine,c.projectionCode(),c.junctionDecision(),c.intervalPartition(),
+            c.intensityMode(),c.sourceRasters(),c.sourceOwner(),c.alternativeMappings(),c.disconnectionSource());
+    }
+
+    private static org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest frozenRequest(
+            LiveBPreviewService.Captured captured,org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot evidence) throws Exception {
+        var method=LiveBPreviewService.class.getDeclaredMethod("fullRequest",LiveBPreviewService.Captured.class,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot.class);
+        method.setAccessible(true);
+        try { return (org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest)method.invoke(null,captured,evidence); }
+        catch(java.lang.reflect.InvocationTargetException failure) {
+            if(failure.getCause() instanceof RuntimeException cause)throw cause;
+            throw failure;
+        }
+    }
+
+    private static void assertOldCaptureIdentities(LiveBPreviewService service,LiveBPreviewService.Captured captured,
+            String moveHash,String oppositeMoveHash,String oldR5,String oppositeR5) throws Exception {
+        var evidence=service.captureEvidence(captured,CancellationProbe.NONE);
+        String[] ids={"corridor-a-r3-owned-bounded-bridge-v1","corridor-a-r4-owned-gap-domain-v1","corridor-a-r5-owned-observed-shoulder-v1","corridor-a-r7-owned-measured-core-cost-v1"};
+        var policies=List.of(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R7_OWNED_MEASURED_CORE_COST_V1);
+        assertEquals(oldR5,independentHash(ids[2],moveHash));
+        assertEquals(oppositeR5,independentHash(ids[2],oppositeMoveHash));
+        for(int i=0;i<ids.length;i++) {
+            String hash=independentHash(ids[i],moveHash),wrongSource=independentHash(ids[i],oppositeMoveHash);
+            var request=frozenRequest(identityCopy(captured,hash,AlignmentMode.PRECISE_SHAPE,TrackerMode.CORRIDOR_AWARE),evidence);
+            assertEquals(policies.get(i),request.corridorInput().orElseThrow().executionPolicy());
+            assertEquals(ids[i],request.samplerId());assertEquals(hash,request.parameterHash());
+            assertThrows(IllegalArgumentException.class,()->frozenRequest(identityCopy(captured,wrongSource,AlignmentMode.PRECISE_SHAPE,TrackerMode.CORRIDOR_AWARE),evidence));
+            assertThrows(IllegalArgumentException.class,()->frozenRequest(identityCopy(captured,hash,AlignmentMode.MOVE_EXISTING_NODES,TrackerMode.CORRIDOR_AWARE),evidence));
+            assertThrows(IllegalArgumentException.class,()->frozenRequest(identityCopy(captured,hash,AlignmentMode.PRECISE_SHAPE,TrackerMode.PROBABILISTIC),evidence));
+        }
+        var historical=frozenRequest(identityCopy(captured,moveHash,AlignmentMode.MOVE_EXISTING_NODES,TrackerMode.CORRIDOR_AWARE),evidence);
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.HISTORICAL_V1,
+            historical.corridorInput().orElseThrow().executionPolicy());
+    }
+
     @Test
     void managedCompleteSourceSetRunsNativeAndAggregateSeparately() throws Exception {
         Fixture fixture = fiveNodeFixture();
@@ -1263,9 +1307,9 @@ class V022LiveBPreviewServiceTest {
 
         LiveBPreviewService.Computed result = service.compute(captured[0], CancellationProbe.NONE);
 
-        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1,
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R7_OWNED_MEASURED_CORE_COST_V1,
                 result.request().corridorInput().orElseThrow().executionPolicy());
-        assertEquals("corridor-a-r5-owned-observed-shoulder-v1", result.request().samplerId());
+        assertEquals("corridor-a-r7-owned-measured-core-cost-v1", result.request().samplerId());
         assertTrue(result.request().corridorInput().orElseThrow().additionalFixedOccurrences().isEmpty());
 
         assertEquals(TrackerMode.CORRIDOR_AWARE, result.pipeline().inference().engine());
@@ -1344,8 +1388,13 @@ class V022LiveBPreviewServiceTest {
         });
         assertNotEquals(v[0].parameterHash(), v[1].parameterHash());
         assertNotEquals(m[0].parameterHash(), m[1].parameterHash());
-        assertEquals(independentHash("corridor-a-r5-owned-observed-shoulder-v1", v[1].parameterHash()), v[0].parameterHash());
-        assertEquals(independentHash("corridor-a-r5-owned-observed-shoulder-v1", m[1].parameterHash()), m[0].parameterHash());
+        assertEquals("ee1cad009b68bcd5c1071244c474415cd85a5de082508f3f6c3f21de797a66fc",v[1].parameterHash());
+        assertEquals("dd53a96a60a638c51b3c256d87d6e615a2d9699d93be7a89790c6681835cf936",m[1].parameterHash());
+        assertEquals(independentHash("corridor-a-r7-owned-measured-core-cost-v1", v[1].parameterHash()), v[0].parameterHash());
+        assertEquals(independentHash("corridor-a-r7-owned-measured-core-cost-v1", m[1].parameterHash()), m[0].parameterHash());
+        assertOldCaptureIdentities(service,v[0],v[1].parameterHash(),m[1].parameterHash(),
+            "ad19cdf50d385cb176ab983e226372a08046dbfbaadb639be9cbbca41a07e53b",
+            "7fbc3d7384235337884c4d26f1ea90826a18fbb0a1323d1cff70d7faef928d4e");
     }
 
     @Test
@@ -1392,10 +1441,16 @@ class V022LiveBPreviewServiceTest {
             var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
                     seed[0].sourceGeographic(), config.heatmap(), seed[0].sourceIdentity(),
                     CredentialSnapshot.fromConfig(null), CancellationProbe.NONE);
-            var computed = service.compute(service.attachManagedSources(seed[0], sources, coordinator), CancellationProbe.NONE);
+            var captured=service.attachManagedSources(seed[0], sources, coordinator);
+            assertOldCaptureIdentities(service,captured,
+                "dd53a96a60a638c51b3c256d87d6e615a2d9699d93be7a89790c6681835cf936",
+                "ee1cad009b68bcd5c1071244c474415cd85a5de082508f3f6c3f21de797a66fc",
+                "7fbc3d7384235337884c4d26f1ea90826a18fbb0a1323d1cff70d7faef928d4e",
+                "ad19cdf50d385cb176ab983e226372a08046dbfbaadb639be9cbbca41a07e53b");
+            var computed = service.compute(captured, CancellationProbe.NONE);
             assertEquals(seed[0].parameterHash(), computed.request().parameterHash());
-            assertEquals("corridor-a-r5-owned-observed-shoulder-v1", computed.request().samplerId());
-            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1,
+            assertEquals("corridor-a-r7-owned-measured-core-cost-v1", computed.request().samplerId());
+            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R7_OWNED_MEASURED_CORE_COST_V1,
                     computed.request().corridorInput().orElseThrow().executionPolicy());
             assertTrue(computed.request().corridorInput().orElseThrow().additionalFixedOccurrences().isEmpty());
         }
@@ -1556,9 +1611,11 @@ class V022LiveBPreviewServiceTest {
             for (int i = island.range().firstIndex(); i <= island.range().lastIndex(); i++) fixed.add(i);
         assertFalse(fixed.isEmpty());
         assertEquals(fixed, batch.fullRequest().corridorInput().orElseThrow().additionalFixedOccurrences());
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R7_OWNED_MEASURED_CORE_COST_V1,
+            batch.fullRequest().corridorInput().orElseThrow().executionPolicy());
         for (var run : batch.runs()) {
             var input = run.request().corridorInput().orElseThrow();
-            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1, input.executionPolicy());
+            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.ExecutionPolicy.R7_OWNED_MEASURED_CORE_COST_V1, input.executionPolicy());
             var expected = new java.util.TreeSet<Integer>();
             for (int i : fixed) if (i >= run.request().selectedRange().firstIndex()
                     && i <= run.request().selectedRange().lastIndex()) expected.add(i);

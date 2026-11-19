@@ -8,8 +8,59 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 
 class CorridorExecutionArtifactsTest {
+    @Test void decodedR7ReplayUsesMeasuredCoreOnPublicUpperElementaryStrand() throws Exception {
+        var type=Class.forName("org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorObservedShoulderCompositionTest");
+        var constructor=type.getDeclaredConstructor();constructor.setAccessible(true);
+        var field=type.getDeclaredMethod("field",boolean.class);field.setAccessible(true);
+        var fixture=(CorridorPolicyFixture.Fixture)field.invoke(constructor.newInstance(),false);
+        var source=fixture.request();var adapter=new CorridorEngineAdapter("native");
+        double[] errors=new double[2];int index=0;
+        for(var policy:List.of(CorridorTraceInput.ExecutionPolicy.R6_OWNED_DIRECT_POSITION_COST_V1,
+                CorridorTraceInput.ExecutionPolicy.R7_OWNED_MEASURED_CORE_COST_V1)) {
+            var c=source.corridorInput().orElseThrow().withPolicy(policy,Set.of());
+            var request=new TraceRequest(source.selectedWayKey(),source.selectedRange(),source.engine(),source.geometryMode(),source.permissions(),source.budgets(),
+                source.evidenceSnapshotId(),source.evidenceContentHash(),source.networkSnapshotId(),source.networkContentHash(),source.settingsHash(),source.parameterHash(),source.samplerId(),
+                source.configuredSampleStepMeters(),source.profileChainage(),source.evidenceResolution(),Optional.of(c));
+            var input=new FrozenReplayInput(request,fixture.evidence(),fixture.network(),fixture.options());
+            var decoded=FrozenReplayCodec.decode(FrozenReplayCodec.encode(input));
+            var actual=adapter.traceWithUsage(decoded.request(),decoded.evidence(),decoded.network(),CancellationProbe.NONE);
+            var replay=Format15ReplayRunner.replay(decoded,org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel.SCALAR_INFERENCE,request.engine());
+            assertEquals(ScalarReplayFingerprint.sha256(actual.result()),ScalarReplayFingerprint.sha256(replay.inference()));
+            double expected=45+3.5*Math.sin(62*Math.PI/18)+.65*Math.sin(62*Math.PI/2);
+            var target=replay.inference().hypotheses().stream().filter(h->h.branchSignature().startsWith("strand-")&&h.points().size()==101)
+                .min(Comparator.comparingDouble(h->Math.abs(h.points().get(62).yMeters()-expected))).orElseThrow();
+            if(index==1)assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorCenterlineOptimizer.OriginalCostPolicy.DIRECT_MEASURED_CORE_V2,
+                actual.corridorReceipt().orElseThrow().originalCostPolicies().orElseThrow().get(target.branchSignature()));
+            var point=target.points().get(62);assertEquals(144.,point.xMeters(),1e-6);
+            errors[index++]=Math.abs(point.yMeters()-expected);
+        }
+        assertTrue(errors[0]>.5,"R6 public control must expose the known bypass difference");
+        assertTrue(errors[1]<.5,"Decoded R7 replay must meet independent analytic upper-strand truth");
+    }
+    @Test void r7ArtifactReportsRetainedActualPolicyAndOldPolicyOmitsRows(){
+        var f=CorridorPolicyFixture.straight(true,false,Set.of());var r=f.request();
+        var c=r.corridorInput().orElseThrow().withPolicy(CorridorTraceInput.ExecutionPolicy.R7_OWNED_MEASURED_CORE_COST_V1,Set.of());
+        var request=new TraceRequest(r.selectedWayKey(),r.selectedRange(),r.engine(),r.geometryMode(),r.permissions(),r.budgets(),
+            r.evidenceSnapshotId(),r.evidenceContentHash(),r.networkSnapshotId(),r.networkContentHash(),r.settingsHash(),r.parameterHash(),r.samplerId(),
+            r.configuredSampleStepMeters(),r.profileChainage(),r.evidenceResolution(),Optional.of(c));
+        var adapter=new CorridorEngineAdapter("native");
+        for(var inputRequest:List.of(r,request)) {
+            var run=adapter.traceWithUsage(inputRequest,f.evidence(),f.network(),CancellationProbe.NONE);
+            var input=new FrozenReplayInput(inputRequest,f.evidence(),f.network(),f.options());
+            var replay=Format15ReplayRunner.replay(FrozenReplayCodec.decode(FrozenReplayCodec.encode(input)),
+                org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel.SCALAR_INFERENCE,inputRequest.engine());
+            assertEquals(ScalarReplayFingerprint.sha256(run.result()),ScalarReplayFingerprint.sha256(replay.inference()));
+            var attached=CorridorExecutionArtifacts.attach(Format15ProductionBundleFactory.create("policy-test",input),input,run.result(),run.corridorReceipt().orElseThrow());
+            String csv=new String(attached.artifact("corridor-execution.csv").bytes(),StandardCharsets.UTF_8);
+            if(inputRequest==r)assertFalse(csv.contains("original_cost_policy"));
+            else {assertTrue(csv.contains("original_cost_policy_schema"));assertTrue(csv.contains("DIRECT_MEASURED_CORE_V2"));
+                assertTrue(csv.contains("original_cost_policy_metadata_bytes"));assertTrue(csv.contains("a_execution_policy"));
+                assertFalse(csv.contains("observed_shoulder_schema"));}
+        }
+    }
     private static final class IntervalCases {
         static final IntervalCase A=caseUnchecked(0),B=caseUnchecked(1);
         private static IntervalCase caseUnchecked(int gray){try{return intervalCase(gray);}catch(Exception failure){throw new AssertionError(failure);}}

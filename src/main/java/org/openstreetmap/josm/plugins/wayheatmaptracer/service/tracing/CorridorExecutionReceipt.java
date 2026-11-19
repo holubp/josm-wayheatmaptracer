@@ -63,19 +63,25 @@ public final class CorridorExecutionReceipt {
     private final Map<String,CandidateProvenance> candidates;
     private final Totals totals;
     private final CorridorTraceInput.ExecutionPolicy executionPolicy;
+    private final Optional<Map<String,CorridorCenterlineOptimizer.OriginalCostPolicy>> originalCostPolicies;
+    private final OptionalLong originalCostPolicyMetadataBytes;
     private CorridorExecutionReceipt(String requestHash,String evidenceHash,String networkHash,String resultHash,
         String certificateStatus,Optional<String> certificateIdentity,String networkSnapshotId,String settingsHash,
         OptionalInt sourceOccurrences,OptionalInt fixedSourceCoordinates,Phase phase,
         Optional<DetachedScalarProfileSampler.RadiusThreeWork> sampling,OptionalInt discoveredTracks,
-        Map<String,TrackWork> tracks,int visitedTracks,Map<String,CandidateProvenance> candidates,Totals totals,CorridorTraceInput.ExecutionPolicy executionPolicy){
+        Map<String,TrackWork> tracks,int visitedTracks,Map<String,CandidateProvenance> candidates,Totals totals,CorridorTraceInput.ExecutionPolicy executionPolicy,
+        Optional<Map<String,CorridorCenterlineOptimizer.OriginalCostPolicy>> originalCostPolicies,OptionalLong originalCostPolicyMetadataBytes){
         this.requestHash=requestHash;this.evidenceHash=evidenceHash;this.networkHash=networkHash;this.resultHash=resultHash;
         this.certificateStatus=certificateStatus;this.certificateIdentity=certificateIdentity;this.phase=phase;this.sampling=sampling;
         this.networkSnapshotId=networkSnapshotId;this.settingsHash=settingsHash;this.sourceOccurrences=sourceOccurrences;this.fixedSourceCoordinates=fixedSourceCoordinates;
         this.discoveredTracks=discoveredTracks;this.tracks=Map.copyOf(tracks);this.visitedTracks=visitedTracks;
         this.candidates=Map.copyOf(candidates);this.totals=totals;
         this.executionPolicy=executionPolicy;
+        this.originalCostPolicies=originalCostPolicies.map(Map::copyOf);this.originalCostPolicyMetadataBytes=originalCostPolicyMetadataBytes;
     }
     public CorridorTraceInput.ExecutionPolicy executionPolicy(){return executionPolicy;}
+    public Optional<Map<String,CorridorCenterlineOptimizer.OriginalCostPolicy>> originalCostPolicies(){return originalCostPolicies;}
+    public OptionalLong originalCostPolicyMetadataBytes(){return originalCostPolicyMetadataBytes;}
     public String requestHash(){return requestHash;} public String evidenceHash(){return evidenceHash;}
     public String networkHash(){return networkHash;} public String resultHash(){return resultHash;}
     public String networkSnapshotId(){return networkSnapshotId;} public String settingsHash(){return settingsHash;}
@@ -140,11 +146,15 @@ public final class CorridorExecutionReceipt {
                 throw new IllegalArgumentException("Prepared candidate lost actual mapping/cleanup provenance");
             provenance.put(hypothesis.id(),new CandidateProvenance(hypothesis.id(),candidate.id(),map,candidate.cleanupEvidence().status()));
         }
+        var input=request.corridorInput().orElseThrow();
+        var policies=tracker!=null&&input.directPositionCostPolicy()?tracker.executedCostPolicies():Map.<String,CorridorCenterlineOptimizer.OriginalCostPolicy>of();
+        var available=!policies.isEmpty();
         return new CorridorExecutionReceipt(FrozenReplayCodec.canonicalRequestHash(request),evidence.canonicalHash(),network.canonicalHash(),
             ScalarReplayFingerprint.sha256(result),certificate==null?"UNAVAILABLE":certificate.status(),
             certificate==null?Optional.empty():Optional.of(certificate.identity()),network.snapshotId(),request.settingsHash(),
             certificate==null?OptionalInt.empty():OptionalInt.of(certificate.occurrences().size()),
             certificate==null?OptionalInt.empty():OptionalInt.of((int)certificate.occurrences().stream().filter(CorridorSourceProtection.Occurrence::fixedCoordinate).count()),phase,sampling,
-            tracker==null?OptionalInt.empty():tracker.correspondenceDiscoveredTracks(),work,visited[0],provenance,totals(tracker),request.corridorInput().orElseThrow().executionPolicy());
+            tracker==null?OptionalInt.empty():tracker.correspondenceDiscoveredTracks(),work,visited[0],provenance,totals(tracker),input.executionPolicy(),
+            available?Optional.of(policies):Optional.empty(),available?OptionalLong.of(tracker.executedCostPolicyMetadataBytes()):OptionalLong.empty());
     }
 }

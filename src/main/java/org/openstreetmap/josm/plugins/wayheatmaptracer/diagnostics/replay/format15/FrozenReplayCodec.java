@@ -658,8 +658,14 @@ public final class FrozenReplayCodec {
                 var policy = en(in, CorridorTraceInput.ExecutionPolicy.class);
                 if (policy != CorridorTraceInput.ExecutionPolicy.R3_OWNED_BOUNDED_BRIDGE_V1
                         && policy != CorridorTraceInput.ExecutionPolicy.R4_OWNED_GAP_DOMAIN_V1
-                        && policy != CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1)
+                        && policy != CorridorTraceInput.ExecutionPolicy.R5_OWNED_OBSERVED_SHOULDER_V1
+                        && policy != CorridorTraceInput.ExecutionPolicy.R6_OWNED_DIRECT_POSITION_COST_V1
+                        && policy != CorridorTraceInput.ExecutionPolicy.R7_OWNED_MEASURED_CORE_COST_V1)
                     throw new IllegalArgumentException("Explicit new A request requires its versioned policy");
+                if ((policy == CorridorTraceInput.ExecutionPolicy.R6_OWNED_DIRECT_POSITION_COST_V1
+                        || policy == CorridorTraceInput.ExecutionPolicy.R7_OWNED_MEASURED_CORE_COST_V1)
+                        && (engine != TrackerMode.CORRIDOR_AWARE || mode == AlignmentMode.MOVE_EXISTING_NODES))
+                    throw new IllegalArgumentException("Cost policy requires precise A request");
                 int fixedCount = count(in); var fixed = new java.util.TreeSet<Integer>();
                 for (int i = 0; i < fixedCount; i++) if (!fixed.add(in.readInt()))
                     throw new IllegalArgumentException("Duplicate frozen fixed occurrence");

@@ -95,11 +95,11 @@ class CorridorEndpointApproachTest {
         assertTrue(model.supportsConstraint(0));
     }
 
-    private Scenario scenario(double center, int count, boolean withEvidence) {
+    Scenario scenario(double center, int count, boolean withEvidence) {
         return scenario(center, count, withEvidence, 5.0);
     }
 
-    private Scenario scenario(double center, int count, boolean withEvidence, double rasterSpacing) {
+    Scenario scenario(double center, int count, boolean withEvidence, double rasterSpacing) {
         List<CorridorProfile> profiles = new ArrayList<>();
         Map<Integer, CorridorTrackPoint> points = new LinkedHashMap<>();
         for (int index = 0; index < count; index++) {
@@ -143,6 +143,6 @@ class CorridorEndpointApproachTest {
         return maximum;
     }
 
-    private record Scenario(CorridorTrack track, List<CorridorProfile> profiles) {
+    record Scenario(CorridorTrack track, List<CorridorProfile> profiles) {
     }
 }

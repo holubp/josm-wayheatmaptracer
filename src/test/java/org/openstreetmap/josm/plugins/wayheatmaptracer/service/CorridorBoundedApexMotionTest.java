@@ -190,7 +190,7 @@ class CorridorBoundedApexMotionTest {
             return CorridorTubeBuilder.class.getConstructor(type).newInstance(policy);
         }catch(ClassNotFoundException|NoSuchMethodException absent){return new CorridorTubeBuilder();}
     }
-    private static Scenario scenario(double[] centers,double rasterScale){
+    static Scenario scenario(double[] centers,double rasterScale){
         var profiles=new ArrayList<CorridorProfile>();var points=new LinkedHashMap<Integer,CorridorTrackPoint>();
         for(int i=0;i<centers.length;i++){
             double center=centers[i]*rasterScale;var band=new CorridorBand("b"+i,center,center-2*rasterScale,center+2*rasterScale,center-.5*rasterScale,center+.5*rasterScale,List.of(center),.25,.02,1,.8,.9,.5*rasterScale,false,List.of());
@@ -200,5 +200,5 @@ class CorridorBoundedApexMotionTest {
         }
         return new Scenario(new CorridorTrack("analytic-apex",points,centers.length,1,false,List.of(),""),profiles);
     }
-    private record Scenario(CorridorTrack track,List<CorridorProfile> profiles) { }
+    record Scenario(CorridorTrack track,List<CorridorProfile> profiles) { }
 }

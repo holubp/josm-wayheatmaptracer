@@ -263,7 +263,7 @@ class CorridorGroupingTest {
         return new Scenario(List.of(left, right), profiles);
     }
 
-    private Scenario predictionSignalScenario() {
+    Scenario predictionSignalScenario() {
         List<CorridorProfile> profiles = new ArrayList<>();
         Map<Integer, CorridorTrackPoint> leftPoints = new LinkedHashMap<>();
         Map<Integer, CorridorTrackPoint> rightPoints = new LinkedHashMap<>();
@@ -307,6 +307,6 @@ class CorridorGroupingTest {
             List.of(center), 1.0, 0.0, 1.0, 0.9, 0.8, 0.5, false, List.of());
     }
 
-    private record Scenario(List<CorridorTrack> tracks, List<CorridorProfile> profiles) {
+    record Scenario(List<CorridorTrack> tracks, List<CorridorProfile> profiles) {
     }
 }

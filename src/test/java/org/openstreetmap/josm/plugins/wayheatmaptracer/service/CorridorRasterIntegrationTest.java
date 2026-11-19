@@ -341,7 +341,7 @@ class CorridorRasterIntegrationTest {
         return new CorridorAwareTracker().trackDetailed(profiles, 1.0, junctionContext);
     }
 
-    private BufferedImage raster(
+    BufferedImage raster(
         IntToDoubleFunction centerFunction,
         double peak,
         boolean alternatingBrightest,
@@ -367,7 +367,7 @@ class CorridorRasterIntegrationTest {
         return raster;
     }
 
-    private BufferedImage parallelRaster(double valley) {
+    BufferedImage parallelRaster(double valley) {
         BufferedImage raster = background();
         for (int profile = 0; profile < PROFILE_COUNT; profile++) {
             int x = START_X + profile * STEP_X;
@@ -384,7 +384,7 @@ class CorridorRasterIntegrationTest {
         return raster;
     }
 
-    private BufferedImage complementarySparseRaster() {
+    BufferedImage complementarySparseRaster() {
         BufferedImage raster = background();
         for (int profile = 0; profile < PROFILE_COUNT; profile++) {
             if (profile == 30 || profile == 31) {
@@ -418,7 +418,7 @@ class CorridorRasterIntegrationTest {
         return raster;
     }
 
-    private BufferedImage switchbackWithNearbyLimbRaster(double rasterMetersPerPixel) {
+    BufferedImage switchbackWithNearbyLimbRaster(double rasterMetersPerPixel) {
         BufferedImage raster = background();
         List<Double> intended = expectedSwitchbackOffsets(rasterMetersPerPixel);
         double neighboringOffset = 10.0 / rasterMetersPerPixel;
@@ -436,7 +436,7 @@ class CorridorRasterIntegrationTest {
         return raster;
     }
 
-    private List<Double> expectedSwitchbackOffsets(double rasterMetersPerPixel) {
+    List<Double> expectedSwitchbackOffsets(double rasterMetersPerPixel) {
         List<Double> offsets = new ArrayList<>(PROFILE_COUNT);
         for (int profile = 0; profile < PROFILE_COUNT; profile++) {
             double offsetMeters;
@@ -462,7 +462,7 @@ class CorridorRasterIntegrationTest {
         return raster;
     }
 
-    private List<Point2D.Double> sourcePolyline() {
+    List<Point2D.Double> sourcePolyline() {
         List<Point2D.Double> points = new ArrayList<>();
         for (int profile = 0; profile < PROFILE_COUNT; profile++) {
             points.add(new Point2D.Double(START_X + profile * STEP_X, SOURCE_Y));
@@ -470,7 +470,7 @@ class CorridorRasterIntegrationTest {
         return points;
     }
 
-    private void setIntensity(BufferedImage image, int x, int y, double intensity) {
+    void setIntensity(BufferedImage image, int x, int y, double intensity) {
         if (x < 0 || y < 0 || x >= image.getWidth() || y >= image.getHeight()) {
             return;
         }
@@ -506,7 +506,7 @@ class CorridorRasterIntegrationTest {
         }).max().orElse(0.0);
     }
 
-    private double bidirectionalMaximumDrift(
+    double bidirectionalMaximumDrift(
         List<Point2D.Double> left,
         List<Point2D.Double> right
     ) {

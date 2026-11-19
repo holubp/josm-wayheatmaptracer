@@ -107,19 +107,22 @@ the preview before applying.
 
 ## Corridor A Tracing Policy
 
-New Corridor A Precise Shape captures use the explicit `corridor-a-r5-owned-observed-shoulder-v1`
-policy. Historical owned correspondence has priority and keeps its exact prepared solve.
-After a legitimate correspondence refusal, R5 can remove existing interior states outside
-a directly measured complete shoulder when the effective tube has zero native motion
-support and lies outside that shoulder. Parent measurements require their actual direct
-child union; predicted, conflicting, censored, protected and endpoint-approach evidence
-cannot authorize restriction. No state is added or clamped. An empty intersection retains
-the historical row with a typed refusal; missing source certification skips the restriction.
-The ordinary gap preparation, exact optimizer and final geometry/assignment validation
-remain in force. R3/R4 replay policies and other engines/modes retain their own behavior.
-Execution receipts expose R5 membership work, removed states and relative row dispositions
-separately from native objective/transition work. Public synthetic shape tests establish
-implementation evidence; they do not establish private-case or release qualification.
+New Corridor A Precise Shape captures use `corridor-a-r7-owned-measured-core-cost-v1`.
+The prepared correspondence solve retains priority and its existing behavior. Otherwise,
+the exact optimizer uses directly measured heatmap centers as position targets, with a
+smaller competing pull from the smoothed corridor reference. It retains the original
+lateral choices and bounded gap rules. This addresses unsupported zigzags while preserving
+supported bends; weak or ambiguous imagery can still require review.
+
+Predicted points and clipped cores do not acquire measured-position authority. Sparse
+parent corridors remain alternatives alongside their individual strands, and their broad
+envelopes do not prove that a bright trace runs through the middle. Final image support,
+protected anchors, topology and immutable Apply assignments remain independently checked.
+MOVE and other engines retain their behavior. Older R3–R6 replay inputs retain their
+explicit policies, including the historical R5 shoulder restriction. Diagnostics distinguish
+the requested policy from the policy actually executed; unavailable observations stay
+unavailable. Public synthetic tests provide implementation evidence, with real-case and
+release qualification performed separately.
 
 ## Offline Confidence Calibration
 

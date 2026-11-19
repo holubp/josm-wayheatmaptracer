@@ -47,6 +47,11 @@ final class PhysicalGeometryFixture {
 
     /** Paints an independent 150-degree arc opposite the source, within the explicit 25m search. */
     static List<RenderedHeatmapSampler.CrossSectionProfile> supportedOppositeArcProfiles() {
+        return supportedOppositeArcProfiles(1.0);
+    }
+
+    /** Same independent arc and source geometry, at an explicit painted signal strength. */
+    static List<RenderedHeatmapSampler.CrossSectionProfile> supportedOppositeArcProfiles(double amplitude) {
         double radius = 4 * NATIVE_PITCH;
         double first = Math.toRadians(105), last = Math.toRadians(255);
         BufferedImage raster = new BufferedImage(128, 128, BufferedImage.TYPE_INT_ARGB);
@@ -58,7 +63,7 @@ final class PhysicalGeometryFixture {
                 double distance = angle >= first && angle <= last ? Math.abs(Math.hypot(dx, dy) - radius)
                         : Math.min(Math.hypot(dx - radius * Math.cos(first), dy - radius * Math.sin(first)),
                                 Math.hypot(dx - radius * Math.cos(last), dy - radius * Math.sin(last)));
-                int value = (int) Math.round(255 * Math.exp(-0.5 * distance * distance / (0.7 * 0.7)));
+                int value = (int) Math.round(255 * amplitude * Math.exp(-0.5 * distance * distance / (0.7 * 0.7)));
                 raster.setRGB(x, y, 0xff000000 | value << 16 | value << 8 | value);
             }
         }

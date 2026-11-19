@@ -877,6 +877,33 @@ supported disconnection capture keeps the existing FIXED selected-way-only polic
 The live contracts remain enforced by `IntervalTraceBatch`,
 `SharedNodeDisconnectionPlanner` and `AlignmentEditPlan`.
 
+### Corridor A measured-position policy
+
+New ordinary visible and managed Precise Shape captures bind
+`R7_OWNED_MEASURED_CORE_COST_V1` and its distinct capture hash. Recognized R3/R4/R5
+captures and frozen R6 requests retain their own identities; MOVE stays historical.
+In a legitimately non-admitted original domain, `DIRECT_MEASURED_CORE_V2` keeps
+the R4 state/gap graph, omits the extra synthetic tube amplification and uses
+`band.centerOffsetPx()` on both equivalent-peak branches only for directly
+supported, positionally measured bands. Other rows retain R6 arithmetic. Prepared
+ADMITTED solves remain historical, and cancellation/resource/binding failures
+cannot enter an alternative solve. Core clipping and predicted contributors do
+not supply measured centers; a direct sparse-parent envelope is not a bright
+midpoint certificate.
+
+Receipts snapshot actual domain policies, retain at most 512 observations and
+charge 128 bytes per retained entry within the existing combined admission cap.
+Absent observations remain unavailable. R6/R7 CSV cost-policy schema 1 is
+additive; older policy encodings/layouts remain unchanged. State and transition
+inventories stay fixed across intentional objective changes, while cumulative
+allocations after strict cost improvement can differ and must be reported.
+
+Portable geometry regressions distinguish raw tracker points from the final
+union of generated and existing-node identities. Compare protected coordinates,
+typed assignments and geometric coverage instead of assuming equal cardinality.
+Near-collinear distance oracles use local-vector projection and a residual norm;
+subtracting squared distances can create false failures at tight tolerances.
+
 ### Modern source freshness in the current development build
 
 For modern managed-source Apply/Redo, the command receipt reads the current

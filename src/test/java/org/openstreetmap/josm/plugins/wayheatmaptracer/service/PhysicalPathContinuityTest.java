@@ -27,7 +27,7 @@ class PhysicalPathContinuityTest {
         assertOppositeArc(candidates.get(0).screenPoints());
     }
 
-    private static void assertOppositeArc(java.util.List<java.awt.geom.Point2D.Double> points) {
+    static void assertOppositeArc(java.util.List<java.awt.geom.Point2D.Double> points) {
         double radius = 4 * PhysicalGeometryFixture.NATIVE_PITCH;
         for (var point : points) {
             assertEquals(radius, Math.hypot(point.x - 64, point.y - 64), PhysicalGeometryFixture.NATIVE_PITCH,
@@ -118,7 +118,7 @@ class PhysicalPathContinuityTest {
         assertSameImageCurveAndApex(original.get(0), inserted.get(0), frame.sourcePixelPitch());
     }
 
-    private static void assertParallelStrand(
+    static void assertParallelStrand(
         CenterlineCandidate candidate,
         PhysicalGeometryFixture.ParallelFrame frame,
         String context
@@ -142,7 +142,7 @@ class PhysicalPathContinuityTest {
         }
     }
 
-    private static void assertEquivalentResampledSource(PhysicalGeometryFixture.CollinearInsertionFrame frame) {
+    static void assertEquivalentResampledSource(PhysicalGeometryFixture.CollinearInsertionFrame frame) {
         assertEquals(frame.originalResampledSource().size(), frame.insertedResampledSource().size());
         assertEquals(frame.originalProfiles().levelZeroProfiles().size(), frame.insertedProfiles().levelZeroProfiles().size());
         for (int i = 0; i < frame.originalResampledSource().size(); i++) {
@@ -151,7 +151,7 @@ class PhysicalPathContinuityTest {
         }
     }
 
-    private static void assertSameImageCurveAndApex(
+    static void assertSameImageCurveAndApex(
         CenterlineCandidate original,
         CenterlineCandidate inserted,
         double sourcePixelPitch

@@ -193,7 +193,7 @@ class CorridorExtractorTest {
             () -> profile.intensitySamples().add(new IntensitySample(1.0, 0.0, 0.0, 0.0, true)));
     }
 
-    private CrossSectionProfile profile(double[] nativeValues, double[] filteredValues) {
+    CrossSectionProfile profile(double[] nativeValues, double[] filteredValues) {
         List<IntensitySample> samples = new ArrayList<>();
         double start = -(nativeValues.length - 1) / 2.0;
         for (int i = 0; i < nativeValues.length; i++) {

@@ -27,6 +27,15 @@ public final class CorridorAwareTracker {
     private final double gapRadiusMeters;
     private final boolean gapAdmissionPolicy;
     private final boolean observedShoulderPolicy;
+    private final CorridorCenterlineOptimizer.OriginalCostPolicy requestedOriginalCostPolicy;
+    private static final int MAX_COST_POLICY_DIAGNOSTICS=512;
+    // A reused track-id String, enum and map slot/table allowance; no geometry/profile retention.
+    private static final long COST_POLICY_METADATA_BYTES_PER_ENTRY=128;
+    private final Map<String,CorridorCenterlineOptimizer.OriginalCostPolicy> executedCostPolicies=new LinkedHashMap<>();
+    /** Actual domain policies for this invocation; absent entries remain unavailable. */
+    public Map<String,CorridorCenterlineOptimizer.OriginalCostPolicy> executedCostPolicies(){return Map.copyOf(executedCostPolicies);}
+    /** Actual retained policy metadata, already included in combined solver memory admission. */
+    public long executedCostPolicyMetadataBytes(){return executedCostPolicies.size()*COST_POLICY_METADATA_BYTES_PER_ENTRY;}
     private final Map<String,CorridorWorkingSchedule.Preparation> preparations=new LinkedHashMap<>();
     private final Map<String,CorridorCenterlineOptimizer.PreparedOptimization> preparedOptimizations=new LinkedHashMap<>();
     private final Map<String,TrackPreparationWork> preparationWork=new LinkedHashMap<>();
@@ -79,6 +88,13 @@ public final class CorridorAwareTracker {
     private CorridorAwareTracker(CorridorCenterlineOptimizer optimizer,CorridorTubeBuilder tubeBuilder,
         PreparedCorrespondencePolicy preparedCorrespondence,CorridorWorkingSchedule.BoundContext context,double gapRadiusMeters,
         boolean gapAdmissionPolicy,boolean observedShoulderPolicy){
+        this(optimizer,tubeBuilder,preparedCorrespondence,context,gapRadiusMeters,gapAdmissionPolicy,
+            observedShoulderPolicy,CorridorCenterlineOptimizer.OriginalCostPolicy.HISTORICAL);
+    }
+    private CorridorAwareTracker(CorridorCenterlineOptimizer optimizer,CorridorTubeBuilder tubeBuilder,
+        PreparedCorrespondencePolicy preparedCorrespondence,CorridorWorkingSchedule.BoundContext context,double gapRadiusMeters,
+        boolean gapAdmissionPolicy,boolean observedShoulderPolicy,CorridorCenterlineOptimizer.OriginalCostPolicy requestedOriginalCostPolicy){
+        this.requestedOriginalCostPolicy=java.util.Objects.requireNonNull(requestedOriginalCostPolicy);
         this.optimizer = java.util.Objects.requireNonNull(optimizer);
         this.tubeBuilder = java.util.Objects.requireNonNull(tubeBuilder);
         this.preparedCorrespondence=preparedCorrespondence;
@@ -86,6 +102,50 @@ public final class CorridorAwareTracker {
         this.gapRadiusMeters=gapRadiusMeters;
         this.gapAdmissionPolicy=gapAdmissionPolicy;
         this.observedShoulderPolicy=observedShoulderPolicy;
+    }
+
+    /** R7 uses the same R4 graph and gives eligible direct measured bands their factual mode target. */
+    public static CorridorAwareTracker withTargetOwnedMeasuredCoreCostDomain(CorridorCenterlineOptimizer optimizer,
+        CorridorWorkingSchedule.BoundContext context,PreparedCorrespondencePolicy admissionPolicy,double ordinaryRadiusMeters){
+        if(!(ordinaryRadiusMeters>0)||!Double.isFinite(ordinaryRadiusMeters))throw new IllegalArgumentException("Finite ordinary radius required");
+        return new CorridorAwareTracker(optimizer,new CorridorTubeBuilder(CorridorTubeBuilder.MotionPolicy.TARGET_OWNED_APEX),
+            java.util.Objects.requireNonNull(admissionPolicy),java.util.Objects.requireNonNull(context),ordinaryRadiusMeters,true,false,
+            CorridorCenterlineOptimizer.OriginalCostPolicy.DIRECT_MEASURED_CORE_V2);
+    }
+    /** R7 retains the R6/R4 missing-authority graph; predicted positions gain no measured authority. */
+    public static CorridorAwareTracker withTargetOwnedMeasuredCoreCostDomainWithoutAuthority(CorridorCenterlineOptimizer optimizer,
+        PreparedCorrespondencePolicy admissionPolicy){
+        return new CorridorAwareTracker(optimizer,new CorridorTubeBuilder(CorridorTubeBuilder.MotionPolicy.TARGET_OWNED_APEX),
+            java.util.Objects.requireNonNull(admissionPolicy),null,Double.NaN,true,false,
+            CorridorCenterlineOptimizer.OriginalCostPolicy.DIRECT_MEASURED_CORE_V2);
+    }
+
+    /** R6 restores the R4 geometric graph and changes only non-admitted original unary arithmetic. */
+    public static CorridorAwareTracker withTargetOwnedDirectPositionCostDomain(CorridorCenterlineOptimizer optimizer,
+        CorridorWorkingSchedule.BoundContext context,PreparedCorrespondencePolicy admissionPolicy,double ordinaryRadiusMeters){
+        if(!(ordinaryRadiusMeters>0)||!Double.isFinite(ordinaryRadiusMeters))throw new IllegalArgumentException("Finite ordinary radius required");
+        return new CorridorAwareTracker(optimizer,new CorridorTubeBuilder(CorridorTubeBuilder.MotionPolicy.TARGET_OWNED_APEX),
+            java.util.Objects.requireNonNull(admissionPolicy),java.util.Objects.requireNonNull(context),ordinaryRadiusMeters,true,false,
+            CorridorCenterlineOptimizer.OriginalCostPolicy.DIRECT_POSITION_V1);
+    }
+    /** R6 missing-authority path retains exactly the R4 original graph, without extra gap states. */
+    public static CorridorAwareTracker withTargetOwnedDirectPositionCostDomainWithoutAuthority(CorridorCenterlineOptimizer optimizer,
+        PreparedCorrespondencePolicy admissionPolicy){
+        return new CorridorAwareTracker(optimizer,new CorridorTubeBuilder(CorridorTubeBuilder.MotionPolicy.TARGET_OWNED_APEX),
+            java.util.Objects.requireNonNull(admissionPolicy),null,Double.NaN,true,false,
+            CorridorCenterlineOptimizer.OriginalCostPolicy.DIRECT_POSITION_V1);
+    }
+
+    private CorridorCenterlineOptimizer.OriginalDomain reserveCostPolicyMetadata(CorridorCenterlineOptimizer.OriginalDomain domain){
+        if(requestedOriginalCostPolicy==CorridorCenterlineOptimizer.OriginalCostPolicy.HISTORICAL)return domain;
+        long retained=executedCostPolicies.size();
+        if(!executedCostPolicies.containsKey(domain.track().id()) && retained<MAX_COST_POLICY_DIAGNOSTICS)retained++;
+        return CorridorCenterlineOptimizer.withRetainedCostPolicyBytes(domain,retained*COST_POLICY_METADATA_BYTES_PER_ENTRY);
+    }
+    private void recordCostPolicy(CorridorCenterlineOptimizer.OriginalDomain domain){
+        if(requestedOriginalCostPolicy!=CorridorCenterlineOptimizer.OriginalCostPolicy.HISTORICAL
+                && (executedCostPolicies.containsKey(domain.track().id()) || executedCostPolicies.size()<MAX_COST_POLICY_DIAGNOSTICS))
+            executedCostPolicies.put(domain.track().id(),domain.costPolicy());
     }
 
     /** Explicit R5 policy: historical correspondence first, then measured shoulders and certified gaps. */
@@ -261,6 +321,7 @@ public final class CorridorAwareTracker {
         GeometryCleanupConfig cleanupConfig,
         double groundMetersPerRasterPixel
     ) {
+        executedCostPolicies.clear();
         validatePhysicalProfileSequence(profiles);
         long extractionStart = System.nanoTime();
         List<CorridorProfile> corridorProfiles = extractor.extract(profiles, sourcePixelSizePx);
@@ -346,6 +407,7 @@ public final class CorridorAwareTracker {
         GeometryCleanupConfig cleanupConfig,
         double groundMetersPerRasterPixel
     ) {
+        executedCostPolicies.clear();
         if (profileSet.levels().isEmpty()) {
             return trackDetailed(List.of(), sourcePixelSizePx, junctionContext, detectorMode,
                 cleanupConfig, groundMetersPerRasterPixel);
@@ -378,6 +440,7 @@ public final class CorridorAwareTracker {
         double groundMetersPerRasterPixel,
         TraceBudgets budgets
     ) {
+        executedCostPolicies.clear();
         if (budgets == null) {
             throw new IllegalArgumentException("Corridor trace budgets are required");
         }
@@ -447,6 +510,7 @@ public final class CorridorAwareTracker {
         long scaleAssociationNanos,
         TraceBudgets budgets
     ) {
+        executedCostPolicies.clear();
         if(preparedCorrespondence!=null){preparations.clear();preparedOptimizations.clear();preparationWork.clear();correspondenceDiscoveredTracks=java.util.OptionalInt.empty();}
         long trackingStart = System.nanoTime();
         List<CorridorTrack> elementary = tracker.track(corridorProfiles, sourcePixelSizePx, scaleEvidence);
@@ -514,11 +578,21 @@ public final class CorridorAwareTracker {
                         original=optimizer.prepareGapDomain(original,gapRadiusMeters);
                         correspondencePairWork=Math.addExact(correspondencePairWork,original.gapPlan().orElseThrow().work().admissionUnits());
                     }
+                    if(requestedOriginalCostPolicy!=CorridorCenterlineOptimizer.OriginalCostPolicy.HISTORICAL)
+                        original=CorridorCenterlineOptimizer.withNonAdmittedCostPolicy(original,admission,requestedOriginalCostPolicy);
+                    original=reserveCostPolicyMetadata(original);
+                    recordCostPolicy(original);
                     optimized=optimizer.optimizeOriginalDomain(original);
                 }
                 else if(admission.admitted()){
                     if(gapAdmissionPolicy)gapDisposition=GapDomainDisposition.SKIPPED_OWNED_CORRESPONDENCE_PRIORITY;
-                    prepared=optimizer.optimizePrepared(original,admission);
+                    original=reserveCostPolicyMetadata(original);
+                    try{prepared=optimizer.optimizePrepared(original,admission);}
+                    finally{
+                        if(!optimizer.preparedWork().outcome().equals("BINDING_REFUSED")
+                                && !optimizer.preparedWork().outcome().equals("BINDING_OR_EXECUTION_FAILURE"))
+                            recordCostPolicy(original);
+                    }
                     preparedOptimizations.put(track.id(),prepared);optimized=prepared.geometry();
                 }else{throw new IllegalArgumentException("Terminal correspondence admission failure: "+admission.status());}
                 correspondencePairWork=Math.addExact(correspondencePairWork,optimized.adjacentGeometryEntries());

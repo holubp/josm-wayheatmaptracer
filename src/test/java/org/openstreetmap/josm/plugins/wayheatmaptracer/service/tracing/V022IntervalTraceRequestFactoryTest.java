@@ -168,6 +168,21 @@ class V022IntervalTraceRequestFactoryTest {
         assertEquals(11.0, modernLeft.profileChainage().sourceOriginGroundMeters());
         assertEquals(modernLeft, factory.createDetached(modern, evidence, captured.network(), intervals.get(0), modern.budgets()));
         assertEquals(modernRight, factory.createDetached(modern, evidence, captured.network(), intervals.get(1), modern.budgets()));
+        for (var policy : List.of(CorridorTraceInput.ExecutionPolicy.R6_OWNED_DIRECT_POSITION_COST_V1,
+                CorridorTraceInput.ExecutionPolicy.R7_OWNED_MEASURED_CORE_COST_V1)) {
+            var c=full.corridorInput().orElseThrow().withPolicy(policy,Set.of(2,4));
+            var parent=new TraceRequest(full.selectedWayKey(),full.selectedRange(),full.engine(),full.geometryMode(),full.permissions(),full.budgets(),
+                full.evidenceSnapshotId(),full.evidenceContentHash(),full.networkSnapshotId(),full.networkContentHash(),full.settingsHash(),full.parameterHash(),full.samplerId(),
+                full.configuredSampleStepMeters(),full.profileChainage().withSourceOrigin(11.0),full.evidenceResolution(),java.util.Optional.of(c),full.disconnectionSource());
+            var child=factory.createDetached(parent,evidence,captured.network(),intervals.get(1),parent.budgets());
+            assertEquals(policy,child.corridorInput().orElseThrow().executionPolicy());
+            assertEquals(Set.of(3,4),child.corridorInput().orElseThrow().additionalFixedOccurrences());
+            assertEquals(modernRight.profileChainage().sourceOriginGroundMeters(),child.profileChainage().sourceOriginGroundMeters());
+            assertEquals(parent.budgets(),child.budgets());
+            var replay=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput(child,evidence,captured.network(),batch.options());
+            assertEquals(child,org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec.decode(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec.encode(replay)).request());
+        }
         for (var frozenRequest : List.of(modern, modernRight)) {
             var frozen = new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput(
                 frozenRequest, evidence, captured.network(), batch.options());
