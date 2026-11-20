@@ -74,6 +74,7 @@ public final class RefinementEngineAdapter {
         boolean nativeEntered=false;
         try {
             cancellation.checkpoint();
+            unscoped.requireRefinementGeometryAuthority();
             // Canonical validation itself clones scalar arrays. Claim its workspace before
             // deriving operation/reference identities or requesting any hashes/profile containers.
             var bindingWorkspace=unscoped.reserveBindingWorkspace(evidence,invocation);

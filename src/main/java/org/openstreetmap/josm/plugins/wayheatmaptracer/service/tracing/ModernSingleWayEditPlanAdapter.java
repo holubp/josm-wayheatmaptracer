@@ -2210,6 +2210,25 @@ public final class ModernSingleWayEditPlanAdapter {
                 searchHalfWidthMeters, ContextContactPolicy.CURRENT_INDEPENDENT_REVIEW);
     }
 
+    /** Assesses a detached final graph under the unchanged request's validated copy/port authority. */
+    public static FinalTopologyAssessment assessFinalTopology(NetworkSnapshot before,
+            Map<PrimitiveKey, DetachedPrimitive> after, TraceRequest request,
+            EvidenceSnapshot authorityEvidence, EvidenceSnapshot evidence, double searchHalfWidthMeters) {
+        if (before == null || request == null || authorityEvidence == null || evidence == null
+                || !request.networkSnapshotId().equals(before.snapshotId())
+                || !request.networkContentHash().equals(before.canonicalHash())
+                || !request.evidenceSnapshotId().equals(authorityEvidence.snapshotId())
+                || !request.evidenceContentHash().equals(authorityEvidence.canonicalHash())
+                || !request.evidenceResolution().equals(authorityEvidence.resolution())
+                || !authorityEvidence.coordinateFrame().equals(evidence.coordinateFrame())
+                || !authorityEvidence.sourceIdentity().equals(evidence.sourceIdentity())) {
+            throw new IllegalArgumentException("Graph topology request differs from its frozen source");
+        }
+        var authority = SharedNodeDisconnectionPlanner.forRequest(request, before);
+        return assessFinalTopology(before, after, request.selectedWayKey(), request.selectedRange(),
+                evidence, searchHalfWidthMeters, authority.replacements(), authority.proposedPortReplacements());
+    }
+
     /** Assesses a complete validated plan, including its exact disconnected endpoint identities. */
     public static FinalTopologyAssessment assessFinalTopology(AlignmentEditPlan plan,
             EvidenceSnapshot evidence, double searchHalfWidthMeters) {

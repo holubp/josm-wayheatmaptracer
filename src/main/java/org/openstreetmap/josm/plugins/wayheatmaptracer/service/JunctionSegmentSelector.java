@@ -68,28 +68,19 @@ public final class JunctionSegmentSelector {
 
     private List<SegmentCandidate> candidates(Way way) {
         requireWaySize(way);
-        List<Integer> anchors = junctionOrEndpointIndices(way);
         SelectionIntegrity.NodeOccurrenceIndex occurrenceIndex = SelectionIntegrity.occurrenceIndex(way);
-        List<SegmentCandidate> candidates = new ArrayList<>(Math.max(0, anchors.size() - 1));
-        for (int i = 1; i < anchors.size(); i++) {
-            int originalStart = anchors.get(i - 1);
-            int originalEnd = anchors.get(i);
-            if (originalEnd > originalStart) {
-                int start = originalStart;
-                int end = originalEnd;
-                while (start < end && !safeEndpoint(way, start)) {
-                    start++;
-                }
-                while (end > start && !safeEndpoint(way, end)) {
-                    end--;
-                }
+        List<SegmentCandidate> candidates = new ArrayList<>();
+        for (var topology : JunctionTopologyRules.ranges(0,way.getNodesCount()-1,
+                index->way.getNode(index).referrers(Way.class).anyMatch(referrer->!referrer.isDeleted()&&referrer!=way),
+                index->safeEndpoint(way,index))) {
+                int originalStart=topology.originalFirst(),originalEnd=topology.originalLast();
+                int start=topology.first(),end=topology.last();
                 if (end > start) {
                     WaySegmentRange originalRange = new WaySegmentRange(originalStart, originalEnd);
                     WaySegmentRange range = new WaySegmentRange(start, end);
                     candidates.add(new SegmentCandidate(originalRange, range, length(way, start, end),
                         occurrenceIndex.rangeIsUnambiguous(start, end)));
                 }
-            }
         }
         return List.copyOf(candidates);
     }
@@ -122,41 +113,14 @@ public final class JunctionSegmentSelector {
         }
     }
 
-    private List<Integer> junctionOrEndpointIndices(Way way) {
-        List<Integer> anchors = new ArrayList<>();
-        anchors.add(0);
-        for (int i = 1; i < way.getNodesCount() - 1; i++) {
-            Node node = way.getNode(i);
-            if (node.referrers(Way.class).anyMatch(referrer -> !referrer.isDeleted() && referrer != way)) {
-                anchors.add(i);
-            }
-        }
-        int last = way.getNodesCount() - 1;
-        if (anchors.get(anchors.size() - 1) != last) {
-            anchors.add(last);
-        }
-        return anchors;
-    }
-
     private boolean safeEndpoint(Way selectedWay, int nodeIndex) {
         Node node = selectedWay.getNode(nodeIndex);
         List<Way> liveReferrers = node.referrers(Way.class).filter(referrer -> !referrer.isDeleted()).toList();
-        if (liveReferrers.size() == 1 && liveReferrers.get(0) == selectedWay) {
-            return true;
-        }
-        if (liveReferrers.size() != 2 || !liveReferrers.contains(selectedWay)) {
-            return false;
-        }
-        Way otherWay = liveReferrers.get(0) == selectedWay ? liveReferrers.get(1) : liveReferrers.get(0);
-        if (otherWay == selectedWay || selectedWay.getDataSet() == null
-            || selectedWay.getDataSet() != otherWay.getDataSet()
-            || node.getDataSet() != selectedWay.getDataSet()) {
-            return false;
-        }
-        return isCompleteNondegenerate(selectedWay)
-            && isCompleteNondegenerate(otherWay)
-            && occursUniquelyAtEndpoint(selectedWay, node)
-            && occursUniquelyAtEndpoint(otherWay, node);
+        return JunctionTopologyRules.safeEndpoint(liveReferrers.stream().map(referrer->
+            new JunctionTopologyRules.Referrer(referrer==selectedWay,
+                selectedWay.getDataSet()!=null&&selectedWay.getDataSet()==referrer.getDataSet()
+                    &&node.getDataSet()==selectedWay.getDataSet(),
+                isCompleteNondegenerate(referrer),occursUniquelyAtEndpoint(referrer,node))).toList());
     }
 
     private boolean isCompleteNondegenerate(Way way) {

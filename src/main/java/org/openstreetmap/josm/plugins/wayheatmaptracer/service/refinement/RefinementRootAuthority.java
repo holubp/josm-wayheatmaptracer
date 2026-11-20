@@ -3,23 +3,43 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement;
 import java.util.*;
 import java.lang.reflect.RecordComponent;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.JunctionTopologyRules;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.SharedNodeDisconnectionPlanner;
+import org.openstreetmap.josm.data.coor.LatLon;
+import org.openstreetmap.josm.data.projection.Projections;
+import java.nio.charset.StandardCharsets;
+import java.security.*;
 
 /** Factual immutable root capture; retained detached data is owned by the bounded history. */
 public final class RefinementRootAuthority {
+    public enum FrozenGeometryProofKind { DERIVED_CLOSED_TOPOLOGY, CAPTURED_PARTITION }
+    public record FrozenGeometryProof(FrozenGeometryProofKind kind,List<OccurrenceRange> ranges,
+            Optional<SelectedWayIntervalPartitioner.Partition> capturedPartition,String identity) {
+        public FrozenGeometryProof {ranges=List.copyOf(ranges);Objects.requireNonNull(kind);Objects.requireNonNull(capturedPartition);Objects.requireNonNull(identity);}
+    }
     private final NetworkSnapshot network;
     private final TraceRequest request;
     private final EvidenceSnapshot evidence;
     private final AlignmentConfig effectiveConfig;
     private final String projectionCode,sourceIdentity;
+    private final Optional<FrozenGeometryProof> frozenGeometryProof;
     private final Map<Object,Long> charges;
     private final long retainedBytes;
     public RefinementRootAuthority(NetworkSnapshot network,TraceRequest request,EvidenceSnapshot evidence,
             AlignmentConfig effectiveConfig,String projectionCode,String sourceIdentity) {
+        this(network,request,evidence,effectiveConfig,projectionCode,sourceIdentity,null);
+    }
+    /** The partition must be the actual initial capture result, never a claimed empty range list. */
+    public RefinementRootAuthority(NetworkSnapshot network,TraceRequest request,EvidenceSnapshot evidence,
+            AlignmentConfig effectiveConfig,String projectionCode,String sourceIdentity,
+            SelectedWayIntervalPartitioner.Partition capturedPartition) {
         Objects.requireNonNull(network); Objects.requireNonNull(request); Objects.requireNonNull(evidence);
         Objects.requireNonNull(effectiveConfig);
         var inventory=new Inventory();
         inventory.visit(network);inventory.visit(request);inventory.visit(evidence);inventory.visit(effectiveConfig);
         inventory.visit(projectionCode);inventory.visit(sourceIdentity);
+        inventory.visit(capturedPartition);
         if (network.role() != SnapshotRole.CAPTURED_BEFORE || request.engine() != TrackerMode.LEGACY_V02
                 || !request.networkSnapshotId().equals(network.snapshotId())
                 || !request.networkContentHash().equals(network.canonicalHash())
@@ -53,6 +73,8 @@ public final class RefinementRootAuthority {
         }
         this.network=network;this.request=request;this.evidence=evidence;this.effectiveConfig=effectiveConfig;
         this.projectionCode=projectionCode;this.sourceIdentity=sourceIdentity;
+        frozenGeometryProof=geometryProof(network,request,effectiveConfig,projectionCode,capturedPartition);
+        inventory.visit(frozenGeometryProof);
         inventory.put(this,256);
         charges=Collections.unmodifiableMap(inventory.owned);retainedBytes=inventory.total;
     }
@@ -63,6 +85,96 @@ public final class RefinementRootAuthority {
     public String projectionCode(){return projectionCode;}
     public String sourceIdentity(){return sourceIdentity;}
     public long retainedBytes(){return retainedBytes;}
+    public Optional<FrozenGeometryProof> frozenGeometryProof(){return frozenGeometryProof;}
+    public String frozenGeometryIdentity(){return frozenGeometryProof.map(FrozenGeometryProof::identity).orElse("frozen-geometry-unavailable");}
+    private static Optional<FrozenGeometryProof> geometryProof(NetworkSnapshot network,TraceRequest request,AlignmentConfig config,
+            String projectionCode,SelectedWayIntervalPartitioner.Partition captured) {
+        var way=(DetachedWay)network.primitives().get(request.selectedWayKey());
+        if(captured!=null) {
+            if(!captured.selectedWayKey().equals(way.key())||!captured.selectedRange().equals(request.selectedRange())
+                    ||!SelectedWayIntervalPartitioner.verifyFrozenParity(captured,network))
+                throw new IllegalArgumentException("Captured frozen-geometry partition differs from original selection/source");
+            for(var island:captured.fixedIslands())if(!island.occurrenceKeys().equals(way.nodeKeys().subList(island.range().firstIndex(),island.range().lastIndex()+1)))
+                throw new IllegalArgumentException("Frozen island occurrence identities differ from original source");
+            var ranges=captured.fixedIslands().stream().map(SelectedWayIntervalPartitioner.FixedIsland::range)
+                .sorted(Comparator.comparingInt(OccurrenceRange::firstIndex)).toList();
+            var copied=SharedNodeDisconnectionPlanner.forRequest(request,network).replacements().keySet();
+            for(int i=request.selectedRange().firstIndex();i<=request.selectedRange().lastIndex();i++) {
+                final int occurrence=i;var key=way.nodeKeys().get(i);
+                boolean shared=network.incomingReferrerWatches().getOrDefault(key,Set.of()).stream()
+                    .anyMatch(ref->ref.type()==PrimitiveKey.Type.WAY&&!ref.equals(way.key())
+                        &&(!(network.primitives().get(ref) instanceof DetachedWay other)||!other.deleted()));
+                if(shared&&!copied.contains(i)&&ranges.stream().noneMatch(r->r.firstIndex()<=occurrence&&r.lastIndex()>=occurrence)
+                        &&captured.junctionDispositions().stream().noneMatch(d->d.selectedOccurrenceIndex()==occurrence&&d.nodeKey().equals(key)))
+                    throw new IllegalArgumentException("Captured partition omitted a shared occurrence without this request's copy authority");
+            }
+            return Optional.of(proof(FrozenGeometryProofKind.CAPTURED_PARTITION,ranges,Optional.of(captured),network,request,config));
+        }
+        if(!provesNoIslands(network,request,projectionCode))return Optional.empty();
+        return Optional.of(proof(FrozenGeometryProofKind.DERIVED_CLOSED_TOPOLOGY,List.of(),Optional.empty(),network,request,config));
+    }
+    private static FrozenGeometryProof proof(FrozenGeometryProofKind kind,List<OccurrenceRange> ranges,
+            Optional<SelectedWayIntervalPartitioner.Partition> captured,NetworkSnapshot network,TraceRequest request,AlignmentConfig config) {
+        var text="stepwise-frozen-geometry-v1\n"+kind+"\n"+network.canonicalHash()+"\n"+request.selectedWayKey()+"\n"+request.selectedRange()+"\n"
+            +request.permissions().canonicalIdentity()+"\n"+config.heatmap().toRedactedJson()+"\n"+ranges;
+        try{return new FrozenGeometryProof(kind,ranges,captured,HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8))));}
+        catch(NoSuchAlgorithmException impossible){throw new IllegalStateException(impossible);}
+    }
+    /** Only closed ordinary topology is derived. Branching, tags, relations or missing facts require capture. */
+    private static boolean provesNoIslands(NetworkSnapshot network,TraceRequest request,String projectionCode) {
+        var closure=network.closure();var selected=(DetachedWay)network.primitives().get(request.selectedWayKey());
+        if(!closure.wayReferrersComplete()||!closure.relationReferrersComplete()||!closure.nearbyGeometryComplete()
+                ||!noLiveRelations(network,selected.key())||!completeWay(network,selected,projectionCode))return false;
+        for(int i=request.selectedRange().firstIndex();i<=request.selectedRange().lastIndex();i++) {
+            var key=selected.nodeKeys().get(i);var node=(DetachedNode)network.primitives().get(key);
+            if(!node.tags().isEmpty()||!network.incomingReferrerWatches().containsKey(key))return false;
+            var ways=new ArrayList<DetachedWay>();
+            for(var ref:network.incomingReferrerWatches().get(key)) {
+                var value=network.primitives().get(ref);if(value==null)return false;if(value.deleted())continue;
+                if(!(value instanceof DetachedWay way))return false;ways.add(way);
+            }
+            if(ways.size()==1&&ways.get(0).key().equals(selected.key()))continue;
+            if(ways.size()!=2)return false;
+            var facts=new ArrayList<JunctionTopologyRules.Referrer>();
+            for(var way:ways)facts.add(new JunctionTopologyRules.Referrer(way.key().equals(selected.key()),true,
+                completeWay(network,way,projectionCode),Collections.frequency(way.nodeKeys(),key)==1
+                    &&(way.nodeKeys().get(0).equals(key)||way.nodeKeys().get(way.nodeKeys().size()-1).equals(key))));
+            if(!JunctionTopologyRules.safeEndpoint(facts))return false;
+            for(var other:ways)if(!other.key().equals(selected.key())) {
+                if(!plainTransport(selected)||!plainTransport(other)||!noLiveRelations(network,other.key()))return false;
+                for(var otherKey:other.nodeKeys()) {
+                    var otherNode=(DetachedNode)network.primitives().get(otherKey);
+                    if(!otherNode.tags().isEmpty()||!network.incomingReferrerWatches().containsKey(otherKey))return false;
+                    for(var ref:network.incomingReferrerWatches().get(otherKey)) {
+                        var value=network.primitives().get(ref);if(value==null)return false;if(value.deleted())continue;
+                        if(!ref.equals(other.key())&&!(otherKey.equals(key)&&ref.equals(selected.key())))return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+    private static boolean noLiveRelations(NetworkSnapshot network,PrimitiveKey key) {
+        var refs=network.incomingReferrerWatches().get(key);if(refs==null)return false;
+        for(var ref:refs) {var value=network.primitives().get(ref);if(value==null||!value.deleted())return false;}
+        return true;
+    }
+    private static boolean plainTransport(DetachedWay way) {
+        return way.tags().containsKey("highway")&&!"yes".equals(way.tags().get("area"))
+            &&Collections.disjoint(way.tags().keySet(),Set.of("building","landuse","boundary","railway","waterway"));
+    }
+    private static boolean completeWay(NetworkSnapshot network,DetachedWay way,String projectionCode) {
+        if(way.deleted()||new HashSet<>(way.nodeKeys()).size()!=way.nodeKeys().size())return false;
+        var projection=Projections.getProjectionByCode(projectionCode);if(projection==null)return false;
+        org.openstreetmap.josm.data.coor.EastNorth previous=null;boolean positive=false;
+        for(var key:way.nodeKeys()) {
+            if(!(network.primitives().get(key) instanceof DetachedNode node)||node.deleted())return false;
+            var p=projection.latlon2eastNorth(new LatLon(node.coordinate().latitudeDegrees(),node.coordinate().longitudeDegrees()));
+            if(p==null||!Double.isFinite(p.east())||!Double.isFinite(p.north()))return false;
+            if(previous!=null&&previous.distance(p)>0)positive=true;previous=p;
+        }
+        return positive;
+    }
     Map<Object,Long> charges(){return charges;}
 
     /** Detached records only. No pixel getters, source buffers, mutable OSM graphs or cache ownership assumptions. */

@@ -11,7 +11,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
 /** Selected final parent geometry and original-occurrence lineage, never a replacement OSM capture. */
 public final class ParentTraceReference {
     public static final String SAMPLER_SUFFIX="/stepwise-reference-v1";
-    public enum Unavailable { MAPPING_UNAVAILABLE, MAPPING_AMBIGUOUS, DEGENERATE_REFERENCE, FROZEN_INTERIOR, EVIDENCE_COVERAGE, SPATIAL_RESOLUTION_UNAVAILABLE }
+    public enum Unavailable { MAPPING_UNAVAILABLE, MAPPING_AMBIGUOUS, DEGENERATE_REFERENCE, FROZEN_INTERIOR, EVIDENCE_COVERAGE, SPATIAL_RESOLUTION_UNAVAILABLE,
+        FROZEN_GEOMETRY_PROOF_UNAVAILABLE, FROZEN_GEOMETRY_SPAN }
     public static final class UnavailableException extends IllegalStateException {
         private final Unavailable reason;
         public UnavailableException(Unavailable reason) { super(reason.name()); this.reason=reason; }
@@ -50,6 +51,10 @@ public final class ParentTraceReference {
         this.range=Objects.requireNonNull(range);this.operationIdentity=Objects.requireNonNull(operationIdentity);
         if(operationIdentity.isBlank()||range.firstIndex()<root.request().selectedRange().firstIndex()
                 ||range.lastIndex()>root.request().selectedRange().lastIndex())throw new IllegalArgumentException("Reference cannot expand original selection");
+        // Projection round trips may differ below the existing 0.1-micrometre binding
+        // tolerance. Original immovable vertices have one canonical captured coordinate;
+        // do this before chainage, cuts and identity, never as a tolerant composition join.
+        points=canonicalImmovableVertices(root,points,arcs);
         this.root=root;this.stage=stage;this.choice=choice;this.nativeId=nativeId;this.palette=palette;
         this.parentIdentity=parentIdentity;this.points=List.copyOf(points);this.arcs=List.copyOf(arcs);
         chainage=new double[points.size()];boolean zeroEdge=false;
@@ -84,7 +89,7 @@ public final class ParentTraceReference {
                 &&!disconnections.mayPosition(i);
             if(immovable&&target.distanceTo(captured)>1e-7)
                 throw new IllegalArgumentException("Parent moved an originally immovable anchor");
-            boolean shared=root.network().incomingReferrerWatches().getOrDefault(key,Set.of()).stream()
+            boolean shared=!disconnections.replacements().containsKey(i)&&root.network().incomingReferrerWatches().getOrDefault(key,Set.of()).stream()
                 .anyMatch(k->k.type()==PrimitiveKey.Type.WAY&&!k.equals(way.key())
                     &&(!(root.network().primitives().get(k) instanceof DetachedWay other)||!other.deleted()));
             if(immovable||shared||i==originalRange().firstIndex()||i==originalRange().lastIndex())fixed.put(i,immovable?captured:target);
@@ -95,6 +100,7 @@ public final class ParentTraceReference {
             throw new IllegalArgumentException("Parent correspondence does not retain selected endpoints");
         var canonical=new StringBuilder("stepwise-parent-reference-v1");
         for(String value:List.of(root.network().canonicalHash(),
+                root.frozenGeometryIdentity(),
                 org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec.canonicalRequestHash(root.request()),
                 stage.value().toString(),choice.value(),nativeId,palette,parentIdentity,range.firstIndex()+":"+range.lastIndex(),operationIdentity))
             field(canonical,value);
@@ -109,15 +115,15 @@ public final class ParentTraceReference {
             var capturedPolicy=ProfileChainage.measured(originalPoints,root.request().configuredSampleStepMeters())
                 .withSourceOrigin(root.request().profileChainage().sourceOriginGroundMeters());
             if(!capturedPolicy.equals(root.request().profileChainage())||!range.equals(root.request().selectedRange())
-                    ||points.size()!=originalPoints.size()||arcs.size()!=originalPoints.size())
+                    ||this.points.size()!=originalPoints.size()||arcs.size()!=originalPoints.size())
                 throw new IllegalArgumentException("Explicit measured A rows require their factual captured vertex policy and complete lineage");
             for(int i=0;i<arcs.size();i++) {
                 var arc=arcs.get(i);int occurrence=range.firstIndex()+i;
-                if(arc.originalOccurrence()!=occurrence||arc.parentEdge()!=Math.min(i,points.size()-2)
-                        ||arc.fraction()!=(i==points.size()-1?1:0))
+                if(arc.originalOccurrence()!=occurrence||arc.parentEdge()!=Math.min(i,this.points.size()-2)
+                        ||arc.fraction()!=(i==this.points.size()-1?1:0))
                     throw new IllegalArgumentException("Explicit measured A rows cannot coarsen captured occurrence ownership");
             }
-            if(!sampling.equals(ProfileChainage.measured(points,root.request().configuredSampleStepMeters())))
+            if(!sampling.equals(ProfileChainage.measured(this.points,root.request().configuredSampleStepMeters())))
                 throw new IllegalArgumentException("Explicit A rows must be factual measured parent vertices under the frozen physical step");
             // Numerical projection round trips may differ below0.1 micrometre; physical spacing may not change.
             for(int i=0;i<sampling.cumulativeGroundMeters().size();i++)
@@ -129,6 +135,26 @@ public final class ParentTraceReference {
         identity=hash(canonical.toString());
     }
     public RefinementRootAuthority root(){return root;}
+    private static List<MetricPoint> canonicalImmovableVertices(RefinementRootAuthority root,List<MetricPoint> source,List<ParentArc> arcs) {
+        var points=new ArrayList<>(source);var way=(DetachedWay)root.network().primitives().get(root.request().selectedWayKey());
+        var disconnections=SharedNodeDisconnectionPlanner.forRequest(root.request(),root.network());
+        for(var arc:arcs) {
+            if(arc.originalOccurrence()>=way.nodeKeys().size()||arc.parentEdge()>=points.size()-1)
+                throw new IllegalArgumentException("Original anchor correspondence exceeds source geometry");
+            var key=way.nodeKeys().get(arc.originalOccurrence());var node=(DetachedNode)root.network().primitives().get(key);
+            boolean relation=root.network().incomingReferrerWatches().getOrDefault(key,Set.of()).stream()
+                .anyMatch(k->k.type()==PrimitiveKey.Type.RELATION&&(!(root.network().primitives().get(k) instanceof DetachedRelation other)||!other.deleted()));
+            boolean immovable=(root.network().closure().protectedExistingNodeKeys().contains(key)||!node.tags().isEmpty()||relation)
+                &&!disconnections.mayPosition(arc.originalOccurrence());
+            if(!immovable)continue;
+            int vertex=arc.fraction()==0?arc.parentEdge():arc.fraction()==1?arc.parentEdge()+1:-1;
+            if(vertex<0)throw new IllegalArgumentException("Originally immovable anchor lacks a retained parent vertex");
+            var captured=root.evidence().coordinateFrame().toMetric(node.coordinate());
+            if(points.get(vertex).distanceTo(captured)>1e-7)throw new IllegalArgumentException("Parent moved an originally immovable anchor");
+            points.set(vertex,captured);
+        }
+        return List.copyOf(points);
+    }
     public StageId parentStage(){return stage;}
     public CandidateId parentChoice(){return choice;}
     public String nativeCandidateId(){return nativeId;}
@@ -172,6 +198,12 @@ public final class ParentTraceReference {
         if(!missing.isEmpty())throw new UnavailableException(Unavailable.MAPPING_UNAVAILABLE);
         if(!ambiguous.isEmpty())throw new UnavailableException(Unavailable.MAPPING_AMBIGUOUS);
         if(degenerate)throw new UnavailableException(Unavailable.DEGENERATE_REFERENCE);
+    }
+    /** Frozen spans retain the selected parent curve, not only its existing endpoint coordinates. */
+    public void requireRefinementGeometryAuthority() {
+        var proof=root.frozenGeometryProof().orElseThrow(()->new UnavailableException(Unavailable.FROZEN_GEOMETRY_PROOF_UNAVAILABLE));
+        for(var frozen:proof.ranges())if(range.firstIndex()<frozen.lastIndex()&&range.lastIndex()>frozen.firstIndex())
+            throw new UnavailableException(Unavailable.FROZEN_GEOMETRY_SPAN);
     }
     /**
      * Pre-allocation bound for derived identity/request validation. Evidence hashing clones its
@@ -231,7 +263,7 @@ public final class ParentTraceReference {
 
     /** Request preparation acquires nothing and allocates no new authority or solver work. */
     public TraceRequest request(TrackerMode engine,EvidenceSnapshot evidence,TraceBudgets remaining,double lateralStep) {
-        requireComplete();
+        requireRefinementGeometryAuthority();requireComplete();
         if(engine!=TrackerMode.CORRIDOR_AWARE&&engine!=TrackerMode.PROBABILISTIC)throw new IllegalArgumentException("Only A/B refine a parent");
         var original=root.request();var maximum=original.budgets();
         if(remaining.maximumStatesPerProfile()!=maximum.maximumStatesPerProfile()||remaining.maximumPairVisits()>maximum.maximumPairVisits()
