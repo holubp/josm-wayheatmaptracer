@@ -1,15 +1,23 @@
-"""G006 released-source freeze; hashes read directly from verified RC15.
+"""G006 released-source freeze against verified RC15, with one reviewed G004 B entry point.
 
 The protected Legacy58 path set comes from legacy58-release-check.json.
 Embedded digests keep this guard usable in shallow public CI checkouts.
 """
 import hashlib
 import pathlib
+import shutil
+import sys
+import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BASE = "111e5027c4d09e8a8ef672c2c58045edc0ce2663"
 B_DIR = "src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic"
+G004_REVIEWED_SOURCE_SHA256 = {
+    "src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/ProbabilisticTraceEngine.java":
+        "ecf57b8bd8ad06f89afa304111837c9832d1f51c519b1cc8909611e938efc28e",
+}
 B_SHA256 = {
     'src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/CensoredDirectionReliability.java':
         'e1c1ec0ca86f7b428aae429a78a8a5ef79969d2a83763d99ccd090d87042bd56',
@@ -183,10 +191,37 @@ LEGACY_SHA256 = {
 
 
 class ReleasedSourceFreezeTest(unittest.TestCase):
-    def test_b_source_set_and_bytes_match_rc15(self):
+    def test_b_source_set_and_bytes_match_rc15_except_named_reviewed_g004_entry_point(self):
         actual = {str(p.relative_to(ROOT)) for p in (ROOT / B_DIR).rglob("*") if p.is_file()}
         self.assertEqual(set(B_SHA256), actual, "B source additions and deletions are forbidden")
-        self.assert_bytes(B_SHA256)
+        engine_path = f"{B_DIR}/ProbabilisticTraceEngine.java"
+        self.assertEqual({engine_path}, set(G004_REVIEWED_SOURCE_SHA256))
+        self.assertIn(engine_path, B_SHA256)
+        expected = {**B_SHA256, **G004_REVIEWED_SOURCE_SHA256}
+        self.assert_bytes(expected)
+
+    def test_guard_rejects_changed_unlisted_b_file(self):
+        self.assert_guard_rejects_mutation("CensoredDirectionReliability.java")
+
+    def test_guard_rejects_changed_reviewed_entry_point(self):
+        self.assert_guard_rejects_mutation("ProbabilisticTraceEngine.java")
+
+    def assert_guard_rejects_mutation(self, filename):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_root = pathlib.Path(directory)
+            shutil.copytree(ROOT / B_DIR, temporary_root / B_DIR)
+            mutated_path = temporary_root / B_DIR / filename
+            mutated_path.write_bytes(mutated_path.read_bytes() + b"\n// mutation\n")
+            case = type(self)("test_b_source_set_and_bytes_match_rc15_except_named_reviewed_g004_entry_point")
+            result = unittest.TestResult()
+            with mock.patch.object(sys.modules[__name__], "ROOT", temporary_root):
+                case.run(result)
+            self.assertEqual([], result.errors)
+            self.assertEqual(1, len(result.failures))
+            expected_digest = G004_REVIEWED_SOURCE_SHA256.get(
+                f"{B_DIR}/{filename}", B_SHA256[f"{B_DIR}/{filename}"]
+            )
+            self.assertIn(expected_digest, result.failures[0][1])
 
     def test_protected_legacy58_bytes_match_rc15(self):
         self.assertEqual(58, len(LEGACY_SHA256))
