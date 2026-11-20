@@ -211,8 +211,27 @@ public class AggregateIntensityLayer extends Layer {
             || composites.putIfAbsent(key, CompositeState.loading()) != null) {
             return;
         }
+        if (destroyed.get() || lifecycle.isCancelled()) { composites.remove(key); return; }
+        if (!coordinator.dispatch(TilePurpose.LIVE_AGGREGATE_VISUALIZATION, () -> startTileRequest(key, mapView))) {
+            Instant retry = Instant.now().plusSeconds(1);
+            CompositeState delayed = new CompositeState(CompositeStatus.FAILED_UNTIL, null, 0, retry, "queue-full");
+            composites.put(key, delayed);
+            if (destroyed.get() || lifecycle.isCancelled()) { composites.remove(key, delayed); return; }
+            coordinator.schedule(retry, () -> {
+                if (!destroyed.get() && composites.remove(key, delayed)) repaintOnEdt(mapView);
+            });
+        }
+    }
+
+    private void startTileRequest(TileKey key, MapView mapView) {
         ManagedTileGeneration generation = new ManagedTileGeneration(Math.max(0L, config.cacheBuster()));
-        coordinator.updateActiveGeneration(generation);
+        if (destroyed.get() || lifecycle.isCancelled()) return;
+        if (!coordinator.isActiveGeneration(generation)) {
+            var stale = new CompositeState(CompositeStatus.FAILED_UNTIL, null, 0, null, "stale-generation");
+            composites.put(key, stale);
+            if (destroyed.get() || lifecycle.isCancelled()) composites.remove(key, stale);
+            return;
+        }
         Map<String, CompletableFuture<TileFetchResult>> requests = new LinkedHashMap<>();
         for (String color : SOURCE_COLORS) {
             TileRequest request = new TileRequest(new ManagedTileAddress(config.activity(), color, ZOOM,

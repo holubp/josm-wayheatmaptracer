@@ -78,22 +78,40 @@ public final class ManagedTileCache {
      * @param bytes validated PNG bytes
      */
     public void write(TileRequest request, byte[] bytes) {
+        try (PreparedWrite prepared = prepareWrite(request, bytes)) {
+            if (prepared != null) prepared.commit();
+        }
+    }
+
+    /** Writes temporary bytes only; the coordinator separately guards final publication. */
+    PreparedWrite prepareWrite(TileRequest request, byte[] bytes) {
         Path target = path(request.generation(), request.address());
+        Path temporary = null;
         try {
             Files.createDirectories(target.getParent());
-            Path temporary = Files.createTempFile(target.getParent(), ".whtr-", ".tmp");
+            temporary = Files.createTempFile(target.getParent(), ".whtr-", ".tmp");
+            Files.write(temporary, bytes);
+            return new PreparedWrite(temporary, target);
+        } catch (IOException failure) {
+            if (temporary != null) try { Files.deleteIfExists(temporary); } catch (IOException ignored) { }
+            return null;
+        }
+    }
+
+    /** Temp cleanup is outside the coordinator fence, including refusal and move failure. */
+    static final class PreparedWrite implements AutoCloseable {
+        private final Path temporary, target;
+        PreparedWrite(Path temporary, Path target) { this.temporary = temporary; this.target = target; }
+        void commit() {
             try {
-                Files.write(temporary, bytes);
-                try {
-                    Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                } catch (AtomicMoveNotSupportedException ex) {
+                try { Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING); }
+                catch (AtomicMoveNotSupportedException unsupported) {
                     Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
                 }
-            } finally {
-                Files.deleteIfExists(temporary);
-            }
-        } catch (IOException ex) {
-            // Cache failure must not turn a valid network tile into an alignment failure.
+            } catch (IOException ignored) { /* Cache failure does not invalidate an owned network tile. */ }
+        }
+        @Override public void close() {
+            try { Files.deleteIfExists(temporary); } catch (IOException ignored) { }
         }
     }
 

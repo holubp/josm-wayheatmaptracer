@@ -80,10 +80,56 @@ class AggregateIntensityLayerTest {
         }
     }
 
+    @Test
+    void paintSchedulingDoesNotWaitForCommitFence(@TempDir java.nio.file.Path temp) throws Exception {
+        var locked = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        try (var coordinator = coordinator(temp, (request, credentials) -> new TransportResponse(
+                TileFetchStatus.NO_TILE, 404, "", null, null, Duration.ZERO, "http-no-tile"))) {
+            var field = TileFetchCoordinator.class.getDeclaredField("publicationFence");
+            field.setAccessible(true);
+            Object fence = field.get(coordinator);
+            var holder = new Thread(() -> { synchronized (fence) { locked.countDown(); awaitLatch(release); } });
+            holder.start();
+            assertTrue(locked.await(2, TimeUnit.SECONDS));
+            var layer = new AggregateIntensityLayer(config(), coordinator);
+            var returned = new java.util.concurrent.CountDownLatch(1);
+            try {
+                javax.swing.SwingUtilities.invokeLater(() -> { layer.requestTileForTesting(102, 202); returned.countDown(); });
+                assertTrue(returned.await(1, TimeUnit.SECONDS), "Paint scheduling must not enter cache commit ownership fence");
+            } finally { release.countDown(); holder.join(3000); layer.destroy(); }
+        }
+    }
+
+    @Test
+    void queuedOldLayerCannotRestoreNewGeneration(@TempDir java.nio.file.Path temp) throws Exception {
+        var entered = new java.util.concurrent.CountDownLatch(3);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var executions = new AtomicInteger();
+        try (var coordinator = coordinator(temp, (request, credentials) -> {
+                executions.incrementAndGet();
+                return new TransportResponse(TileFetchStatus.NO_TILE, 404, "", null, null, Duration.ZERO, "http-no-tile"); })) {
+            for (int i = 0; i < 3; i++) assertTrue(coordinator.dispatch(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TilePurpose.ALIGNMENT_REQUIRED,
+                () -> { entered.countDown(); awaitLatch(release); }));
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            var layer = new AggregateIntensityLayer(config(), coordinator);
+            layer.requestTileForTesting(103, 203);
+            coordinator.updateActiveGeneration(new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(21));
+            release.countDown();
+            await(() -> "FAILED_UNTIL".equals(layer.compositeStatusForTesting(103, 203)));
+            assertEquals(0, executions.get());
+            assertTrue(coordinator.isActiveGeneration(new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(21)));
+            layer.destroy();
+        } finally { release.countDown(); }
+    }
+
     private TileFetchCoordinator coordinator(java.nio.file.Path temp, ManagedTileTransport transport) {
         TileDecoderClassifier decoder = new TileDecoderClassifier();
-        return new TileFetchCoordinator(transport, new ManagedTileCache(temp, decoder), decoder,
+        var coordinator = new TileFetchCoordinator(transport, new ManagedTileCache(temp, decoder), decoder,
             TileReliabilityPolicy.defaults(), Clock.systemUTC());
+        coordinator.updateActiveGeneration(new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(20));
+        return coordinator;
     }
 
     private ManagedHeatmapConfig config() {

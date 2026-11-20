@@ -29,7 +29,11 @@ public final class TileFetchCoordinator implements AutoCloseable {
     private final Clock clock;
     private final ThreadPoolExecutor workers;
     private final ScheduledThreadPoolExecutor scheduler;
-    private final ConcurrentHashMap<FlightKey, CompletableFuture<TileFetchResult>> flights = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<FlightKey, Flight> flights = new ConcurrentHashMap<>();
+    // Dedicated ownership/publication fence. Never held for transport, decode or temporary writes.
+    // Final rename is deliberately serialized with last detach, generation change and close.
+    private final Object publicationFence = new Object();
+    private final Runnable beforePublication;
     private final ConcurrentHashMap<CacheKey, NegativeState> negatives = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Long, TileFetchStatus> authBlocked = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Long, Instant> rateLimited = new ConcurrentHashMap<>();
@@ -46,6 +50,11 @@ public final class TileFetchCoordinator implements AutoCloseable {
     private final AtomicLong joins = new AtomicLong();
     private final AtomicLong retrySuppressed = new AtomicLong();
     private volatile long activeGeneration = -1L;
+
+    /** Conservative encoded-body allowance for a tile including its one bounded retry. */
+    public long maximumTransportBodyAllowancePerTile() {
+        return Math.multiplyExact(2L,policy.maximumBodyBytes());
+    }
 
     /**
      * Creates a production coordinator with the system clock.
@@ -71,6 +80,13 @@ public final class TileFetchCoordinator implements AutoCloseable {
      */
     public TileFetchCoordinator(ManagedTileTransport transport, ManagedTileCache cache,
         TileDecoderClassifier classifier, TileReliabilityPolicy policy, Clock clock) {
+        this(transport, cache, classifier, policy, clock, () -> { });
+    }
+
+    /** Package-private deterministic boundary after decode/staging, outside the publication fence. */
+    TileFetchCoordinator(ManagedTileTransport transport, ManagedTileCache cache,
+        TileDecoderClassifier classifier, TileReliabilityPolicy policy, Clock clock, Runnable beforePublication) {
+        this.beforePublication = Objects.requireNonNull(beforePublication);
         this.transport = Objects.requireNonNull(transport, "transport");
         this.diskCache = Objects.requireNonNull(cache, "cache");
         this.classifier = Objects.requireNonNull(classifier, "classifier");
@@ -126,51 +142,67 @@ public final class TileFetchCoordinator implements AutoCloseable {
             return completedObserved(blocked);
         }
         FlightKey flightKey = new FlightKey(cacheKey, request.cachePolicy());
-        CompletableFuture<TileFetchResult> existing = flights.get(flightKey);
-        if (existing != null) {
-            joins.incrementAndGet();
-            return subscriber(existing, request);
-        }
-        CompletableFuture<TileFetchResult> shared = new CompletableFuture<>();
-        existing = flights.putIfAbsent(flightKey, shared);
-        if (existing != null) {
-            joins.incrementAndGet();
-            return subscriber(existing, request);
-        }
-        int maximumAdmitted = policy.maximumQueueSize() + policy.workerConcurrency();
-        if (admitted.incrementAndGet() > maximumAdmitted) {
-            admitted.decrementAndGet();
-            flights.remove(flightKey, shared);
-            shared.complete(failure(request, TileFetchStatus.OFFLINE, "queue-full",
-                "Tile acquisition queue is full.", clock.instant().plus(policy.transientFailureTtl())));
-            return subscriber(shared, request);
-        }
-        TileRequest operationRequest = new TileRequest(request.address(), request.generation(), request.purpose(),
-            request.cachePolicy(), request.deadline(), new CancellationToken());
-        try {
-            workers.execute(new PrioritizedTask(request.purpose().priority(), sequence.getAndIncrement(), () -> {
-                try {
-                    TileFetchResult result = execute(operationRequest, credentials, cacheKey);
-                    observe(result);
-                    shared.complete(result);
-                } catch (RuntimeException ex) {
-                    TileFetchResult result = failure(request, TileFetchStatus.NETWORK_ERROR, "internal-fetch",
-                        "Tile acquisition failed safely.", clock.instant().plus(policy.transientFailureTtl()));
-                    rememberFailure(cacheKey, result);
-                    observe(result);
-                    shared.complete(result);
-                } finally {
+        Flight proposed = new Flight(flightKey, request);
+        Flight previous = flights.putIfAbsent(flightKey, proposed);
+        return subscriber(previous == null ? proposed : previous, request, credentials, previous != null);
+    }
+
+    private void start(Flight flight, CredentialSnapshot credentials) {
+        TileFetchResult refused = null;
+        synchronized (publicationFence) {
+            refused = unavailable(flight);
+            if (refused == null) {
+                int maximumAdmitted = policy.maximumQueueSize() + policy.workerConcurrency();
+                if (admitted.incrementAndGet() > maximumAdmitted) {
                     admitted.decrementAndGet();
-                    flights.remove(flightKey, shared);
+                    refused = failure(flight.request, TileFetchStatus.OFFLINE, "queue-full",
+                        "Tile acquisition queue is full.", clock.instant().plus(policy.transientFailureTtl()));
+                } else flight.admitted = true;
+            }
+        }
+        if (refused != null) { finish(flight, refused); return; }
+        try {
+            workers.execute(new PrioritizedTask(flight.request.purpose().priority(), sequence.getAndIncrement(), () -> {
+                try {
+                    TileFetchResult result;
+                    try { result = execute(flight, credentials); }
+                    catch (RuntimeException ex) {
+                        synchronized (publicationFence) {
+                            result = unavailable(flight);
+                            if (result == null) {
+                                result = failure(flight.request, TileFetchStatus.NETWORK_ERROR, "internal-fetch",
+                                    "Tile acquisition failed safely.", clock.instant().plus(policy.transientFailureTtl()));
+                                rememberFailure(flight.key.key(), result);
+                            }
+                        }
+                    }
+                    finish(flight, result);
+                } finally {
+                    // Retire even an abnormal worker exit; never strand admission or subscribers.
+                    if (retire(flight)) flight.result.completeExceptionally(new IllegalStateException("Tile acquisition stopped."));
                 }
             }));
         } catch (RejectedExecutionException ex) {
-            admitted.decrementAndGet();
-            flights.remove(flightKey, shared);
-            shared.complete(failure(request, TileFetchStatus.CANCELLED, "closed",
+            finish(flight, failure(flight.request, TileFetchStatus.CANCELLED, "closed",
                 "Tile acquisition is closed.", null));
         }
-        return subscriber(shared, request);
+    }
+
+    private boolean retire(Flight flight) {
+        synchronized (publicationFence) {
+            if (flight.terminal) return false;
+            flight.terminal = true;
+            flight.accepting = false;
+            flights.remove(flight.key, flight);
+            if (flight.admitted) { flight.admitted = false; admitted.decrementAndGet(); }
+            return true;
+        }
+    }
+
+    private void finish(Flight flight, TileFetchResult result) {
+        if (!retire(flight)) return;
+        if (!closed.get()) observe(result);
+        flight.result.complete(result); // User continuations must never execute under the fence.
     }
 
     /**
@@ -180,13 +212,13 @@ public final class TileFetchCoordinator implements AutoCloseable {
      */
     public void updateActiveGeneration(ManagedTileGeneration generation) {
         long next = Objects.requireNonNull(generation, "generation").value();
-        if (activeGeneration == next) {
-            return;
+        synchronized (publicationFence) {
+            if (closed.get() || activeGeneration == next) return;
+            activeGeneration = next;
+            negatives.keySet().removeIf(key -> key.generation().value() != next);
+            authBlocked.keySet().removeIf(value -> value != next);
+            rateLimited.keySet().removeIf(value -> value != next);
         }
-        activeGeneration = next;
-        negatives.keySet().removeIf(key -> key.generation().value() != next);
-        authBlocked.keySet().removeIf(value -> value != next);
-        rateLimited.keySet().removeIf(value -> value != next);
     }
 
     /**
@@ -196,7 +228,7 @@ public final class TileFetchCoordinator implements AutoCloseable {
      * @return true only for the currently active runtime generation
      */
     public boolean isActiveGeneration(ManagedTileGeneration generation) {
-        return generation != null && generation.value() == activeGeneration;
+        return !closed.get() && generation != null && generation.value() == activeGeneration;
     }
 
     /** Returns the factual currently active generation without starting tile work. */
@@ -315,40 +347,87 @@ public final class TileFetchCoordinator implements AutoCloseable {
 
     @Override
     public void close() {
-        if (!closed.compareAndSet(false, true)) {
-            return;
+        java.util.List<Flight> abandoned;
+        synchronized (publicationFence) {
+            if (!closed.compareAndSet(false, true)) return;
+            abandoned = java.util.List.copyOf(flights.values());
+            abandoned.forEach(flight -> flight.accepting = false);
+        }
+        for (Flight flight : abandoned) {
+            flight.request.cancellation().cancel();
+            finish(flight, failure(flight.request, TileFetchStatus.CANCELLED, "closed",
+                "Tile acquisition is closed.", null));
         }
         workers.shutdownNow();
         scheduler.shutdownNow();
-        flights.forEach((key, future) -> future.completeExceptionally(
-            new IllegalStateException("Tile acquisition closed")));
-        flights.clear();
         negatives.clear();
         memoryCache.clear();
-        synchronized (this) {
-            recentResults.clear();
+        synchronized (this) { recentResults.clear(); }
+    }
+
+    private CompletionStage<TileFetchResult> subscriber(Flight flight, TileRequest request,
+        CredentialSnapshot credentials, boolean joined) {
+        CompletableFuture<TileFetchResult> consumer = new CompletableFuture<>();
+        boolean start;
+        synchronized (publicationFence) {
+            if (closed.get() || !flight.accepting || flight.terminal || request.cancellation().isCancelled()) {
+                discardUnstarted(flight);
+                return CompletableFuture.completedFuture(failure(request, TileFetchStatus.CANCELLED,
+                    "cancelled", "Tile acquisition was cancelled.", null));
+            }
+            if (activeGeneration >= 0 && activeGeneration != request.generation().value()) {
+                discardUnstarted(flight);
+                return CompletableFuture.completedFuture(failure(request, TileFetchStatus.STALE_GENERATION,
+                    "stale-generation", "Tile settings changed before acquisition completed.", null));
+            }
+            flight.subscribers.add(consumer);
+            start = !flight.started;
+            flight.started = true;
+            if (joined) joins.incrementAndGet();
+        }
+        consumer.whenComplete((value, error) -> detach(flight, consumer));
+        CancellationToken.Registration registration = request.cancellation().onCancellation(() ->
+            consumer.complete(failure(request, TileFetchStatus.CANCELLED, "cancelled",
+                "Tile acquisition was cancelled.", null)));
+        consumer.whenComplete((value, error) -> registration.close());
+        flight.result.whenComplete((result, error) -> {
+            if (request.cancellation().isCancelled())
+                consumer.complete(failure(request, TileFetchStatus.CANCELLED, "cancelled", "Tile acquisition was cancelled.", null));
+            else if (error != null)
+                consumer.complete(failure(request, TileFetchStatus.CANCELLED, "closed", "Tile acquisition was closed.", null));
+            else consumer.complete(result.as(result.status(), request.purpose()));
+        });
+        if (start) start(flight, credentials);
+        return consumer;
+    }
+
+    private void discardUnstarted(Flight flight) {
+        if (!flight.started && flight.subscribers.isEmpty()) {
+            flight.accepting = false;
+            flight.terminal = true;
+            flights.remove(flight.key, flight);
         }
     }
 
-    private CompletionStage<TileFetchResult> subscriber(CompletableFuture<TileFetchResult> shared,
-        TileRequest request) {
-        CompletableFuture<TileFetchResult> consumer = new CompletableFuture<>();
-        CancellationToken.Registration cancellation = request.cancellation().onCancellation(
-                () -> consumer.complete(failure(request, TileFetchStatus.CANCELLED, "cancelled",
-                        "Tile acquisition was cancelled.", null)));
-        shared.whenComplete((result, error) -> {
-            if (request.cancellation().isCancelled()) {
-                consumer.complete(failure(request, TileFetchStatus.CANCELLED, "cancelled",
-                    "Tile acquisition was cancelled.", null));
-            } else if (error != null) {
-                consumer.complete(failure(request, TileFetchStatus.CANCELLED, "closed",
-                    "Tile acquisition was closed.", null));
-            } else {
-                consumer.complete(result.as(result.status(), request.purpose()));
+    private void detach(Flight flight, CompletableFuture<TileFetchResult> consumer) {
+        boolean cancel = false;
+        synchronized (publicationFence) {
+            if (flight.subscribers.remove(consumer) && flight.subscribers.isEmpty() && !flight.terminal) {
+                flight.accepting = false;
+                cancel = true;
             }
-            cancellation.close();
-        });
-        return consumer;
+        }
+        if (cancel) flight.request.cancellation().cancel();
+    }
+
+    /** Requires the publication fence; token signaling may lag the irreversible ownership transition. */
+    private TileFetchResult unavailable(Flight flight) {
+        TileRequest request = flight.request;
+        if (closed.get() || !flight.accepting || flight.subscribers.isEmpty() || request.cancellation().isCancelled())
+            return failure(request, TileFetchStatus.CANCELLED, "cancelled", "Tile acquisition was cancelled.", null);
+        if (activeGeneration >= 0 && request.generation().value() != activeGeneration)
+            return failure(request, TileFetchStatus.STALE_GENERATION, "stale-generation", "Tile settings changed before acquisition completed.", null);
+        return null;
     }
 
     private CompletionStage<TileFetchResult> completedObserved(TileFetchResult result) {
@@ -363,9 +442,12 @@ public final class TileFetchCoordinator implements AutoCloseable {
         }
     }
 
-    private TileFetchResult execute(TileRequest request, CredentialSnapshot credentials, CacheKey cacheKey) {
-        if (closed.get() || request.cancellation().isCancelled()) {
-            return failure(request, TileFetchStatus.CANCELLED, "cancelled", "Tile acquisition was cancelled.", null);
+    private TileFetchResult execute(Flight flight, CredentialSnapshot credentials) {
+        TileRequest request = flight.request;
+        CacheKey cacheKey = flight.key.key();
+        synchronized (publicationFence) {
+            TileFetchResult invalid = unavailable(flight);
+            if (invalid != null) return invalid;
         }
         if (!request.deadline().isAfter(clock.instant())) {
             return failure(request, TileFetchStatus.OFFLINE, "deadline",
@@ -378,13 +460,13 @@ public final class TileFetchCoordinator implements AutoCloseable {
         if (request.cachePolicy().reads()) {
             Optional<TileFetchResult> disk = diskCache.read(request);
             if (disk.isPresent()) {
-                if (activeGeneration >= 0L && request.generation().value() != activeGeneration) {
-                    return failure(request, TileFetchStatus.STALE_GENERATION, "stale-generation",
-                        "Tile settings changed during cache validation.", null);
+                synchronized (publicationFence) {
+                    TileFetchResult invalid = unavailable(flight);
+                    if (invalid != null) return invalid;
+                    diskHits.incrementAndGet();
+                    memoryCache.put(cacheKey, disk.get());
+                    return disk.get();
                 }
-                diskHits.incrementAndGet();
-                memoryCache.put(cacheKey, disk.get());
-                return disk.get();
             }
         }
         TileFetchResult blocked = blockedResult(request, cacheKey);
@@ -395,20 +477,18 @@ public final class TileFetchCoordinator implements AutoCloseable {
         TransportResponse response = transport.execute(request, credentials);
         int attempts = 1;
         Duration elapsed = response.elapsed();
-        if (shouldRetryRequired(request, response.status())) {
+        boolean retryRequest;
+        synchronized (publicationFence) { retryRequest = unavailable(flight) == null && shouldRetryRequired(request, response.status()); }
+        if (retryRequest) {
             transportExecutions.incrementAndGet();
             TransportResponse retried = transport.execute(request, credentials);
             attempts = 2;
             elapsed = elapsed.plus(retried.elapsed());
             response = retried;
         }
-        if (activeGeneration >= 0L && request.generation().value() != activeGeneration) {
-            return failure(request, TileFetchStatus.STALE_GENERATION, "stale-generation",
-                "Tile settings changed before acquisition completed.", null);
-        }
-        if (closed.get() || request.cancellation().isCancelled()) {
-            return failure(request, TileFetchStatus.CANCELLED, "cancelled",
-                "Tile acquisition was cancelled.", null);
+        synchronized (publicationFence) {
+            TileFetchResult invalid = unavailable(flight);
+            if (invalid != null) return invalid;
         }
         TileFetchResult result;
         if (response.status() == TileFetchStatus.SUCCESS_NETWORK) {
@@ -422,10 +502,16 @@ public final class TileFetchCoordinator implements AutoCloseable {
                     decoded.status(), decoded.image(), body, response.httpStatus(), response.contentType(),
                     elapsed, attempts, null, decoded.quality(), decoded.safeReasonCode(), decoded.safeMessage());
                 if (result.usable()) {
-                    memoryCache.put(cacheKey, result);
-                    negatives.remove(cacheKey);
-                    if (request.cachePolicy().writes()) {
-                        diskCache.write(request, body);
+                    try (ManagedTileCache.PreparedWrite prepared = request.cachePolicy().writes()
+                            ? diskCache.prepareWrite(request, body) : null) {
+                        beforePublication.run();
+                        synchronized (publicationFence) {
+                            TileFetchResult invalid = unavailable(flight);
+                            if (invalid != null) return invalid;
+                            if (prepared != null) prepared.commit();
+                            memoryCache.put(cacheKey, result);
+                            negatives.remove(cacheKey);
+                        }
                     }
                 }
             }
@@ -435,7 +521,11 @@ public final class TileFetchCoordinator implements AutoCloseable {
                 null, null, response.httpStatus(), response.contentType(), elapsed, attempts, retry,
                 TileQuality.unavailable(response.reasonCode()), response.reasonCode(), safeMessage(response.status()));
         }
-        rememberFailure(cacheKey, result);
+        synchronized (publicationFence) {
+            TileFetchResult invalid = unavailable(flight);
+            if (invalid != null) return invalid;
+            rememberFailure(cacheKey, result);
+        }
         return result;
     }
 
@@ -528,6 +618,20 @@ public final class TileFetchCoordinator implements AutoCloseable {
     }
 
     private record CacheKey(ManagedTileGeneration generation, ManagedTileAddress address) { }
+    private static final class Flight {
+        final FlightKey key;
+        final TileRequest request;
+        final CompletableFuture<TileFetchResult> result = new CompletableFuture<>();
+        final java.util.Set<CompletableFuture<TileFetchResult>> subscribers =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        boolean accepting = true, started, terminal, admitted;
+        Flight(FlightKey key, TileRequest source) {
+            this.key = key;
+            request = new TileRequest(source.address(), source.generation(), source.purpose(), source.cachePolicy(),
+                source.deadline(), new CancellationToken());
+        }
+    }
+
     private record FlightKey(CacheKey key, TileCachePolicy policy) { }
     private record NegativeState(TileFetchStatus status, Instant retryNotBefore, String reasonCode) { }
 
