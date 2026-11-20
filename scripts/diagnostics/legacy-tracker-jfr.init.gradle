@@ -1,0 +1,34 @@
+// DIAGNOSTIC_NOT_GATE: instrument only the benchmark's forked JVM.
+import java.lang.management.ManagementFactory
+import org.gradle.api.tasks.JavaExec
+
+def daemonArgsBefore = ManagementFactory.runtimeMXBean.inputArguments.toList()
+def recording = System.getenv('LEGACY_PERF_JFR')
+if (!recording || !new File(recording).isAbsolute() || !(recording ==~ /[A-Za-z0-9_\/.\-]+\.jfr/)) {
+    throw new GradleException('LEGACY_PERF_JFR must be an absolute, unambiguous .jfr path')
+}
+def settings = System.getenv('LEGACY_PERF_JFR_SETTINGS')
+if (!settings || !new File(settings).isAbsolute() || !(settings ==~ /[A-Za-z0-9_\/.\-]+\.jfc/) || !new File(settings).isFile()) {
+    throw new GradleException('LEGACY_PERF_JFR_SETTINGS must be an existing absolute .jfc path')
+}
+def jfrArg = "-XX:StartFlightRecording=settings=${settings},dumponexit=true,filename=${recording}"
+
+gradle.rootProject { root ->
+    root.tasks.withType(JavaExec).configureEach { task ->
+        if (task.name == 'legacyNormalPerformance') task.jvmArgs(jfrArg)
+    }
+    root.tasks.register('verifyLegacyTrackerJfrConfiguration') {
+        group = 'verification'
+        doLast {
+            def targets = root.allprojects.collectMany { p -> p.tasks.withType(JavaExec).toList() }
+            def instrumented = targets.findAll { t -> t.jvmArgs.any { it.startsWith('-XX:StartFlightRecording') } }
+            def target = root.tasks.named('legacyNormalPerformance').get()
+            assert instrumented == [target] : "Unexpected JFR JavaExec tasks: ${instrumented*.path}"
+            assert target.jvmArgs.count { it == jfrArg } == 1
+            assert target.jvmArgs.contains('-Xmx512m')
+            assert ManagementFactory.runtimeMXBean.inputArguments.toList() == daemonArgsBefore
+            assert !daemonArgsBefore.any { it.startsWith('-XX:StartFlightRecording') }
+            println "DIAGNOSTIC_NOT_GATE: verified ${target.path}; daemon JVM arguments unchanged"
+        }
+    }
+}

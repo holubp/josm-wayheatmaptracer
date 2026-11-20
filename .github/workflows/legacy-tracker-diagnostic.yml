@@ -1,0 +1,100 @@
+name: Legacy tracker JFR diagnostic (not gate)
+on:
+  push:
+    branches: [codex/g004-ci-freeze-20261120]
+    paths:
+      - scripts/diagnostics/legacy-tracker-jfr.init.gradle
+      - scripts/diagnostics/legacy_tracker_jfr_privacy.py
+      - scripts/diagnostics/test_legacy_tracker_jfr_privacy.py
+      - .github/workflows/legacy-tracker-diagnostic.yml
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout diagnostic tools
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: diagnostic-tools
+          persist-credentials: false
+      - name: Checkout immutable benchmark source
+        uses: actions/checkout@v4
+        with:
+          ref: 88109c006177ee40d461b668844b520b0d289af8
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test privacy tooling
+        working-directory: diagnostic-tools
+        run: python3 -m unittest discover -s scripts/diagnostics -p 'test_legacy_tracker_jfr_privacy.py' -v
+      - name: Record diagnostic identity
+        working-directory: source
+        run: |
+          mkdir -p "$RUNNER_TEMP/legacy-tracker-jfr"
+          {
+            echo 'DIAGNOSTIC_NOT_GATE: JFR overhead makes this unsuitable as a gate result'
+            printf 'source='; git rev-parse HEAD
+            printf 'tools=%s\n' "$GITHUB_SHA"
+            printf 'runner_os=%s runner_arch=%s\n' "$RUNNER_OS" "$RUNNER_ARCH"
+            java -version 2>&1
+          } > "$RUNNER_TEMP/legacy-tracker-jfr/receipt.txt"
+          test "$(git rev-parse HEAD)" = 88109c006177ee40d461b668844b520b0d289af8
+      - name: Prepare pinned JOSM 19555 host
+        working-directory: source
+        run: |
+          python3 scripts/prepare-ci-josm19555.py --output-dir "$RUNNER_TEMP/josm19555-host"
+          test -s "$RUNNER_TEMP/josm19555-host/host-runtime.json"
+          cp "$RUNNER_TEMP/josm19555-host/host-runtime.json" "$RUNNER_TEMP/legacy-tracker-jfr/host-runtime.json"
+          echo "ORG_GRADLE_PROJECT_josm19555HostJar=$RUNNER_TEMP/josm19555-host/JOSM-Linux-java11-19555.jar" >> "$GITHUB_ENV"
+      - name: Run one profiled fork (DIAGNOSTIC_NOT_GATE)
+        working-directory: source
+        env:
+          LEGACY_PERF_JFR: ${{ runner.temp }}/legacy-tracker-jfr-raw/fork-1.jfr
+          LEGACY_PERF_JFR_SETTINGS: ${{ runner.temp }}/legacy-tracker-jfr/safe.jfc
+        run: |
+          mkdir -p "$RUNNER_TEMP/legacy-tracker-jfr-raw"
+          python3 "$GITHUB_WORKSPACE/diagnostic-tools/scripts/diagnostics/legacy_tracker_jfr_privacy.py" generate \
+            "$JAVA_HOME/lib/jfr/profile.jfc" "$LEGACY_PERF_JFR_SETTINGS" \
+            > "$RUNNER_TEMP/legacy-tracker-jfr/config-receipt.txt"
+          sh gradlew legacyNormalPerformance \
+            -PlegacyNormalPerformanceFork=1 \
+            -PlegacyNormalPerformanceOutput="$RUNNER_TEMP/legacy-tracker-jfr/fork-1" \
+            -PlegacyTrackerPerformancePolicy=native-reciprocal-support-paired-chord-v4 \
+            --init-script "$GITHUB_WORKSPACE/diagnostic-tools/scripts/diagnostics/legacy-tracker-jfr.init.gradle" \
+            --console=plain
+      - name: Verify recording privacy
+        id: privacy
+        if: always()
+        env:
+          LEGACY_PERF_JFR: ${{ runner.temp }}/legacy-tracker-jfr-raw/fork-1.jfr
+        run: |
+          echo 'safe_to_upload=false' >> "$GITHUB_OUTPUT"
+          test -s "$LEGACY_PERF_JFR"
+          python3 "$GITHUB_WORKSPACE/diagnostic-tools/scripts/diagnostics/legacy_tracker_jfr_privacy.py" check \
+            "$LEGACY_PERF_JFR" "$RUNNER_TEMP/legacy-tracker-jfr/jfr-summary.txt"
+          echo 'safe_to_upload=true' >> "$GITHUB_OUTPUT"
+      - name: Upload safe diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-tracker-jfr-diagnostic-evidence
+          path: ${{ runner.temp }}/legacy-tracker-jfr/
+          if-no-files-found: warn
+          retention-days: 5
+      - name: Upload privacy-verified recording
+        if: always() && steps.privacy.outputs.safe_to_upload == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-tracker-jfr-diagnostic
+          path: ${{ runner.temp }}/legacy-tracker-jfr-raw/fork-1.jfr
+          if-no-files-found: error
+          retention-days: 5
