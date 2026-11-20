@@ -461,6 +461,17 @@ public final class ManagedModernPreviewSource {
 
     private SourceRasters acquireSources(Request request, AlignmentTileSourcePlan plan,
             CredentialSnapshot credentials, CancellationProbe cancellation) {
+        return acquireSources(request,plan,credentials,cancellation,null);
+    }
+
+    private SourceRasters acquireSources(Request request, AlignmentTileSourcePlan plan,
+            CredentialSnapshot credentials, CancellationProbe cancellation,RefinementSourceBudget budget) {
+        return acquireSources(request,plan,credentials,cancellation,budget,null);
+    }
+
+    private SourceRasters acquireSources(Request request, AlignmentTileSourcePlan plan,
+            CredentialSnapshot credentials, CancellationProbe cancellation,RefinementSourceBudget budget,
+            Map<Integer,ZoomGrid> preparedGrids) {
         if (javax.swing.SwingUtilities.isEventDispatchThread()) {
             throw new IllegalStateException("Managed preview acquisition must execute off the EDT");
         }
@@ -477,7 +488,7 @@ public final class ManagedModernPreviewSource {
         long plannedPixels = 0L;
         boolean preflightOverflow = false;
         for (int zoom : plan.requiredZooms()) {
-            TileBounds bounds = tileBounds(request, zoom);
+            TileBounds bounds = preparedGrids == null ? tileBounds(request, zoom) : preparedGrids.get(zoom).bounds();
             int width = Math.multiplyExact(bounds.width(), TILE_SIZE);
             int height = Math.multiplyExact(bounds.height(), TILE_SIZE);
             long pixels = Math.multiplyExact((long) width, height);
@@ -500,7 +511,7 @@ public final class ManagedModernPreviewSource {
         Map<String, Raster> rasters = new LinkedHashMap<>();
         Map<Integer, ZoomReceipt> receipts = new LinkedHashMap<>();
         PaletteAcquisition selectedAcquisition = acquirePalette(request, inferenceZoom, inferenceGrid,
-                request.palette(), credentials, cancellation, false);
+                request.palette(), credentials, cancellation, false,budget);
         SupportedInputRasterTransform transform = rasterTransform(request, inferenceZoom, inferenceGrid.bounds());
         Raster selected = toRaster(selectedAcquisition.raster(), transform, request,
                 request.palette(), inferenceZoom);
@@ -531,7 +542,7 @@ public final class ManagedModernPreviewSource {
                     cancellation.checkpoint();
                     requireActiveGeneration(request);
                     PaletteAcquisition acquired = acquirePalette(request, inferenceZoom, inferenceGrid,
-                            palette, credentials, cancellation, true);
+                            palette, credentials, cancellation, true,budget);
                     if (acquired.failure() != null || !allValid(acquired.raster().validity())) {
                         availability = AggregateAvailability.PALETTE_UNAVAILABLE;
                         failure = new AggregateFailure(inferenceZoom, palette,
@@ -578,7 +589,7 @@ public final class ManagedModernPreviewSource {
                 continue;
             }
             PaletteVerification verification = verifyZoom(request, zoom, grids.get(zoom),
-                    plan.orderedColors(), credentials, cancellation);
+                    plan.orderedColors(), credentials, cancellation,budget);
             receipts.put(zoom, new ZoomReceipt(zoom, plan.orderedColors(), verification.acquiredPalettes(),
                     verification.failure() == null ? ZoomAvailability.COMPLETE
                             : ZoomAvailability.PALETTE_UNAVAILABLE,
@@ -606,20 +617,276 @@ public final class ManagedModernPreviewSource {
         return new SourceRasters(rasters, plan, availability, failure, proof, receipts);
     }
 
+    /** Existing native palette/direct conversion, before scalar interpolation or filtering. */
+    public static double scalarIntensity(int argb,String mapping,IntensitySamplingMode mode) {
+        int red=argb>>>16&255,green=argb>>>8&255,blue=argb&255,alpha=argb>>>24&255;
+        return mode.usesColorMapping()?RenderedHeatmapSampler.normalizedColorIntensity(red,green,blue,mapping)
+            :RenderedHeatmapSampler.directIntensity(red,green,blue,alpha,mode);
+    }
+
+    /** Factual ground pitch of one decoded native managed source pixel (512px tile). */
+    public static double nativePitchMeters(int zoom,double latitude) {
+        return TileHeatmapSampler.metersPerPixel(zoom,latitude);
+    }
+
+    /** One caller-owned admission envelope for all palettes/zooms in an operation. */
+    public static final class RefinementSourceBudget {
+        private final int maximumTiles;
+        private final long maximumBodyAllowance;
+        private final Instant deadline;
+        private int tiles,attempts,cacheHits;
+        private long bodyAllowance,validatedBytes;
+        private boolean stopped,attemptsKnown=true,networkBytesKnown=true;
+        private long networkBytes;
+        public RefinementSourceBudget(int maximumTiles,long maximumBodyAllowance,Instant deadline) {
+            if(maximumTiles<1||maximumTiles>64||maximumBodyAllowance<1||deadline==null)
+                throw new IllegalArgumentException("Invalid bounded refinement source budget");
+            this.maximumTiles=maximumTiles;this.maximumBodyAllowance=maximumBodyAllowance;this.deadline=deadline;
+        }
+        private void admit(long perTileBodyAllowance) {
+            if(tiles>=maximumTiles||!Instant.now().isBefore(deadline)
+                    ||perTileBodyAllowance>maximumBodyAllowance-bodyAllowance){stopped=true;throw new SourceBudgetRefused();}
+            tiles++;bodyAllowance+=perTileBodyAllowance;
+        }
+        private void record(TileFetchResult result) {
+            boolean cached=result.status()==TileFetchStatus.SUCCESS_MEMORY_CACHE||result.status()==TileFetchStatus.SUCCESS_DISK_CACHE;
+            if(cached)cacheHits++;else attempts=Math.addExact(attempts,result.attemptCount());
+            if(!cached&&!result.usable()&&result.attemptCount()==0)attemptsKnown=false;
+            if(!cached) {
+                if(result.attemptCount()==1&&result.responseBytes()>0)networkBytes=Math.addExact(networkBytes,result.responseBytes());
+                else if(result.attemptCount()>0||!result.usable())networkBytesKnown=false;
+            }
+            if(result.usable())validatedBytes=Math.addExact(validatedBytes,result.responseBytes());
+        }
+        public int tileRequests(){return tiles;}
+        public int actualTransportAttempts(){if(!attemptsKnown)throw new IllegalStateException("Transport attempts unavailable");return attempts;}
+        private RefinementWorkReceipt receipt(){return new RefinementWorkReceipt(tiles,
+            attemptsKnown?java.util.OptionalInt.of(attempts):java.util.OptionalInt.empty(),cacheHits,bodyAllowance,validatedBytes,networkBytesKnown?java.util.OptionalLong.of(networkBytes):java.util.OptionalLong.empty(),deadline,stopped); }
+        public int cacheHits(){return cacheHits;}
+        public long reservedBodyAllowanceBytes(){return bodyAllowance;}
+        public long observedValidatedBytes(){return validatedBytes;}
+        public Instant deadline(){return deadline;}
+    }
+
+    private static final class SourceAccessInvalidated extends IllegalStateException {
+        private final RefinementAbortReason reason;
+        private SourceAccessInvalidated(RefinementAbortReason reason){this.reason=reason;}
+    }
+    private static final class SourceBudgetRefused extends IllegalStateException { }
+
+    /** Immutable operation receipt: validated returned bytes are not total network body bytes. */
+    public record RefinementWorkReceipt(int logicalTileRequests,java.util.OptionalInt observedTransportAttempts,int cacheHits,
+            long conservativeBodyAllowanceBytes,long validatedReturnedBytes,java.util.OptionalLong observedNetworkBodyBytes,Instant deadline,boolean budgetStopped) { }
+    /** Fixed safe acquisition abort metadata, including unattempted sources. */
+    public enum RefinementAbortReason { AUTH_FAILURE, RATE_LIMITED, STALE_GENERATION, CANCELLED, ACQUISITION_FAILED }
+    public record RefinementFailureReceipt(RefinementAbortReason reason,List<String> requested,
+            Map<String,RefinementStatus> outcomes,RefinementWorkReceipt work) {
+        public RefinementFailureReceipt {requested=List.copyOf(requested);outcomes=Map.copyOf(outcomes);}
+    }
+    public static final class RefinementFailed extends IllegalStateException {
+        private final RefinementFailureReceipt receipt;
+        private RefinementFailed(RefinementFailureReceipt receipt){super(receipt.reason().name());this.receipt=receipt;}
+        public RefinementFailureReceipt receipt(){return receipt;}
+    }
+    public static final class RefinementCancelled extends java.util.concurrent.CancellationException {
+        private final RefinementFailureReceipt receipt;
+        private RefinementCancelled(RefinementFailureReceipt receipt){super(receipt.reason().name());this.receipt=receipt;}
+        public RefinementFailureReceipt receipt(){return receipt;}
+    }
+
+    /** Independent refinement outcomes; an unattempted palette never masquerades as unavailable. */
+    public enum RefinementStatus { ACQUIRED, UNAVAILABLE, UNATTEMPTED, ABORTED }
+
+    /** Coordinator-sealed independent native acquisitions, retaining successful siblings on failure. */
+    public static final class RefinementSources {
+        private final TileFetchCoordinator owner;
+        private final Map<String, SourceRasters> sources;
+        private final Map<String, RefinementStatus> outcomes;
+        private final Map<String, byte[]> fingerprints;
+        private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner memory;
+        private final Request request;
+        private final SourceRasters aggregate;
+        private final RefinementWorkReceipt work;
+        private final Map<String,Map<Integer,ZoomReceipt>> receipts;
+        private RefinementSources(TileFetchCoordinator owner,Request request,Map<String,SourceRasters> sources,
+                Map<String,RefinementStatus> outcomes,SourceRasters aggregate,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner memory,
+                RefinementWorkReceipt work,Map<String,Map<Integer,ZoomReceipt>> receipts) {
+            this.work=work;var frozen=new LinkedHashMap<String,Map<Integer,ZoomReceipt>>();
+            receipts.forEach((p,r)->frozen.put(p,Map.copyOf(r)));this.receipts=Collections.unmodifiableMap(frozen);
+            this.owner=owner;this.request=request;this.memory=memory;
+            this.sources=Collections.unmodifiableMap(new LinkedHashMap<>(sources));
+            this.outcomes=Collections.unmodifiableMap(new LinkedHashMap<>(outcomes));this.aggregate=aggregate;
+            var digests=new LinkedHashMap<String,byte[]>();
+            sources.forEach((palette,value)->digests.put(palette,SourceRasters.fingerprint(value.palettes())));
+            fingerprints=Collections.unmodifiableMap(digests);
+        }
+        public Map<String,RefinementStatus> sourceOutcomes(){return outcomes;}
+        public RefinementWorkReceipt workReceipt(){return work;}
+        public Map<String,Map<Integer,ZoomReceipt>> sourceReceipts(){return receipts;}
+        public Set<String> palettes(){return sources.keySet();}
+        public boolean isCurrent(TileFetchCoordinator actualOwner) {
+            return owner==actualOwner&&!memory.isClosed()&&owner.isActiveGeneration(request.generation());
+        }
+        public void requireCurrent(TileFetchCoordinator actualOwner) {
+            if(!isCurrent(actualOwner))throw new IllegalStateException("Refinement source owner or generation is stale");
+            for(var entry:sources.entrySet())if(!MessageDigest.isEqual(fingerprints.get(entry.getKey()),
+                    SourceRasters.fingerprint(entry.getValue().palettes())))
+                throw new IllegalStateException("Refinement source pixels changed after acquisition");
+        }
+        public Raster raster(String palette,TileFetchCoordinator actualOwner) {
+            requireCurrent(actualOwner);var value=sources.get(palette);
+            if(value==null)throw new IllegalArgumentException("Refinement palette unavailable");
+            return value.selectedRaster();
+        }
+        public boolean completeAggregate(){return aggregate!=null&&isCurrent(owner)&&aggregate.provenCompleteAggregate(owner);}
+        public double[] aggregateScalars(CancellationProbe cancellation) {
+            requireCurrent(owner);
+            if(!completeAggregate())throw new IllegalStateException("Complete refinement aggregate unavailable");
+            return aggregate.completeAggregateScalars(cancellation);
+        }
+    }
+
+    /**
+     * Purpose-specific independent palette acquisition. Ordinary alignment acquisition stays strict
+     * and unchanged. The supplied parent request is used for every palette and required zoom.
+     * The caller owns this result until its worker/result consumers have settled.
+     */
+    public org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted<RefinementSources>
+            acquireRefinementSources(Request request,Set<Integer> zooms,boolean aggregateRequested,
+            CredentialSnapshot credentials,CancellationProbe cancellation,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner caller) {
+        return acquireRefinementSources(request,zooms,aggregateRequested,credentials,cancellation,caller,
+            new RefinementSourceBudget(64,Math.multiplyExact(64L,coordinator.maximumTransportBodyAllowancePerTile()),Instant.now().plusSeconds(30)));
+    }
+
+    /** Same operation budget is used for every actual tile request and frozen zoom. */
+    public org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted<RefinementSources>
+            acquireRefinementSources(Request request,Set<Integer> zooms,boolean aggregateRequested,
+            CredentialSnapshot credentials,CancellationProbe cancellation,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner caller,
+            RefinementSourceBudget budget) {
+        return acquireRefinementSources(request,zooms,aggregateRequested,credentials,cancellation,caller,budget,null);
+    }
+
+    /** Acquires the exact original-frame image footprint without changing the decision radius. */
+    public org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted<RefinementSources>
+            acquireRefinementSources(Request request,Set<Integer> zooms,boolean aggregateRequested,
+            CredentialSnapshot credentials,CancellationProbe cancellation,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner caller,
+            RefinementSourceBudget budget,MetricRasterGrid imageGrid) {
+        if(javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Refinement acquisition requires worker thread");
+        Objects.requireNonNull(caller);Objects.requireNonNull(cancellation);Objects.requireNonNull(credentials);Objects.requireNonNull(budget);
+        zooms=Set.copyOf(zooms);
+        if(zooms.isEmpty()||!zooms.contains(request.zoom())||zooms.stream().anyMatch(z->z<10||z>request.zoom()))
+            throw new IllegalArgumentException("Refinement zoom policy differs from frozen inference");
+        var orderedZooms=new LinkedHashSet<Integer>();orderedZooms.add(request.zoom());
+        zooms.stream().sorted(java.util.Comparator.reverseOrder()).forEach(orderedZooms::add);
+        zooms=Collections.unmodifiableSet(orderedZooms);
+        var memory=caller.child("refinement-source-acquisition");
+        var outcomes=new LinkedHashMap<String,RefinementStatus>();
+        request.requiredPalettes().forEach(p->outcomes.put(p,RefinementStatus.UNATTEMPTED));
+        var sourceReceipts=new LinkedHashMap<String,Map<Integer,ZoomReceipt>>();
+        String activePalette=null;int requestsAtPaletteStart=budget.tileRequests();
+        RefinementAbortReason abortReason=RefinementAbortReason.ACQUISITION_FAILED;
+        try {
+            cancellation.checkpoint();requireActiveGeneration(request);
+            // Bound temporary coordinate lists, corridor polygons and grid planning before copying.
+            var geometry=memory.reserve(Math.addExact(262144L,Math.multiplyExact(1024L,request.source().size())));
+            geometry.adopt(new Object());
+            if(imageGrid!=null) {
+                var frame=imageGrid.coordinateFrame();
+                imageGrid.footprint().polygons().forEach(poly->poly.forEach(frame::toGeographic));
+                var metricSource=request.source().stream().map(frame::toMetric).toList();
+                if(!imageGrid.footprint().containsRegion(MetricCorridorRegion.aroundPolyline(metricSource,request.searchRadiusMeters())))
+                    throw new IllegalArgumentException("Refinement image extent does not cover its unchanged decision corridor");
+            }
+            long pixels=0;
+            var preparedGrids=new LinkedHashMap<Integer,ZoomGrid>();
+            for(int zoom:zooms){
+                var bounds=imageGrid==null?tileBounds(request,zoom):tileBounds(imageGrid,zoom);
+                int width=Math.multiplyExact(bounds.width(),TILE_SIZE),height=Math.multiplyExact(bounds.height(),TILE_SIZE);
+                long framePixels=Math.multiplyExact((long)width,height);
+                preparedGrids.put(zoom,new ZoomGrid(bounds,width,height,framePixels));
+                pixels=Math.addExact(pixels,framePixels);
+            }
+            pixels=Math.multiplyExact(pixels,request.requiredPalettes().size());
+            if(pixels>MAX_INPUT_PIXELS)throw new IllegalArgumentException("Refinement capture exceeds source input-pixel cap");
+            // Retained ARGB/support plus defensive masks, digest rows and one acquisition/copy workspace.
+            // This is additional caller-owned memory; coordinator cache/body limits remain independent.
+            var reservation=memory.reserve(Math.addExact(262144L,Math.multiplyExact(pixels,32L)));
+            var acquired=new LinkedHashMap<String,SourceRasters>();
+            for(String palette:request.requiredPalettes()) {
+                cancellation.checkpoint();requireActiveGeneration(request);
+                var single=new Request(request.source(),request.activity(),palette,request.zoom(),request.generation(),
+                    request.searchRadiusMeters(),request.sampleStepMeters(),request.sourceIdentity());
+                var plan=new AlignmentTileSourcePlan(palette,Set.of(palette),Set.of(),zooms,false);
+                SourceRasters result;
+                int requestsBefore=budget.tileRequests();activePalette=palette;requestsAtPaletteStart=requestsBefore;
+                try {result=acquireSources(single,plan,credentials,cancellation,budget,preparedGrids);}
+                catch(SourceBudgetRefused refused) {
+                    if(budget.tileRequests()>requestsBefore)outcomes.put(palette,RefinementStatus.UNAVAILABLE);
+                    break;
+                }
+                sourceReceipts.put(palette,result.zoomReceipts());
+                outcomes.put(palette,result.allRequiredZoomsWereAvailableAtAcquisition()?RefinementStatus.ACQUIRED:RefinementStatus.UNAVAILABLE);
+                if(result.allRequiredZoomsWereAvailableAtAcquisition())acquired.put(palette,result);
+                if(result.zoomReceipts().values().stream().anyMatch(r->r.failureStatus()==TileFetchStatus.AUTH_FAILURE
+                        ||r.failureStatus()==TileFetchStatus.RATE_LIMITED))
+                    {abortReason=result.zoomReceipts().values().stream().anyMatch(r->r.failureStatus()==TileFetchStatus.AUTH_FAILURE)?
+                        RefinementAbortReason.AUTH_FAILURE:RefinementAbortReason.RATE_LIMITED;
+                    throw new IllegalStateException("Refinement source access invalidated");}
+                activePalette=null;
+            }
+            SourceRasters aggregate=null;
+            if(aggregateRequested&&acquired.size()==BASE_PALETTES.size()) {
+                var optional=new LinkedHashSet<>(request.requiredPalettes());optional.remove(request.palette());
+                var aggregatePlan=new AlignmentTileSourcePlan(request.palette(),Set.of(request.palette()),optional,zooms,true);
+                var rasters=new LinkedHashMap<String,Raster>();
+                aggregatePlan.orderedColors().forEach(p->rasters.put(p,acquired.get(p).selectedRaster()));
+                var receipts=new LinkedHashMap<Integer,ZoomReceipt>();
+                for(int zoom:zooms){byte[] digest=emptyDigest();for(String p:aggregatePlan.orderedColors())
+                    digest=combineDigests(digest,java.util.HexFormat.of().parseHex(acquired.get(p).zoomReceipts().get(zoom).contentSupportDigest()));
+                    receipts.put(zoom,new ZoomReceipt(zoom,aggregatePlan.orderedColors(),rasters.keySet(),ZoomAvailability.COMPLETE,
+                        null,null,request.generation(),request.sourceIdentity(),digest));}
+                var proof=new AcquisitionProof(coordinator,rasters,aggregatePlan,receipts);
+                aggregate=new SourceRasters(rasters,aggregatePlan,AggregateAvailability.COMPLETE,null,proof,receipts);
+            }
+            cancellation.checkpoint();requireActiveGeneration(request);
+            var result=new RefinementSources(coordinator,request,acquired,outcomes,aggregate,memory,budget.receipt(),sourceReceipts);
+            reservation.adopt(result);
+            return new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted<>(result,memory);
+        } catch(RuntimeException|Error failure){
+            if(activePalette!=null&&budget.tileRequests()>requestsAtPaletteStart
+                    &&outcomes.get(activePalette)==RefinementStatus.UNATTEMPTED)outcomes.put(activePalette,RefinementStatus.ABORTED);
+            if(failure instanceof SourceAccessInvalidated invalidated) {
+                abortReason=invalidated.reason;
+                if(activePalette!=null)outcomes.put(activePalette,RefinementStatus.UNAVAILABLE);
+            }
+            memory.close();
+            if(failure instanceof java.util.concurrent.CancellationException)
+                throw new RefinementCancelled(new RefinementFailureReceipt(RefinementAbortReason.CANCELLED,request.requiredPalettes(),outcomes,budget.receipt()));
+            if(failure instanceof IllegalStateException)
+                throw new RefinementFailed(new RefinementFailureReceipt(!coordinator.isActiveGeneration(request.generation())?
+                    RefinementAbortReason.STALE_GENERATION:abortReason,request.requiredPalettes(),outcomes,budget.receipt()));
+            throw failure;
+        }
+    }
+
     private record ZoomGrid(TileBounds bounds, int width, int height, long pixels) { }
     private record PaletteFailure(String palette, TileFetchStatus status) { }
     private record PaletteVerification(Set<String> acquiredPalettes, PaletteFailure failure, byte[] digest) { }
     private record TileVerification(byte[] digest, TileFetchStatus failure) { }
 
     private PaletteVerification verifyZoom(Request request, int zoom, ZoomGrid grid, List<String> palettes,
-            CredentialSnapshot credentials, CancellationProbe cancellation) {
+            CredentialSnapshot credentials, CancellationProbe cancellation,RefinementSourceBudget budget) {
         LinkedHashSet<String> acquired = new LinkedHashSet<>();
         byte[] digest = emptyDigest();
         for (String palette : palettes) {
             cancellation.checkpoint();
             requireActiveGeneration(request);
             TileVerification paletteVerification = verifyPaletteTiles(request, zoom, grid.bounds(), palette, credentials,
-                    cancellation, !palette.equals(request.palette()));
+                    cancellation, !palette.equals(request.palette()),budget);
             if (paletteVerification.failure() != null) {
                 return new PaletteVerification(acquired,
                         new PaletteFailure(palette, paletteVerification.failure()), digest);
@@ -631,14 +898,14 @@ public final class ManagedModernPreviewSource {
     }
 
     private TileVerification verifyPaletteTiles(Request request, int zoom, TileBounds bounds, String palette,
-            CredentialSnapshot credentials, CancellationProbe cancellation, boolean optional) {
+            CredentialSnapshot credentials, CancellationProbe cancellation, boolean optional,RefinementSourceBudget budget) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             for (int x = bounds.minimumX(); x <= bounds.maximumX(); x++) {
                 for (int y = bounds.minimumY(); y <= bounds.maximumY(); y++) {
                     cancellation.checkpoint();
                     TileFetchResult result = fetchTile(request, zoom, palette, x, y,
-                            credentials, cancellation, optional);
+                            credentials, cancellation, optional,budget);
                     if (!result.usable()) {
                         return new TileVerification(null, result.status());
                     }
@@ -694,7 +961,7 @@ public final class ManagedModernPreviewSource {
 
     private PaletteAcquisition acquirePalette(Request request, int zoom, ZoomGrid grid,
             String palette, CredentialSnapshot credentials, CancellationProbe cancellation,
-            boolean requiredForAggregate) {
+            boolean requiredForAggregate,RefinementSourceBudget budget) {
         TileBounds bounds = grid.bounds();
         int width = grid.width();
         int height = grid.height();
@@ -707,7 +974,7 @@ public final class ManagedModernPreviewSource {
                 for (int y = bounds.minimumY(); y <= bounds.maximumY(); y++) {
                     cancellation.checkpoint();
                     TileFetchResult result = fetchTile(request, zoom, palette, x, y,
-                            credentials, cancellation, requiredForAggregate);
+                            credentials, cancellation, requiredForAggregate,budget);
                     if (requiredForAggregate && !result.usable()) {
                         return new PaletteAcquisition(null, result.status());
                     }
@@ -730,17 +997,24 @@ public final class ManagedModernPreviewSource {
     }
 
     private TileFetchResult fetchTile(Request request, int zoom, String palette, int x, int y,
-            CredentialSnapshot credentials, CancellationProbe cancellation, boolean optional) {
+            CredentialSnapshot credentials, CancellationProbe cancellation, boolean optional,RefinementSourceBudget budget) {
         cancellation.checkpoint();
+        if(budget!=null)budget.admit(coordinator.maximumTransportBodyAllowancePerTile());
         CancellationToken requestCancellation = new CancellationToken();
         TileRequest tile = new TileRequest(new ManagedTileAddress(request.activity(), palette, zoom, x, y),
                 request.generation(), optional ? TilePurpose.ALIGNMENT_OPTIONAL_AGGREGATE
                         : TilePurpose.ALIGNMENT_REQUIRED,
-                TileCachePolicy.USE_CACHE, Instant.now().plusSeconds(30), requestCancellation);
+                TileCachePolicy.USE_CACHE, budget==null?Instant.now().plusSeconds(30):budget.deadline(), requestCancellation);
         TileFetchResult result;
         try (CancellationProbe.Registration ignored =
                 cancellation.onCancellation(requestCancellation::cancel)) {
             result = coordinator.fetch(tile, credentials).toCompletableFuture().join();
+        }
+        if(budget!=null) {
+            budget.record(result);
+            if(result.status()==TileFetchStatus.AUTH_FAILURE||result.status()==TileFetchStatus.RATE_LIMITED)
+                throw new SourceAccessInvalidated(result.status()==TileFetchStatus.AUTH_FAILURE?
+                    RefinementAbortReason.AUTH_FAILURE:RefinementAbortReason.RATE_LIMITED);
         }
         cancellation.checkpoint();
         if (result.status() == TileFetchStatus.STALE_GENERATION) {
@@ -763,6 +1037,10 @@ public final class ManagedModernPreviewSource {
     private static TileBounds tileBounds(Request request, int zoom) {
         MetricRasterGrid grid = managedOutputGrid(request.source(), zoom,
                 request.searchRadiusMeters());
+        return tileBounds(grid,zoom);
+    }
+
+    private static TileBounds tileBounds(MetricRasterGrid grid, int zoom) {
         SupportedInputRasterTransform world = SupportedInputRasterTransform.webMercator(
                 zoom, 0.0, 0.0, 2.0);
         SupportedInputRasterTransform.RasterBounds support = world.boundsForMetricCell(
