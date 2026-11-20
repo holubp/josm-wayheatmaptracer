@@ -100,6 +100,76 @@ class RefinementSessionTest {
         });
     }
 
+    @Test void redoRestoresCachedStagesAndPreservesTheirOriginalParentChoice() throws Exception {
+        edt(() -> {
+            var session = session(AlignmentMode.PRECISE_SHAPE);
+            session.select(new CandidateId("purple"));
+            Stage root = session.current();
+            var first = session.begin(TrackerMode.CORRIDOR_AWARE);
+            Stage child = child(first, "purple-A");
+            assertTrue(publishReserved(session, first, child));
+            session.select(new CandidateId("purple-A"));
+            var second = session.begin(TrackerMode.PROBABILISTIC);
+            Stage grandchild = child(second, "purple-B");
+            assertTrue(publishReserved(session, second, grandchild));
+            session.confirmCurrent();
+
+            assertEquals(child, session.back().orElseThrow());
+            assertFalse(session.confirmed());
+            assertEquals(root, session.back().orElseThrow());
+            assertTrue(session.back().isEmpty());
+            session.select(new CandidateId("blue"));
+            assertEquals(child, session.redo().orElseThrow());
+            assertFalse(session.confirmed());
+            assertEquals(grandchild, session.redo().orElseThrow());
+            assertEquals("purple-A", session.current().parentChoice().orElseThrow().value(),
+                "Cached child lineage describes the selection from which it was actually computed");
+            assertTrue(session.redo().isEmpty());
+        });
+    }
+
+    @Test void successfulReplacementDropsRedoBranchButCancelAndFailureKeepIt() throws Exception {
+        edt(() -> {
+            var session = session(AlignmentMode.PRECISE_SHAPE);
+            var first = session.begin(TrackerMode.CORRIDOR_AWARE);
+            assertTrue(publishReserved(session, first, child(first, "first")));
+            session.select(new CandidateId("first"));
+            var second = session.begin(TrackerMode.CORRIDOR_AWARE);
+            assertTrue(publishReserved(session, second, child(second, "second")));
+            assertEquals("first", session.back().orElseThrow().selected().value());
+
+            var cancelled = session.begin(TrackerMode.PROBABILISTIC);
+            session.cancel(cancelled);
+            assertEquals("second", session.redo().orElseThrow().selected().value());
+            session.back();
+            var failed = session.begin(TrackerMode.PROBABILISTIC);
+            session.fail(failed, Outcome.FAILED);
+            assertEquals("second", session.redo().orElseThrow().selected().value());
+            session.back();
+
+            var replacement = session.begin(TrackerMode.PROBABILISTIC);
+            assertTrue(publishReserved(session, replacement, child(replacement, "replacement")));
+            assertTrue(session.redo().isEmpty());
+            assertEquals("replacement", session.current().selected().value());
+        });
+    }
+
+    @Test void redoIsUnavailableWhileRunningAndAfterTerminalState() throws Exception {
+        edt(() -> {
+            var session = session(AlignmentMode.PRECISE_SHAPE);
+            var ticket = session.begin(TrackerMode.CORRIDOR_AWARE);
+            assertTrue(publishReserved(session, ticket, child(ticket, "child")));
+            session.back();
+            var running = session.begin(TrackerMode.PROBABILISTIC);
+            assertThrows(IllegalStateException.class, session::redo);
+            session.cancel(running);
+            assertTrue(session.redo().isPresent());
+            session.back();
+            session.close();
+            assertThrows(IllegalStateException.class, session::redo);
+        });
+    }
+
     @Test void controlledQueueRejectsCancelledRestartedAndClosedPublications() throws Exception {
         edt(() -> {
             var session = session(AlignmentMode.MOVE_EXISTING_NODES);

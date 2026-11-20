@@ -132,6 +132,13 @@ public final class RefinementSession implements AutoCloseable {
         confirmed = false;
         return Optional.of(current());
     }
+    public Optional<Stage> redo() {
+        requireIdle();
+        if (cursor + 1 >= history.size()) return Optional.empty();
+        cursor++;
+        confirmed = false;
+        return Optional.of(current());
+    }
     public OperationTicket begin(TrackerMode engine) {
         requireIdle();
         if (engine != TrackerMode.CORRIDOR_AWARE && engine != TrackerMode.PROBABILISTIC)
