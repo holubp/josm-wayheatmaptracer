@@ -15,7 +15,7 @@ public final class RefinementSession implements AutoCloseable {
     private final SessionId id = new SessionId(UUID.randomUUID());
     private final AlignmentConfig config;
     private final String sourceIdentity;
-    private final Object authority;
+    private final RefinementRootAuthority authority;
     private final RefinementLimits limits;
     private final List<Stage> history = new ArrayList<>();
     private int cursor;
@@ -91,12 +91,22 @@ public final class RefinementSession implements AutoCloseable {
     }
 
     /** The caller retains its ordinary Legacy flow if bounded payload capture refuses the root. */
-    public RefinementSession(Stage root, AlignmentConfig config, String sourceIdentity, Object authority,
+    @Deprecated
+    public RefinementSession(Stage root,AlignmentConfig config,String sourceIdentity,Object authority,RefinementLimits limits) {
+        this(root,config,sourceIdentity,requireRootAuthority(authority),limits);
+    }
+    private static RefinementRootAuthority requireRootAuthority(Object authority) {
+        if(!(authority instanceof RefinementRootAuthority root))throw new IllegalArgumentException("Factual detached root authority required");
+        return root;
+    }
+    public RefinementSession(Stage root,AlignmentConfig config,String sourceIdentity,RefinementRootAuthority authority,
             RefinementLimits limits) {
         requireEdt();
+        if(!config.equals(authority.effectiveConfig())||!sourceIdentity.equals(authority.sourceIdentity()))
+            throw new IllegalArgumentException("Session config/source differs from its factual root authority");
         if (root.parent().isPresent()) throw new IllegalArgumentException("A session requires its original root");
-        this.config = Objects.requireNonNull(config);
-        this.sourceIdentity = Objects.requireNonNull(sourceIdentity);
+        this.config = authority.effectiveConfig();
+        this.sourceIdentity = authority.sourceIdentity();
         this.authority = Objects.requireNonNull(authority);
         this.limits = Objects.requireNonNull(limits);
         RefusalReason refusal = retentionRefusal(List.of(root));
@@ -105,8 +115,8 @@ public final class RefinementSession implements AutoCloseable {
     }
     public AlignmentConfig rootConfig() { requireEdt(); return config; }
     public String sourceIdentity() { requireEdt(); return sourceIdentity; }
-    /** Existing authority handle, retained solely by identity; this model does not refresh authority. */
-    public Object authority() { requireEdt(); return authority; }
+    /** Factual detached root; live dataset/source revalidation remains a consumer obligation. */
+    public RefinementRootAuthority authority() { requireEdt(); return authority; }
     public Stage current() { requireEdt(); return history.get(cursor); }
     public List<Stage> history() { requireEdt(); return List.copyOf(history); }
     public void select(CandidateId id) {
@@ -222,20 +232,26 @@ public final class RefinementSession implements AutoCloseable {
         inputPins.values().forEach(retained::addAll);
         return retainedBytes(retained);
     }
-    private static long retainedBytes(List<Stage> stages) {
+    private long retainedBytes(List<Stage> stages) {
         IdentityHashMap<Object, Long> charges = new IdentityHashMap<>();
-        long bytes = 0;
+        Map<Object,Long> rootCharges=authority.charges();
+        long bytes = authority.retainedBytes();
         for (Stage stage : stages) {
             if (charges.put(stage, 0L) != null) continue;
             bytes = RefinementPayload.add(bytes, 256L + 8L * stage.candidates().size());
             for (Candidate candidate : stage.candidates()) {
                 if (charges.put(candidate, 0L) == null) {
-                    bytes = RefinementPayload.add(bytes, 128L + 32L * candidate.correspondence().size()
-                        + 2L * candidate.immutableIdentity().length() + 2L * candidate.id().value().length());
+                    bytes = RefinementPayload.add(bytes, 384L + 32L * candidate.correspondence().size()
+                        + 2L * candidate.immutableIdentity().length() + 2L * candidate.id().value().length()
+                        + 2L * candidate.nativeCandidateId().length() + 2L * candidate.sourcePalette().length());
                 }
-                for (Map.Entry<Object, Long> entry : candidate.payload().charges().entrySet())
-                    if (charges.put(entry.getKey(), entry.getValue()) == null)
-                        bytes = RefinementPayload.add(bytes, entry.getValue());
+                for (Map.Entry<Object, Long> entry : candidate.payload().charges().entrySet()) {
+                    Long previous=charges.get(entry.getKey());
+                    if(previous==null)previous=rootCharges.get(entry.getKey());
+                    long prior=previous==null?0:previous;
+                    if(entry.getValue()>prior)bytes=RefinementPayload.add(bytes,entry.getValue()-prior);
+                    charges.put(entry.getKey(),Math.max(prior,entry.getValue()));
+                }
             }
         }
         return bytes;

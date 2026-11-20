@@ -15,6 +15,39 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.Refine
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler.*;
 
 class RefinementHistoryOwnershipTest {
+    @Test void rootAuthorityBuffersCannotEscapeTheHistoryCap() throws Exception {
+        edt(() -> {
+            var authority=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);
+            var field=authority.evidence().fields().get("native");
+            long minimum=9L*field.width()*field.height()+(long)(field.width()-1)*(field.height()-1);
+            assertEquals(RefusalReason.PAYLOAD_LIMIT,assertThrows(RefinementSession.Refused.class,()->
+                new RefinementSession(root(),authority.effectiveConfig(),authority.sourceIdentity(),authority,
+                    new RefinementLimits(8,32,minimum-1))).reason());
+        });
+    }
+
+    @Test void rootAuthorityAndAliasedScalarBuffersAreChargedOnceByIdentity() throws Exception {
+        edt(() -> {
+            var authority=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);
+            var e=authority.evidence();var field=e.fields().get("native");
+            long minimum=9L*field.width()*field.height()+(long)(field.width()-1)*(field.height()-1);
+            assertTrue(authority.retainedBytes()>=minimum,"Detached scalar arrays belong to retained root authority");
+            var evidence=new EvidenceSnapshot("aliased-root",e.coordinateFrame(),e.transform(),e.resolution(),e.decisionRegion(),e.evidenceRegion(),Map.of("native",field,"alias",field),e.resampling(),e.sourceIdentity());
+            var r=authority.request();var request=new TraceRequest(r.selectedWayKey(),r.selectedRange(),r.engine(),r.geometryMode(),r.permissions(),r.budgets(),evidence.snapshotId(),evidence.canonicalHash(),r.networkSnapshotId(),r.networkContentHash(),r.settingsHash(),r.parameterHash(),r.samplerId(),r.configuredSampleStepMeters(),r.profileChainage(),r.evidenceResolution());
+            var aliased=new RefinementRootAuthority(authority.network(),request,evidence,authority.effectiveConfig(),authority.projectionCode(),authority.sourceIdentity());
+            assertTrue(aliased.retainedBytes()<authority.retainedBytes()+minimum/2,"A second field name must not duplicate one scalar allocation");
+            var payload=RefinementPayload.capture(result(new BufferedImage(64,64,BufferedImage.TYPE_INT_ARGB)),1_000_000);
+            var one=new Candidate(new CandidateId("one"),payload,List.of(),"one");var two=new Candidate(new CandidateId("two"),payload,List.of(),"two");
+            var session=new RefinementSession(Stage.root(List.of(one,two),one.id()),aliased.effectiveConfig(),aliased.sourceIdentity(),aliased,
+                new RefinementLimits(8,32,aliased.retainedBytes()+payload.retainedBytes()+4096));
+            assertTrue(session.retainedBytes()>=aliased.retainedBytes()+payload.retainedBytes());
+            assertTrue(session.retainedBytes()<aliased.retainedBytes()+2*payload.retainedBytes(),"Shared raster remains charged once alongside detached scalar data");
+            long before=session.retainedBytes();var ticket=session.begin(TrackerMode.CORRIDOR_AWARE);
+            assertTrue(publishReserved(session,ticket,Stage.child(ticket,List.of(one,two),one.id())));
+            assertTrue(session.retainedBytes()-before<4096,"An additional stage cannot charge root authority again");
+        });
+    }
+
     @Test void cancelledWorkersKeepDiscardedForwardInputChargedUntilBothSettle() throws Exception {
         edt(() -> assertUnsettledInputPins(false));
     }
@@ -28,8 +61,9 @@ class RefinementHistoryOwnershipTest {
             RefinementLimits.defaults().maxPayloadBytes());
         var first = new Candidate(new CandidateId("large-blue"), large, List.of(), "large-blue");
         var second = new Candidate(new CandidateId("large-purple"), large, List.of(), "large-purple");
-        long cap = large.retainedBytes() + 128_000;
-        var session = new RefinementSession(root(), config(AlignmentMode.PRECISE_SHAPE), "s", new Object(),
+        var authority=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);
+        long cap = authority.retainedBytes()+large.retainedBytes() + 128_000;
+        var session = new RefinementSession(root(), authority.effectiveConfig(), authority.sourceIdentity(), authority,
             new RefinementLimits(8,32,cap));
         var initial = smoothing ? session.beginSmoothing("Medium") : session.begin(TrackerMode.CORRIDOR_AWARE);
         Stage largeStage = Stage.child(initial, List.of(first,second), first.id());
@@ -185,10 +219,11 @@ class RefinementHistoryOwnershipTest {
             var first = new Candidate(new CandidateId("one"), payload, List.of(), "one");
             var second = new Candidate(new CandidateId("two"), payload, List.of(), "two");
             Stage root = Stage.root(List.of(first, second), first.id());
-            var session = new RefinementSession(root, config(AlignmentMode.PRECISE_SHAPE), "s", new Object(),
-                new RefinementLimits(8, 2, payload.retainedBytes() + 4096));
+            var authority=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);
+            var session = new RefinementSession(root, authority.effectiveConfig(), authority.sourceIdentity(), authority,
+                new RefinementLimits(8, 2, authority.retainedBytes()+payload.retainedBytes() + 4096));
             long retained = session.retainedBytes();
-            assertTrue(retained < 2 * payload.retainedBytes(), "The real shared raster must fit only once");
+            assertTrue(retained-authority.retainedBytes() < 2 * payload.retainedBytes(), "The real shared raster must fit only once alongside detached root data");
             var ticket = session.begin(TrackerMode.CORRIDOR_AWARE);
             assertFalse(publishReserved(session, ticket, Stage.child(ticket,
                 List.of(candidate("a"), candidate("b"), candidate("c")), new CandidateId("a"))));
@@ -211,7 +246,7 @@ class RefinementHistoryOwnershipTest {
         edt(() -> {
             var root = root();
             assertEquals(RefusalReason.PAYLOAD_LIMIT, assertThrows(RefinementSession.Refused.class,
-                () -> new RefinementSession(root, config(AlignmentMode.PRECISE_SHAPE), "s", new Object(),
+                () -> new RefinementSession(root, config(AlignmentMode.PRECISE_SHAPE), "synthetic-source", RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE),
                     new RefinementLimits(8, 32, 1))).reason());
             assertEquals("blue", root.selected().value());
             assertEquals(List.of(new org.openstreetmap.josm.data.coor.EastNorth(1,2),

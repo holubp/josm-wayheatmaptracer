@@ -16,7 +16,7 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 class RefinementSessionTest {
     static AlignmentConfig config(AlignmentMode mode) {
         Config.setPreferencesInstance(new MemoryPreferences());
-        return AlignmentConfig.withoutCleanup(PluginPreferences.load().withAlignmentMode(mode));
+        return AlignmentConfig.withoutCleanup(PluginPreferences.load().withAlignmentMode(mode).withTrackerMode(TrackerMode.LEGACY_V02));
     }
     static Candidate candidate(String id) {
         return new Candidate(new CandidateId(id), result(null), List.of(), id);
@@ -35,7 +35,7 @@ class RefinementSessionTest {
         return session.publish(ticket, stage);
     }
     static RefinementSession session(AlignmentMode mode) {
-        return new RefinementSession(root(), config(mode), "source-1", new Object(), RefinementLimits.defaults());
+        return new RefinementSession(root(), config(mode), "synthetic-source", RefinementParentFixtures.authority(mode), RefinementLimits.defaults());
     }
     static void edt(Runnable action) throws Exception {
         AtomicReference<Throwable> thrown = new AtomicReference<>();
@@ -43,6 +43,16 @@ class RefinementSessionTest {
         if (thrown.get() instanceof AssertionError ex) throw ex;
         if (thrown.get() instanceof RuntimeException ex) throw ex;
         if (thrown.get() != null) throw new AssertionError(thrown.get());
+    }
+
+    @Test void typedAuthorityRejectsOpaqueHandlesAndContradictoryMode() throws Exception {
+        edt(() -> {
+            assertThrows(IllegalArgumentException.class,()->new RefinementSession(root(),config(AlignmentMode.PRECISE_SHAPE),
+                "synthetic-source",new Object(),RefinementLimits.defaults()));
+            var authority=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);
+            assertThrows(IllegalArgumentException.class,()->new RefinementSession(root(),config(AlignmentMode.MOVE_EXISTING_NODES),
+                authority.sourceIdentity(),authority,RefinementLimits.defaults()));
+        });
     }
 
     @Test void rootAndRepeatedRefinementsPreserveBothFrozenModes() throws Exception {
@@ -137,7 +147,7 @@ class RefinementSessionTest {
             var invalid = new Stage(new StageId(UUID.randomUUID()), Optional.empty(), Optional.empty(),
                 StageKind.ROOT_LEGACY, TrackerMode.PROBABILISTIC, List.of(candidate("old")),
                 new CandidateId("old"), Optional.empty());
-            var session = new RefinementSession(invalid, config(AlignmentMode.PRECISE_SHAPE), "old", new Object(),
+            var session = new RefinementSession(invalid, config(AlignmentMode.PRECISE_SHAPE), "synthetic-source", RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE),
                 RefinementLimits.defaults());
             var refusal = assertThrows(RefinementSession.Refused.class,
                 () -> session.begin(TrackerMode.CORRIDOR_AWARE));

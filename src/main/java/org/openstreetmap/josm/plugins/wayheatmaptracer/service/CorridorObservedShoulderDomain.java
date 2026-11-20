@@ -69,6 +69,10 @@ public final class CorridorObservedShoulderDomain {
     /** Examines bound direct observations once and retains existing double values in their original order. */
     public static Plan restrict(CorridorCenterlineOptimizer.OriginalDomain d, Map<String,CorridorTrack> tracksById,
             Optional<SparseCorridorBundle> bundle, CancellationProbe cancellation, Consumer<Work> spent) {
+        return restrict(d,tracksById,bundle,cancellation,spent,null);
+    }
+    public static Plan restrict(CorridorCenterlineOptimizer.OriginalDomain d, Map<String,CorridorTrack> tracksById,
+            Optional<SparseCorridorBundle> bundle, CancellationProbe cancellation, Consumer<Work> spent,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner memoryOwner) {
         Objects.requireNonNull(d); Objects.requireNonNull(tracksById); Objects.requireNonNull(bundle);
         Objects.requireNonNull(cancellation); Objects.requireNonNull(spent);
         if(d.gapPlan().isPresent()) throw new IllegalArgumentException("Observed restriction must precede gap preparation");
@@ -89,6 +93,7 @@ public final class CorridorObservedShoulderDomain {
             bytes=Math.addExact(Math.multiplyExact(points,96L),Math.multiplyExact(d.states().size(),320L));
             if(Math.addExact(bytes,CorridorGapDomain.estimateMetricBytes(d.states().size(),points,pairs))>CACHE_LIMIT)
                 throw limit("Combined observed-domain and metric storage cap");
+            if(memoryOwner!=null)memoryOwner.reserve(Math.addExact(65536L,Math.multiplyExact(2L,Math.addExact(bytes,CorridorGapDomain.estimateMetricBytes(d.states().size(),points,pairs)))));
             var states=new ArrayList<List<Double>>(d.states().size());
             var profiles=d.frozenProfiles();
             for(int row=0;row<profiles.size();row++) {

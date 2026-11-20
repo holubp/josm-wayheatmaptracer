@@ -20,6 +20,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBModels.Reference;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBReferenceFactory;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.ImageOrientationDescriptor;
@@ -107,7 +108,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
     public Accounted<TraceEngineRun> traceWithUsage(TraceRequest request, EvidenceSnapshot evidence,
             NetworkSnapshot network, CancellationProbe cancellation,
             AttemptMemoryLedger.Owner attemptOwner) {
-        return traceAccounted(request, evidence, network, null, cancellation, attemptOwner);
+        return traceAccounted(request, evidence, network, null, null, cancellation, attemptOwner);
     }
 
     /** Runs unchanged B inference around a factual Legacy reference, with original OSM authority. */
@@ -126,13 +127,33 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
     public Accounted<TraceEngineRun> traceRefinedWithUsage(Reference reference, NetworkSnapshot network,
             CancellationProbe cancellation, AttemptMemoryLedger.Owner attemptOwner) {
         if (reference == null) { throw new IllegalArgumentException("A bound reference is required"); }
-        return traceAccounted(reference.request(), reference.evidence(), network, reference,
+        return traceAccounted(reference.request(), reference.evidence(), network, reference, null,
                 cancellation, attemptOwner);
+    }
+
+    /** Same native B inference around an explicitly validated stepwise parent in either geometry mode. */
+    public Accounted<TraceEngineRun> traceRefinedWithUsage(ParentTraceReference parent, TraceRequest request,
+            EvidenceSnapshot evidence, NetworkSnapshot network, CancellationProbe cancellation,
+            AttemptMemoryLedger.Owner attemptOwner) {
+        var scope=java.util.Objects.requireNonNull(attemptOwner).child("stepwise-b-validation");
+        try {
+            var workspace=parent.reserveBindingWorkspace(evidence,scope);
+            var run=traceRefinedWithUsage(parent,request,evidence,network,cancellation,scope,workspace);
+            return new Accounted<>(run.value(),scope);
+        }catch(RuntimeException|Error failure){scope.close();throw failure;}
+    }
+    /** Same actual native B call, borrowing only a typed workspace owned by this operation. */
+    public Accounted<TraceEngineRun> traceRefinedWithUsage(ParentTraceReference parent,TraceRequest request,
+            EvidenceSnapshot evidence,NetworkSnapshot network,CancellationProbe cancellation,
+            AttemptMemoryLedger.Owner attemptOwner,ParentTraceReference.BindingWorkspace workspace) {
+        workspace.requireCapacity(parent,evidence,attemptOwner);
+        parent.requireBinding(request,evidence,network,cancellation);
+        return traceAccounted(request,evidence,network,null,parent,cancellation,attemptOwner);
     }
 
     private Accounted<TraceEngineRun> traceAccounted(TraceRequest request,
             EvidenceSnapshot evidence, NetworkSnapshot network,
-            Reference reference, CancellationProbe cancellation, AttemptMemoryLedger.Owner attemptOwner) {
+            Reference reference, ParentTraceReference parent, CancellationProbe cancellation, AttemptMemoryLedger.Owner attemptOwner) {
         if (attemptOwner == null) {
             throw new IllegalArgumentException("Attempt memory owner is required");
         }
@@ -142,7 +163,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
         EngineWork work = new EngineWork();
         try {
             TraceEngineRun result = traceInternal(request, evidence, network, cancellation,
-                    reference, candidateOwner, workingOwner, work);
+                    reference, parent, candidateOwner, workingOwner, work);
             closeIfOpen(workingOwner, null);
             candidateOwner.transferTo(engineOwner);
             candidateOwner.close();
@@ -244,7 +265,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
 
     private TraceEngineRun traceInternal(TraceRequest request, EvidenceSnapshot evidence,
         NetworkSnapshot network, CancellationProbe cancellation,
-        Reference reference, AttemptMemoryLedger.Owner candidateOwner,
+        Reference reference, ParentTraceReference parent, AttemptMemoryLedger.Owner candidateOwner,
         AttemptMemoryLedger.Owner workingOwner, EngineWork work) {
         long started = System.nanoTime();
         cancellation.checkpoint();
@@ -256,6 +277,9 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
         if (reference != null) {
             new LegacyBReferenceFactory().validateReferenceAuthority(reference, network, cancellation);
         }
+        if (parent != null) parent.requireBinding(request, evidence, network, cancellation);
+        if (request.samplerId().endsWith(ParentTraceReference.SAMPLER_SUFFIX) && parent == null)
+            throw new IllegalArgumentException("A bound stepwise reference is required");
         ScalarEvidenceField field = evidence.fields().get(fieldName);
         if (field == null) {
             workingOwner.close();
@@ -265,11 +289,14 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
             return accountedRun(unavailable, 0, 0, candidateOwner);
         }
         AttemptMemoryLedger.Owner sourceOwner = workingOwner.child("selected-source");
-        List<MetricPoint> source = reference == null ? selectedPolyline(request, evidence, network, sourceOwner)
+        List<MetricPoint> source = parent != null ? ProbabilisticInference.allocated(sourceOwner,
+                    ProbabilisticInference.listBytes(parent.points().size()), "stepwise reference points",
+                    () -> new ArrayList<>(parent.points()))
+                : reference == null ? selectedPolyline(request, evidence, network, sourceOwner)
                 : ProbabilisticInference.allocated(sourceOwner,
                     ProbabilisticInference.listBytes(reference.section().reference().size()),
                     "refinement reference points", () -> new ArrayList<>(reference.section().reference()));
-        boolean fixedEndpoints = reference != null || request.permissions().junctionPolicy() == JunctionPolicy.FIXED;
+        boolean fixedEndpoints = parent != null || reference != null || request.permissions().junctionPolicy() == JunctionPolicy.FIXED;
         long profileSamplingStarted = System.nanoTime();
         List<ProbabilisticProfile> profiles = new ProbabilisticProfileFactory().create(source,
             request.profileChainage(), request.permissions().ordinaryRadiusMeters(), fixedEndpoints,

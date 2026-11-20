@@ -320,7 +320,7 @@ class CorridorObservedShoulderCompositionTest {
     private NativeRun runOwned(CorridorPolicyFixture.Fixture f) throws Exception {
         var adapter = new CorridorEngineAdapter("native");
         var type = Class.forName(CorridorEngineAdapter.class.getName()+"$OwnedInvocation");
-        var ctor = type.getDeclaredConstructors()[0]; ctor.setAccessible(true);
+        var ctor = type.getDeclaredConstructor(CorridorEngineAdapter.class,org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest.class,org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot.class,org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot.class,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.class); ctor.setAccessible(true);
         var owned = ctor.newInstance(adapter,f.request(),f.evidence(),f.network(),CancellationProbe.NONE);
         var execute = type.getDeclaredMethod("execute"); execute.setAccessible(true);
         var run = (TraceEngineRun) execute.invoke(owned);

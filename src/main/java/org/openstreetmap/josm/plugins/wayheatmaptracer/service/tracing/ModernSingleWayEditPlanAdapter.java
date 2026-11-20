@@ -569,10 +569,33 @@ public final class ModernSingleWayEditPlanAdapter {
      * Replays fixed selected-way planning through the ordinary production planner.
      * The frozen request retains the original authority; this boundary never fabricates live capture.
      */
+    public AlignmentEditPlan adaptRefined(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementEngineAdapter.Run computation,
+            EvidenceSnapshot evidence,int routeIndex) {
+        var parent=computation.reference();var request=computation.request();var actual=computation.finalized().orElseThrow(()->new IllegalArgumentException("No assessed refined output"));
+        var execution=computation.execution().orElseThrow(()->new IllegalArgumentException("No actual native execution"));
+        execution.requireBinding(parent,request,evidence,parent.root().network());
+        if(!actual.inference().equals(execution.nativeRun().result()))throw new IllegalArgumentException("Finalized output differs from sealed native execution");
+        parent.requireBinding(request,evidence,parent.root().network(),CancellationProbe.NONE);
+        if(routeIndex<0||routeIndex>=actual.routes().size()||actual.inference().engine()!=request.engine())
+            throw new IllegalArgumentException("Refined route selection differs from actual native result");
+        var route=actual.routes().get(routeIndex);
+        if(!actual.inference().hypotheses().contains(route.rawHypothesis()))throw new IllegalArgumentException("Refined route lost native provenance");
+        for(var entry:route.existingAssignments().entrySet()) {
+            var pinned=parent.frozenAnchors().get(entry.getKey().originalOccurrenceIndex());
+            if(pinned!=null&&!pinned.equals(entry.getValue()))throw new IllegalArgumentException("Refined route moved a pinned parent anchor");
+        }
+        requireConsistentFinalQuality(route);
+        var options=new ModernTracePipeline.Options(execution.fieldName(),GeometryCleanupConfig.disabled(),"native",0);
+        var before=parent.root().network();
+        var selected=requireSupportedBoundary(request,before,options.cleanup(),false,parent);
+        return draftPrepared(request,evidence,before,options,actual,request.permissions().ordinaryRadiusMeters(),route,selected,null).toPlan();
+    }
+
     public AlignmentEditPlan adaptFrozen(TraceRequest request, EvidenceSnapshot evidence,
             NetworkSnapshot before, ModernTracePipeline.Options options,
             ModernTracePipeline.Result actual, int routeIndex, double searchRadiusMeters) {
         if (request == null || evidence == null || before == null || options == null || actual == null
+                || request.samplerId().endsWith(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference.SAMPLER_SUFFIX)
                 || request.permissions().junctionPolicy() != JunctionPolicy.FIXED
                 || request.permissions().reconstructIncidentWays()
                 || routeIndex < 0 || routeIndex >= actual.routes().size()
@@ -1178,6 +1201,12 @@ public final class ModernSingleWayEditPlanAdapter {
     private static DetachedWay requireSupportedBoundary(
             TraceRequest request, NetworkSnapshot before, GeometryCleanupConfig cleanup,
             boolean exactOriginalComposite) {
+        return requireSupportedBoundary(request,before,cleanup,exactOriginalComposite,null);
+    }
+
+    private static DetachedWay requireSupportedBoundary(TraceRequest request,NetworkSnapshot before,
+            GeometryCleanupConfig cleanup,boolean exactOriginalComposite,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference parent) {
         ClosureDescriptor closure = before.closure();
         if (before.role() != SnapshotRole.CAPTURED_BEFORE
                 || request.engine() == TrackerMode.LEGACY_V02
@@ -1200,7 +1229,14 @@ public final class ModernSingleWayEditPlanAdapter {
                 || new HashSet<>(selected.nodeKeys()).size() != selected.nodeKeys().size()) {
             throw new IllegalArgumentException("Selected way occurrence identity is incomplete or repeated");
         }
-        if (!closure.removableExistingNodeKeys().isEmpty()) {
+        if(parent!=null) {
+            if(before!=parent.root().network())throw new IllegalArgumentException("Refined edit authority is not the captured root");
+            for(var key:closure.removableExistingNodeKeys()) {
+                if(!(before.primitives().get(key) instanceof DetachedNode node)||node.deleted()||!node.tags().isEmpty()
+                        ||!before.incomingReferrerWatches().getOrDefault(key,Set.of()).equals(Set.of(request.selectedWayKey())))
+                    throw new IllegalArgumentException("Refined removable occurrence is protected or shared");
+            }
+        } else if (!closure.removableExistingNodeKeys().isEmpty()) {
             PrimitiveKey middle = selected.nodeKeys().get(request.selectedRange().firstIndex() + 1);
             DetachedPrimitive value = before.primitives().get(middle);
             if (request.engine() != TrackerMode.CORRIDOR_AWARE
@@ -1313,6 +1349,8 @@ public final class ModernSingleWayEditPlanAdapter {
                 expectedOccurrence = occurrence + 1;
             } else if (id instanceof GeneratedCandidatePoint generated) {
                 if (!composite && !generated.candidateId().equals(identity)
+                        && !(request.samplerId().endsWith(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference.SAMPLER_SUFFIX)
+                            && generated.candidateId().equals(identity+"/"+request.parameterHash()))
                         || !planned.add(plannedKey(generated))) {
                     throw new IllegalArgumentException(
                         "Generated route identities are inconsistent or duplicated");

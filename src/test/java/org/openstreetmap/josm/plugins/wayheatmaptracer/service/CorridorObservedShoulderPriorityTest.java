@@ -12,7 +12,7 @@ class CorridorObservedShoulderPriorityTest {
     @Test void admittedCorrespondenceIgnoresOtherwiseEligibleUnrelatedObservedPrefix() throws Exception {
         var f=CorridorPolicyFixture.admittedParabolaWithStraightPrefix();
         var type=Class.forName(CorridorEngineAdapter.class.getName()+"$OwnedInvocation");
-        var ctor=type.getDeclaredConstructors()[0]; ctor.setAccessible(true);
+        var ctor=type.getDeclaredConstructor(CorridorEngineAdapter.class,org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest.class,org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot.class,org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot.class,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.class); ctor.setAccessible(true);
         var invocation=ctor.newInstance(new CorridorEngineAdapter("native"),f.request(),f.evidence(),f.network(),CancellationProbe.NONE);
         var execute=type.getDeclaredMethod("execute"); execute.setAccessible(true); execute.invoke(invocation);
         var trackedField=type.getDeclaredField("tracked"); trackedField.setAccessible(true);

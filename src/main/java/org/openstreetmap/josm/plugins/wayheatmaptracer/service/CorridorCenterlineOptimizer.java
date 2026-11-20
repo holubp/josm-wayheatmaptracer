@@ -33,6 +33,13 @@ public final class CorridorCenterlineOptimizer {
     private final CancellationProbe hardGeometryCancellation;
     private HardGeometryWork hardGeometryWork = new HardGeometryWork(HardGeometryOutcome.DISABLED,
         0, 0, 0, 0, 0, 0, 0, 0);
+    private org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner memoryOwner;
+    /** Attaches the actual operation owner to this invocation-local optimizer. */
+    public CorridorCenterlineOptimizer withMemoryOwner(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner) {
+        if(memoryOwner!=null)throw new IllegalStateException("Memory owner already attached");
+        memoryOwner=java.util.Objects.requireNonNull(owner);return this;
+    }
+    private void reserveMemory(long bytes){if(memoryOwner!=null)memoryOwner.reserve(bytes);}
     private final PreparedCounters preparedCounters=new PreparedCounters();
     /** Spent prepared-domain work, independent of historical/default optimizer diagnostics. */
     public PreparedWork preparedWork(){return preparedCounters.snapshot();}
@@ -93,8 +100,9 @@ public final class CorridorCenterlineOptimizer {
      * Preserves FGE-legal raw paths only. Finalization may insert/remove points; this is not live activation. */
     public CorridorCenterlineOptimizer withLocalHardBacktrackGuard(RasterMetricTransform transform,
             CancellationProbe cancellation) {
-        return new CorridorCenterlineOptimizer(parameters, rippleParameters,
-            java.util.Objects.requireNonNull(transform), cancellation);
+        var guarded=new CorridorCenterlineOptimizer(parameters,rippleParameters,java.util.Objects.requireNonNull(transform),cancellation);
+        if(memoryOwner!=null)guarded.withMemoryOwner(memoryOwner);
+        return guarded;
     }
 
     /** Actual work of the last explicitly guarded solve, including rejected/no-route/cancelled work. */
@@ -196,6 +204,13 @@ public final class CorridorCenterlineOptimizer {
         try{
         sourcePixel=validSourcePixel(sourcePixel);
         if(profiles.isEmpty()||profiles.size()!=tube.slices().size())throw new IllegalArgumentException("Original tube alignment differs");
+        if(memoryOwner!=null) {
+            long samples=profiles.stream().mapToLong(p->p.source().intensitySamples().size()).sum(),n=profiles.size(),k=parameters.maxOffsetStates();
+            // Full original state generation plus K² bridge choices with up to N consumed offsets,
+            // profile/approach copies and transient allowed-offset sets. Reserved before any copy.
+            reserveMemory(Math.addExact(65536L,Math.addExact(Math.multiplyExact(samples,256L),
+                Math.multiplyExact(n,Math.addExact(4096L,Math.multiplyExact(Math.multiplyExact(k,k),256L))))));
+        }
         profiles=copyProfiles(profiles);preparedCounters.copied=profiles.size();scales=Map.copyOf(scales);
         if(context!=null)for(var p:profiles)context.requireProfileFrame(p.source().samplingAnchor());
         var approaches=new EndpointApproachBuilder().build(track,profiles,tube,junctions,scales);
@@ -219,7 +234,7 @@ public final class CorridorCenterlineOptimizer {
             throw new IllegalArgumentException("Observed source/optimizer frame binding differs");
         try{
         var plan=CorridorObservedShoulderDomain.restrict(d,tracksById,bundle,hardGeometryCancellation,
-            work->preparedCounters.observed=java.util.Optional.of(work));
+            work->preparedCounters.observed=java.util.Optional.of(work),memoryOwner);
         var b=d.budgets(); long spent=plan.work().admissionUnits();
         // Restriction may finish exactly at the cap, but no zero solver budget can be admitted.
         // Its completed PREPARED receipt remains factual; this optimizer boundary is RESOURCE_LIMIT.
@@ -246,7 +261,7 @@ public final class CorridorCenterlineOptimizer {
             throw new IllegalArgumentException("Gap source/optimizer frame binding differs");
         try{
             var plan=CorridorGapDomain.prepare(d,ordinaryRadiusMeters,hardGeometryCancellation,
-                work->preparedCounters.gap=java.util.Optional.of(work));
+                work->preparedCounters.gap=java.util.Optional.of(work),memoryOwner);
             var b=d.budgets();long spent=plan.work().admissionUnits();
             var remaining=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets(b.maximumStatesPerProfile(),
                 b.maximumPairVisits()-spent,b.maximumTransitions(),b.maximumRawAlternatives(),b.maximumDistinctAlternatives());
@@ -279,6 +294,13 @@ public final class CorridorCenterlineOptimizer {
         }
         if(d.states().size()>1)transitions=Math.addExact(transitions,Math.multiplyExact((long)d.states().get(0).size(),d.states().get(1).size()));
         if(pairs>d.budgets().maximumPairVisits()||transitions>d.budgets().maximumTransitions())throw new CorridorResourceLimitException("Original declared solver work cap", CorridorResourceLimitException.Stage.ORIGINAL_ADMISSION, CorridorResourceLimitException.Reason.DECLARED_WORK_CAP, java.util.Map.of(CorridorResourceLimitException.Metric.DECLARED_PAIRS,pairs, CorridorResourceLimitException.Metric.LIMIT_PAIRS,d.budgets().maximumPairVisits(), CorridorResourceLimitException.Metric.DECLARED_TRANSITIONS,transitions, CorridorResourceLimitException.Metric.LIMIT_TRANSITIONS,d.budgets().maximumTransitions()));
+        if(memoryOwner!=null) {
+            long points=d.states().stream().mapToLong(List::size).sum();
+            // Metric points/edges, offset/unary/adjacent tables, exact pair fronts and their full
+            // predecessor graph, output costs and diagnostic copies. PairState replacement garbage
+            // is unreachable; the retained predecessor graph has at most one node per row/pair.
+            reserveMemory(Math.addExact(65536L,Math.addExact(Math.multiplyExact(Math.addExact(points,pairs),512L),Math.multiplyExact(d.states().size(),8192L))));
+        }
         var cleanup=GeometryCleanupConfig.disabled();
         var ripple=new UnsupportedRippleEvaluator().evaluate(d.track(),d.tube(),d.sourcePixel(),cleanup.rippleScaleMeters(),false);
         var gates=rippleEndpointGates(d.profiles().size(),d.approaches());
@@ -545,6 +567,10 @@ public final class CorridorCenterlineOptimizer {
             preparedCounters.outcome="RESOURCE_LIMIT";throw new CorridorResourceLimitException("Prepared table/work cap", CorridorResourceLimitException.Stage.PREPARED_TABLE, CorridorResourceLimitException.Reason.TABLE_OR_WORK_CAP, java.util.Map.of(CorridorResourceLimitException.Metric.REQUESTED_TABLE_BYTES,reserved, CorridorResourceLimitException.Metric.LIMIT_TABLE_BYTES,128L*1024*1024, CorridorResourceLimitException.Metric.DECLARED_PAIRS,edges, CorridorResourceLimitException.Metric.LIMIT_PAIRS,limits.maximumPairVisits(), CorridorResourceLimitException.Metric.DECLARED_TRANSITIONS,transitions, CorridorResourceLimitException.Metric.LIMIT_TRANSITIONS,limits.maximumTransitions()));
         }
         preparedCounters.bytes=reserved;
+        // All simultaneous native prepared/metric/bridge tables, exact pair predecessor graph,
+        // row diagnostics and geometry/unary copies share the actual operation cap.
+        reserveMemory(Math.addExact(65536L,Math.addExact(Math.multiplyExact(reserved,4L),
+            Math.addExact(Math.multiplyExact(edges,512L),Math.multiplyExact(profiles.size(),8192L)))));
         var cleanup=GeometryCleanupConfig.disabled();
         var ripple=new UnsupportedRippleEvaluator().evaluate(track,tube,sourcePixel,cleanup.rippleScaleMeters(),false);
         var gates=rippleEndpointGates(profiles.size(),approaches);

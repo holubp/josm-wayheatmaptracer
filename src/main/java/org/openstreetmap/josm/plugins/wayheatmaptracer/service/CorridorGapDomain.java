@@ -52,6 +52,10 @@ public final class CorridorGapDomain {
 
     static Plan prepare(CorridorCenterlineOptimizer.OriginalDomain d, double radius, CancellationProbe cancellation,
             Consumer<Work> spent) {
+        return prepare(d,radius,cancellation,spent,null);
+    }
+    static Plan prepare(CorridorCenterlineOptimizer.OriginalDomain d, double radius, CancellationProbe cancellation,
+            Consumer<Work> spent,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner memoryOwner) {
         if (d.context() == null || !(radius > 0) || !Double.isFinite(radius))
             throw new IllegalArgumentException("Frozen gap authority and physical radius required");
         var context = d.context(); var profiles = d.frozenProfiles(); int n = profiles.size();
@@ -82,6 +86,7 @@ public final class CorridorGapDomain {
         combined=Math.addExact(combined,d.observedPlan().map(p->p.work().retainedBytes()).orElse(0L));
         if (combined > CACHE_LIMIT || Math.addExact(Math.addExact(newPoints, checks), pairs) > d.budgets().maximumPairVisits())
             throw limit("Combined gap mask/metric cache or source/solver work cap");
+        if(memoryOwner!=null)memoryOwner.reserve(Math.addExact(65536L,Math.multiplyExact(combined,2L)));
         var rows = new ArrayList<Row>(); var states = new ArrayList<List<Double>>(n);
         long pointChecks = 0, edgeChecks = 0, rejectedPoints = 0, rejectedEdges = 0, additions = 0;
         spent.accept(new Work(0, 0, 0, 0, 0, maskBytes, "PREPARING", rows));

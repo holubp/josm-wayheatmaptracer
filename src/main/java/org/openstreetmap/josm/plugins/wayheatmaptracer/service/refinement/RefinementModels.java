@@ -30,9 +30,13 @@ public final class RefinementModels {
         }
     }
     public record Candidate(CandidateId id, RefinementPayload payload, List<ParentArc> correspondence,
-            String immutableIdentity) {
+            String immutableIdentity,String nativeCandidateId,String sourcePalette) {
+        public Candidate(CandidateId id,RefinementPayload payload,List<ParentArc> correspondence,String immutableIdentity) {
+            this(id,payload,correspondence,immutableIdentity,id.value(),"");
+        }
         public Candidate {
-            Objects.requireNonNull(id); Objects.requireNonNull(payload);
+            Objects.requireNonNull(id); Objects.requireNonNull(payload);Objects.requireNonNull(sourcePalette);
+            if(nativeCandidateId==null||nativeCandidateId.isBlank())throw new IllegalArgumentException("Native candidate identity required");
             if (immutableIdentity == null || immutableIdentity.isBlank()) throw new IllegalArgumentException("Immutable identity required");
             correspondence = List.copyOf(correspondence);
             ParentArc previous = null;

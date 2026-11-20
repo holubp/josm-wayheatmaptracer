@@ -11,6 +11,8 @@ import java.util.Map;
  * Associates elementary corridor bands across profiles while preserving longitudinal identity.
  */
 public final class CorridorTracker {
+    private org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner memoryOwner;
+    void withMemoryOwner(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner){memoryOwner=java.util.Objects.requireNonNull(owner);}
     private static final int MAX_GAP_PROFILES = 16;
     private static final double MAX_GAP_METERS = 20.0;
     private static final double LARGE_PREDICTION_RESIDUAL_SOURCE_PIXELS = 1.5;
@@ -53,6 +55,13 @@ public final class CorridorTracker {
         List<Seed> seeds = collectSeeds(profiles);
         if (seeds.isEmpty()) {
             return List.of();
+        }
+        if(memoryOwner!=null) {
+            long maximumBands=profiles.stream().mapToLong(profile->profile.bands().size()).max().orElse(0);
+            // Both directions, old/new 24-state fronts and their copied full-path maps, plus all
+            // completed seed paths. This bounds reachable allocation, not cumulative garbage.
+            long paths=Math.addExact(seeds.size(),Math.multiplyExact(MAX_STATES_PER_SEED,maximumBands+3));
+            memoryOwner.reserve(Math.addExact(65536L,Math.multiplyExact(Math.multiplyExact(profiles.size(),paths),512L)));
         }
         double sourcePixel = validSourcePixel(sourcePixelSizePx);
         List<CorridorTrack> tracks = new ArrayList<>();

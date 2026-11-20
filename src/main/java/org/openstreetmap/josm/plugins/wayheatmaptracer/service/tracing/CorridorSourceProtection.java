@@ -5,6 +5,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorWorkingSchedule;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec;
 
@@ -67,7 +68,14 @@ public final class CorridorSourceProtection {
      */
     public static Certificate inspect(TraceRequest request,EvidenceSnapshot evidence,NetworkSnapshot network,
             String field,CancellationProbe cancellation){
+        return inspect(request,evidence,network,field,cancellation,null);
+    }
+
+    /** Parent sampling geometry is derived; all original node/permission facts stay captured. */
+    public static Certificate inspect(TraceRequest request,EvidenceSnapshot evidence,NetworkSnapshot network,
+            String field,CancellationProbe cancellation,ParentTraceReference parent){
         Objects.requireNonNull(cancellation,"cancellation");cancellation.checkpoint();
+        if(parent!=null)parent.requireBinding(request,evidence,network,cancellation);
         if(request==null||evidence==null||network==null||field==null||!evidence.fields().containsKey(field)
             ||request.engine()!=TrackerMode.CORRIDOR_AWARE||network.role()!=SnapshotRole.CAPTURED_BEFORE
             ||!request.evidenceSnapshotId().equals(evidence.snapshotId())||!request.evidenceContentHash().equals(evidence.canonicalHash())
@@ -89,7 +97,8 @@ public final class CorridorSourceProtection {
             geographic.add(node.coordinate());metric.add(evidence.coordinateFrame().toMetric(node.coordinate()));
         }
         double[] fractions=ModernTracePipeline.normalizedChainage(metric,"captured selected geometry");
-        var expected=IntervalTraceRequestFactory.corridorForAnchors(request.profileChainage(),metric,geographic,evidence);
+        var expected=parent==null?IntervalTraceRequestFactory.corridorForAnchors(request.profileChainage(),metric,geographic,evidence)
+            :org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput.from(request.profileChainage(),parent.points(),evidence.coordinateFrame(),evidence.transform(),input.lateralStepMeters());
         if(!input.profileLocations().equals(expected.profileLocations()))
             throw new IllegalArgumentException("Original profile/source/frame/chainage binding differs");
         for(var anchor:input.profileLocations()){
@@ -106,21 +115,23 @@ public final class CorridorSourceProtection {
             .append('\n').append(evidence.canonicalHash()).append('\n').append(field).append('\n');
         for(int local=0;local<metric.size();local++){
             cancellation.checkpoint();if(local>0)chainage+=metric.get(local-1).distanceTo(metric.get(local));
+            if(parent!=null)chainage=parent.occurrenceChainage(request.selectedRange().firstIndex()+local);
             int index=request.selectedRange().firstIndex()+local;var key=way.nodeKeys().get(index);
             var node=(DetachedNode)network.primitives().get(key);boolean replacement=disconnections.mayPosition(index);
             boolean additional=input.additionalFixedOccurrences().contains(index);
             boolean ambiguous=ModernTracePipeline.fractionMultiplicity(fractions,fractions[local])>1;
             var permission=permission(network,key,replacement,additional,ambiguous);
+            boolean fixed=parent==null?permission.fixed():parent.frozenAnchors().containsKey(index);
             var fact=new Occurrence(index,key,node.coordinate(),metric.get(local),chainage,
                 request.profileChainage().sourceOriginGroundMeters()+chainage,node.tags(),network.incomingReferrerWatches().get(key),
                 closure.protectedExistingNodeKeys().contains(key),closure.movableExistingNodeKeys().contains(key),
-                closure.removableExistingNodeKeys().contains(key),replacement,additional,ambiguous,permission.fixed());
-            facts.add(fact);if(permission.fixed())protectedChainages.add(chainage);
+                closure.removableExistingNodeKeys().contains(key),replacement,additional,ambiguous,fixed);
+            facts.add(fact);if(fixed)protectedChainages.add(chainage);
             // Canonical network/request identities bind all coordinate/tag/watch/permission facts;
             // ordered derived decisions and factual distances additionally bind the certificate.
             proof.append(index).append(':').append(key).append(':').append(Double.toHexString(chainage))
                 .append(':').append(replacement).append(':').append(additional).append(':').append(ambiguous)
-                .append(':').append(permission.fixed()).append('\n');
+                .append(':').append(fixed).append('\n');
         }
         String identity=hash(proof.toString());
         if(!closure.wayReferrersComplete()||!closure.relationReferrersComplete())

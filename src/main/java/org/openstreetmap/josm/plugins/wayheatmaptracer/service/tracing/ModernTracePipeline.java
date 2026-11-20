@@ -359,6 +359,128 @@ public final class ModernTracePipeline {
         }
     }
 
+    /** Final production reconstruction from one factual native run and its exact parent reference rows. */
+    public record RefinedFinalization(Result result, Map<String,List<Double>> nativePointReferenceChainages,
+            Map<String,List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.ParentArc>> finalCorrespondence) {
+        public RefinedFinalization {
+            nativePointReferenceChainages=Map.copyOf(nativePointReferenceChainages);
+            finalCorrespondence=Map.copyOf(finalCorrespondence);
+        }
+    }
+
+    /** Does not run inference or optional smoothing; the caller retains the actual native work/owner. */
+    public RefinedFinalization finalizeRefined(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference parent,
+            TraceRequest request,EvidenceSnapshot evidence,NetworkSnapshot network,Options options,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementEngineAdapter.NativeExecution execution,CancellationProbe cancellation) {
+        execution.requireBinding(parent,request,evidence,network);
+        TraceEngineRun nativeRun=execution.nativeRun();
+        parent.requireBinding(request,evidence,network,cancellation);
+        if(!options.cleanup().isDisabled() || nativeRun.result().engine()!=request.engine())
+            throw new IllegalArgumentException("Refinement requires explicit cleanup Off and the actual requested engine");
+        nativeRun.corridorReceipt().ifPresent(r->r.requireBinding(request,evidence,network,nativeRun.result()));
+        var field=evidence.fields().get(options.fieldName());
+        if(field==null)throw new IllegalArgumentException("Refinement scalar field unavailable");
+        var image=new ImageCostField(field,evidence.transform(),evidence.decisionRegion(),evidence.resolution().effectivePitchMeters());
+        var routes=new ArrayList<Route>();var rows=new LinkedHashMap<String,List<Double>>();
+        var mappings=new LinkedHashMap<String,List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.ParentArc>>();
+        var way=(DetachedWay)network.primitives().get(request.selectedWayKey());
+        for(var raw:nativeRun.result().hypotheses()) {
+            cancellation.checkpoint();
+            List<Double> nativeChainages=referenceRows(raw,request,nativeRun);
+            rows.put(raw.id(),nativeChainages);
+            var entries=new ArrayList<SeedEntry>();
+            String scope=raw.id()+"/"+request.parameterHash();
+            for(int i=0;i<raw.points().size();i++) {
+                boolean boundary=i==0||i==raw.points().size()-1;
+                int occurrence=i==0?request.selectedRange().firstIndex():request.selectedRange().lastIndex();
+                MetricPoint target=boundary?parent.frozenAnchors().get(occurrence):raw.points().get(i);
+                if(target==null)throw new IllegalArgumentException("Refined boundary lost its exact parent anchor");
+                entries.add(new SeedEntry(nativeChainages.get(i),1,i,new GeneratedCandidatePoint(scope,i),target,
+                    boundary?ObservationOwnership.FIXED_TOPOLOGY_ONLY:raw.support().get(i),false,boundary));
+            }
+            for(int occurrence=request.selectedRange().firstIndex();occurrence<=request.selectedRange().lastIndex();occurrence++) {
+                var key=way.nodeKeys().get(occurrence);
+                // Removable Precise occurrences retain lineage, but never gain movement authority by being reused.
+                if(request.geometryMode()==AlignmentMode.PRECISE_SHAPE&&network.closure().removableExistingNodeKeys().contains(key))continue;
+                double s=parent.occurrenceChainage(occurrence);
+                MetricPoint target=parent.frozenAnchors().get(occurrence);
+                boolean fixed=target!=null;
+                if(!fixed)target=pointAtReference(raw.points(),nativeChainages,s);
+                var id=new ExistingWayNodeOccurrence(request.selectedWayKey(),key,occurrence);
+                int nativeIndex=exactReferenceRow(nativeChainages,s);
+                var support=fixed?ObservationOwnership.FIXED_TOPOLOGY_ONLY:nativeIndex>=0?raw.support().get(nativeIndex):ObservationOwnership.INFERRED_GAP;
+                entries.add(new SeedEntry(s,0,occurrence,id,target,support,true,fixed));
+            }
+            entries.sort(Comparator.comparingDouble(SeedEntry::fraction).thenComparingInt(SeedEntry::priority).thenComparingInt(SeedEntry::ordinal));
+            var retainedRows=entries.stream().filter(e->e.id() instanceof ExistingWayNodeOccurrence).map(SeedEntry::fraction).toList();
+            var dense=entries.stream().filter(e->!(e.id() instanceof GeneratedCandidatePoint)||exactReferenceRow(retainedRows,e.fraction())<0).toList();
+            List<SeedEntry> finalEntries=request.geometryMode()==AlignmentMode.MOVE_EXISTING_NODES
+                ?dense.stream().filter(e->e.id() instanceof ExistingWayNodeOccurrence).toList():dense;
+            var ids=finalEntries.stream().map(SeedEntry::id).toList();var points=finalEntries.stream().map(SeedEntry::point).toList();
+            var assignments=new LinkedHashMap<FinalRoutePointId,MetricPoint>();var ownership=new LinkedHashMap<FinalRoutePointId,ObservationOwnership>();
+            var protectedPoints=new LinkedHashMap<Integer,MetricPoint>();
+            for(int i=0;i<finalEntries.size();i++){var entry=finalEntries.get(i);assignments.put(entry.id(),entry.point());ownership.put(entry.id(),entry.sourceOwnership());if(entry.protectedCoordinate())protectedPoints.put(i,entry.point());}
+            var quality=evaluate(raw.id(),points,ids,protectedPoints,image,evidence.resolution().effectivePitchMeters(),nativeRun.result(),cancellation);
+            double loss=request.geometryMode()==AlignmentMode.MOVE_EXISTING_NODES?maximumDistanceToPolyline(raw.points(),points):0;
+            boolean outside=false;
+            for(int i=1;i<points.size();i++)outside|=!network.closure().editRegion().containsSegment(points.get(i-1),points.get(i));
+            if(loss>evidence.resolution().effectivePitchMeters()+1e-9||outside) {
+                var findings=new ArrayList<>(quality.findings());
+                findings.add(new FinalGeometryEvaluator.Finding(outside?FinalGeometryEvaluator.FindingCode.PROTECTED_ASSIGNMENT_MISMATCH:
+                    FinalGeometryEvaluator.FindingCode.PRECISE_SHAPE_REQUIRED,FinalGeometryEvaluator.Severity.HARD_BLOCK,0,points.size()-1,loss));
+                quality=new FinalGeometryEvaluator.Result(quality.id(),FinalGeometryEvaluator.Disposition.HARD_BLOCKED,findings,
+                    quality.totalLengthMeters(),quality.directlySupportedLengthMeters(),quality.worstUnsupportedSpanMeters(),quality.meanImageCenterCost(),quality.bendPreservingRoughness());
+            }
+            var diagnostics=new LinkedHashMap<>(raw.diagnostics());diagnostics.put("stepwiseParentReference",1.);diagnostics.put("rootEditEnvelopeViolation",outside?1.:0.);
+            var finalHypothesis=new TraceHypothesis(raw.id(),raw.branchSignature(),points,freshSupport(points,protectedPoints.keySet(),image),raw.objective(),raw.posteriorProbability(),diagnostics);
+            routes.add(new Route(raw,finalHypothesis,ids,assignments,ownership,quality,ImageSupportedLocalCleanup.Status.UNCHANGED,!points.equals(raw.points())));
+            var arcs=new ArrayList<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.ParentArc>();
+            var outputRows=finalEntries.stream().map(SeedEntry::fraction).toList();
+            for(int occurrence=request.selectedRange().firstIndex();occurrence<=request.selectedRange().lastIndex();occurrence++) {
+                double s=parent.occurrenceChainage(occurrence);int edge=referenceEdge(outputRows,s);
+                double f=(s-outputRows.get(edge))/(outputRows.get(edge+1)-outputRows.get(edge));
+                if(s==outputRows.get(outputRows.size()-1)){edge=outputRows.size()-2;f=1;}
+                arcs.add(new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.ParentArc(occurrence,edge,f));
+            }
+            mappings.put(raw.id(),List.copyOf(arcs));
+        }
+        return new RefinedFinalization(new Result(nativeRun.result(),rankRoutes(routes,request.engine(),options)),rows,mappings);
+    }
+
+    /** Native row correspondence is factual: prepared A schedules are never replaced by output arc length. */
+    public static List<Double> referenceRows(TraceHypothesis raw,TraceRequest request,TraceEngineRun run) {
+        var source=request.profileChainage().cumulativeGroundMeters();var rows=new ArrayList<Double>();
+        if(request.engine()==TrackerMode.CORRIDOR_AWARE) {
+            var receipt=run.corridorReceipt().orElseThrow(()->new IllegalArgumentException("Refined A requires its actual execution receipt"));
+            var provenance=receipt.candidates().get(raw.id());
+            if(provenance!=null) {
+                var mapping=provenance.mapping();
+                if(mapping.originalCount()!=source.size()||mapping.workingCount()!=raw.points().size())throw new IllegalArgumentException("Native A reference row counts differ");
+                for(int i=0;i<raw.points().size();i++)rows.add(source.get(mapping.originalRow(i)));
+            } else {
+                var track=receipt.tracks().get(raw.branchSignature());
+                boolean unscheduled=track!=null && track.mapping().isEmpty()
+                    && Double.valueOf(0).equals(raw.diagnostics().get("preparedCorrespondence"));
+                if(!unscheduled||raw.points().size()!=source.size())throw new IllegalArgumentException("Unscheduled native A row ownership unavailable");
+                rows.addAll(source);
+            }
+        } else {
+            if(raw.points().size()!=source.size())throw new IllegalArgumentException("Native B reference rows unavailable");
+            rows.addAll(source);
+        }
+        for(int i=1;i<rows.size();i++)if(!(rows.get(i)>rows.get(i-1)))throw new IllegalArgumentException("Native reference rows are ambiguous");
+        return List.copyOf(rows);
+    }
+    private static int exactReferenceRow(List<Double> rows,double s){for(int i=0;i<rows.size();i++)if(Math.abs(rows.get(i)-s)<=1e-8)return i;return -1;}
+    private static int referenceEdge(List<Double> rows,double s){int edge=0;while(edge<rows.size()-2&&rows.get(edge+1)<=s)edge++;return edge;}
+    private static MetricPoint pointAtReference(List<MetricPoint> points,List<Double> rows,double s){
+        int exact=exactReferenceRow(rows,s);if(exact>=0)return points.get(exact);
+        int edge=referenceEdge(rows,s);double f=(s-rows.get(edge))/(rows.get(edge+1)-rows.get(edge));
+        if(f<0||f>1)throw new IllegalArgumentException("Occurrence outside actual native reference rows");
+        return org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference.interpolate(points.get(edge),points.get(edge+1),f);
+    }
+
     private static boolean longScaleEnabled(TraceRequest request, Options options) {
         return request.engine()==TrackerMode.CORRIDOR_AWARE && request.geometryMode()==AlignmentMode.PRECISE_SHAPE
                 && options.cleanup().mode()==GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE;

@@ -13,14 +13,22 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.Refine
 /** Explicitly shared immutable payload ownership; no process-global snapshot cache. */
 public final class RefinementPayload {
     public record SourceNode(long id, double latitude, double longitude) { }
+    /** Original full-way source and selection, frozen before any command or mutable-handle change. */
+    public record SourceSelection(long wayId,int firstOccurrence,int lastOccurrence,List<SourceNode> fullWayNodes,
+            List<Long> selectedNodeIds) {
+        public SourceSelection {fullWayNodes=List.copyOf(fullWayNodes);selectedNodeIds=List.copyOf(selectedNodeIds);}
+    }
     private final AlignmentResult result;
+    private final Optional<SourceSelection> sourceSelection;
     private final List<SourceNode> sourceNodes;
     private final IdentityHashMap<Object, Long> charges;
-    private RefinementPayload(AlignmentResult result, List<SourceNode> nodes) {
+    private RefinementPayload(AlignmentResult result, List<SourceNode> nodes, Optional<SourceSelection> selection) {
+        sourceSelection=selection;
         this.result = result;
         sourceNodes = List.copyOf(nodes);
         charges = measure(result);
-        charges.put(this, 96L + 48L * nodes.size());
+        charges.put(this,96L);
+        charges.put(selection.<Object>map(value->value).orElse(sourceNodes),sourceCharge(nodes.size(),selection.map(v->v.selectedNodeIds().size()).orElse(0)));
     }
     /**
      * Checks a conservative, overflow-safe bound before copying any raster, point, map or node list.
@@ -39,16 +47,44 @@ public final class RefinementPayload {
                     coordinate == null ? Double.NaN : coordinate.lon()));
             }
         }
-        return new RefinementPayload(copy(result), nodes);
+        Optional<SourceSelection> provenance=Optional.empty();
+        if(result.selection()!=null) {
+            var selection=result.selection();
+            provenance=Optional.of(new SourceSelection(selection.way().getUniqueId(),selection.startIndex(),selection.endIndex(),
+                nodes,selection.segmentNodes().stream().map(Node::getUniqueId).toList()));
+        }
+        return new RefinementPayload(copy(result), nodes,provenance);
     }
     /** Conservative byte estimate for obtaining an EDT reservation before a worker snapshots history. */
     public static long estimateBytes(AlignmentResult result) {
         Objects.requireNonNull(result);
         int nodeCount = result.selection() == null ? 0 : result.selection().way().getNodesCount();
-        return add(sum(measure(result)), 96L + 48L * nodeCount);
+        return add(add(sum(measure(result)),96L), sourceCharge(nodeCount,result.selection()==null?0:result.selection().segmentNodes().size()));
     }
+    private static long sourceCharge(int count,int selected){return 512L+80L*count+32L*selected;}
+    /**
+     * Carries the already validated original source through descendant/interval reconstruction.
+     * The descendant's mutable selection handles cannot replace that frozen original provenance.
+     */
+    public static RefinementPayload captureDescendant(AlignmentResult result,RefinementPayload parent,long maximumBytes) {
+        Objects.requireNonNull(result);Objects.requireNonNull(parent);
+        if(maximumBytes<1)throw new IllegalArgumentException("Positive payload bound required");
+        long estimate=add(add(sum(measure(result)),96L),sourceCharge(parent.sourceNodes.size(),parent.sourceSelection.map(v->v.selectedNodeIds().size()).orElse(0)));
+        if(estimate>maximumBytes)throw new RefinementSession.Refused(RefusalReason.PAYLOAD_LIMIT);
+        return new RefinementPayload(copy(result),parent.sourceNodes,parent.sourceSelection);
+    }
+    public Optional<SourceSelection> sourceSelection(){return sourceSelection;}
     /** Returns a detached mutable-raster/point view; mutation cannot change retained history. */
     public AlignmentResult result() { return copy(result); }
+    /** Immutable binder view: excludes rasters, mutable screen points and live primitive handles. */
+    public record NativeGeometry(String id,List<org.openstreetmap.josm.data.coor.EastNorth> finalPreviewPoints,
+            Map<Long,org.openstreetmap.josm.data.coor.EastNorth> proposedNodePositions) {
+        public NativeGeometry {finalPreviewPoints=List.copyOf(finalPreviewPoints);proposedNodePositions=Map.copyOf(proposedNodePositions);}
+    }
+    public List<NativeGeometry> nativeGeometry() {
+        return result.candidates().stream().map(c->new NativeGeometry(c.id(),c.finalPreviewPoints(),c.proposedNodePositions())).toList();
+    }
+    public List<DetectorAttempt> detectorAttempts(){return result.detectorAttempts();}
     public long retainedBytes() { return sum(charges); }
     /** Frozen original full-way coordinate/occurrence values, independent of the retained live handles. */
     public List<SourceNode> sourceNodes() { return sourceNodes; }

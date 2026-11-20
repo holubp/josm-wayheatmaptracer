@@ -98,6 +98,13 @@ public final class DetachedScalarProfileSampler {
     public RadiusThreeSampling sampleRadiusThree(EvidenceSnapshot evidence, String fieldName,
             List<DetachedProfileSamplingLocation> anchors, double searchHalfWidthMeters,
             double lateralStepMeters, CancellationProbe cancellation, double sourceOriginGroundMeters) {
+        return sampleRadiusThree(evidence,fieldName,anchors,searchHalfWidthMeters,lateralStepMeters,cancellation,sourceOriginGroundMeters,null);
+    }
+
+    /** Caller-owned allocation allowance, held through result settlement; old overloads retain their behavior. */
+    public RadiusThreeSampling sampleRadiusThree(EvidenceSnapshot evidence,String fieldName,
+            List<DetachedProfileSamplingLocation> anchors,double searchHalfWidthMeters,double lateralStepMeters,
+            CancellationProbe cancellation,double sourceOriginGroundMeters,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner memoryOwner) {
         validateInputs(evidence, fieldName, anchors, searchHalfWidthMeters, lateralStepMeters,
             cancellation, sourceOriginGroundMeters);
         cancellation.checkpoint();
@@ -112,6 +119,8 @@ public final class DetachedScalarProfileSampler {
             anchors.size(), width, step);
         if (estimate > maximumEstimatedBytes)
             throw new IllegalArgumentException("Radius-three temporary profile materialization exceeds its component budget");
+        if(memoryOwner!=null)memoryOwner.reserve(estimate);
+        cancellation.checkpoint();
         long started = System.nanoTime();
         var contexts = radiusThreeContexts(anchors, cancellation);
         long construction = System.nanoTime() - started;

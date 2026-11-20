@@ -17,6 +17,13 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
  * Orchestrates extraction, longitudinal association, grouping, and stable corridor optimization.
  */
 public final class CorridorAwareTracker {
+    private org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner memoryOwner;
+    /** Invocation-local optional allocation owner; no change to historical unowned tracking. */
+    public CorridorAwareTracker withMemoryOwner(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner) {
+        if(memoryOwner!=null)throw new IllegalStateException("Memory owner already attached");
+        memoryOwner=java.util.Objects.requireNonNull(owner);tracker.withMemoryOwner(owner);return this;
+    }
+    private void reserveMemory(long bytes){if(memoryOwner!=null)memoryOwner.reserve(bytes);}
     private final CorridorExtractor extractor = new CorridorExtractor();
     private final CorridorTracker tracker = new CorridorTracker();
     private final CorridorGrouping grouping = new CorridorGrouping();
@@ -452,6 +459,12 @@ public final class CorridorAwareTracker {
             validatePhysicalProfileSequence(level.profiles());
         }
         validateAlignedPhysicalSequences(profileSet);
+        if(memoryOwner!=null) {
+            long rows=0,samples=0;
+            for(var level:profileSet.levels())for(var profile:level.profiles()){rows++;samples=Math.addExact(samples,profile.intensitySamples().size());}
+            // Extracted bands, scale association tables, native/B3/B5 statistics and temporary lists.
+            reserveMemory(Math.addExact(65536L,Math.addExact(Math.multiplyExact(samples,2048L),Math.multiplyExact(rows,8192L))));
+        }
         long extractionStart = System.nanoTime();
         List<List<CorridorProfile>> extractedLevels = profileSet.levels().stream()
             .map(level -> extractor.extract(level.profiles(), sourcePixelSizePx)).toList();
@@ -514,6 +527,13 @@ public final class CorridorAwareTracker {
         if(preparedCorrespondence!=null){preparations.clear();preparedOptimizations.clear();preparationWork.clear();correspondenceDiscoveredTracks=java.util.OptionalInt.empty();}
         long trackingStart = System.nanoTime();
         List<CorridorTrack> elementary = tracker.track(corridorProfiles, sourcePixelSizePx, scaleEvidence);
+        if(memoryOwner!=null) {
+            long count=elementary.size(),rows=corridorProfiles.size();
+            // All pair receipts, at most one compatible group per seed, per-group row contributors,
+            // tubes, candidate/diagnostic maps and transient pair-comparison lists coexist.
+            long perRow=Math.addExact(8192L,Math.addExact(Math.multiplyExact(512L,Math.multiplyExact(count,count)),Math.multiplyExact(2048L,count)));
+            reserveMemory(Math.addExact(65536L,Math.multiplyExact(rows,perRow)));
+        }
         CorridorGrouping.GroupingResult grouped = grouping.group(elementary, corridorProfiles, sourcePixelSizePx);
         if(preparedCorrespondence!=null)correspondenceDiscoveredTracks=java.util.OptionalInt.of(grouped.tracks().size());
         if (budgets != null) {
@@ -600,6 +620,8 @@ public final class CorridorAwareTracker {
                 }catch(java.util.concurrent.CancellationException cancelled){
                     if(cancelled instanceof CorridorWorkingSchedule.PreparationCancelledException partial)preparations.put(track.id(),partial.spent());
                     optimizer.preparationFailed("CANCELLED");throw cancelled;
+                }catch(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.ResourceLimitException limited){
+                    optimizer.preparationFailed("RESOURCE_LIMIT");throw limited;
                 }catch(CorridorResourceLimitException|CorridorCenterlineOptimizer.HardGeometryResourceLimitException limited){
                     optimizer.preparationFailed("RESOURCE_LIMIT");throw limited;
                 }catch(IllegalArgumentException corrupt){
