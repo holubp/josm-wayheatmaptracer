@@ -8,6 +8,88 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.Refine
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 
 class RefinementAttemptDiagnosticsTest {
+    @Test void oneByteShortPublicationAdmissionKeepsActualAssessedReceiptAndInputs() {
+        withAssessedPublication((parent,ticket,result,evidence,payload,original,progress,input,publication)->{
+            long allowance=1024*1024, pinned=input.currentBytes();
+            try(var competitor=input.child("competing-live-input")) {
+                competitor.reserve(AttemptMemoryLedger.MAX_BYTES-pinned-allowance+1);
+                var failure=assertThrows(AttemptMemoryLedger.ResourceLimitException.class,()->LegacyRefinementWorkflow.materialize(
+                    ticket,parent,result,evidence,payload,original,allowance,CancellationProbe.NONE,progress,publication));
+                assertEquals(allowance,failure.requestedBytes());assertEquals(AttemptMemoryLedger.MAX_BYTES-allowance+1,failure.currentBytes());
+                assertEquals(RefinementAttemptDiagnostics.Phase.MATERIALIZATION,progress.phase);
+                assertEquals(result.outcome(),progress.pipelineOutcome);assertEquals(0,progress.materializationRefusals);
+                assertEquals(0,reserved(publication),"Denied capacity must not allocate or retain a child");
+                var diagnostic=progress.snapshot(RefinementAttemptDiagnostics.Publication.FAILED,RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT);
+                assertEquals(result.outcome(),diagnostic.pipeline().orElseThrow().outcome());
+                assertTrue(diagnostic.pipeline().orElseThrow().attempts().stream().anyMatch(a->a.nativeCalls().orElse(0)>0));
+            }
+            assertEquals(pinned,input.currentBytes(),"Admission refusal cannot release actual source/native/result pins");
+        });
+    }
+    @Test void sameFullPublicationBoundPrecedesCopyAndRemainsPinnedOnCancelOrException() {
+        withAssessedPublication((parent,ticket,result,evidence,payload,original,progress,input,publication)->{
+            long allowance=1024*1024,pinned=input.currentBytes();
+            for(boolean cancel:List.of(true,false)) {
+                var output=publication.child("copy-attempt");var entered=new java.util.concurrent.atomic.AtomicBoolean();
+                CancellationProbe probe=()->{
+                    if(reserved(output)==0)return false; // the pre-admission cancellation checkpoint
+                    assertEquals(allowance,reserved(output),"Full capacity must precede the first edit-plan/copy allocation");
+                    assertEquals(pinned+allowance,input.currentBytes());entered.set(true);
+                    if(!cancel)throw new IllegalStateException("synthetic materialization failure");return true;
+                };
+                if(cancel)assertThrows(java.util.concurrent.CancellationException.class,()->LegacyRefinementWorkflow.materialize(ticket,parent,result,evidence,payload,original,allowance,probe,progress,output));
+                else assertThrows(IllegalStateException.class,()->LegacyRefinementWorkflow.materialize(ticket,parent,result,evidence,payload,original,allowance,probe,progress,output));
+                assertTrue(entered.get());assertEquals(allowance,reserved(output),"A failure cannot settle a still-owned physical result early");
+                output.close();assertEquals(pinned,input.currentBytes());
+            }
+        });
+    }
+    @Test void emptyNativeResourceResultSkipsFutureStageAdmissionAndKeepsPipelinePhase() {
+        withAssessedPublication((parent,ticket,result,evidence,payload,original,progress,input,publication)->{
+            var empty=new RefinementPipeline.Result(Outcome.RESOURCE_LIMIT,List.of(),result.attempts(),result.actualWork(),true,List.of(),result.actualSourceWork(),result.sourceOutcomes());
+            progress.pipelineOutcome=empty.outcome();progress.receipt=Optional.of(RefinementOperationReceipt.capture(ticket,parent,empty));
+            try(var competitor=input.child("all-remaining-capacity")) {
+                competitor.reserve(AttemptMemoryLedger.MAX_BYTES-input.currentBytes());
+                var computed=LegacyRefinementWorkflow.materialize(ticket,parent,empty,evidence,payload,original,1024*1024,CancellationProbe.NONE,progress,publication);
+                assertTrue(computed.stage().isEmpty());assertTrue(computed.publicationAllowance().isEmpty());assertEquals(0,reserved(publication));
+                assertEquals(RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT,computed.cause());assertEquals(RefinementAttemptDiagnostics.Phase.PIPELINE,progress.phase);
+                assertEquals(Outcome.RESOURCE_LIMIT,progress.receipt.orElseThrow().outcome());
+            }
+        });
+    }
+    @Test void retainedAssessedCandidatesStillRequireFullAdmissionWhenPipelineIsResourceLimited() {
+        withAssessedPublication((parent,ticket,result,evidence,payload,original,progress,input,publication)->{
+            var partial=new RefinementPipeline.Result(Outcome.RESOURCE_LIMIT,result.candidates(),result.attempts(),result.actualWork(),true,result.rejected(),result.actualSourceWork(),result.sourceOutcomes());
+            long allowance=1024*1024,pinned=input.currentBytes();
+            var computed=LegacyRefinementWorkflow.materialize(ticket,parent,partial,evidence,payload,original,allowance,CancellationProbe.NONE,progress,publication);
+            assertEquals(allowance,computed.publicationAllowance().orElseThrow().bytes());
+            assertEquals(pinned+allowance,input.currentBytes());assertEquals(RefinementAttemptDiagnostics.Phase.MATERIALIZATION,progress.phase);
+        });
+    }
+    private interface PublicationCase {
+        void run(ParentTraceReference parent,OperationTicket ticket,RefinementPipeline.Result result,
+            Map<RefinementSourcePlanner.SourceRequest,EvidenceSnapshot> evidence,RefinementPayload payload,AlignmentResult original,
+            LegacyRefinementWorkflow.AttemptProgress progress,AttemptMemoryLedger.Owner input,AttemptMemoryLedger.Owner publication);
+    }
+    private static long reserved(AttemptMemoryLedger.Owner owner) {
+        return ((Set<?>)get(owner,"reservations")).stream().map(AttemptMemoryLedger.Reservation.class::cast).mapToLong(AttemptMemoryLedger.Reservation::bytes).sum();
+    }
+    private static void withAssessedPublication(PublicationCase check) {
+        var parent=ParentBackedComposerTest.copyParent();var root=parent.root();var ticket=RefinementPipelineTest.ticket(parent,TrackerMode.PROBABILISTIC);
+        var ledger=AttemptMemoryLedger.production();
+        try(var input=ledger.rootOwner();var slot=RefinementAttemptDiagnostics.Slot.open(input,64L*1024*1024).orElseThrow();var publication=input.child("future-publication")) {
+            var result=new RefinementPipeline().run(ticket,parent,RefinementPipelineTest.plan(ticket,parent,false),
+                new RefinementPipeline.Adapters(RefinementPipelineTest.sources(parent),RefinementPipeline.productionRunner(),input),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
+            assertFalse(result.candidates().isEmpty(),"Admission tests require actual production assessed native output");
+            var binding=new RefinementAttemptDiagnostics.Binding(ticket,parent.parentStage(),root.sourceIdentity(),root.network().canonicalHash(),root.request().parameterHash(),root.frozenGeometryIdentity(),parent.canonicalIdentity());
+            var progress=new LegacyRefinementWorkflow.AttemptProgress(binding,slot);progress.receipt=slot.receipt(binding,parent,result);progress.pipelineOutcome=result.outcome();progress.phase=RefinementAttemptDiagnostics.Phase.PIPELINE;
+            assertTrue(progress.receipt.isPresent());var evidence=new HashMap<RefinementSourcePlanner.SourceRequest,EvidenceSnapshot>();
+            for(var candidate:result.candidates())for(var source:candidate.sources())evidence.put(source,root.evidence());
+            var original=new AlignmentResult(null,null,List.of(),List.of(),List.of(),List.of(),null,null,List.of(),List.of());
+            check.run(parent,ticket,result,evidence,RefinementPayload.capture(original,1024*1024),original,progress,input,publication);
+        }
+        assertEquals(0,ledger.currentBytes(),"Physical owner settlement must release every reservation and lease");
+    }
     @Test void actualCopyCompositionPlanRefusalKeepsItsPipelineReceipt() {
         var parent=ParentBackedComposerTest.copyParent();var root=parent.root();var ticket=RefinementPipelineTest.ticket(parent,TrackerMode.PROBABILISTIC);
         try(var owner=AttemptMemoryLedger.production().rootOwner();var slot=RefinementAttemptDiagnostics.Slot.open(owner,64L*1024*1024).orElseThrow()) {

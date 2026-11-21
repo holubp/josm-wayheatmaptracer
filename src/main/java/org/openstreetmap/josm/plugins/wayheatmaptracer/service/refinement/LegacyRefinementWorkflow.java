@@ -231,7 +231,10 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         AttemptProgress(RefinementAttemptDiagnostics.Binding binding,RefinementAttemptDiagnostics.Slot slot){this.binding=binding;this.slot=slot;}
         RefinementAttemptDiagnostics snapshot(RefinementAttemptDiagnostics.Publication publication,RefinementAttemptDiagnostics.Cause cause){return new RefinementAttemptDiagnostics(binding,receipt,publication,phase,cause,materializationRefusals);}
     }
-    record Computed(Optional<Stage> stage,RefinementAttemptDiagnostics.Cause cause) { }
+    record Computed(Optional<Stage> stage,RefinementAttemptDiagnostics.Cause cause,
+            Optional<AttemptMemoryLedger.Reservation> publicationAllowance) {
+        Computed(Optional<Stage> stage,RefinementAttemptDiagnostics.Cause cause){this(stage,cause,Optional.empty());}
+    }
     private void publishDiagnostics(OperationTicket ticket,AttemptProgress progress,RefinementAttemptDiagnostics.Publication publication,RefinementAttemptDiagnostics.Cause cause){
         if(closed||!ownsPublication()||!Objects.equals(active,ticket))return;
         if(progress.slot==null){diagnosticsAvailability=RefinementAttemptDiagnostics.Availability.UNAVAILABLE_BUDGET;return;}
@@ -395,12 +398,11 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             var sourcePayload=selected().payload();var original=review.originalResult();var credentials=CredentialSnapshot.fromConfig(review.originalConfig().heatmap());
             var operation=rootMemory.child("live-refinement-"+ticket.sequence());
             var publication=rootMemory.child("publication-"+ticket.sequence());
-            var publicationAllowance=publication.reserve(allowance);
             var entry=new NativeEntry(ticket);activeEntry=entry;
             cancellation=new CancellationToken();var probe=probe(cancellation,entry);busy=true;present();
             var work=workGate.beginWork(this);activeWork=work;
             CompletableFuture<Computed> computation;
-            try {computation=CompletableFuture.supplyAsync(()->compute(ticket,parent,plan,credentials,operation,sourcePayload,original,allowance,probe,entry,progress),executor);}
+            try {computation=CompletableFuture.supplyAsync(()->compute(ticket,parent,plan,credentials,operation,publication,sourcePayload,original,allowance,probe,entry,progress),executor);}
             catch(RuntimeException rejected){computation=CompletableFuture.failedFuture(rejected);}
             computation.whenComplete((completed,failure)->{entry.workerReturned=true;dispatchCompletion(()->{
                     var publicationOutcome=RefinementAttemptDiagnostics.Publication.FAILED;
@@ -422,9 +424,11 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                                 progress.phase=RefinementAttemptDiagnostics.Phase.PUBLICATION;
                                 var child=completed.stage().get();
                                 if(session.publish(ticket,child,()->{
-                                    publicationAllowance.close();
                                     long bytes=child.candidates().stream().mapToLong(c->c.payload().retainedBytes()).sum();
-                                    publication.reserve(bytes).adopt(child);
+                                    synchronized(memory) {
+                                        completed.publicationAllowance().orElseThrow().close();
+                                        publication.reserve(bytes).adopt(child);
+                                    }
                                     progress.presentationAttempted=true;showStage(child);
                                     probe.checkpoint();review.requireOriginalAttemptCurrent();
                                 })) {
@@ -444,11 +448,12 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                         boolean cancelled=entry.cancellationRequested&&!stale;
                         boolean presentationFailed=refused instanceof PresentationFailed;
                         if(progress.presentationAttempted&&!hasCurrentPresentation())presentationFailed|=!restoreCurrentPresentation();
-                        var outcome=cancelled?Outcome.CANCELLED:stale?Outcome.STALE:Outcome.FAILED;
+                        boolean limited=refused instanceof AttemptMemoryLedger.ResourceLimitException||refused instanceof RefinementSession.Refused;
+                        var outcome=cancelled?Outcome.CANCELLED:stale?Outcome.STALE:limited?Outcome.RESOURCE_LIMIT:Outcome.FAILED;
                         if(!closed)session.fail(ticket,outcome);
                         publicationOutcome=cancelled?RefinementAttemptDiagnostics.Publication.CANCELLED:stale?RefinementAttemptDiagnostics.Publication.STALE:RefinementAttemptDiagnostics.Publication.FAILED;
                         diagnosticCause=stale?RefinementAttemptDiagnostics.Cause.STALE:cancelled?RefinementAttemptDiagnostics.Cause.CANCELLED:
-                            presentationFailed?RefinementAttemptDiagnostics.Cause.PRESENTATION_FAILED:refused instanceof AttemptMemoryLedger.ResourceLimitException||refused instanceof RefinementSession.Refused?RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT:RefinementAttemptDiagnostics.Cause.FAILED;
+                            presentationFailed?RefinementAttemptDiagnostics.Cause.PRESENTATION_FAILED:limited?RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT:RefinementAttemptDiagnostics.Cause.FAILED;
                         message=cancelled?"Refinement cancelled.":stale?"Refinement source changed.":"Refinement failed.";
                     }
                     finally{publishDiagnostics(ticket,progress,publicationOutcome,diagnosticCause);operation.close();if(!retainedStages.containsValue(publication))publication.close();session.workerSettled(ticket);active=null;activeProgress=null;busy=false;if(closed)releaseClosed();activeEntry=null;settleWork(work);if(!closed)present();entry.settlement.complete(null);}
@@ -464,7 +469,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         }
     }
     private Computed compute(OperationTicket ticket,ParentTraceReference parent,RefinementSourcePlanner.Plan plan,
-            CredentialSnapshot credentials,AttemptMemoryLedger.Owner operation,RefinementPayload sourcePayload,
+            CredentialSnapshot credentials,AttemptMemoryLedger.Owner operation,AttemptMemoryLedger.Owner publication,RefinementPayload sourcePayload,
             AlignmentResult original,long allowance,CancellationProbe probe,NativeEntry entry,AttemptProgress progress) {
         progress.phase=RefinementAttemptDiagnostics.Phase.ACQUISITION;
         var acquired=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,credentials,probe,operation);
@@ -487,8 +492,21 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         actualNativeCalls+=outcome.attempts().stream().flatMap(a->a.run().stream()).mapToInt(RefinementEngineAdapter.Run::nativeCalls).sum();
         computationEvidence="outcome="+outcome.outcome()+" full="+outcome.candidates().size()+" rejected="+outcome.rejected().size()+" attempts="+outcome.attempts().stream().map(a->a.kind()+":"+a.reason()+":"+a.nativeCallAvailability()).toList()
             +" rejectedFindings="+outcome.rejected().stream().map(a->a.quality().findings().stream().map(f->f.code().name()).toList()).toList();
-        var computed=materialize(ticket,parent,outcome,evidence,sourcePayload,original,allowance,probe,progress);
+        var computed=materialize(ticket,parent,outcome,evidence,sourcePayload,original,allowance,probe,progress,publication);
         computationEvidence+=" plan-refusals="+progress.materializationRefusals;return computed;
+    }
+    /** Claims the unchanged future Stage bound only once actual assessed output needs materialization. */
+    static Computed materialize(OperationTicket ticket,ParentTraceReference parent,RefinementPipeline.Result outcome,
+            Map<RefinementSourcePlanner.SourceRequest,EvidenceSnapshot> evidence,RefinementPayload sourcePayload,
+            AlignmentResult original,long allowance,CancellationProbe probe,AttemptProgress progress,AttemptMemoryLedger.Owner publication) {
+        if(outcome.candidates().isEmpty())return materialize(ticket,parent,outcome,evidence,sourcePayload,original,allowance,probe,progress);
+        progress.phase=RefinementAttemptDiagnostics.Phase.MATERIALIZATION;
+        probe.checkpoint();
+        // Input, native result, assembly and assessment owners are independent. This reservation
+        // covers the new Stage payload from its first allocation through queued publication.
+        var reservation=publication.reserve(allowance);
+        var computed=materialize(ticket,parent,outcome,evidence,sourcePayload,original,allowance,probe,progress);
+        return new Computed(computed.stage(),computed.cause(),Optional.of(reservation));
     }
     /** Same assessed full-composition materialization used by the live worker, including typed plan refusal. */
     static Computed materialize(OperationTicket ticket,ParentTraceReference parent,RefinementPipeline.Result outcome,
