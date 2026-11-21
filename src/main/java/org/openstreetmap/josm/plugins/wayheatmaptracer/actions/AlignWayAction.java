@@ -160,6 +160,11 @@ public class AlignWayAction extends JosmAction {
         }
     }
 
+    /** Recovery supplied only by the ordinary modern invocation, never fabricated for Legacy. */
+    static RecoveryPermissions ordinaryRecoveryPermissions(OrdinaryRoute route) {
+        return route==null||route.pipeline()==OrdinaryPipeline.LEGACY_COMPATIBILITY?null:route.invocation().recovery().toPermissions();
+    }
+
     /** Complete source-routing decision used directly by the ordinary action. */
     record OrdinaryActionRouting<T>(OrdinaryRoute route, T visibleSource,
             AlignmentConfig requestedConfig) {
@@ -670,7 +675,7 @@ public class AlignWayAction extends JosmAction {
                     ? (forcedManagedPreview ? null : HeatmapLayerResolver.resolve())
                     : ordinaryRouting.visibleSource();
             MapView mapView = MainApplication.getMap().mapView;
-            RecoveryPermissions recovery = ordinaryRoute == null ? null : ordinaryRoute.invocation().recovery().toPermissions();
+            RecoveryPermissions recovery = ordinaryRecoveryPermissions(ordinaryRoute);
             final ManagedHeatmapConfig invocationConfig=config;
             final String invocationLineage=diagnosticSourceLineage;
             java.util.function.Consumer<LegacyReviewOwner> execute=originalReview->runPreparedInvocation(dataSet,selection,imageryLayer,mapView,
@@ -3400,6 +3405,18 @@ public class AlignWayAction extends JosmAction {
         }
     }
 
+    /** Synchronous root-selection callback; explicit warning paths remain outside owned restoration. */
+    static final class LegacyRootPresentation {
+        private boolean owned,failed;
+        void present(Runnable selection){
+            if(owned)throw new IllegalStateException("Legacy root presentation is already running");
+            owned=true;failed=false;
+            try{selection.run();}finally{owned=false;}
+            if(failed)throw new IllegalStateException("The retained Legacy preview could not be displayed");
+        }
+        boolean failedOwnedSelection(){if(!owned)return false;failed=true;return true;}
+    }
+
     record ReviewButtonContext(CandidateAssessment.Disposition disposition,boolean matchingConfirmation,
             boolean busy,boolean nativeSelection,boolean nativeCanApply,boolean currentOwner) { }
     /** The live workflow status callback; no acquisition or computation belongs here. */
@@ -3550,17 +3567,18 @@ public class AlignWayAction extends JosmAction {
         Supplier<String> currentQuality = () -> selectedCoverageStatus.getText() + "\n"
             + selectedCleanupStatus.getText() + "\n" + selectedCandidateDetail.getText();
         LegacyRefinementWorkflow[] workflow = {null};
+        LegacyRootPresentation rootPresentation=new LegacyRootPresentation();
         Runnable refreshButtons=createReviewButtonRefresh(legacyReview,apply,confirm,()->{
             boolean nativeChoice=workflow[0]!=null&&workflow[0].nativeSelected();
             boolean busy=workflow[0]!=null&&workflow[0].busy();
             var disposition=nativeChoice?CandidateAssessment.Disposition.valueOf(workflow[0].currentNative().orElseThrow().plan().validation().disposition().name())
                 :AlignmentService.assessCandidate(current[0].candidate()).disposition();
             boolean confirmed=nativeChoice?workflow[0].canApplyNative():confirmationMatches(reviewConfirmation[0],current[0].candidate(),current[0]);
-            return new ReviewButtonContext(disposition,confirmed,busy,nativeChoice,nativeChoice&&workflow[0].canApplyNative(),livePreviewSession.isCurrent(rootOwner));
+            return new ReviewButtonContext(disposition,confirmed,busy,nativeChoice,nativeChoice&&workflow[0].canApplyNative(),livePreviewSession.isCurrent(rootOwner)&&(workflow[0]==null||workflow[0].hasCurrentPresentation()));
         });
         workflow[0] = new LegacyRefinementWorkflow(legacyReview,
             org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime.coordinator(),
-            candidate -> { comboBox.setSelectedItem(null); comboBox.setSelectedItem(candidate); },
+            candidate -> rootPresentation.present(()->{comboBox.setSelectedItem(null);comboBox.setSelectedItem(candidate);}),
             displayed -> {
                 current[0] = new PreviewSelection(initial, displayed.candidate(), displayed.result());
                 reviewConfirmation[0] = null;
@@ -3616,6 +3634,7 @@ public class AlignWayAction extends JosmAction {
                 refreshButtons.run();
                 updatePreviewBundle(current[0], candidateRatings, "preview-open");
             } catch (Exception ex) {
+                if(rootPresentation.failedOwnedSelection())return;
                 Logging.warn("WayHeatmapTracer rejected preview candidate: " + ex.getMessage());
                 showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
                 comboBox.setSelectedItem(current[0].candidate());

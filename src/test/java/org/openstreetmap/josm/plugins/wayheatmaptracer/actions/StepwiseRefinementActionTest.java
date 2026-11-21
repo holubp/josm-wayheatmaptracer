@@ -23,6 +23,51 @@ class StepwiseRefinementActionTest {
         var preferences=new org.openstreetmap.josm.data.Preferences();preferences.enableSaveOnPut(false);Config.setPreferencesInstance(preferences);
         ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
     }
+    @Test void ordinaryLegacyEntryHasNoModernRecoveryAndPreservesItsModeAndJunctionOptIn() {
+        var previous=Config.getPref();Config.setPreferencesInstance(new MemoryPreferences());
+        try {
+            var recovery=new RecoverySettings(RecoverySettings.CURRENT_SCHEMA_VERSION,true,7.01,14,JunctionPolicy.REATTACH,true);
+            for(var mode:AlignmentMode.values())for(boolean optIn:List.of(false,true)) {
+                Config.getPref().putBoolean("wayheatmaptracer.adjustJunctionNodes",optIn);
+                var config=AlignmentConfig.withoutCleanup(PluginPreferences.load().withTrackerMode(TrackerMode.LEGACY_V02).withAlignmentMode(mode));
+                var tracing=new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,TrackerMode.LEGACY_V02,recovery,false,AlignmentSourceMode.AUTOMATIC);
+                var selected=new AtomicInteger();var route=AlignWayAction.resolveOrdinaryAction(tracing,config,()->{fail("Legacy must not acquire a modern visible source");return "unreachable";},()->{selected.incrementAndGet();return "existing-Legacy-source";});
+                assertEquals(AlignWayAction.OrdinaryPipeline.LEGACY_COMPATIBILITY,route.route().pipeline());assertNull(route.route().invocation());
+                assertNull(assertDoesNotThrow(()->AlignWayAction.ordinaryRecoveryPermissions(route.route()),"Valid Legacy route has no modern invocation"));
+                assertEquals(mode,route.requestedConfig().heatmap().alignmentMode());assertEquals(optIn,route.requestedConfig().heatmap().adjustJunctionNodes());
+                assertSame(config,route.requestedConfig());assertEquals("existing-Legacy-source",route.visibleSource());assertEquals(1,selected.get());
+            }
+            assertNull(AlignWayAction.ordinaryRecoveryPermissions(null));
+        } finally {Config.setPreferencesInstance(previous);}
+    }
+    @Test void ordinaryModernEntryRetainsItsExplicitRecoveryPermissions() {
+        var previous=Config.getPref();Config.setPreferencesInstance(new MemoryPreferences());
+        try {
+            var recovery=new RecoverySettings(RecoverySettings.CURRENT_SCHEMA_VERSION,true,7.01,14,JunctionPolicy.REATTACH,true);
+            for(var engine:List.of(TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC))for(var mode:AlignmentMode.values()) {
+                var config=AlignmentConfig.withoutCleanup(PluginPreferences.load().withTrackerMode(engine).withAlignmentMode(mode));
+                var tracing=new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,engine,recovery,false,AlignmentSourceMode.VISIBLE_LAYER);
+                var route=AlignWayAction.resolveOrdinaryAction(tracing,config,()->"actual-visible-source",()->{fail("Modern must not use Legacy source routing");return "unreachable";});
+                var actual=AlignWayAction.ordinaryRecoveryPermissions(route.route());assertNotNull(actual);assertTrue(actual.widerDiscovery());
+                assertEquals(7.01,actual.ordinaryRadiusMeters());assertEquals(14,actual.maximumDiscoveryRadiusMeters());assertEquals(JunctionPolicy.REATTACH,actual.junctionPolicy());assertTrue(actual.reconstructIncidentWays());
+                assertEquals(mode,route.route().invocation().config().heatmap().alignmentMode());assertEquals(engine,route.route().invocation().engine());
+            }
+        } finally {Config.setPreferencesInstance(previous);}
+    }
+    @Test void ownedRootComboFailureMustPropagateWithoutModalAndCannotCertifyNewPresentation() throws Exception {
+        SwingUtilities.invokeAndWait(()->{
+            var bridge=new AlignWayAction.LegacyRootPresentation();var combo=new JComboBox<>(new String[]{"retained-parent","failed-root","restored-root"});
+            var shown=new java.util.concurrent.atomic.AtomicReference<>("retained-parent");var modalWarnings=new AtomicInteger();
+            combo.addActionListener(event->{
+                if("failed-root".equals(combo.getSelectedItem())){if(bridge.failedOwnedSelection())return;modalWarnings.incrementAndGet();return;}
+                shown.set((String)combo.getSelectedItem());
+            });
+            assertThrows(IllegalStateException.class,()->bridge.present(()->combo.setSelectedItem("failed-root")));
+            assertEquals(0,modalWarnings.get());assertEquals("retained-parent",shown.get());
+            bridge.present(()->combo.setSelectedItem("restored-root"));assertEquals("restored-root",shown.get());
+            assertFalse(bridge.failedOwnedSelection(),"Unrelated explicit warnings must retain their existing path");
+        });
+    }
     @Test void ordinaryLegacyOwnerRunsOriginalActionOnceWithoutReadingRetainedRaster() throws Exception {
         SwingUtilities.invokeAndWait(() -> {
             DataSet data = new DataSet();

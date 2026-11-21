@@ -45,6 +45,28 @@ class RefinementSessionTest {
         if (thrown.get() != null) throw new AssertionError(thrown.get());
     }
 
+    @Test void throwingPublicationPreparationPreservesParentForwardAndAllUnsettledPins() throws Exception {
+        edt(()->{
+            var session=session(AlignmentMode.PRECISE_SHAPE);var first=session.begin(TrackerMode.CORRIDOR_AWARE);var forward=child(first,"old-forward");
+            assertTrue(publishReserved(session,first,forward));session.workerSettled(first);session.back();
+            var parent=session.current();var before=session.history();var replacement=session.begin(TrackerMode.PROBABILISTIC);
+            session.reserve(replacement,1,session.availablePayloadBytes());long reserved=session.reservedBytes();
+            assertThrows(IllegalStateException.class,()->session.publish(replacement,child(replacement,"undisplayed"),()->{throw new IllegalStateException("synthetic preparation failure");}));
+            assertEquals(parent,session.current());assertEquals(before,session.history());assertEquals(reserved,session.reservedBytes());assertFalse(session.canApply());
+            session.fail(replacement,Outcome.FAILED);assertEquals(reserved,session.reservedBytes());session.workerSettled(replacement);assertEquals(0,session.reservedBytes());
+            assertEquals(forward,session.redo().orElseThrow());
+        });
+    }
+    @Test void cancelledPublicationPreparationCannotCommitAfterReturningNormally() throws Exception {
+        edt(()->{
+            var session=session(AlignmentMode.PRECISE_SHAPE);var parent=session.current();var ticket=session.begin(TrackerMode.CORRIDOR_AWARE);
+            session.reserve(ticket,1,session.availablePayloadBytes());
+            assertFalse(session.publish(ticket,child(ticket,"late-child"),()->session.cancel(ticket)));
+            assertEquals(parent,session.current());assertEquals(List.of(parent),session.history());assertTrue(session.reservedBytes()>0);
+            session.workerSettled(ticket);assertEquals(0,session.reservedBytes());
+        });
+    }
+
     @Test void typedAuthorityRejectsOpaqueHandlesAndContradictoryMode() throws Exception {
         edt(() -> {
             assertThrows(IllegalArgumentException.class,()->new RefinementSession(root(),config(AlignmentMode.PRECISE_SHAPE),

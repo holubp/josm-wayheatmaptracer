@@ -150,8 +150,11 @@ public final class RefinementSession implements AutoCloseable {
         pinInputs(active, current());
         return active;
     }
-    public boolean publish(OperationTicket ticket, Stage stage) {
-        requireEdt();
+    public boolean publish(OperationTicket ticket, Stage stage) {return publish(ticket,stage,()->{});}
+    /** Validates first, prepares owned memory/presentation, then commits the still-owned history atomically on EDT.
+     * A throwing preparation leaves parent, forward history and input/publication reservations unchanged. */
+    public boolean publish(OperationTicket ticket,Stage stage,Runnable beforeCommit) {
+        requireEdt();Objects.requireNonNull(beforeCommit);
         if (!owns(ticket)) return false;
         Objects.requireNonNull(stage);
         StageId inputStage = ticket.smoothingInput().map(SmoothingInput::unsmoothedParent).orElse(ticket.parent());
@@ -176,6 +179,8 @@ public final class RefinementSession implements AutoCloseable {
             reject(ticket, refusal);
             return false;
         }
+        beforeCommit.run();
+        if(!owns(ticket))return false;
         // Successful publication removes the forward branch from visible history. Unsettled inputs remain pinned.
         history.clear(); history.addAll(proposed); cursor = history.size() - 1;
         active = null; reservations.remove(ticket); confirmed = false;
