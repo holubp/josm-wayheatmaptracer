@@ -812,9 +812,12 @@ public final class ManagedModernPreviewSource {
             }
             pixels=Math.multiplyExact(pixels,request.requiredPalettes().size());
             if(pixels>MAX_INPUT_PIXELS)throw new IllegalArgumentException("Refinement capture exceeds source input-pixel cap");
-            // Retained ARGB/support plus defensive masks, digest rows and one acquisition/copy workspace.
-            // This is additional caller-owned memory; coordinator cache/body limits remain independent.
-            var reservation=memory.reserve(Math.addExact(262144L,Math.multiplyExact(pixels,32L)));
+            // Admit the unchanged all-zoom peak before acquiring any palette. Only inference
+            // rasters survive; secondary zooms return receipts after physical verification.
+            // Keep the existing 32-byte inference allowance and all-zoom metadata bound.
+            long retainedPixels=Math.multiplyExact(preparedGrids.get(request.zoom()).pixels(),request.requiredPalettes().size());
+            var reservation=memory.reserve(Math.addExact(262144L,Math.multiplyExact(retainedPixels,32L)));
+            try(var validationWorkspace=memory.reserve(Math.multiplyExact(Math.subtractExact(pixels,retainedPixels),32L))) {
             var acquired=new LinkedHashMap<String,SourceRasters>();
             for(String palette:request.requiredPalettes()) {
                 cancellation.checkpoint();requireActiveGeneration(request);
@@ -856,6 +859,7 @@ public final class ManagedModernPreviewSource {
             var result=new RefinementSources(coordinator,request,acquired,outcomes,aggregate,memory,budget.receipt(),sourceReceipts);
             reservation.adopt(result);
             return new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted<>(result,memory);
+            } // All inner acquisition, validation and fingerprint/proof calls have returned.
         } catch(RuntimeException|Error failure){
             if(activePalette!=null&&budget.tileRequests()>requestsAtPaletteStart
                     &&outcomes.get(activePalette)==RefinementStatus.UNATTEMPTED)outcomes.put(activePalette,RefinementStatus.ABORTED);

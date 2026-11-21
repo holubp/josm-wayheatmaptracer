@@ -296,6 +296,80 @@ class RefinementAcquisitionTest {
    }
   }
  }
+ @Test void actualSmallABPipelinesPreserveOutputsWithTheLegacyValidationAllowanceControl() throws Exception {
+  for(var mode:AlignmentMode.values())for(var engine:List.of(TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC)) {
+   var parent=memoryPipelineParent(mode);var root=parent.root();var config=root.effectiveConfig().heatmap();
+   var ticket=new OperationTicket(new SessionId(UUID.randomUUID()),1,parent.parentStage(),parent.parentChoice(),engine,mode);
+   var capturedSettings=new java.util.concurrent.atomic.AtomicReference<RefinementSourcePlanner.Settings>();
+   javax.swing.SwingUtilities.invokeAndWait(()->capturedSettings.set(RefinementSourcePlanner.Settings.capture(true,config,List.of())));
+   var plan=RefinementSourcePlanner.plan(ticket,capturedSettings.get(),parent);
+   var images=new HashMap<ManagedTileAddress,byte[]>();var decoder=new TileDecoderClassifier();var signatures=new ArrayList<Map<String,List<Object>>>();
+   try(var coordinator=new TileFetchCoordinator((r,credentials)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",
+       images.computeIfAbsent(r.address(),address->memoryRidge(address,root.evidence().coordinateFrame())),null,Duration.ZERO,""),
+       new ManagedTileCache(temp.resolve(mode.name()+engine.name()),decoder),decoder,TileReliabilityPolicy.defaults())) {
+    coordinator.updateActiveGeneration(new ManagedTileGeneration(9));long releasedPeak=0;
+    for(boolean legacyLifetime:List.of(true,false)) {
+     var ledger=AttemptMemoryLedger.production();try(var owner=ledger.rootOwner()) {
+      var acquired=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,owner);
+      long released=ledger.peakBytes()-ledger.currentBytes();assertTrue(released>0,"two-zoom acquisition must release completed workspace");
+      if(legacyLifetime){releasedPeak=released;owner.reserve(released).adopt(new Object());}else assertEquals(releasedPeak,released);
+      var entries=new java.util.concurrent.atomic.AtomicInteger();
+      var result=new RefinementPipeline().run(ticket,parent,plan,new RefinementPipeline.Adapters(RefinementPipeline.managedSources(acquired.value(),coordinator),
+        RefinementPipeline.productionRunner(t->entries.incrementAndGet()),owner),RefinementPipeline.OperationBudget.production(root.request().budgets()),CancellationProbe.NONE);
+      System.out.println("memory-pipeline mode="+mode.name()+" engine="+engine.name()+" legacyLifetime="+legacyLifetime+" outcome="+result.outcome()
+        +" assessed="+result.candidates().size()+" rejected="+result.rejected().size()+" actualWork="+result.actualWork()+" currentBytes="+ledger.currentBytes()+" peakBytes="+ledger.peakBytes());
+      for(var attempt:result.attempts())System.out.println("memory-pipeline-attempt palette="+attempt.source().palette()+" mapping="+attempt.source().mapping()
+        +" kind="+attempt.kind()+" reason="+attempt.reason()+" offered="+attempt.issuedBudgets()+" calls="+attempt.nativeCallAvailability()
+        +" work="+attempt.run().flatMap(RefinementEngineAdapter.Run::actualWorkAvailability)
+        +" nativeStatus="+attempt.run().flatMap(RefinementEngineAdapter.Run::nativeRun).map(run->run.result().status())
+        +" nativeResource="+attempt.run().flatMap(RefinementEngineAdapter.Run::nativeRun).filter(run->run.result().status()==TraceHypothesisSet.Status.RESOURCE_LIMIT)
+          .map(run->run.result().explanation()).orElse("UNAVAILABLE"));
+      assertTrue(entries.get()>0,mode+"/"+engine+" requires actual native entry");
+      assertEquals(List.of("purple","hot","blue","bluered","gray","all-colors-combined"),result.sourceOutcomes().stream().map(o->o.source().mapping()).toList());
+      assertTrue(result.sourceOutcomes().stream().allMatch(o->!o.attempts().isEmpty()),"requested sources retain factual attempts or explicit unattempted rows");
+      assertFalse(result.candidates().isEmpty(),mode+"/"+engine+" requires actual assessed native geometry: "+result.outcome());
+      assertTrue(result.actualWork().orElseThrow().transitions()>0);assertTrue(ledger.peakBytes()<=AttemptMemoryLedger.MAX_BYTES);
+      var signature=new LinkedHashMap<String,List<Object>>();
+      for(var attempt:result.attempts())for(var run:attempt.run().stream().toList()) {
+       var nativeRun=run.nativeRun();
+       if(nativeRun.isEmpty()||nativeRun.get().result().status()==TraceHypothesisSet.Status.RESOURCE_LIMIT)continue;
+       var values=new ArrayList<Object>();values.add(run.request());values.add(run.outcome());values.add(run.actualWork());
+       values.add(nativeRun.get().result().status());values.add(nativeRun.get().result().hypotheses());
+       values.add(run.finalized().map(ModernTracePipeline.Result::routes));
+       values.add(result.sourceOutcomes().stream().filter(o->o.source().equals(attempt.source())).findFirst().orElseThrow().assessments());
+       signature.put(attempt.source().mapping()+"/"+attempt.kind()+"/"+attempt.range(),List.copyOf(values));
+      }
+      signatures.add(Map.copyOf(signature));
+     }assertEquals(0,ledger.currentBytes());
+    }
+    assertFalse(signatures.get(0).isEmpty(),"control must contain actual completed native output");
+    for(var shared:signatures.get(0).entrySet())assertEquals(shared.getValue(),signatures.get(1).get(shared.getKey()),
+      "shared completed invocation must retain exact native/final output, parameters, physical geometry, quality and work: "+shared.getKey());
+   }
+  }
+ }
+ private static ParentTraceReference memoryPipelineParent(AlignmentMode mode) {
+   var original=RefinementParentFixtures.authority(mode);var c=original.effectiveConfig().heatmap();
+   var config=new ManagedHeatmapConfig("","","","","all","blue",c.manualLayerName(),c.layerRegex(),mode,TrackerMode.LEGACY_V02,
+     c.verbose(),c.debug(),false,true,c.showAggregateIntensityLayer(),c.candidateRatingEnabled(),c.parallelWayAwareness(),c.allowUndownloadedAlignment(),
+     c.adjustJunctionNodes(),c.simplifyEnabled(),c.crossSectionHalfWidthPx(),c.crossSectionStepPx(),c.simplifyTolerancePx(),InferenceMode.RAW_HIGH_RESOLUTION,
+     15,14,8,3,IntensitySamplingMode.COLOR_MAPPING,9);
+   var root=new RefinementRootAuthority(original.network(),original.request(),original.evidence(),new AlignmentConfig(config,original.effectiveConfig().cleanup()),original.projectionCode(),original.sourceIdentity());
+   return new ParentReferenceBinder().bind(root,new StageId(UUID.randomUUID()),RefinementParentFixtures.parent(root,"purple"));
+ }
+ private static byte[] memoryRidge(ManagedTileAddress address,LocalMetricFrame frame) {
+  try {
+   var image=new BufferedImage(512,512,BufferedImage.TYPE_INT_ARGB);
+   int center=switch(address.color()){case "blue"->0xff4ca9ff;case "bluered"->0xffff24b2;case "purple"->0xffbd9cff;case "gray"->0xffe84bea;default->0xfffdfdfd;};
+   for(int y=0;y<512;y++) {
+    double worldY=(address.y()*512.0+y+.5)/(512.0*(1<<address.zoom()));double latitude=Math.toDegrees(Math.atan(Math.sinh(Math.PI*(1-2*worldY))));
+    double ground=frame.toMetric(new GeographicPoint(latitude,frame.origin().longitudeDegrees())).yMeters();double strength=Math.exp(-.5*Math.pow((ground-50)/2,2));
+    for(int x=0;x<512;x++){int background=3+(x*7+y*3)%29;int red=(int)Math.round(background+strength*(((center>>>16)&255)-background));
+     int green=(int)Math.round(background+strength*(((center>>>8)&255)-background));int blue=(int)Math.round(background+strength*((center&255)-background));image.setRGB(x,y,0xff000000|red<<16|green<<8|blue);}
+   }
+   var bytes=new ByteArrayOutputStream();if(!ImageIO.write(image,"png",bytes))throw new IllegalStateException("PNG writer unavailable");return bytes.toByteArray();
+  }catch(java.io.IOException failure){throw new IllegalStateException(failure);}
+ }
  @Test void capRefusalPrecedesTransportAndReleasesOwnership() throws Exception {
   var count=new java.util.concurrent.atomic.AtomicInteger();var decoder=new TileDecoderClassifier();try(var coordinator=new TileFetchCoordinator((r,c)->{count.incrementAndGet();return new TransportResponse(TileFetchStatus.NO_TILE,404,"",null,null,Duration.ZERO,"");},new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())){
    coordinator.updateActiveGeneration(new ManagedTileGeneration(9));var p=RefinementSourcePlannerTest.parent();var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(p),RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.COLOR_MAPPING,false),p);var ledger=new AttemptMemoryLedger(1024);try(var owner=ledger.rootOwner()){assertThrows(AttemptMemoryLedger.ResourceLimitException.class,()->new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),()->false,owner));assertEquals(0,count.get());}assertEquals(0,ledger.currentBytes());
