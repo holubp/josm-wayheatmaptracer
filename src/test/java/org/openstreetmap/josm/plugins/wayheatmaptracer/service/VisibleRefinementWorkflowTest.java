@@ -39,7 +39,8 @@ class VisibleRefinementWorkflowTest {
                     var config=AlignmentConfig.withoutCleanup(new ManagedHeatmapConfig("","","","","all","hot","",".*",mode,TrackerMode.LEGACY_V02,false,false,false,false,false,false,false,true,false,false,7,4,3,InferenceMode.RAW_HIGH_RESOLUTION,15,15,7.01,1.56,IntensitySamplingMode.COLOR_MAPPING,7));
                     owner[0]=LegacyReviewOwner.begin(data,selection,config);var points=nodes.stream().map(Node::getEastNorth).toList();
                     var image=new BufferedImage(200,200,BufferedImage.TYPE_INT_ARGB);for(int y=0;y<200;y++)for(int x=0;x<200;x++)image.setRGB(x,y,y==99||y==100?0xffffffff:0xff000000);
-                    var first=new CenterlineCandidate("first",1,List.of(),List.of(),points,points,Map.of(),List.of(),1,CandidateEvidence.empty(),CandidateCleanupEvidence.empty(),List.of());
+                    var unselected=points.stream().map(point->new EastNorth(point.east(),point.north()+1)).toList();
+                    var first=new CenterlineCandidate("first",1,List.of(),List.of(),unselected,unselected,Map.of(),List.of(),1,CandidateEvidence.empty(),CandidateCleanupEvidence.empty(),List.of());
                     var chosen=new CenterlineCandidate("chosen",1,List.of(),List.of(),points,points,Map.of(),List.of(),1,CandidateEvidence.empty(),CandidateCleanupEvidence.empty(),List.of());
                     var result=new AlignmentResult(selection,image,List.of(first,chosen),points,points,List.of(),null,null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(first.id(),chosen.id()),"","")),List.of(first,chosen));
                     var metadata=new LegacyVisibleSource(-100,-100,100,100,6,6,OptionalDouble.empty(),"EPSG:3857",epoch.captureStable(),OptionalDouble.of(7.01),OptionalDouble.of(1.56));
@@ -52,8 +53,42 @@ class VisibleRefinementWorkflowTest {
                 SwingUtilities.invokeAndWait(()->{
                     assertTrue(workflow[0].nativeSelected(),workflow[0].computationEvidence());
                     assertTrue(workflow[0].actualNativeCalls()>0);assertFalse(workflow[0].currentStage().candidates().isEmpty());
-                    var nativeReview=workflow[0].currentNative().orElseThrow();assertFalse(nativeReview.retainedSources().isEmpty());nativeReview.retainedSources().values().forEach(RetainedSmoothingSource::requireCurrent);
+                    var nativeReview=workflow[0].currentNative().orElseThrow();
+                    assertEquals(ValidationReport.Disposition.APPLICABLE,nativeReview.plan().validation().disposition());
+                    assertTrue(workflow[0].selectedGeometry().size()>=2);assertTrue(workflow[0].canApplyNative());
+                    assertEquals("legacy-choice-1",workflow[0].currentStage().parentChoice().orElseThrow().value());
+                    assertFalse(nativeReview.retainedSources().isEmpty());nativeReview.retainedSources().values().forEach(source->{source.requireCurrent();assertEquals("hot",source.source().palette());assertEquals(200,source.referenceWidth());assertEquals(200,source.referenceHeight());});
+                    var receipt=nativeReview.operation().orElseThrow();assertTrue(receipt.actualWork().isPresent());
+                    assertEquals(4,receipt.attempts().stream().filter(attempt->attempt.kind()==RefinementPipeline.AttemptKind.UNAVAILABLE).count());
+                    assertEquals(1,receipt.attempts().stream().filter(attempt->attempt.nativeCalls().orElse(0)>0).count());
                     int calls=workflow[0].actualNativeCalls();((JButton)find(workflow[0].controls(),"undo")).doClick();assertEquals("legacy-choice-1",workflow[0].selectedChoiceIdentity());((JButton)find(workflow[0].controls(),"redo")).doClick();assertEquals(calls,workflow[0].actualNativeCalls());
+                });
+                // The selected native descendant, not root geometry, is the exact second-engine parent.
+                var firstStage=workflow[0].currentStage();var second=engine==TrackerMode.CORRIDOR_AWARE?TrackerMode.PROBABILISTIC:TrackerMode.CORRIDOR_AWARE;
+                SwingUtilities.invokeAndWait(()->workflow[0].refine(second));drain(work,publications,workflow[0]);
+                var secondStage=workflow[0].currentStage();
+                SwingUtilities.invokeAndWait(()->{
+                    assertNotEquals(firstStage.id(),secondStage.id(),workflow[0].computationEvidence());
+                    assertEquals(firstStage.id(),secondStage.parent().orElseThrow());assertEquals(firstStage.selected(),secondStage.parentChoice().orElseThrow());
+                    assertEquals(ValidationReport.Disposition.APPLICABLE,workflow[0].currentNative().orElseThrow().plan().validation().disposition());
+                    ((JButton)find(workflow[0].controls(),"undo")).doClick();assertEquals(firstStage.id(),workflow[0].currentStage().id());
+                    int before=workflow[0].actualNativeCalls();workflow[0].refine(second);((JButton)find(workflow[0].controls(),"cancel")).doClick();assertEquals(before,workflow[0].actualNativeCalls());
+                });
+                drain(work,publications,workflow[0]);
+                SwingUtilities.invokeAndWait(()->{
+                    assertEquals(firstStage.id(),workflow[0].currentStage().id());
+                    assertTrue(((JButton)find(workflow[0].controls(),"redo")).isEnabled(),"Cancelled branch keeps forward history");
+                    ((JButton)find(workflow[0].controls(),"redo")).doClick();assertEquals(secondStage.id(),workflow[0].currentStage().id());
+                    ((JButton)find(workflow[0].controls(),"undo")).doClick();workflow[0].refine(TrackerMode.LEGACY_V02);
+                    assertEquals(firstStage.id(),workflow[0].currentStage().id());assertTrue(((JButton)find(workflow[0].controls(),"redo")).isEnabled(),"Refused operation keeps forward history");
+                    workflow[0].refine(second);
+                });
+                drain(work,publications,workflow[0]);
+                SwingUtilities.invokeAndWait(()->{
+                    assertNotEquals(secondStage.id(),workflow[0].currentStage().id(),"Successful branch replaces forward stage");assertFalse(((JButton)find(workflow[0].controls(),"redo")).isEnabled());
+                    var geometry=workflow[0].selectedGeometry();var nodes=owner[0].originalResult().selection().way().getNodes();var coordinates=nodes.stream().map(Node::getCoor).toList();
+                    int calls=workflow[0].actualNativeCalls();var command=workflow[0].command();workflow[0].close();
+                    assertTrue(command.executeCommand());command.undoCommand();assertEquals(coordinates,nodes.stream().map(Node::getCoor).toList());assertFalse(owner[0].dataSet().isModified());assertTrue(command.executeCommand());command.undoCommand();assertEquals(calls,workflow[0].actualNativeCalls());assertFalse(owner[0].dataSet().isModified());
                 });
             } finally {SwingUtilities.invokeAndWait(()->{if(workflow[0]!=null)workflow[0].close();});if(workflow[0]!=null)drain(work,publications,workflow[0]);SwingUtilities.invokeAndWait(()->{if(owner[0]!=null)owner[0].close();});}
         }
