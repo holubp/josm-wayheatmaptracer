@@ -491,76 +491,86 @@ public class AlignWayAction extends JosmAction {
         this(forcedAlignmentMode, null, false, session, false);
     }
 
-    /** Creates the explicit session-local visible-source Engine A preview action. */
+    /** @deprecated Standalone preview is unavailable; start ordinary Legacy alignment instead. */
+    @Deprecated
     public static AlignWayAction experimentalCorridorAwareVisiblePreview() {
-        return new AlignWayAction(null, TrackerMode.CORRIDOR_AWARE, false,
-                new PreviewSessionController<>(SwingUtilities::invokeLater), true);
+        throw obsoleteStandalonePreview();
     }
 
-    /** Creates Engine A visible preview with the plugin-owned shared session. */
+    /** @deprecated Standalone preview is unavailable; start ordinary Legacy alignment instead. */
+    @Deprecated
     public static AlignWayAction experimentalCorridorAwareVisiblePreview(
             PreviewSessionController<LiveBPreviewService.Computed> session) {
-        return new AlignWayAction(null, TrackerMode.CORRIDOR_AWARE, false, session, false);
+        throw obsoleteStandalonePreview();
     }
 
-    /** Creates the explicit session-local visible-source Engine B preview action. */
+    /** @deprecated Standalone preview is unavailable; start ordinary Legacy alignment instead. */
+    @Deprecated
     public static AlignWayAction experimentalProbabilisticVisiblePreview() {
-        return new AlignWayAction(null, TrackerMode.PROBABILISTIC, false,
-                new PreviewSessionController<>(SwingUtilities::invokeLater), true);
+        throw obsoleteStandalonePreview();
     }
 
-    /** Creates Engine B visible preview with the plugin-owned shared session. */
+    /** @deprecated Standalone preview is unavailable; start ordinary Legacy alignment instead. */
+    @Deprecated
     public static AlignWayAction experimentalProbabilisticVisiblePreview(
             PreviewSessionController<LiveBPreviewService.Computed> session) {
-        return new AlignWayAction(null, TrackerMode.PROBABILISTIC, false, session, false);
+        throw obsoleteStandalonePreview();
     }
 
-    /** Creates the explicit session-local visible-source Directional Image preview action. */
+    /** @deprecated Standalone preview is unavailable; start ordinary Legacy alignment instead. */
+    @Deprecated
     public static AlignWayAction experimentalDirectionalImageVisiblePreview() {
-        return new AlignWayAction(null, TrackerMode.DIRECTIONAL_IMAGE, false,
-                new PreviewSessionController<>(SwingUtilities::invokeLater), true);
+        throw obsoleteStandalonePreview();
     }
 
-    /** Creates Directional Image visible preview with the plugin-owned shared session. */
+    /** @deprecated Standalone preview is unavailable; start ordinary Legacy alignment instead. */
+    @Deprecated
     public static AlignWayAction experimentalDirectionalImageVisiblePreview(
             PreviewSessionController<LiveBPreviewService.Computed> session) {
-        return new AlignWayAction(null, TrackerMode.DIRECTIONAL_IMAGE, false, session, false);
+        throw obsoleteStandalonePreview();
     }
 
-    /** Creates the explicit session-local visible-source Hybrid A+B preview action. */
+    /** @deprecated Standalone preview is unavailable; start ordinary Legacy alignment instead. */
+    @Deprecated
     public static AlignWayAction experimentalHybridVisiblePreview() {
-        return new AlignWayAction(null, TrackerMode.HYBRID, false,
-                new PreviewSessionController<>(SwingUtilities::invokeLater), true);
+        throw obsoleteStandalonePreview();
     }
 
-    /** Creates Hybrid A+B visible preview with the plugin-owned shared session. */
+    /** @deprecated Standalone preview is unavailable; start ordinary Legacy alignment instead. */
+    @Deprecated
     public static AlignWayAction experimentalHybridVisiblePreview(
             PreviewSessionController<LiveBPreviewService.Computed> session) {
-        return new AlignWayAction(null, TrackerMode.HYBRID, false, session, false);
+        throw obsoleteStandalonePreview();
     }
 
-    /** Creates the explicit session-local managed-source Engine A preview action. */
+    /** @deprecated Standalone preview is unavailable; start ordinary Legacy alignment instead. */
+    @Deprecated
     public static AlignWayAction experimentalCorridorAwareManagedPreview() {
-        return new AlignWayAction(null, TrackerMode.CORRIDOR_AWARE, true,
-                new PreviewSessionController<>(SwingUtilities::invokeLater), true);
+        throw obsoleteStandalonePreview();
     }
 
-    /** Creates Engine A managed preview with the plugin-owned shared session. */
+    /** @deprecated Standalone preview is unavailable; start ordinary Legacy alignment instead. */
+    @Deprecated
     public static AlignWayAction experimentalCorridorAwareManagedPreview(
             PreviewSessionController<LiveBPreviewService.Computed> session) {
-        return new AlignWayAction(null, TrackerMode.CORRIDOR_AWARE, true, session, false);
+        throw obsoleteStandalonePreview();
     }
 
-    /** Creates the explicit session-local managed-source Engine B preview action. */
+    /** @deprecated Standalone preview is unavailable; start ordinary Legacy alignment instead. */
+    @Deprecated
     public static AlignWayAction experimentalProbabilisticManagedPreview() {
-        return new AlignWayAction(null, TrackerMode.PROBABILISTIC, true,
-                new PreviewSessionController<>(SwingUtilities::invokeLater), true);
+        throw obsoleteStandalonePreview();
     }
 
-    /** Creates Engine B managed preview with the plugin-owned shared session. */
+    /** @deprecated Standalone preview is unavailable; start ordinary Legacy alignment instead. */
+    @Deprecated
     public static AlignWayAction experimentalProbabilisticManagedPreview(
             PreviewSessionController<LiveBPreviewService.Computed> session) {
-        return new AlignWayAction(null, TrackerMode.PROBABILISTIC, true, session, false);
+        throw obsoleteStandalonePreview();
+    }
+
+    private static UnsupportedOperationException obsoleteStandalonePreview() {
+        return new UnsupportedOperationException("Standalone preview is unavailable; start ordinary Legacy alignment.");
     }
 
     private AlignWayAction(AlignmentMode forcedAlignmentMode, TrackerMode forcedLivePreviewEngine,

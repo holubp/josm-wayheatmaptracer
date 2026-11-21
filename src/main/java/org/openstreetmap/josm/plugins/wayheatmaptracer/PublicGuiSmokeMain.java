@@ -89,31 +89,44 @@ public final class PublicGuiSmokeMain {
             if (!fixture.tilesUsable()) throw new IllegalStateException("Public Hot tile is unusable");
             ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
             AlignmentMode requestedMode=AlignmentMode.valueOf(System.getProperty("wayheatmaptracer.guiSmoke.alignmentMode","PRECISE_SHAPE"));
-            PluginPreferences.save(engine==TrackerMode.LEGACY_V02?stepwiseConfig(requestedMode):config().withTrackerMode(engine).withAlignmentMode(requestedMode));
+            AlignmentMode savedMode = engine == TrackerMode.LEGACY_THEN_B
+                ? AlignmentMode.MOVE_EXISTING_NODES
+                : engine == TrackerMode.CORRIDOR_AWARE ? AlignmentMode.PRECISE_SHAPE : requestedMode;
+            // The matrix engine is the saved pre-migration preference, not a live route.
+            PluginPreferences.save(stepwiseConfig(savedMode).withTrackerMode(engine));
             PluginPreferences.saveTracingSettings(new TracingSettings(
                     TracingSettings.CURRENT_SCHEMA_VERSION, engine,
                     RecoverySettings.defaults(7.01), false, AlignmentSourceMode.MANAGED_TILES));
             PluginPreferences.saveGeometryCleanup(GeometryCleanupConfig.disabled());
             Config.getPref().putLong("wayheatmaptracer.cacheBuster", 0L);
             fixture.seedTiles();
-            if(engine==TrackerMode.LEGACY_V02)fixture.seedRefinementTiles();
+            fixture.seedRefinementTiles();
+            if (PluginPreferences.load().trackerMode() != TrackerMode.LEGACY_V02
+                    || PluginPreferences.loadTracingSettings().engine() != TrackerMode.LEGACY_V02) {
+                throw new IllegalStateException("Saved live preference did not migrate to Legacy");
+            }
             WayHeatmapTracerPlugin plugin = onEventThread(() -> {
                 WayHeatmapTracerPlugin loaded = new WayHeatmapTracerPlugin(
                         new PluginInformation(jar.toFile()));
                 OsmDataLayer layer = new OsmDataLayer(fixture.dataSet(),
                         "public-analytic-osm", null);
                 MainApplication.getLayerManager().addLayer(layer);
-                if(engine==TrackerMode.LEGACY_V02)addOfflineManagedLayer(PluginPreferences.load(), MainApplication.getLayerManager()::addLayer);
+                addOfflineManagedLayer(PluginPreferences.load(), MainApplication.getLayerManager()::addLayer);
                 MainApplication.getLayerManager().setActiveLayer(layer);
                 fixture.dataSet().setSelected(fixture.selectedWay());
                 return loaded;
             });
-            AlignWayAction action = onEventThread(PublicGuiSmokeMain::registeredOrdinaryAction);
+            if (engine != TrackerMode.LEGACY_V02) onEventThread(() -> {
+                for (Window window : Window.getWindows()) if (window.isShowing()) requireNoObsoleteMethodUi(window);
+                return null;
+            });
+            AlignWayAction action = onEventThread(() -> engine == TrackerMode.LEGACY_V02
+                ? registeredOrdinaryAction() : registeredEntryAction(engine));
             PreviewSessionController<?> session = productionSession(plugin);
             List<String> original = wayState(fixture);
             int originalUndo = UndoRedoHandler.getInstance().getUndoCommands().size();
-            if(engine==TrackerMode.LEGACY_V02){
-                stage="stepwise-controls";runStepwiseGui(report,fixture,action,session,original,originalUndo,requestedMode);System.exit(0);return;
+            if(PluginPreferences.loadTracingSettings().engine()==TrackerMode.LEGACY_V02){
+                stage="stepwise-controls";runStepwiseGui(report,fixture,action,session,original,originalUndo,requestedMode,engine);System.exit(0);return;
             }
             stage = "preview";
             String selectedId = null;
@@ -251,13 +264,20 @@ public final class PublicGuiSmokeMain {
 
     /** Drives the actual Legacy modeless dialog and its existing refinement controls. */
     private static void runStepwiseGui(Path report,PublicGuiSmokeFixture fixture,AlignWayAction action,
-            PreviewSessionController<?> session,List<String> original,int originalUndo,AlignmentMode requestedMode) throws Exception {
+            PreviewSessionController<?> session,List<String> original,int originalUndo,AlignmentMode requestedMode,
+            TrackerMode savedEngine) throws Exception {
+        ManagedHeatmapConfig savedSettings = PluginPreferences.load();
+        TracingSettings savedTracing = PluginPreferences.loadTracingSettings();
         var opened=new CompletableFuture<JDialog>();
         AWTEventListener openedListener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED
             &&e.getWindow() instanceof JDialog dialog&&"legacy-review".equals(dialog.getName()))opened.complete(dialog);};
         Toolkit.getDefaultToolkit().addAWTEventListener(openedListener,AWTEvent.WINDOW_EVENT_MASK);
         JDialog preview;
-        try{onEventThread(()->{action.actionPerformed(null);return null;});preview=opened.get(180,TimeUnit.SECONDS);}
+        try{
+            if (savedEngine == TrackerMode.LEGACY_V02) onEventThread(()->{action.actionPerformed(null);return null;});
+            else dispatchEntryShortcut(savedEngine, action);
+            preview=opened.get(180,TimeUnit.SECONDS);
+        }
         finally{Toolkit.getDefaultToolkit().removeAWTEventListener(openedListener);}
         var owner=onEventThread(()->{
             if(preview.isModal()||!preview.isVisible())throw new IllegalStateException("Legacy review is not modeless");
@@ -270,6 +290,15 @@ public final class PublicGuiSmokeMain {
         List<GeographicPoint> originalCoordinates=onEventThread(()->originalNodes.stream().map(n->new GeographicPoint(n.lat(),n.lon())).toList());
         var rootReview=onEventThread(()->originalReview(owner));
         onEventThread(()->{checkedMode(requestedMode,rootReview.originalConfig().heatmap().alignmentMode());return null;});
+        if (savedEngine != TrackerMode.LEGACY_V02) {
+            AlignmentMode savedMode = savedEngine == TrackerMode.LEGACY_THEN_B
+                ? AlignmentMode.MOVE_EXISTING_NODES : AlignmentMode.PRECISE_SHAPE;
+            checkedMode(savedMode, PluginPreferences.load().alignmentMode());
+            if (!savedSettings.equals(PluginPreferences.load()) || !savedTracing.equals(PluginPreferences.loadTracingSettings()))
+                throw new IllegalStateException("Shortcut changed saved alignment or source settings");
+            if (rootReview.originalConfig().heatmap().trackerMode() != TrackerMode.LEGACY_V02)
+                throw new IllegalStateException("Keyboard entry did not start Legacy");
+        }
         String initialChoice=onEventThread(owner::selectedChoiceIdentity);
         String rootChoice=onEventThread(()->{
             var choices=requiredNamed(preview.getContentPane(),"candidate",JComboBox.class);
@@ -406,7 +435,13 @@ public final class PublicGuiSmokeMain {
             cancelClosed.get(30,TimeUnit.SECONDS);onEventThread(()->null);
             cancelledArchive=checkClosedExport(report.resolveSibling("stepwise-cancelled.zip"),cancelOwner,cancelled,action,cancelledExpected,"cancelled",null);
         } finally{Toolkit.getDefaultToolkit().removeAWTEventListener(cancelListener);}
-        writeSummary(report,"{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\",\"status\":\"PASS\",\"engine\":\"LEGACY_V02\",\"stepwise\":true,\"order\":\""+(bFirst?"B_A":"A_B")+"\",\"mode\":\""+appliedMode+"\",\"firstOutcome\":\""+firstOutcome+"\",\"secondOutcome\":\""+secondOutcome+"\",\"actualNativeCalls\":"+owner.actualNativeCalls()+",\"modeless\":true,\"cachedUndoRedo\":true,\"panZoomOverlay\":true,\"oneCommandApply\":true,\"commandUndoRedo\":true,\"cancelSettled\":true,\"nativeCancellationEntered\":true,\"nativeCancellationObserved\":true,\"nativePhysicalReturned\":true,\"noninitialLegacyParent\":true,\"allStageFindingsRestored\":true,\"archiveBuild\":\"runtime-stepwise-refinement-v1\",\"appliedArchive\":\"stepwise-applied.zip\",\"cancelledArchive\":\"stepwise-cancelled.zip\",\"appliedArchiveSha256\":\""+appliedArchive+"\",\"cancelledArchiveSha256\":\""+cancelledArchive+"\"}\n");
+        if (savedEngine != TrackerMode.LEGACY_V02) {
+            verifySilentSettingsSave();
+            requireUnchanged(fixture, original, originalUndo);
+        }
+        String entryEvidence = savedEngine == TrackerMode.LEGACY_V02 ? "" :
+            ",\"keyboardEntry\":\"" + entryActionKey(savedEngine) + "\",\"settingsAcceptedWithoutNotice\":true";
+        writeSummary(report,"{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\",\"status\":\"PASS\",\"engine\":\"LEGACY_V02\",\"savedEngine\":\""+savedEngine.name()+"\""+entryEvidence+",\"stepwise\":true,\"order\":\""+(bFirst?"B_A":"A_B")+"\",\"mode\":\""+appliedMode+"\",\"firstOutcome\":\""+firstOutcome+"\",\"secondOutcome\":\""+secondOutcome+"\",\"actualNativeCalls\":"+owner.actualNativeCalls()+",\"modeless\":true,\"cachedUndoRedo\":true,\"panZoomOverlay\":true,\"oneCommandApply\":true,\"commandUndoRedo\":true,\"cancelSettled\":true,\"nativeCancellationEntered\":true,\"nativeCancellationObserved\":true,\"nativePhysicalReturned\":true,\"noninitialLegacyParent\":true,\"allStageFindingsRestored\":true,\"archiveBuild\":\"runtime-stepwise-refinement-v1\",\"appliedArchive\":\"stepwise-applied.zip\",\"cancelledArchive\":\"stepwise-cancelled.zip\",\"appliedArchiveSha256\":\""+appliedArchive+"\",\"cancelledArchiveSha256\":\""+cancelledArchive+"\"}\n");
     }
 
     private record ExpectedExport(AlignmentMode mode,
@@ -1135,6 +1170,7 @@ public final class PublicGuiSmokeMain {
             });
             JDialog dialog = settings.get(30, TimeUnit.SECONDS);
             onEventThread(() -> {
+                requireNoObsoleteMethodUi(dialog.getContentPane());
                 var verbose = requiredCheckbox(dialog.getContentPane(), "Verbose logging");
                 if (verbose.isSelected()) throw new IllegalStateException("Settings fixture must start quiet");
                 verbose.doClick();
@@ -1146,6 +1182,10 @@ public final class PublicGuiSmokeMain {
                 return null;
             });
             completed.get(30, TimeUnit.SECONDS);
+            onEventThread(() -> {
+                for (Window window : Window.getWindows()) if (window.isShowing()) requireNoObsoleteMethodUi(window);
+                return null;
+            });
             if (unexpectedModal.get() || onEventThread(dialog::isVisible)) {
                 throw new IllegalStateException("Successful Settings save opened an unexpected modal");
             }
@@ -1166,6 +1206,21 @@ public final class PublicGuiSmokeMain {
         return found.get(0);
     }
 
+    static void requireNoObsoleteMethodUi(Container root) {
+        for (Component component : root.getComponents()) {
+            String text = component instanceof javax.swing.JLabel label ? label.getText()
+                : component instanceof javax.swing.JTextArea area ? area.getText() : null;
+            if (text != null && (text.contains("old A+B Hybrid") || text.contains("tracing method is now Legacy")))
+                throw new IllegalStateException("Obsolete method notice remains visible");
+            if (component instanceof JComboBox<?> combo) {
+                for (int i = 0; i < combo.getItemCount(); i++)
+                    if (combo.getItemAt(i) instanceof TrackerMode)
+                        throw new IllegalStateException("Settings expose a primary tracker selector");
+            }
+            if (component instanceof Container nested) requireNoObsoleteMethodUi(nested);
+        }
+    }
+
     private static void findCheckboxes(Container root, String label, List<javax.swing.JCheckBox> found) {
         for (var component : root.getComponents()) {
             if (component instanceof javax.swing.JCheckBox box && label.equals(box.getText())) found.add(box);
@@ -1180,6 +1235,74 @@ public final class PublicGuiSmokeMain {
                     && action.forcedAlignmentMode() == null) return action;
         }
         throw new IllegalStateException("Registered ordinary Align action is missing");
+    }
+
+    static String entryActionKey(TrackerMode savedEngine) {
+        return switch (savedEngine) {
+            case PROBABILISTIC -> "wayheatmaptracer.align.global";
+            case LEGACY_THEN_B -> "wayheatmaptracer.align.precise.global";
+            case CORRIDOR_AWARE -> "wayheatmaptracer.align.move-nodes.global";
+            default -> throw new IllegalArgumentException("No migration keyboard case");
+        };
+    }
+
+    private static AlignWayAction registeredEntryAction(TrackerMode savedEngine) {
+        var root = MainApplication.getMainFrame().getRootPane();
+        Object action = root.getActionMap().get(entryActionKey(savedEngine));
+        if (!(action instanceof AlignWayAction align)) throw new IllegalStateException("Registered shortcut action missing");
+        AlignmentMode expected = savedEngine == TrackerMode.PROBABILISTIC ? null
+            : savedEngine == TrackerMode.LEGACY_THEN_B ? AlignmentMode.PRECISE_SHAPE : AlignmentMode.MOVE_EXISTING_NODES;
+        if (align.forcedAlignmentMode() != expected) throw new IllegalStateException("Shortcut owns wrong mode override");
+        if (expected == null && align != registeredOrdinaryAction()) throw new IllegalStateException("Ordinary shortcut owns another action");
+        return align;
+    }
+
+    private static void dispatchEntryShortcut(TrackerMode savedEngine, AlignWayAction expected) throws Exception {
+        int key = savedEngine == TrackerMode.PROBABILISTIC ? java.awt.event.KeyEvent.VK_Y
+            : savedEngine == TrackerMode.LEGACY_THEN_B ? java.awt.event.KeyEvent.VK_S : java.awt.event.KeyEvent.VK_M;
+        int modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK | java.awt.event.InputEvent.SHIFT_DOWN_MASK
+            | (savedEngine == TrackerMode.PROBABILISTIC ? 0 : java.awt.event.InputEvent.ALT_DOWN_MASK);
+        var focused = new CompletableFuture<Void>();
+        var delivered = new CompletableFuture<Void>();
+        var manager = java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager();
+        java.beans.PropertyChangeListener focusListener = event -> {
+            if (event.getNewValue() instanceof Component component
+                    && SwingUtilities.getWindowAncestor(component) == MainApplication.getMainFrame()) focused.complete(null);
+        };
+        AWTEventListener keyListener = event -> {
+            if (event instanceof java.awt.event.KeyEvent pressed && pressed.getID() == java.awt.event.KeyEvent.KEY_PRESSED
+                    && pressed.getKeyCode() == key && (pressed.getModifiersEx() & modifiers) == modifiers
+                    && SwingUtilities.getWindowAncestor(pressed.getComponent()) == MainApplication.getMainFrame()) delivered.complete(null);
+        };
+        manager.addPropertyChangeListener("focusOwner", focusListener);
+        Toolkit.getDefaultToolkit().addAWTEventListener(keyListener, AWTEvent.KEY_EVENT_MASK);
+        try {
+            onEventThread(() -> {
+                var root = MainApplication.getMainFrame().getRootPane();
+                Object binding = root.getInputMap(javax.swing.JComponent.WHEN_IN_FOCUSED_WINDOW)
+                    .get(javax.swing.KeyStroke.getKeyStroke(key, modifiers));
+                if (!entryActionKey(savedEngine).equals(binding) || root.getActionMap().get(binding) != expected)
+                    throw new IllegalStateException("Actual shortcut binding differs from registered action");
+                MainApplication.getMainFrame().toFront();
+                MainApplication.getMap().mapView.requestFocusInWindow();
+                Component owner = manager.getFocusOwner();
+                if (owner != null && SwingUtilities.getWindowAncestor(owner) == MainApplication.getMainFrame()) focused.complete(null);
+                return null;
+            });
+            focused.get(30, TimeUnit.SECONDS);
+            var robot = new java.awt.Robot();
+            robot.keyPress(java.awt.event.KeyEvent.VK_CONTROL);
+            robot.keyPress(java.awt.event.KeyEvent.VK_SHIFT);
+            if ((modifiers & java.awt.event.InputEvent.ALT_DOWN_MASK) != 0) robot.keyPress(java.awt.event.KeyEvent.VK_ALT);
+            robot.keyPress(key); robot.keyRelease(key);
+            if ((modifiers & java.awt.event.InputEvent.ALT_DOWN_MASK) != 0) robot.keyRelease(java.awt.event.KeyEvent.VK_ALT);
+            robot.keyRelease(java.awt.event.KeyEvent.VK_SHIFT);
+            robot.keyRelease(java.awt.event.KeyEvent.VK_CONTROL);
+            delivered.get(30, TimeUnit.SECONDS);
+        } finally {
+            manager.removePropertyChangeListener("focusOwner", focusListener);
+            Toolkit.getDefaultToolkit().removeAWTEventListener(keyListener);
+        }
     }
 
     private static JDialog currentProgressDialog() {

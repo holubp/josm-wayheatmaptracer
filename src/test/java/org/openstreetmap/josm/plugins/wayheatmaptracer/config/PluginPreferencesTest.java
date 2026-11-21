@@ -77,16 +77,26 @@ class PluginPreferencesTest {
     }
 
     @Test
-    void explicitModernEnginePreferencesRoundTripWithoutPromotionOrMigration() {
+    void obsoleteLiveEnginePreferencesMigrateToLegacy() {
         Config.getPref().putInt(PREFIX + "tracing.schemaVersion", TracingSettings.CURRENT_SCHEMA_VERSION);
-        for (TrackerMode expected : new TrackerMode[] { TrackerMode.LEGACY_V02, TrackerMode.CORRIDOR_AWARE,
-                TrackerMode.PROBABILISTIC, TrackerMode.DIRECTIONAL_IMAGE, TrackerMode.LEGACY_THEN_B }) {
+        for (TrackerMode expected : TrackerMode.values()) {
+            Config.getPref().put(PREFIX + "trackerMode", expected.name());
             Config.getPref().put(PREFIX + "tracing.engine", expected.name());
+            Config.getPref().put(PREFIX + "color", "blue");
+            Config.getPref().put(PREFIX + "alignmentMode", "PRECISE_SHAPE");
+            Config.getPref().put(PREFIX + "intensitySamplingMode", "DIRECT_LUMINANCE");
+            Config.getPref().putBoolean(PREFIX + "adjustJunctionNodes", true);
+            Config.getPref().put(PREFIX + "tracing.sourceMode", "VISIBLE_LAYER");
             TracingSettings loaded = PluginPreferences.loadTracingSettings();
-            assertEquals(expected, loaded.engine(), "load " + expected);
+            assertEquals(TrackerMode.LEGACY_V02, loaded.engine(), "load " + expected);
+            assertEquals(TrackerMode.LEGACY_V02, PluginPreferences.load().trackerMode());
+            assertEquals("blue", PluginPreferences.load().color());
+            assertEquals("PRECISE_SHAPE", PluginPreferences.load().alignmentMode().name());
+            assertEquals("DIRECT_LUMINANCE", PluginPreferences.load().intensitySamplingMode().name());
+            assertTrue(PluginPreferences.load().adjustJunctionNodes());
+            assertEquals(AlignmentSourceMode.VISIBLE_LAYER, loaded.sourceMode());
             PluginPreferences.saveTracingSettings(loaded);
-            assertEquals(expected.name(), Config.getPref().get(PREFIX + "tracing.engine", ""), "persist " + expected);
-            assertEquals(expected, PluginPreferences.loadTracingSettings().engine(), "reload " + expected);
+            assertEquals(TrackerMode.LEGACY_V02.name(), Config.getPref().get(PREFIX + "tracing.engine", ""));
         }
     }
 
@@ -98,14 +108,14 @@ class PluginPreferencesTest {
     }
 
     @Test
-    void oldHybridPreferencesMigrateWithoutReplacingAnExplicitIndependentEngine() {
+    void oldHybridAndIndependentEngineBothMigrateForLiveUse() {
         Config.getPref().put(PREFIX + "trackerMode", "HYBRID");
         Config.getPref().putInt(PREFIX + "tracing.schemaVersion", TracingSettings.CURRENT_SCHEMA_VERSION);
         Config.getPref().put(PREFIX + "tracing.engine", "PROBABILISTIC");
 
         assertEquals(TrackerMode.LEGACY_V02, PluginPreferences.load().trackerMode());
         assertEquals(TrackerMode.LEGACY_V02.name(), Config.getPref().get(PREFIX + "trackerMode", ""));
-        assertEquals(TrackerMode.PROBABILISTIC, PluginPreferences.loadTracingSettings().engine());
+        assertEquals(TrackerMode.LEGACY_V02, PluginPreferences.loadTracingSettings().engine());
     }
 
     @Test
@@ -118,13 +128,13 @@ class PluginPreferencesTest {
     }
 
     @Test
-    void migrationNoticeSurvivesReloadAndIsConsumedOnlyOnce() {
+    void migrationDoesNotCreateAnObsoleteNotice() {
         Config.getPref().put(PREFIX + "trackerMode", "HYBRID");
         PluginPreferences.load();
         PluginPreferences.loadTracingSettings();
-        assertTrue(PluginPreferences.consumeOldHybridMigrationNotice());
+        assertFalse(Config.getPref().getBoolean(PREFIX + "migration.oldHybridNoticePending", false));
         PluginPreferences.load();
-        assertFalse(PluginPreferences.consumeOldHybridMigrationNotice());
+        assertFalse(Config.getPref().getBoolean(PREFIX + "migration.oldHybridNoticePending", false));
     }
 
     @Test

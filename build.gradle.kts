@@ -200,10 +200,10 @@ tasks.register<JavaExec>("v022PublicGuiSmoke") {
     systemProperty("wayheatmaptracer.guiSmoke.alignmentMode",guiMode)
     systemProperty("wayheatmaptracer.guiSmoke.refinementOrder",guiOrder)
     val root = layout.buildDirectory.dir(when (engine) {
-        "PROBABILISTIC" -> "reports/public-gui-smoke"
-        "LEGACY_THEN_B" -> "reports/public-gui-smoke-hybrid"
+        "PROBABILISTIC" -> "reports/public-gui-smoke-migrate-b"
+        "LEGACY_THEN_B" -> "reports/public-gui-smoke-migrate-sequential"
         "LEGACY_V02" -> "reports/public-gui-smoke-stepwise-${if(guiMode=="PRECISE_SHAPE") "precise" else "move"}-${if(guiOrder=="A_B") "a-b" else "b-a"}"
-        else -> "reports/public-gui-smoke-corridor-aware"
+        else -> "reports/public-gui-smoke-migrate-a"
     })
     doFirst {
         root.get().asFile.mkdirs()

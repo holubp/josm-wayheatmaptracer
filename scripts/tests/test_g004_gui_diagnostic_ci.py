@@ -29,6 +29,13 @@ def _workflow() -> dict[str, object]:
     return loaded
 
 
+def test_gradle_migration_report_paths_match_matrix() -> None:
+    gradle = (ROOT / "build.gradle.kts").read_text(encoding="utf-8")
+    for name in ("public-gui-smoke-migrate-b", "public-gui-smoke-migrate-sequential",
+                 "public-gui-smoke-migrate-a"):
+        assert f'"reports/{name}"' in gradle
+
+
 def test_g004_diagnostic_gui_is_fast_native_and_diagnostic_only() -> None:
     workflow = _workflow()
     jobs = workflow["jobs"]
@@ -89,9 +96,9 @@ def test_diagnostic_job_does_not_change_public_release_gates_or_permissions() ->
     assert jobs["public-gui-smoke"]["needs"] == "public-validation"
     assert jobs["public-gui-smoke"]["strategy"]["matrix"]["include"][-4:] == DIAGNOSTIC_MATRIX
     assert jobs["public-gui-smoke"]["strategy"]["matrix"]["include"][:3] == [
-        {"engine": "PROBABILISTIC", "report": "public-gui-smoke", "mode": "PRECISE_SHAPE", "order": "A_B"},
-        {"engine": "LEGACY_THEN_B", "report": "public-gui-smoke-hybrid", "mode": "PRECISE_SHAPE", "order": "A_B"},
-        {"engine": "CORRIDOR_AWARE", "report": "public-gui-smoke-corridor-aware", "mode": "PRECISE_SHAPE", "order": "A_B"},
+        {"engine": "PROBABILISTIC", "report": "public-gui-smoke-migrate-b", "mode": "PRECISE_SHAPE", "order": "A_B"},
+        {"engine": "LEGACY_THEN_B", "report": "public-gui-smoke-migrate-sequential", "mode": "PRECISE_SHAPE", "order": "A_B"},
+        {"engine": "CORRIDOR_AWARE", "report": "public-gui-smoke-migrate-a", "mode": "MOVE_EXISTING_NODES", "order": "A_B"},
     ]
     assert jobs["public-validation"]["timeout-minutes"] == "300"
     assert jobs["public-validation"]["steps"][-1]["with"]["name"] == "public-validated-wayheatmaptracer"

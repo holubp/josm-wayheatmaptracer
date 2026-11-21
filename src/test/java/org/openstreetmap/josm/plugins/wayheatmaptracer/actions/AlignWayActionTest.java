@@ -90,6 +90,34 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 /** Verifies action-level candidate selection before the modeless preview opens. */
 class AlignWayActionTest {
     @Test
+    void obsoleteExperimentalFactoriesRefuseBeforeCreatingLiveActions() throws Exception {
+        var content = org.openstreetmap.josm.gui.MainApplication.class.getDeclaredField("contentPanePrivate");
+        content.setAccessible(true);
+        Object previousContent = content.get(null);
+        content.set(null, new javax.swing.JPanel());
+        var session = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController<
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService.Computed>(Runnable::run);
+        int checked = 0;
+        try {
+            for (var method : AlignWayAction.class.getDeclaredMethods()) {
+                if (!method.getName().startsWith("experimental") || !method.getName().endsWith("Preview")) continue;
+                checked++;
+                Object[] args = method.getParameterCount() == 0 ? new Object[0] : new Object[] {session};
+                try {
+                    Object result = method.invoke(null, args);
+                    if (result instanceof AlignWayAction action) action.destroy();
+                    org.junit.jupiter.api.Assertions.fail("Factory created a standalone live action: " + method.getName());
+                } catch (java.lang.reflect.InvocationTargetException exception) {
+                    assertTrue(exception.getCause() instanceof UnsupportedOperationException);
+                }
+            }
+            assertEquals(12, checked);
+        } finally {
+            session.close();
+            content.set(null, previousContent);
+        }
+    }
+    @Test
     void intervalRouteLabelsKeepTypedBeforeAfterAcrossSourceRebuild() throws Exception {
         List<ModernTracePipeline.Route> paired=smoothingLabelRoutes();
         List<ModernTracePipeline.Route> nativeOnly=List.of(paired.get(1));
@@ -1093,11 +1121,7 @@ class AlignWayActionTest {
             PluginPreferences.saveGeometryCleanup(GeometryCleanupPreset.STRONG.apply());
             ManagedHeatmapConfig loadedHeatmap = PluginPreferences.load();
             GeometryCleanupConfig loadedCleanup = PluginPreferences.loadGeometryCleanup();
-            AlignmentConfig loaded = new AlignmentConfig(loadedHeatmap, loadedCleanup);
-            AlignWayAction.resolveOrdinaryRoute(new TracingSettings(
-                    TracingSettings.CURRENT_SCHEMA_VERSION, TrackerMode.PROBABILISTIC,
-                    RecoverySettings.defaults(7.01), false, AlignmentSourceMode.MANAGED_TILES),
-                    loaded);
+            assertEquals(TrackerMode.LEGACY_V02, loadedHeatmap.trackerMode());
             assertEquals(loadedHeatmap, PluginPreferences.load());
             assertEquals(loadedCleanup, PluginPreferences.loadGeometryCleanup());
             assertTrue(Config.getPref().getBoolean("wayheatmaptracer.simplifyEnabled", false));

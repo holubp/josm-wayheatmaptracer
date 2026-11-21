@@ -2,7 +2,7 @@
 
 `WayHeatmapTracer` is a JOSM plugin for tracing or realigning selected OSM paths, tracks, and roads against heatmap imagery when the visible activity pattern is clearer than the existing mapped geometry.
 
-The plugin is meant for mappers who already inspect imagery manually, but want help turning a clear heatmap corridor into editable OSM geometry. With managed Strava access configured, it samples fixed-resolution source tiles. Without managed access, it asks JOSM to render the heatmap layer over the selected segment at the required working resolution. The default method is **Legacy v0.2-compatible**. The optional **Corridor-aware (A)** method retains full cross-section intensity profiles, checks corridor stability in a local Gaussian scale space, follows broad or sparse corridors longitudinally, and presents ambiguous parallel interpretations for review. Both paths preview candidates and apply nothing until the mapper confirms.
+The plugin is meant for mappers who already inspect imagery manually, but want help turning a clear heatmap corridor into editable OSM geometry. With managed Strava access configured, it samples fixed-resolution source tiles. Without managed access, it asks JOSM to render the heatmap layer over the selected segment at the required working resolution. Every new alignment starts with **Legacy v0.2-compatible** tracing. The modeless review offers explicit Corridor-aware A and Probabilistic B refinements; nothing is applied until the mapper confirms.
 
 Geometry cleanup is a separate, opt-in stage for future slide candidates. It is configured independently from heatmap sampling and never changes existing OSM geometry merely because its settings dialog was opened or accepted.
 
@@ -65,7 +65,7 @@ the preview before applying.
 - Use cross-section gradient evidence, intensity/prominence, raw/B3/B5 peak-center agreement, and source-pixel roughness when ranking ridge candidates and confirming longitudinal stability
 - Resolve ridge geometry through reliable anchor profiles and constrained intervals, reducing short weak side excursions near crossings
 - Treat source-tile resolution as a real evidence limit: sub-source-pixel alternating wiggles are penalized, while sustained bends remain available as candidate geometry
-- Use the default `Legacy v0.2-compatible` tracker, or select Corridor-aware A, experimental Probabilistic B, or the Precise Shape-only `Hybrid (Legacy then B)` workflow
+- Start with `Legacy v0.2-compatible` tracing, then optionally request A or B from the review; refinements never run automatically.
 - In corridor-aware mode, combine complementary intermittent recording strands into an additional `sparse corridor` candidate when their longitudinal union is coherent. Direct child evidence and bounded interpolation remain distinct, every elementary child stays selectable, and persistent deep-valley parallel roads remain separate.
 - In corridor-aware mode, map RGB to scalar intensity first, interpolate corridor edges and intensity evidence between source samples, then build local L0/L1/L2 Gaussian levels from the imagery already acquired for the slide. Source pixels define evidence uncertainty, not a grid to which the result must snap.
 - In corridor-aware mode, associate the same longitudinal strand through short gaps, fit confidence-weighted 5 m and 12 m robust corridor references, and add a 32 m reference only for weak signal without sustained motion. One exact second-order centerline optimization follows that evidence; temporary side traces cannot authorize a lateral switch, while sustained weak turns and switchbacks retain the local reference.
@@ -99,7 +99,7 @@ the preview before applying.
 - Access values are kept out of docs and diagnostics, but the current plugin stores them in JOSM preferences rather than OS-backed secure storage.
 - Heatmap interpretation is strongest for `hot`, `bluered`, and `purple`. `gray` and `blue` are supported but may still need additional tuning in difficult cases. `gray` is treated as a dual-color scheme because high-activity traces can become pink/magenta rather than merely brighter gray; `purple` uses the real purple/lavender palette path rather than strict old magenta-only hue matching.
 - Strava's current public access appears to expose signed rendered PNG tiles, not the old raw numeric heat-density tile feed used by Strava Slide. Direct intensity modes therefore operate on rendered pixel channels and are intended for scalar imagery, diagnostics, and future compatible sources.
-- Legacy v0.2-compatible is the default method; Corridor-aware (A) is optional. Sparse-corridor parents remain hypotheses for review, not declarations that several traces are one OSM way.
+- New live sessions start with Legacy. A and B are explicit review refinements; sparse-corridor parents remain hypotheses, not declarations that several traces are one OSM way.
 - Parallel-way awareness is opt-in and applies only to the corridor-aware tracker. It uses downloaded nearby `highway=*` ways as read-only ranking context; it never edits those ways and cannot prove lane or carriageway semantics on its own.
 - With complete managed Strava access values, `Stable fixed scale` and `Raw high-resolution` align from fetched source tiles rather than the current screen capture. This makes sliding independent of the current JOSM zoom and allows the selected way to extend outside the current viewport.
 - Without managed Strava access values, alignment falls back to the legacy visible rendered-layer path. In that fallback mode, the plugin temporarily renders the selected segment plus the search corridor through a normal-resolution virtual JOSM viewport. If one viewport would be too large, it pans that virtual viewport over the extent and stitches the rendered chunks for sampling, then restores the user's previous viewport.
@@ -246,7 +246,7 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 ### 2. Recommended Settings
 
 - `Alignment mode`: use `Move Existing Nodes` for normal OSM ways whose node count should remain stable. Use `Precise Shape` when drawing from a rough sketch or when the existing geometry is too coarse.
-- `Ridge tracker`: `Legacy v0.2-compatible` is the default. Corridor-aware A remains an option for corridor centering and sparse longitudinal inference; its `sparse corridor` candidates supplement the retained elementary strands. Experimental Probabilistic B remains independently selectable. `Hybrid (Legacy then B)` first runs Legacy and then refines eligible sections with B; it requires `Precise Shape`. Saved valid engine choices are preserved. The removed A+B Hybrid preference migrates to Legacy with a one-time nonmodal notice.
+- New sessions start with Legacy. Older saved starting-method choices migrate to Legacy; source, alignment mode, palette and protection settings are retained. A and B are chosen explicitly in the review.
 - `Inference mode`, `Inference zoom`, `Validation zoom`, `Search half-width meters`, and `Sample step meters`: used by managed source-tile alignment. `Stable fixed scale` uses the calibrated fixed-scale sampling parameters and avoids broad z15 heat dilation; `Raw high-resolution` uses the source tiles directly. When no managed access values are configured, the plugin uses the legacy visible-layer path instead.
 - Rough 2-5 node sketches use the same configured `Search half-width meters`; the plugin does not silently widen the search. The 25 m default accommodates displaced paths; a narrower saved width remains useful when nearby parallel traces make the intended branch ambiguous.
 - If a corridor-aware preview says the heatmap center leaves the search corridor, the candidate remains selectable for inspection but Apply stays disabled. `Retry with wider search...` re-runs the complete unchanged selection once at an explicitly entered larger physical half-width. It does not alter saved settings, reuse old profiles, or widen automatically, and ordinary retries are capped at a 14 m half-width.
@@ -296,13 +296,13 @@ For rough new paths, draw a simple way approximately along the heatmap trace, se
 All actions are under JOSM `More tools`:
 
 - `Align Way to Heatmap`: `Ctrl+Shift+Y`
-- `Align Way to Heatmap Precisely`: `Alt+Ctrl+Shift+S`
-- `Align Way to Heatmap by Moving Nodes`: `Alt+Ctrl+Shift+M`
+- `Alt+Ctrl+Shift+S`: align once in Precise Shape mode (shortcut only)
+- `Alt+Ctrl+Shift+M`: align once in Move Existing Nodes mode (shortcut only)
 - `Heatmap Layer Settings`: `Ctrl+Shift+U`
 - `Geometry Cleanup Settings`: no default shortcut
 - `Select Longest Junctionless Segment`: `Ctrl+Shift+J`
-- `Export Heatmap Calibration Tiles`: `Alt+Ctrl+Shift+P`
-- `Export Last Alignment Diagnostics`: `Alt+Ctrl+Shift+D`
+- `Diagnostics -> Export Last Alignment Diagnostics`: `Alt+Ctrl+Shift+D`
+- `Diagnostics -> Export Heatmap Calibration Tiles`: `Alt+Ctrl+Shift+P`
 
 ## Debugging And Reporting Bad Slides
 
@@ -497,39 +497,13 @@ The plugin explicitly supports a Strava heatmap imagery workflow for OSM improve
 
 The documentation avoids publishing a raw tokenized imagery URL, but the settings dialog uses the real cookie field names so users can copy the values accurately.
 
-### v0.22 modern preview workflow
+### Stepwise review
 
-Legacy v0.2 is the default. Use the ordinary `More tools -> Align Way to Heatmap`
-action for Corridor-aware A, Probabilistic B, Hybrid (Legacy then B), or Directional
-Image. It presents production alternatives
-in one modeless preview and exports Format-15 diagnostics for the attempt. When a
-tagged, relation-protected, or otherwise complex junction cannot be moved safely,
-the approved fixed-island interval plan leaves that vicinity unchanged and can move
-independently safe sections on either side. Inspect every preview before Apply;
-manual junction adjustment may still be necessary.
-
-Hybrid requires **Precise Shape**. It first computes Legacy geometry, then runs
-B between junction/protected boundaries using that geometry as its reference.
-When B cannot refine one section, that section retains Legacy while other sections
-can still use B. Compare the Legacy-only and assembled alternatives, inspect the
-section table, and select a row to highlight its final geometry on the map. Reported
-support includes the retained sections; absent B confidence is shown as unavailable.
-One final Apply performs the combined change, with one Undo operation. Temporary
-Legacy geometry is never applied to the dataset. The former A+B Hybrid is removed;
-historical captures remain inspectable but cannot execute that removed algorithm.
-
-With junction movement off, Hybrid can leave a connected road fixed and align
-the selected way's interior even when distant members of its hiking or cycling
-route are not downloaded. This requires a complete route member list, complete
-receiver-road geometry, and no parent relations on those partly downloaded routes.
-The junction, connected road and relations remain unchanged. Older captures without that separate proof
-retain their conservative restrictions.
-
-If B stops at its computation limit, the failure message identifies the cause and
-keeps diagnostics export available. Try a shorter selected segment; for refinement
-of an already aligned way, a smaller **Search half-width meters** setting may also
-help. These are manual choices: the plugin does not silently change the width or
-raise its computation limits.
+The ordinary action opens a Legacy preview. Choose A or B explicitly to refine the
+selected candidate, and use review Undo and Redo to navigate retained stages without
+rerunning them. Intermediate previews do not edit OSM; one final Apply creates the
+edit command. Smoothing is unavailable in this build. Historical engine identities
+remain readable in diagnostics and replay; they are not starting-method choices.
 
 Connections are preserved by default. In the modern preview, use **Disconnect
 selected way at shared nodes…** to choose individual shared-node occurrences or

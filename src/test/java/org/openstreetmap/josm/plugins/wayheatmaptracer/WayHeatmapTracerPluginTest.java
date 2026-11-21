@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.swing.Action;
 import javax.swing.JPanel;
+import javax.swing.JMenu;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,6 +31,65 @@ import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 class WayHeatmapTracerPluginTest {
+    @Test
+    void pluginMenuContainsFiveEntriesAndUnloadsThem() throws Exception {
+        Field menuField = MainApplication.class.getDeclaredField("menu");
+        menuField.setAccessible(true);
+        Object previous = menuField.get(null);
+        Field toolbarField = MainApplication.class.getDeclaredField("toolbar");
+        toolbarField.setAccessible(true);
+        Object previousToolbar = toolbarField.get(null);
+        toolbarField.set(null, new org.openstreetmap.josm.gui.preferences.ToolbarPreferences());
+        org.openstreetmap.josm.gui.MainMenu menu = new org.openstreetmap.josm.gui.MainMenu();
+        menuField.set(null, menu);
+        int before = menu.moreToolsMenu.getMenuComponentCount();
+        var attributes = new java.util.jar.Attributes();
+        attributes.putValue("Plugin-Class", WayHeatmapTracerPlugin.class.getName());
+        var info = new org.openstreetmap.josm.plugins.PluginInformation(attributes, "wayheatmaptracer", "test");
+        WayHeatmapTracerPlugin plugin = null;
+        try {
+            plugin = new WayHeatmapTracerPlugin(info);
+            assertEquals(5, menu.moreToolsMenu.getMenuComponentCount() - before);
+            JMenu diagnostics = (JMenu) menu.moreToolsMenu.getMenuComponent(before + 4);
+            assertEquals("Diagnostics", diagnostics.getText());
+            assertEquals(List.of("Export Last Alignment Diagnostics", "Export Heatmap Calibration Tiles"),
+                java.util.Arrays.stream(diagnostics.getMenuComponents())
+                    .map(component -> ((javax.swing.JMenuItem) component).getText()).toList());
+            Field actionsField = WayHeatmapTracerPlugin.class.getDeclaredField("actions");
+            actionsField.setAccessible(true);
+            @SuppressWarnings("unchecked") List<JosmAction> actions = (List<JosmAction>) actionsField.get(plugin);
+            Field bindingsField = WayHeatmapTracerPlugin.class.getDeclaredField("ALIGN_SHORTCUTS");
+            bindingsField.setAccessible(true);
+            List<?> bindings = (List<?>) bindingsField.get(null);
+            var install = java.util.Arrays.stream(WayHeatmapTracerPlugin.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals("installShortcut")).findFirst().orElseThrow();
+            var uninstall = WayHeatmapTracerPlugin.class.getDeclaredMethod("uninstallShortcuts", javax.swing.JComponent.class);
+            install.setAccessible(true); uninstall.setAccessible(true);
+            JPanel target = new JPanel();
+            for (int i = 0; i < 3; i++) install.invoke(plugin, target, bindings.get(i), actions.get(i));
+            assertSame(actions.get(1), target.getActionMap().get("wayheatmaptracer.align.precise.global"));
+            assertSame(actions.get(2), target.getActionMap().get("wayheatmaptracer.align.move-nodes.global"));
+            Field forcedMode = AlignWayAction.class.getDeclaredField("forcedAlignmentMode");
+            forcedMode.setAccessible(true);
+            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.PRECISE_SHAPE,
+                forcedMode.get(actions.get(1)));
+            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.MOVE_EXISTING_NODES,
+                forcedMode.get(actions.get(2)));
+            uninstall.invoke(plugin, target);
+            assertNull(target.getActionMap().get("wayheatmaptracer.align.precise.global"));
+            assertNull(target.getActionMap().get("wayheatmaptracer.align.move-nodes.global"));
+            plugin.destroy();
+            plugin.destroy();
+            assertEquals(before, menu.moreToolsMenu.getMenuComponentCount());
+            plugin = new WayHeatmapTracerPlugin(info);
+            assertEquals(5, menu.moreToolsMenu.getMenuComponentCount() - before);
+        } finally {
+            if (plugin != null) plugin.destroy();
+            menuField.set(null, previous);
+            toolbarField.set(null, previousToolbar);
+        }
+        assertEquals(before, menu.moreToolsMenu.getMenuComponentCount());
+    }
     @BeforeEach
     void resetPreferences() throws Exception {
         Config.setPreferencesInstance(new MemoryPreferences());

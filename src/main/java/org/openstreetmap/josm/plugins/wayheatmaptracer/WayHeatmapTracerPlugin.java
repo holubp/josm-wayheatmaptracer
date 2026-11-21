@@ -1,5 +1,6 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer;
 
+import static org.openstreetmap.josm.tools.I18n.tr;
 import java.awt.Component;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
@@ -58,7 +59,9 @@ public class WayHeatmapTracerPlugin extends Plugin {
     private final AlignWayAction alignPreciseAction;
     private final AlignWayAction alignMoveNodesAction;
     private final PreviewSessionController<LiveBPreviewService.Computed> modernPreviewSession;
+    private final JMenu diagnosticsMenu = new JMenu(tr("Diagnostics"));
     private Timer shortcutInstallRetryTimer;
+    private boolean destroyed;
 
     /**
      * Creates the plugin and installs menu actions.
@@ -68,22 +71,17 @@ public class WayHeatmapTracerPlugin extends Plugin {
     public WayHeatmapTracerPlugin(PluginInformation info) {
         super(info);
         ManagedTileRuntime.initialize(PluginPreferences.load());
-        if (PluginPreferences.consumeOldHybridMigrationNotice()) {
-            javax.swing.SwingUtilities.invokeLater(() -> new org.openstreetmap.josm.gui.Notification(
-                    org.openstreetmap.josm.tools.I18n.tr(
-                        "The old A+B Hybrid has been removed. Your tracing method is now Legacy. "
-                        + "The new Legacy then B Hybrid can be selected in Heatmap Settings."))
-                    .setDuration(org.openstreetmap.josm.gui.Notification.TIME_LONG).show());
-        }
         this.modernPreviewSession = new PreviewSessionController<>(javax.swing.SwingUtilities::invokeLater);
         this.actions = createRegisteredActions(modernPreviewSession);
         this.alignWayAction = (AlignWayAction) actions.get(0);
         this.alignPreciseAction = (AlignWayAction) actions.get(1);
         this.alignMoveNodesAction = (AlignWayAction) actions.get(2);
 
-        for (JosmAction action : actions) {
-            MainMenu.add(MainApplication.getMenu().moreToolsMenu, action);
-        }
+        JMenu menu = MainApplication.getMenu().moreToolsMenu;
+        for (int index : new int[] {0, 3, 4, 5}) MainMenu.add(menu, actions.get(index));
+        MainMenu.add(diagnosticsMenu, actions.get(7));
+        MainMenu.add(diagnosticsMenu, actions.get(6));
+        menu.add(diagnosticsMenu);
         scheduleShortcutInstall();
     }
 
@@ -105,11 +103,15 @@ public class WayHeatmapTracerPlugin extends Plugin {
      * Removes registered actions and shortcuts when JOSM unloads the plugin.
      */
     public void destroy() {
+        if (destroyed) return;
+        destroyed = true;
         org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.clearPlugin(diagnosticOwner);
         AggregateIntensityLayer.removeExisting();
         closeModernPreviewRuntime(modernPreviewSession,
                 () -> PreviewOverlay.getInstance().hide(), ManagedTileRuntime::close);
         JMenu menu = MainApplication.getMenu().moreToolsMenu;
+        menu.remove(diagnosticsMenu);
+        diagnosticsMenu.removeAll();
         Map<Action, Component> byAction = Arrays.stream(menu.getMenuComponents())
             .filter(JMenuItem.class::isInstance)
             .map(JMenuItem.class::cast)

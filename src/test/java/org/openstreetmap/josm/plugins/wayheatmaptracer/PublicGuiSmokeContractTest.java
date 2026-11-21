@@ -68,6 +68,23 @@ class PublicGuiSmokeContractTest {
         for (String other : List.of("HYBRID", "DIRECTIONAL_IMAGE", "unknown"))
             assertThrows(IllegalArgumentException.class, () -> PublicGuiSmokeMain.guiEngine(other));
     }
+    @Test void migrationCasesCoverThreeDistinctRegisteredKeyboardActions() {
+        assertEquals("wayheatmaptracer.align.global", PublicGuiSmokeMain.entryActionKey(TrackerMode.PROBABILISTIC));
+        assertEquals("wayheatmaptracer.align.precise.global", PublicGuiSmokeMain.entryActionKey(TrackerMode.LEGACY_THEN_B));
+        assertEquals("wayheatmaptracer.align.move-nodes.global", PublicGuiSmokeMain.entryActionKey(TrackerMode.CORRIDOR_AWARE));
+        assertThrows(IllegalArgumentException.class, () -> PublicGuiSmokeMain.entryActionKey(TrackerMode.LEGACY_V02));
+    }
+    @Test void actualSettingsControlOracleRejectsNestedTrackerChoices() {
+        var root = new JPanel(); var nested = new JPanel(); root.add(nested);
+        nested.add(new JComboBox<>(new String[] {"color"}));
+        PublicGuiSmokeMain.requireNoObsoleteMethodUi(root);
+        var obsolete = new javax.swing.JLabel("The old A+B Hybrid has been removed. Your tracing method is now Legacy.");
+        nested.add(obsolete);
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireNoObsoleteMethodUi(root));
+        nested.remove(obsolete);
+        nested.add(new JComboBox<>(TrackerMode.values()));
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireNoObsoleteMethodUi(root));
+    }
     @Test void stepwiseControlLookupIsExactAndRejectsAmbiguity() {
         var panel=new JPanel();var apply=new javax.swing.JButton("Apply");apply.setName("legacy-apply");panel.add(apply);
         assertEquals(apply,PublicGuiSmokeMain.requiredNamed(panel,"legacy-apply",javax.swing.JButton.class));
