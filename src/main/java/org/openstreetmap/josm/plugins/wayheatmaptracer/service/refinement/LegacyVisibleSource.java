@@ -52,7 +52,7 @@ public record LegacyVisibleSource(double minimumEast, double minimumNorth,
                 minimumEast, minimumNorth, maximumEast, maximumNorth, projectionUnitsPerViewPixel,
                 groundMetersPerViewPixel, nativePitchMeters, sourceIdentity, projectionCode, sourceReceipt);
     }
-    /** Optional smoothing copy, admitted before allocation and cancellable in <=256 pixel chunks.
+    /** Optional smoothing copy, admitted before allocation and cancellable in {@code <=256} pixel chunks.
      * The old VisibleRaster constructor/accessor cloning contract remains untouched.
      */
     public SmoothingRaster freeze(BufferedImage raster,String sourceIdentity,GeometryWorkContext work) {
