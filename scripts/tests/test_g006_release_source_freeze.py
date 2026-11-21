@@ -1,7 +1,8 @@
-"""G006 released-source freeze against verified RC15, with one reviewed G004 B entry point.
+"""G006 released-source freeze with reviewed G004 amendments to RC15 pins.
 
-The protected Legacy58 path set comes from legacy58-release-check.json.
-Embedded digests keep this guard usable in shallow public CI checkouts.
+The Legacy58 path set and original RC15 digests remain historical authority;
+two reviewed G004 capture-file digests override those RC15 pins. Embedded
+digests keep this guard usable in shallow public CI checkouts.
 """
 import hashlib
 import pathlib
@@ -17,6 +18,13 @@ B_DIR = "src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/service/t
 G004_REVIEWED_SOURCE_SHA256 = {
     "src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/ProbabilisticTraceEngine.java":
         "ecf57b8bd8ad06f89afa304111837c9832d1f51c519b1cc8909611e938efc28e",
+}
+SERVICE_DIR = "src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/service"
+G004_REVIEWED_LEGACY_CAPTURE_SHA256 = {
+    f"{SERVICE_DIR}/AlignmentService.java":
+        "267aac29c1848cce2b61a560241c7a2f86c593411219a1563c0c8ae24670db82",
+    f"{SERVICE_DIR}/TileHeatmapSampler.java":
+        "41acb4d80367ef2d1cfdd8b37f484806b74bbaa6d1c338e90ab24f46d4910e11",
 }
 B_SHA256 = {
     'src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/CensoredDirectionReliability.java':
@@ -223,9 +231,44 @@ class ReleasedSourceFreezeTest(unittest.TestCase):
             )
             self.assertIn(expected_digest, result.failures[0][1])
 
-    def test_protected_legacy58_bytes_match_rc15(self):
+    def test_protected_legacy58_bytes_match_rc15_except_reviewed_g004_capture(self):
         self.assertEqual(58, len(LEGACY_SHA256))
-        self.assert_bytes(LEGACY_SHA256)
+        self.assertEqual(
+            set(G004_REVIEWED_LEGACY_CAPTURE_SHA256),
+            {f"{SERVICE_DIR}/{name}.java" for name in ("AlignmentService", "TileHeatmapSampler")},
+        )
+        self.assertTrue(set(G004_REVIEWED_LEGACY_CAPTURE_SHA256) <= set(LEGACY_SHA256))
+        expected = {**LEGACY_SHA256, **G004_REVIEWED_LEGACY_CAPTURE_SHA256}
+        self.assert_bytes(expected)
+
+    def test_guard_rejects_mutated_reviewed_g004_legacy_capture_files(self):
+        for relative_path in G004_REVIEWED_LEGACY_CAPTURE_SHA256:
+            with self.subTest(path=relative_path):
+                self.assert_legacy_guard_rejects_mutation(relative_path)
+
+    def test_guard_rejects_mutated_unchanged_rc15_legacy_source(self):
+        self.assert_legacy_guard_rejects_mutation(f"{SERVICE_DIR}/RidgeTracker.java")
+
+    def assert_legacy_guard_rejects_mutation(self, relative_path):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_root = pathlib.Path(directory)
+            for path in LEGACY_SHA256:
+                source = ROOT / path
+                destination = temporary_root / path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
+            mutated_path = temporary_root / relative_path
+            mutated_path.write_bytes(mutated_path.read_bytes() + b"\n// mutation\n")
+            case = type(self)("test_protected_legacy58_bytes_match_rc15_except_reviewed_g004_capture")
+            result = unittest.TestResult()
+            with mock.patch.object(sys.modules[__name__], "ROOT", temporary_root):
+                case.run(result)
+            self.assertEqual([], result.errors)
+            self.assertEqual(1, len(result.failures))
+            expected_digest = G004_REVIEWED_LEGACY_CAPTURE_SHA256.get(
+                relative_path, LEGACY_SHA256[relative_path]
+            )
+            self.assertIn(expected_digest, result.failures[0][1])
 
     def assert_bytes(self, expected):
         for path, digest in expected.items():

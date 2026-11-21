@@ -336,7 +336,11 @@ def test_workflow_pins_same_host_for_validation_and_both_gui_engines() -> None:
     assert gui_receipt_upload["with"]["name"] == "${{ matrix.report }}-host-runtime"
     assert gui_receipt_upload["with"]["path"] == "build/reports/${{ matrix.report }}/host-runtime.json"
     assert jobs["public-gui-smoke"]["strategy"]["matrix"]["include"] == [
-        {"engine": "PROBABILISTIC", "report": "public-gui-smoke"},
-        {"engine": "LEGACY_THEN_B", "report": "public-gui-smoke-hybrid"},
-        {"engine": "CORRIDOR_AWARE", "report": "public-gui-smoke-corridor-aware"},
+        {"engine": "PROBABILISTIC", "report": "public-gui-smoke", "mode": "PRECISE_SHAPE", "order": "A_B"},
+        {"engine": "LEGACY_THEN_B", "report": "public-gui-smoke-hybrid", "mode": "PRECISE_SHAPE", "order": "A_B"},
+        {"engine": "CORRIDOR_AWARE", "report": "public-gui-smoke-corridor-aware", "mode": "PRECISE_SHAPE", "order": "A_B"},
+        {"engine": "LEGACY_V02", "report": "public-gui-smoke-stepwise-precise-a-b", "mode": "PRECISE_SHAPE", "order": "A_B"},
+        {"engine": "LEGACY_V02", "report": "public-gui-smoke-stepwise-precise-b-a", "mode": "PRECISE_SHAPE", "order": "B_A"},
+        {"engine": "LEGACY_V02", "report": "public-gui-smoke-stepwise-move-a-b", "mode": "MOVE_EXISTING_NODES", "order": "A_B"},
+        {"engine": "LEGACY_V02", "report": "public-gui-smoke-stepwise-move-b-a", "mode": "MOVE_EXISTING_NODES", "order": "B_A"},
     ]
