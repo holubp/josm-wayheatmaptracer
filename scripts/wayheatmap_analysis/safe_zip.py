@@ -51,6 +51,7 @@ class BundleSource:
 
     name: str
     data: bytes
+    provenance: str = "ordinary"
 
 
 @dataclass(frozen=True)
@@ -154,6 +155,7 @@ class SafeArchiveReader:
         path: Path,
         on_bundle: Callable[[BundleSource], None] | None = None,
         on_member: Callable[[ScannableMember], None] | None = None,
+        on_lineage: Callable[[str], None] | None = None,
     ) -> ArchiveInspection:
         """Read and validate one snapshot, optionally streaming bundles and bounded text chunks."""
 
@@ -189,7 +191,8 @@ class SafeArchiveReader:
         self._validate_initial_materialization(len(data))
         budget = _Budget(live_materialized=len(data), peak_materialized=len(data))
         members: list[ScannableMember] = []
-        bundles = self._discover(path.name, data, 0, budget, members, on_bundle, on_member)
+        bundles = self._discover(path.name, data, 0, budget, members, on_bundle, on_member,
+                                 on_lineage=on_lineage)
         return ArchiveInspection(digest.hexdigest(), len(data), tuple(bundles), tuple(members))
 
     def discover(self, path: Path) -> list[BundleSource]:
@@ -197,14 +200,16 @@ class SafeArchiveReader:
 
         return list(self.inspect(path).bundles)
 
-    def for_each_bundle(self, path: Path, callback: Callable[[BundleSource], None]) -> None:
+    def for_each_bundle(self, path: Path, callback: Callable[[BundleSource], None],
+                        on_lineage: Callable[[str], None] | None = None) -> None:
         """Validate an outer ZIP and invoke callback for each bundle as it is found.
 
         The callback must finish using the bundle before returning; nested ZIP
         payloads are released immediately afterwards.
         """
 
-        self.inspect(path, on_bundle=callback, on_member=lambda ignored: None)
+        self.inspect(path, on_bundle=callback, on_member=lambda ignored: None,
+                     on_lineage=on_lineage)
 
     def discover_bytes(self, name: str, data: bytes) -> list[BundleSource]:
         """Discover validated bundles from bounded caller-owned bytes."""
@@ -223,6 +228,8 @@ class SafeArchiveReader:
         members: list[ScannableMember],
         on_bundle: Callable[[BundleSource], None] | None = None,
         on_member: Callable[[ScannableMember], None] | None = None,
+        provenance: str = "ordinary",
+        on_lineage: Callable[[str], None] | None = None,
     ) -> list[BundleSource]:
         if depth > self.limits.max_depth:
             raise ArchiveError("NESTING_DEPTH", "maximum nesting depth exceeded")
@@ -290,6 +297,8 @@ class SafeArchiveReader:
                                 payload.close()
                                 self._release(payload_size, budget)
                     names = {item.filename for item in infos if not item.is_dir()}
+                    if "refinement-lineage.json" in names and on_lineage is not None:
+                        on_lineage(name)
                     format15_production = {
                         "replay-manifest.json",
                         "frozen-input.bin",
@@ -298,7 +307,7 @@ class SafeArchiveReader:
                         "evidence-frame.json",
                     }.issubset(names)
                     if "candidate-metrics.csv" in names or format15_production:
-                        bundle = BundleSource(name, source)
+                        bundle = BundleSource(name, source, provenance)
                         if on_bundle is not None:
                             on_bundle(bundle)
                             return []
@@ -317,8 +326,13 @@ class SafeArchiveReader:
                         nested_payload = self._read_member(archive, info, budget)
                         nested_expansion_baseline = budget.uncompressed
                         try:
+                            child_provenance = provenance
+                            if ("refinement-lineage.json" in names
+                                    and info.filename == "legacy-root-diagnostics.zip"):
+                                child_provenance = "root-context-only"
                             result.extend(self._discover(nested_name, nested_payload,
-                                depth + 1, budget, members, on_bundle, on_member))
+                                depth + 1, budget, members, on_bundle, on_member,
+                                child_provenance, on_lineage))
                         finally:
                             budget.uncompressed = nested_expansion_baseline
                             self._release(len(nested_payload), budget)

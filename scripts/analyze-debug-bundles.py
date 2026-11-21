@@ -48,6 +48,8 @@ def rating_score(value: str) -> int | None:
 
 def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
     """Merge candidate metrics and optional human ratings for one debug bundle."""
+    if bundle.provenance == "root-context-only":
+        return []
     manifest = json_object(read_zip_text(bundle, "manifest.json"))
     diagnostics = json_object(read_zip_text(bundle, "diagnostics.json"))
     bundle_format = int(manifest.get("formatVersion", 0) or 0)
@@ -1049,7 +1051,9 @@ def main() -> None:
     rows: list[dict[str, object]] = []
     reader = SafeArchiveReader()
     for path in bundle_paths:
-        reader.for_each_bundle(path, lambda bundle: rows.extend(bundle_rows(bundle)))
+        reader.for_each_bundle(path, lambda bundle: rows.extend(bundle_rows(bundle)),
+            on_lineage=lambda name: print(
+                f"{name}: current refinement metrics unavailable.", file=sys.stderr))
 
     if args.raw_csv:
         with args.raw_csv.open("w", newline="", encoding="utf-8") as handle:

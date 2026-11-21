@@ -23,6 +23,54 @@ UNDULATION_ANALYZER = REPOSITORY / "scripts" / "analyze-slide-undulations.py"
 class DebugAnalyzerCompatibilityTest(unittest.TestCase):
     """Checks schema compatibility using generated bundles with no field data."""
 
+    def test_lineage_without_root_reports_unavailable_in_both_clis(self) -> None:
+        for lineage in ('{}', '{"rootContext":{"availability":"unavailable"}}'):
+            outer = io.BytesIO()
+            with zipfile.ZipFile(outer, "w") as archive:
+                archive.writestr("refinement-lineage.json", lineage)
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "input.zip"
+                source.write_bytes(outer.getvalue())
+                for script, option in ((DEBUG_ANALYZER, "--raw-csv"),
+                                       (UNDULATION_ANALYZER, "--csv")):
+                    with self.subTest(lineage=lineage, script=script.name):
+                        output = root / (script.stem + ".csv")
+                        result = subprocess.run([sys.executable, str(script), str(source), option,
+                                                 str(output)], capture_output=True, text=True, check=True)
+                        self.assertEqual([], read_csv(output))
+                        self.assertIn("current refinement metrics unavailable", result.stderr)
+
+    def test_lineage_root_is_not_reported_as_current_by_either_cli(self) -> None:
+        inner = debug_bundle(14, "synthetic-root", "preview-open")
+        outer = io.BytesIO()
+        with zipfile.ZipFile(outer, "w") as archive:
+            archive.writestr("refinement-lineage.json", "{}")
+            archive.writestr("legacy-root-diagnostics.zip", inner)
+            archive.writestr("checksums.sha256", hashlib.sha256(inner).hexdigest()
+                             + "  legacy-root-diagnostics.zip\n")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input.zip"
+            source.write_bytes(outer.getvalue())
+            for script, option in ((DEBUG_ANALYZER, "--raw-csv"),
+                                   (UNDULATION_ANALYZER, "--csv")):
+                with self.subTest(script=script.name):
+                    output = root / (script.stem + ".csv")
+                    result = subprocess.run([sys.executable, str(script), str(source), option,
+                                             str(output)], capture_output=True, text=True, check=True)
+                    self.assertEqual([], read_csv(output))
+                    self.assertIn("current refinement metrics unavailable", result.stderr)
+
+        # The same filename has no special meaning without lineage parent context.
+        ordinary = io.BytesIO()
+        with zipfile.ZipFile(ordinary, "w") as archive:
+            archive.writestr("legacy-root-diagnostics.zip", inner)
+        for payload in (inner, ordinary.getvalue()):
+            rows, undulations = run_analyzers(payload)
+            self.assertEqual("synthetic-root", rows[0]["plugin_version"])
+            self.assertEqual("synthetic-root", undulations[0]["plugin_version"])
+
     def test_scored_execution_work_is_separate_from_logical_extensions(self) -> None:
         data = io.BytesIO(debug_bundle(15, "0.22.0-rc.next", "preview-open"))
         with zipfile.ZipFile(data, "a") as archive:

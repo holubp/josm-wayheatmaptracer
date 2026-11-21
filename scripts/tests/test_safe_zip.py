@@ -39,6 +39,50 @@ def production_bundle():
     ])
 
 
+def test_lineage_root_remains_scanned_and_subject_to_limits(tmp_path):
+    marker = b"Cookie: synthetic-secret"
+    payload = b"A" * (1024 * 1024 - 2) + marker
+    inner = make([("candidate-metrics.csv", b"candidate_id\na\n"), ("notes.txt", payload)])
+    outer = make([("refinement-lineage.json", b"{}"), ("legacy-root-diagnostics.zip", inner)])
+    path = tmp_path / "outer.zip"
+    path.write_bytes(outer)
+    chunks = []
+    bundles = []
+    limits = ArchiveLimits(max_ratio=10000, max_text_member_bytes=16)
+    SafeArchiveReader(limits).inspect(path, on_bundle=bundles.append,
+                                      on_member=lambda member: chunks.append(member.text))
+    assert len(bundles) == 1
+    assert bundles[0].provenance == "root-context-only"
+    assert any(marker.decode() in chunk for chunk in chunks)
+    for limits, code in ((ArchiveLimits(max_depth=0), "NESTING_DEPTH"),
+                         (ArchiveLimits(max_total_entries=2), "TOTAL_ENTRY_LIMIT"),
+                         (ArchiveLimits(max_uncompressed_bytes=len(inner)), "UNCOMPRESSED_SIZE"),
+                         (ArchiveLimits(max_peak_materialized_bytes=len(outer)), "MEMORY_LIMIT")):
+        with pytest.raises(ArchiveError) as caught:
+            SafeArchiveReader(limits).inspect(path, on_member=lambda member: None)
+        assert caught.value.code == code
+
+
+def test_rootless_lineage_notification_preserves_nested_scan_and_limits(tmp_path):
+    marker = b"Cookie: synthetic-secret"
+    inner = make([("notes.txt", b"A" * (1024 * 1024 - 2) + marker)])
+    path = tmp_path / "lineage.zip"
+    path.write_bytes(make([("refinement-lineage.json", b"{}"), ("other.zip", inner)]))
+    chunks, wrappers = [], []
+    SafeArchiveReader(ArchiveLimits(max_ratio=10000, max_text_member_bytes=16)).inspect(
+        path, on_member=lambda member: chunks.append(member.text), on_lineage=wrappers.append)
+    assert wrappers == ["lineage.zip"]
+    assert any(marker.decode() in chunk for chunk in chunks)
+    for limits, code in ((ArchiveLimits(max_depth=0, max_ratio=10000), "NESTING_DEPTH"),
+                         (ArchiveLimits(max_total_entries=2, max_ratio=10000), "TOTAL_ENTRY_LIMIT"),
+                         (ArchiveLimits(max_uncompressed_bytes=len(inner), max_ratio=10000), "UNCOMPRESSED_SIZE"),
+                         (ArchiveLimits(max_peak_materialized_bytes=path.stat().st_size, max_ratio=10000), "MEMORY_LIMIT")):
+        with pytest.raises(ArchiveError) as caught:
+            SafeArchiveReader(limits).inspect(
+                path, on_member=lambda member: None, on_lineage=lambda name: None)
+        assert caught.value.code == code
+
+
 def test_recognizes_format15_production_signature_without_legacy_metrics():
     bundles = discover(production_bundle())
 

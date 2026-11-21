@@ -1,5 +1,7 @@
 # AGENTS
 
+- Refinement lineage root-context archives are historical evidence, not current metrics. Preserve explicit unavailable-current analytics even without the optional root ZIP; excluding historical rows must never skip nested privacy scanning or weaken archive limits.
+
 - Corridor A R7 measured-position changes apply only to legitimately non-ADMITTED original domains. Preserve the R4 state/gap graph, R6 arithmetic for unmeasured or predicted rows, historical ADMITTED solves, and explicit older capture/replay identities. A direct parent envelope does not certify bright midpoint support. Record actual executed policies; absent or unretained observations are unavailable rather than inferred from a requested tag, and bounded metadata remains charged within existing admission limits.
 - Raw tracker geometry and final fixed-anchor reconstruction can have different point counts. Test typed occurrence identities, protected assignments and geometric coverage rather than sharing raw/final indices. Use stable local-vector projection for near-collinear distance oracles; keep meaningful tolerances instead of widening them to conceal squared-distance cancellation.
 

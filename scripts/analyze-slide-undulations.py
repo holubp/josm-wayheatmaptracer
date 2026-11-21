@@ -66,7 +66,8 @@ def for_each_bundle(paths: list[Path], callback: Callable[[Bundle], None]) -> No
             for child in sorted(path.glob("*.zip")):
                 for_each_bundle([child], callback)
             continue
-        reader.for_each_bundle(path, callback)
+        reader.for_each_bundle(path, callback, on_lineage=lambda name: print(
+            f"{name}: current refinement metrics unavailable.", file=sys.stderr))
 
 
 def discover_nested_bundle(name: str, data: bytes, depth: int) -> list[Bundle]:
@@ -86,6 +87,8 @@ def is_debug_bundle(data: bytes) -> bool:
 
 def analyze_bundle(bundle: Bundle) -> list[dict[str, object]]:
     """Compute geometry, offset, and heatmap-profile metrics for every candidate in a bundle."""
+    if bundle.provenance == "root-context-only":
+        return []
     with zipfile.ZipFile(io.BytesIO(bundle.data)) as archive:
         diagnostics = read_json(archive, "diagnostics.json")
         manifest = read_json(archive, "manifest.json")

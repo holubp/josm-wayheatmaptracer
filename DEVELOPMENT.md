@@ -545,6 +545,11 @@ python3 scripts/analyze-debug-bundles.py problems-3.zip --raw-csv build/candidat
 python3 scripts/analyze-slide-undulations.py problems-3.zip --csv build/undulations.csv
 ```
 
+Refinement lineage archives may contain `legacy-root-diagnostics.zip` as historical
+context only. Both analyzers exclude those metrics from current-result rows and
+report current refinement metrics unavailable, including when root context is
+absent. Nested privacy scanning and archive limits still apply to that context.
+
 Bulk private-corpus inventory must use the bounded shared reader and an explicit root:
 
 ```bash

@@ -375,6 +375,9 @@ python3 scripts/analyze-slide-undulations.py problems.zip --csv build/undulation
 python3 scripts/validate-sampling-scale.py --pretty
 ```
 
+For refinement lineage archives, the analyzers report unavailable current metrics
+instead of treating nested Legacy root diagnostics as the refinement result.
+
 For a bounded privacy scan and deterministic manifest of many local archives,
 run `scripts/calibrate-lateral-stability.py` with an explicit `--archive-root`,
 include patterns, an ignored `build/` output directory, and
