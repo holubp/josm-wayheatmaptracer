@@ -63,6 +63,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedImagerySer
 
 /** Runs a public analytic fixture through the registered ordinary JOSM GUI action. */
 public final class PublicGuiSmokeMain {
+    private static String firstRefinementFailureEvidence;
     private PublicGuiSmokeMain() { }
 
     public static void main(String[] args) throws Exception {
@@ -237,7 +238,8 @@ public final class PublicGuiSmokeMain {
             writeSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
                     + "\"status\":\"FAIL\",\"stage\":\"" + safeToken(stage)
                     + "\",\"errorType\":\"" + safeToken(failure.getClass().getSimpleName())
-                    + "\"}\n");
+                    + "\"" + (firstRefinementFailureEvidence == null ? "" : ",\"firstRefinement\":" + firstRefinementFailureEvidence)
+                    + "}\n");
             failure.printStackTrace();
             System.exit(1);
         }
@@ -278,7 +280,7 @@ public final class PublicGuiSmokeMain {
         var first=bFirst?StageKind.REFINE_B:StageKind.REFINE_A;
         var second=bFirst?StageKind.REFINE_A:StageKind.REFINE_B;
         checkDialogLayout(preview);
-        keyboardAndAwaitStage(preview,owner,bFirst?"refineB":"refineA",first);
+        keyboardAndAwaitStage(report,preview,owner,bFirst?"refineB":"refineA",first);
         checkDialogLayout(preview);
         onEventThread(()->{
             checkedMode(requestedMode,owner.currentNative().orElseThrow().operation().orElseThrow().ticket().mode());
@@ -502,10 +504,20 @@ public final class PublicGuiSmokeMain {
         }
         if (!reachedRoot) throw new IllegalStateException("Footer control is outside the dialog");
     }
-    private static void keyboardAndAwaitStage(JDialog dialog, LegacyRefinementWorkflow owner,
+    enum FirstChildState { WAIT, CHILD, NO_CHILD, LOST_OWNER }
+    static FirstChildState firstChildState(boolean actionObserved, boolean busy, boolean owns,
+            boolean expectedChild) {
+        if (!actionObserved) return FirstChildState.WAIT;
+        if (!owns) return FirstChildState.LOST_OWNER;
+        if (busy) return FirstChildState.WAIT;
+        return expectedChild ? FirstChildState.CHILD : FirstChildState.NO_CHILD;
+    }
+    private static void keyboardAndAwaitStage(Path report, JDialog dialog, LegacyRefinementWorkflow owner,
             String button, StageKind expected) throws Exception {
         var focused = new CompletableFuture<Void>();
         var keyDelivered = new CompletableFuture<Void>();
+        var actionObserved = new AtomicBoolean();
+        var entry = new java.util.concurrent.atomic.AtomicReference<LegacyRefinementWorkflow.NativeEntry>();
         var ready = new CompletableFuture<Void>();
         var target = onEventThread(() -> requiredNamed(dialog.getContentPane(), button, javax.swing.JButton.class));
         java.awt.event.FocusListener focusListener = new java.awt.event.FocusAdapter() {
@@ -517,13 +529,31 @@ public final class PublicGuiSmokeMain {
             }
         };
         Runnable check = () -> {
-            if (owner.busy()) return;
-            if (owner.nativeSelected() && owner.currentStage().kind() == expected) ready.complete(null);
+            boolean child = owner.nativeSelected() && owner.currentStage().kind() == expected;
+            switch (firstChildState(actionObserved.get(), owner.busy(), owner.ownsPublication(), child)) {
+                case CHILD -> ready.complete(null);
+                case NO_CHILD -> ready.completeExceptionally(new IllegalStateException("First refinement settled without requested child"));
+                case LOST_OWNER -> ready.completeExceptionally(new IllegalStateException("First refinement lost publication ownership"));
+                case WAIT -> { }
+            }
         };
+        java.awt.event.ActionListener actionListener = event -> { actionObserved.set(true); SwingUtilities.invokeLater(check); };
         java.beans.PropertyChangeListener listener = event -> SwingUtilities.invokeLater(check);
+        javax.swing.event.DocumentListener documentListener = new javax.swing.event.DocumentListener() {
+            public void insertUpdate(javax.swing.event.DocumentEvent event) { SwingUtilities.invokeLater(check); }
+            public void removeUpdate(javax.swing.event.DocumentEvent event) { SwingUtilities.invokeLater(check); }
+            public void changedUpdate(javax.swing.event.DocumentEvent event) { SwingUtilities.invokeLater(check); }
+        };
+        owner.firstNativeEntry().whenComplete((nativeEntry, failure) -> {
+            if (nativeEntry != null) {
+                entry.set(nativeEntry);
+                nativeEntry.settlement().whenComplete((ignored, settlementFailure) -> SwingUtilities.invokeLater(check));
+            }
+        });
         onEventThread(() -> {
             if (!target.isEnabled()) throw new IllegalStateException("Keyboard refinement is disabled");
-            target.addFocusListener(focusListener); target.addKeyListener(keyListener);
+            target.addFocusListener(focusListener); target.addKeyListener(keyListener); target.addActionListener(actionListener);
+            requiredNamed(dialog.getContentPane(), "quality", javax.swing.JTextArea.class).getDocument().addDocumentListener(documentListener);
             requiredNamed(dialog.getContentPane(), "stage", javax.swing.JLabel.class).addPropertyChangeListener(listener);
             requiredNamed(dialog.getContentPane(), "refineA", javax.swing.JButton.class).addPropertyChangeListener(listener);
             target.scrollRectToVisible(new java.awt.Rectangle(0, 0, target.getWidth(), target.getHeight()));
@@ -545,11 +575,42 @@ public final class PublicGuiSmokeMain {
                     owner.nativeSelected() && owner.currentStage().kind() == expected);
                 return null;
             });
+        } catch (Exception failure) {
+            try {
+                String evidence = onEventThread(() -> firstChildEvidence(owner, expected, actionObserved.get(), keyDelivered.isDone(), entry.get()));
+                firstRefinementFailureEvidence = evidence;
+                System.err.println("First refinement diagnostics: " + evidence);
+                writeSummary(report.resolveSibling("first-refinement-diagnostics.json"), evidence + "\n");
+            } catch (Exception diagnosticFailure) { failure.addSuppressed(diagnosticFailure); }
+            throw failure;
         } finally {
-            onEventThread(() -> { target.removeFocusListener(focusListener); target.removeKeyListener(keyListener);
+            onEventThread(() -> { target.removeFocusListener(focusListener); target.removeKeyListener(keyListener); target.removeActionListener(actionListener);
+                requiredNamed(dialog.getContentPane(), "quality", javax.swing.JTextArea.class).getDocument().removeDocumentListener(documentListener);
                 requiredNamed(dialog.getContentPane(), "stage", javax.swing.JLabel.class).removePropertyChangeListener(listener);
                 requiredNamed(dialog.getContentPane(), "refineA", javax.swing.JButton.class).removePropertyChangeListener(listener); return null; });
         }
+    }
+    private static String firstChildEvidence(LegacyRefinementWorkflow owner, StageKind expected,
+            boolean action, boolean key, LegacyRefinementWorkflow.NativeEntry entry) {
+        var diagnostics = owner.latestAttemptDiagnostics();
+        var pipeline = diagnostics.flatMap(d -> d.pipeline());
+        String phase = diagnostics.map(d -> d.phase().name()).orElse("UNAVAILABLE");
+        String cause = diagnostics.map(d -> d.cause().name()).orElse("UNAVAILABLE");
+        String publication = diagnostics.map(d -> d.publication().name()).orElse("UNAVAILABLE");
+        String operationKind = diagnostics.map(d -> d.binding().ticket().kind().name()).orElse("UNAVAILABLE");
+        String outcome = pipeline.map(p -> p.outcome().name()).orElse("UNAVAILABLE");
+        String actualStage = owner.nativeSelected() ? owner.currentStage().kind().name() : "ROOT_LEGACY";
+        return "{\"schema\":\"wayheatmaptracer-first-refinement-1\",\"expected\":\"" + expected.name()
+            + "\",\"stage\":\"" + actualStage + "\",\"keyDelivered\":" + key + ",\"actionObserved\":" + action
+            + ",\"owned\":" + owner.ownsPublication() + ",\"busy\":" + owner.busy()
+            + ",\"nativeCalls\":" + owner.actualNativeCalls() + ",\"nativeEntryObserved\":" + (entry != null)
+            + ",\"nativeEntered\":" + (entry == null ? "null" : Boolean.toString(entry.entered()))
+            + ",\"workerReturned\":" + (entry == null ? "null" : Boolean.toString(entry.workerReturned()))
+            + ",\"settled\":" + (entry == null ? "null" : Boolean.toString(entry.settlement().toCompletableFuture().isDone()))
+            + ",\"diagnosticsAvailability\":\"" + owner.attemptDiagnosticsAvailability().name()
+            + "\",\"operationKind\":\"" + operationKind + "\",\"phase\":\"" + phase + "\",\"cause\":\"" + cause
+            + "\",\"publication\":\"" + publication + "\",\"pipelineOutcome\":\"" + outcome
+            + "\",\"pipelineAttempts\":" + pipeline.map(p -> Integer.toString(p.attempts().size())).orElse("null") + "}";
     }
     private static void checkDialogLayout(JDialog dialog) throws Exception {
         onEventThread(() -> {

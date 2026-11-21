@@ -140,6 +140,13 @@ class PublicGuiSmokeContractTest {
         });
         assertTrue(added.get());
     }
+    @Test void firstChildStateDistinguishesIdleBeforeActionFromSettledRefusal() {
+        assertEquals(PublicGuiSmokeMain.FirstChildState.WAIT, PublicGuiSmokeMain.firstChildState(false, false, true, false));
+        assertEquals(PublicGuiSmokeMain.FirstChildState.WAIT, PublicGuiSmokeMain.firstChildState(true, true, true, false));
+        assertEquals(PublicGuiSmokeMain.FirstChildState.NO_CHILD, PublicGuiSmokeMain.firstChildState(true, false, true, false));
+        assertEquals(PublicGuiSmokeMain.FirstChildState.CHILD, PublicGuiSmokeMain.firstChildState(true, false, true, true));
+        assertEquals(PublicGuiSmokeMain.FirstChildState.LOST_OWNER, PublicGuiSmokeMain.firstChildState(true, false, false, false));
+    }
     @Test void stepwisePublicFixtureHasEveryNativePaletteAtBothZooms() throws Exception {
         Path root=temporary.resolve("stepwise-cache");
         var fixture=PublicGuiSmokeFixture.create(temporary.resolve("stepwise-input"));
