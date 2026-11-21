@@ -66,6 +66,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedImagerySer
 /** Runs a public analytic fixture through the registered ordinary JOSM GUI action. */
 public final class PublicGuiSmokeMain {
     private static String firstRefinementFailureEvidence;
+    private static String laterRefinementFailureEvidence;
     private PublicGuiSmokeMain() { }
 
     public static void main(String[] args) throws Exception {
@@ -241,6 +242,7 @@ public final class PublicGuiSmokeMain {
                     + "\"status\":\"FAIL\",\"stage\":\"" + safeToken(stage)
                     + "\",\"errorType\":\"" + safeToken(failure.getClass().getSimpleName())
                     + "\"" + (firstRefinementFailureEvidence == null ? "" : ",\"firstRefinement\":" + firstRefinementFailureEvidence)
+                    + (laterRefinementFailureEvidence == null ? "" : ",\"laterRefinement\":" + laterRefinementFailureEvidence)
                     + "}\n");
             failure.printStackTrace();
             System.exit(1);
@@ -265,6 +267,7 @@ public final class PublicGuiSmokeMain {
             return workflow;
         });
         List<Node> originalNodes=onEventThread(()->List.copyOf(fixture.selectedWay().getNodes()));
+        List<GeographicPoint> originalCoordinates=onEventThread(()->originalNodes.stream().map(n->new GeographicPoint(n.lat(),n.lon())).toList());
         var rootReview=onEventThread(()->originalReview(owner));
         onEventThread(()->{checkedMode(requestedMode,rootReview.originalConfig().heatmap().alignmentMode());return null;});
         String initialChoice=onEventThread(owner::selectedChoiceIdentity);
@@ -312,7 +315,7 @@ public final class PublicGuiSmokeMain {
         if(owner.actualNativeCalls()!=firstCalls||!ManagedTileRuntime.initializedCoordinator().stats().equals(firstSource))throw new IllegalStateException("Cached navigation performed extra native/source work");
         var firstStage=onEventThread(owner::currentStage);
         requireUnchanged(fixture,original,originalUndo);
-        clickAndAwaitStage(preview,owner,bFirst?"refineA":"refineB",second);
+        clickAndAwaitStage(report,preview,owner,bFirst?"refineA":"refineB",second);
         var plan=onEventThread(()->{
             var stage=owner.currentStage();
             checkedMode(requestedMode,owner.currentNative().orElseThrow().operation().orElseThrow().ticket().mode());
@@ -339,10 +342,15 @@ public final class PublicGuiSmokeMain {
         PublicGuiSmokeOracle.verifyFinalGeometry(plan.finalPreviewWays().get(plan.selectedWayKey()));
         requireUnchanged(fixture,original,originalUndo);
         if(onEventThread(()->requiredNamed(preview.getContentPane(),"legacy-confirm",javax.swing.JButton.class).isVisible()))confirmStepwise(preview);
+        var appliedExpected=onEventThread(()->snapshotExport(owner,requestedMode,originalCoordinates,rootChoice,rootGeometry,firstStage,firstChoice,firstGeometry));
+        var appliedClosed=observeClose(preview);
         onEventThread(()->{
             var apply=requiredNamed(preview.getContentPane(),"legacy-apply",javax.swing.JButton.class);
             if(!apply.isEnabled())throw new IllegalStateException("Actual final Apply remains disabled");apply.doClick();return null;
         });
+        appliedClosed.get(30,TimeUnit.SECONDS);
+        onEventThread(()->null);
+        String appliedArchive=checkClosedExport(report.resolveSibling("stepwise-applied.zip"),owner,preview,action,appliedExpected,"applied",plan.finalPreviewWays().get(plan.selectedWayKey()));
         onEventThread(()->{
             if(preview.isDisplayable())throw new IllegalStateException("Applied review window remained open");
             if(UndoRedoHandler.getInstance().getUndoCommands().size()!=originalUndo+1)throw new IllegalStateException("Final Apply did not add exactly one command");
@@ -359,6 +367,7 @@ public final class PublicGuiSmokeMain {
         AWTEventListener cancelListener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED
             &&e.getWindow() instanceof JDialog dialog&&"legacy-review".equals(dialog.getName()))cancelledWindow.complete(dialog);};
         Toolkit.getDefaultToolkit().addAWTEventListener(cancelListener,AWTEvent.WINDOW_EVENT_MASK);
+        String cancelledArchive;
         try {
             onEventThread(()->{fixture.dataSet().setSelected(fixture.selectedWay());action.actionPerformed(null);return null;});
             var cancelled=cancelledWindow.get(180,TimeUnit.SECONDS);
@@ -386,15 +395,169 @@ public final class PublicGuiSmokeMain {
             var entry=cancelledEntry.get(180,TimeUnit.SECONDS);
             entry.settlement().toCompletableFuture().get(90,TimeUnit.SECONDS);
             session.workGate().settlement().toCompletableFuture().get(90,TimeUnit.SECONDS);
-            onEventThread(()->{
+            var cancelledExpected=onEventThread(()->{
                 if(!entry.workerReturned()||!entry.cancellationObserved()||cancelOwner.busy()||cancelOwner.nativeSelected())throw new IllegalStateException("Native cancellation failed to settle/discard its result");
                 if(!cancelOwner.currentStage().id().equals(entry.ticket().parent()))throw new IllegalStateException("Cancelled native result published a child");
                 requireOverlayGeometry(action,cancelOwner.selectedGeometry());requireUnchanged(fixture,original,originalUndo);
-                cancelled.dispatchEvent(new WindowEvent(cancelled,WindowEvent.WINDOW_CLOSING));
-                if(cancelOwner.ownedBytes()!=0||cancelled.isDisplayable()||hasVisiblePreview())throw new IllegalStateException("Cancelled review retained work/window");return null;
+                return snapshotExport(cancelOwner,requestedMode,originalCoordinates,cancelOwner.selectedChoiceIdentity(),cancelOwner.selectedGeometry(),null,null,null);
             });
+            var cancelClosed=observeClose(cancelled);
+            onEventThread(()->{cancelled.dispatchEvent(new WindowEvent(cancelled,WindowEvent.WINDOW_CLOSING));return null;});
+            cancelClosed.get(30,TimeUnit.SECONDS);onEventThread(()->null);
+            cancelledArchive=checkClosedExport(report.resolveSibling("stepwise-cancelled.zip"),cancelOwner,cancelled,action,cancelledExpected,"cancelled",null);
         } finally{Toolkit.getDefaultToolkit().removeAWTEventListener(cancelListener);}
-        writeSummary(report,"{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\",\"status\":\"PASS\",\"engine\":\"LEGACY_V02\",\"stepwise\":true,\"order\":\""+(bFirst?"B_A":"A_B")+"\",\"mode\":\""+appliedMode+"\",\"firstOutcome\":\""+firstOutcome+"\",\"secondOutcome\":\""+secondOutcome+"\",\"actualNativeCalls\":"+owner.actualNativeCalls()+",\"modeless\":true,\"cachedUndoRedo\":true,\"panZoomOverlay\":true,\"oneCommandApply\":true,\"commandUndoRedo\":true,\"cancelSettled\":true,\"nativeCancellationEntered\":true,\"nativeCancellationObserved\":true,\"nativePhysicalReturned\":true,\"noninitialLegacyParent\":true,\"allStageFindingsRestored\":true}\n");
+        writeSummary(report,"{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\",\"status\":\"PASS\",\"engine\":\"LEGACY_V02\",\"stepwise\":true,\"order\":\""+(bFirst?"B_A":"A_B")+"\",\"mode\":\""+appliedMode+"\",\"firstOutcome\":\""+firstOutcome+"\",\"secondOutcome\":\""+secondOutcome+"\",\"actualNativeCalls\":"+owner.actualNativeCalls()+",\"modeless\":true,\"cachedUndoRedo\":true,\"panZoomOverlay\":true,\"oneCommandApply\":true,\"commandUndoRedo\":true,\"cancelSettled\":true,\"nativeCancellationEntered\":true,\"nativeCancellationObserved\":true,\"nativePhysicalReturned\":true,\"noninitialLegacyParent\":true,\"allStageFindingsRestored\":true,\"archiveBuild\":\"runtime-stepwise-refinement-v1\",\"appliedArchive\":\"stepwise-applied.zip\",\"cancelledArchive\":\"stepwise-cancelled.zip\",\"appliedArchiveSha256\":\""+appliedArchive+"\",\"cancelledArchiveSha256\":\""+cancelledArchive+"\"}\n");
+    }
+
+    private record ExpectedExport(AlignmentMode mode,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageId current,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.CandidateId choice, String candidateIdentity,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageId root,
+            String rootChoice, List<org.openstreetmap.josm.data.coor.EastNorth> rootGeometry,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageId parent,
+            String parentChoice, List<org.openstreetmap.josm.data.coor.EastNorth> parentGeometry,
+            List<org.openstreetmap.josm.data.coor.EastNorth> currentGeometry, List<GeographicPoint> original,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Availability availability,
+            java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementOperationReceipt> receipt,
+            java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics> diagnostic) { }
+    private static ExpectedExport snapshotExport(LegacyRefinementWorkflow owner,AlignmentMode mode,List<GeographicPoint> original,
+            String rootChoice,List<org.openstreetmap.josm.data.coor.EastNorth> rootGeometry,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Stage parent,
+            String parentChoice,List<org.openstreetmap.josm.data.coor.EastNorth> parentGeometry) {
+        var stage=owner.currentStage();
+        var root=parent==null?stage.id():parent.parent().orElseThrow();
+        String identity=stage.candidates().stream().filter(c->c.id().equals(stage.selected())).findFirst().orElseThrow().immutableIdentity();
+        return new ExpectedExport(mode,stage.id(),stage.selected(),identity,root,rootChoice,List.copyOf(rootGeometry),
+            parent==null?null:parent.id(),parentChoice,parentGeometry==null?null:List.copyOf(parentGeometry),
+            List.copyOf(owner.selectedGeometry()),List.copyOf(original),owner.attemptDiagnosticsAvailability(),
+            owner.latestAttemptDiagnostics().flatMap(d->d.pipeline()),owner.latestAttemptDiagnostics());
+    }
+    static void requireLatestAttemptBinding(
+            java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics> expected,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Availability expectedAvailability,
+            java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.LatestPublication> actual,
+            java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementOperationReceipt> receipt,
+            String actualAvailability, org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.CandidateKey selection) {
+        if(!expectedAvailability.name().equals(actualAvailability)
+            ||!actual.map(value->value.diagnostic()).equals(expected)
+            ||!receipt.equals(expected.flatMap(value->value.pipeline()))
+            ||actual.isPresent()&&selection!=null&&!actual.get().resultingSelection().equals(selection)
+            ||expected.isPresent()&&expectedAvailability!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Availability.AVAILABLE)
+            throw new IllegalStateException("Latest operation binding differs");
+    }
+    private static jakarta.json.JsonObject parseReviewStatus(String json) {
+        try {
+            var keys=new java.util.ArrayDeque<java.util.Set<String>>();
+            try(var parser=jakarta.json.Json.createParser(new java.io.StringReader(json))) {
+                while(parser.hasNext()) {
+                    var event=parser.next();
+                    if(event==jakarta.json.stream.JsonParser.Event.START_OBJECT)keys.push(new java.util.HashSet<>());
+                    else if(event==jakarta.json.stream.JsonParser.Event.KEY_NAME && (keys.isEmpty()||!keys.peek().add(parser.getString())))throw new IllegalStateException("Duplicate status field");
+                    else if(event==jakarta.json.stream.JsonParser.Event.END_OBJECT)keys.pop();
+                }
+            }
+            try(var reader=jakarta.json.Json.createReader(new java.io.StringReader(json))) { return reader.readObject(); }
+        } catch(RuntimeException malformed) {throw new IllegalStateException("Malformed review status",malformed);}
+    }
+    static void requireReviewStatus(String json,String state,String mode,String availability,String stage,String choice,String geometry,String hash,boolean applied) {
+        try {
+            var object=parseReviewStatus(json);
+            if(!state.equals(object.getString("state"))||!mode.equals(object.getString("mode"))
+                ||!availability.equals(object.getString("latestAttemptAvailability"))||!stage.equals(object.getString("currentStage"))
+                ||!choice.equals(object.getString("currentChoice"))||!geometry.equals(object.getString("currentGeometry"))
+                ||!hash.equals(object.getString("currentGeometrySha256")))throw new IllegalStateException("Review status binding differs");
+            if(!object.containsKey("applied"))throw new IllegalStateException("Applied status missing");
+            if(applied) {
+                var key=object.getJsonObject("applied");
+                if(key==null||!stage.equals(key.getString("stage"))||!choice.equals(key.getString("choice")))throw new IllegalStateException("Applied status identity differs");
+            } else if(!object.isNull("applied"))throw new IllegalStateException("Unexpected applied status");
+        } catch(RuntimeException malformed) {throw new IllegalStateException("Review status invalid",malformed);}
+    }
+    private static CompletableFuture<Void> observeClose(JDialog dialog) throws Exception {
+        var closed=new CompletableFuture<Void>();
+        onEventThread(()->{dialog.addWindowListener(new java.awt.event.WindowAdapter(){
+            @Override public void windowClosed(WindowEvent event){closed.complete(null);}
+        });return null;});
+        return closed;
+    }
+    private static boolean overlayAttached(AlignWayAction action) throws Exception {
+        Field field=AlignWayAction.class.getDeclaredField("overlay");field.setAccessible(true);Object overlay=field.get(action);
+        Field attached=overlay.getClass().getDeclaredField("attached");attached.setAccessible(true);return attached.getBoolean(overlay);
+    }
+    private static String checkClosedExport(Path path,LegacyRefinementWorkflow owner,JDialog dialog,AlignWayAction action,
+            ExpectedExport expected,String state,List<GeographicPoint> applied) throws Exception {
+        var observations=onEventThread(()->new long[]{owner.workflowOwnedBytes(),owner.registryOwnedBytes(),owner.ownedBytes(),
+            dialog.isDisplayable()?1:0,hasVisiblePreview()?1:0,overlayAttached(action)?1:0});
+        System.err.println("Closed review "+state+" workflowBytes="+observations[0]+" registryBytes="+observations[1]
+            +" totalBytes="+observations[2]+" windowDisplayable="+(observations[3]!=0)+" previewVisible="+(observations[4]!=0)+" overlayAttached="+(observations[5]!=0));
+        Format15Archive archive;
+        try { DiagnosticsRegistry.writeLatest(path.toFile()); archive=Format15ArchiveReader.read(path); }
+        catch(Exception unavailable) {
+            requireClosedExportAccounting(observations[0],observations[1],observations[2],false,observations[3]!=0,observations[4]!=0,observations[5]!=0);
+            throw unavailable;
+        }
+        requireClosedExportAccounting(observations[0],observations[1],observations[2],true,observations[3]!=0,observations[4]!=0,observations[5]!=0);
+        if(archive.formatVersion()!=15||!archive.buildIdentity().equals("runtime-stepwise-refinement-v1"))throw new IllegalStateException("Export format or build identity differs");
+        var bundle=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle(
+            archive.buildIdentity(),archive.sourceIdentityHash(),archive.parameterHash(),archive.artifacts());
+        var lineage=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec
+            .readBound(bundle,expected.current(),expected.choice()).orElseThrow();
+        requireExportIdentity(expected.mode(),lineage.binding().mode(),expected.current().value().toString(),
+            lineage.binding().current().value().toString(),expected.choice().value(),lineage.binding().currentChoice().value(),
+            archive.artifact(lineage.originalOsm().geometry().artifact()).isPresent(),lineage.latestAttempt().equals(expected.receipt()));
+        if(!lineage.binding().root().equals(expected.root())
+            ||!lineage.latestPublication().map(p->p.diagnostic()).equals(expected.diagnostic()))
+            throw new IllegalStateException("Export lineage or receipt availability differs");
+        var currentStage=lineage.stages().stream().filter(v->v.id().equals(expected.current())).findFirst().orElseThrow();
+        var currentCandidate=currentStage.candidates().stream().filter(v->v.id().equals(expected.choice())).findFirst().orElseThrow();
+        if(!currentCandidate.immutableIdentity().equals(expected.candidateIdentity()))throw new IllegalStateException("Current candidate identity differs");
+        if(expected.receipt().isPresent()&&!lineage.originalOsm().immutableIdentity().equals(expected.receipt().get().originalNetworkHash()))
+            throw new IllegalStateException("Original authority identity differs");
+        if(expected.parent()==null) {
+            if(currentStage.parent().isPresent())throw new IllegalStateException("Root gained a parent");
+        } else {
+            if(!currentStage.parent().equals(java.util.Optional.of(expected.parent()))
+                ||!currentStage.parentChoice().map(c->c.value()).equals(java.util.Optional.of(expected.parentChoice())))throw new IllegalStateException("Current parent identity differs");
+            var parentStage=lineage.stages().stream().filter(v->v.id().equals(expected.parent())).findFirst().orElseThrow();
+            if(!parentStage.parent().equals(java.util.Optional.of(expected.root()))
+                ||!parentStage.parentChoice().map(c->c.value()).equals(java.util.Optional.of(expected.rootChoice())))throw new IllegalStateException("Original parent identity differs");
+        }
+        checkExportGeometry(archive,lineage,expected.root(),expected.rootChoice(),expected.rootGeometry());
+        if(expected.parent()!=null)checkExportGeometry(archive,lineage,expected.parent(),expected.parentChoice(),expected.parentGeometry());
+        checkExportGeometry(archive,lineage,expected.current(),expected.choice().value(),expected.currentGeometry());
+        var original=archive.artifact(lineage.originalOsm().geometry().artifact()).orElseThrow();
+        String[] originalRows=new String(original.bytes(),StandardCharsets.UTF_8).strip().split("\n");
+        if(originalRows.length!=expected.original().size()+1)throw new IllegalStateException("Original geometry size differs");
+        for(int i=0;i<expected.original().size();i++) {String[] fields=originalRows[i+1].split(",");var point=expected.original().get(i);
+            if(fields.length!=7||Integer.parseInt(fields[2])!=i||Double.compare(Double.parseDouble(fields[5]),point.latitudeDegrees())!=0
+                ||Double.compare(Double.parseDouble(fields[6]),point.longitudeDegrees())!=0)throw new IllegalStateException("Original geometry differs");}
+        String status=new String(archive.artifact("review-state.json").orElseThrow().bytes(),StandardCharsets.UTF_8);
+        requireReviewStatus(status,state,expected.mode().name(),expected.availability().name(),expected.current().value().toString(),
+            expected.choice().value(),currentCandidate.geometry().artifact(),currentCandidate.geometry().sha256(),applied!=null);
+        if(applied!=null) {
+            if(archive.artifact("host-command-publication.txt").isEmpty())throw new IllegalStateException("Applied publication unavailable");
+            String[] rows=new String(archive.artifact("applied-geographic.csv").orElseThrow().bytes(),StandardCharsets.UTF_8).strip().split("\n");
+            if(rows.length!=applied.size()+1)throw new IllegalStateException("Applied geometry size differs");
+            for(int i=0;i<applied.size();i++){String[] f=rows[i+1].split(",");var point=applied.get(i);
+                if(f.length!=3||Integer.parseInt(f[0])!=i||Double.compare(Double.parseDouble(f[1]),point.latitudeDegrees())!=0
+                    ||Double.compare(Double.parseDouble(f[2]),point.longitudeDegrees())!=0)throw new IllegalStateException("Applied geometry differs");}
+        } else if(archive.artifact("applied-geographic.csv").isPresent())throw new IllegalStateException("Cancelled export claims applied geometry");
+        String identity=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)));
+        DiagnosticsRegistry.setLastBundle(null);
+        onEventThread(()->{if(owner.workflowOwnedBytes()!=0||owner.registryOwnedBytes()!=0||owner.ownedBytes()!=0)throw new IllegalStateException("Retired export retained memory");return null;});
+        return identity;
+    }
+    private static void checkExportGeometry(Format15Archive archive,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.Document lineage,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageId stage,String choice,
+            List<org.openstreetmap.josm.data.coor.EastNorth> geometry) {
+        var selected=lineage.stages().stream().filter(v->v.id().equals(stage)).findFirst().orElseThrow().candidates().stream()
+            .filter(v->v.id().value().equals(choice)).findFirst().orElseThrow();
+        String[] rows=new String(archive.artifact(selected.geometry().artifact()).orElseThrow().bytes(),StandardCharsets.UTF_8).strip().split("\n");
+        if(rows.length!=geometry.size()+1)throw new IllegalStateException("Preview geometry size differs");
+        for(int i=0;i<geometry.size();i++){String[] f=rows[i+1].split(",");var p=geometry.get(i);
+            if(f.length!=4||!f[0].equals("EPSG:3857")||Integer.parseInt(f[1])!=i||Double.compare(Double.parseDouble(f[2]),p.east())!=0
+                ||Double.compare(Double.parseDouble(f[3]),p.north())!=0)throw new IllegalStateException("Preview geometry differs");}
     }
 
     private static org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyReviewOwner originalReview(LegacyRefinementWorkflow owner) throws Exception {
@@ -422,21 +585,89 @@ public final class PublicGuiSmokeMain {
             ||!receipt.parentIdentity().equals(expected.canonicalIdentity()))throw new IllegalStateException("Refinement did not bind exact selected Legacy geometry/palette/identity");
     }
 
-    private static void clickAndAwaitStage(JDialog dialog,LegacyRefinementWorkflow owner,String button,StageKind expected) throws Exception {
-        var ready=new CompletableFuture<Void>();
-        Runnable check=()->{
-            if(owner.busy())return;
-            if(owner.nativeSelected()&&owner.currentStage().kind()==expected)ready.complete(null);
-            else ready.completeExceptionally(new IllegalStateException("Requested live refinement did not publish a child"));
-        };
-        java.beans.PropertyChangeListener listener=event->SwingUtilities.invokeLater(check);
-        onEventThread(()->{
-            requiredNamed(dialog.getContentPane(),"stage",javax.swing.JLabel.class).addPropertyChangeListener(listener);
-            requiredNamed(dialog.getContentPane(),"refineA",javax.swing.JButton.class).addPropertyChangeListener(listener);
-            var target=requiredNamed(dialog.getContentPane(),button,javax.swing.JButton.class);
-            if(!target.isEnabled())throw new IllegalStateException("Requested refinement button is disabled");target.doClick();SwingUtilities.invokeLater(check);return null;
-        });
-        try{ready.get(180,TimeUnit.SECONDS);}finally{onEventThread(()->{requiredNamed(dialog.getContentPane(),"stage",javax.swing.JLabel.class).removePropertyChangeListener(listener);requiredNamed(dialog.getContentPane(),"refineA",javax.swing.JButton.class).removePropertyChangeListener(listener);return null;});}
+    private record LaterExportSnapshot(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageId stage,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.CandidateId choice,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Availability availability,
+            java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics> diagnostic,
+            boolean owned, boolean busy, boolean currentAttempt, String evidence) { }
+    private static LaterExportSnapshot laterExportSnapshot(LegacyRefinementWorkflow owner,StageKind expected,
+            boolean actionObserved,PipelineAdmissionObserver.Scope admissions) {
+        var selected=owner.currentStage();
+        var availability=owner.attemptDiagnosticsAvailability(); var diagnostic=owner.latestAttemptDiagnostics();
+        String evidence=firstChildEvidence(owner,expected,actionObserved,false,null,admissions)
+            .replace("\"keyDelivered\":false", "\"keyDelivered\":null")
+            .replace("\"nativeEntryObserved\":false", "\"nativeEntryObserved\":null");
+        boolean currentAttempt=isCurrentAttemptDiagnostic(diagnostic,selected.id(),selected.selected(),expected)
+            ||isPublishedAttemptDiagnostic(diagnostic,selected.kind(),selected.parent(),selected.parentChoice(),expected);
+        return new LaterExportSnapshot(selected.id(),selected.selected(),availability,diagnostic,owner.ownsPublication(),owner.busy(),currentAttempt,evidence);
+    }
+    static boolean isPublishedAttemptDiagnostic(
+            java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics> diagnostic,
+            StageKind currentKind,java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageId> parent,
+            java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.CandidateId> parentChoice,StageKind expected) {
+        return currentKind==expected && diagnostic.map(d->d.publication()==org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Publication.PUBLISHED
+            &&parent.equals(java.util.Optional.of(d.binding().ticket().parent()))&&parentChoice.equals(java.util.Optional.of(d.binding().ticket().choice()))
+            &&d.binding().ticket().kind()==expected).orElse(false);
+    }
+    static boolean isCurrentAttemptDiagnostic(
+            java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics> diagnostic,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageId stage,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.CandidateId choice,StageKind expected) {
+        return diagnostic.map(d->d.binding().ticket().parent().equals(stage)&&d.binding().ticket().choice().equals(choice)
+            &&d.binding().ticket().kind()==expected).orElse(false);
+    }
+    private static void clickAndAwaitStage(Path report,JDialog dialog,LegacyRefinementWorkflow owner,String button,StageKind expected) throws Exception {
+        try(var admissions=PipelineAdmissionObserver.openForTesting(value->{})) {
+            var ready=new CompletableFuture<Void>();
+            Runnable check=()->{
+                if(owner.busy())return;
+                if(owner.nativeSelected()&&owner.currentStage().kind()==expected)ready.complete(null);
+                else ready.completeExceptionally(new IllegalStateException("Requested live refinement did not publish a child"));
+            };
+            java.beans.PropertyChangeListener listener=event->SwingUtilities.invokeLater(check);
+            var actionObserved=new AtomicBoolean();
+            java.awt.event.ActionListener actionListener=event->actionObserved.set(true);
+            try {
+                onEventThread(()->{
+                    requiredNamed(dialog.getContentPane(),"stage",javax.swing.JLabel.class).addPropertyChangeListener(listener);
+                    requiredNamed(dialog.getContentPane(),"refineA",javax.swing.JButton.class).addPropertyChangeListener(listener);
+                    var target=requiredNamed(dialog.getContentPane(),button,javax.swing.JButton.class);
+                    target.addActionListener(actionListener);
+                    if(!target.isEnabled())throw new IllegalStateException("Requested refinement button is disabled");target.doClick();SwingUtilities.invokeLater(check);return null;
+                });
+                ready.get(180,TimeUnit.SECONDS);
+            } catch(Exception failure) {
+                try {
+                    var observed=onEventThread(()->laterExportSnapshot(owner,expected,actionObserved.get(),admissions));
+                    String evidence=observed.evidence();
+                    String exportStatus="UNAVAILABLE"; String archiveHash=null;
+                    try {
+                        Path archive=report.resolveSibling("later-refinement-failure.zip");
+                        DiagnosticsRegistry.writeLatest(archive.toFile());
+                        var read=Format15ArchiveReader.read(archive);
+                        if(read.formatVersion()!=15)throw new IllegalStateException("Refinement format unavailable");
+                        var bundle=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle(read.buildIdentity(),read.sourceIdentityHash(),read.parameterHash(),read.artifacts());
+                        var lineage=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.readBound(bundle,observed.stage(),observed.choice()).orElseThrow();
+                        String status=new String(read.artifact("review-state.json").orElseThrow().bytes(),StandardCharsets.UTF_8);
+                        String availability=parseReviewStatus(status).getString("latestAttemptAvailability");
+                        var selection=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.CandidateKey(observed.stage(),observed.choice());
+                        boolean currentAttempt=observed.currentAttempt();
+                        requireLatestAttemptBinding(observed.diagnostic(),observed.availability(),lineage.latestPublication(),lineage.latestAttempt(),availability,currentAttempt?selection:null);
+                        var after=onEventThread(()->laterExportSnapshot(owner,expected,actionObserved.get(),admissions));
+                        if(!observed.owned()||!after.owned()||observed.busy()!=after.busy()||observed.currentAttempt()!=after.currentAttempt()||!observed.stage().equals(after.stage())
+                            ||!observed.choice().equals(after.choice())||observed.availability()!=after.availability()
+                            ||!observed.diagnostic().equals(after.diagnostic()))throw new IllegalStateException("Refinement owner changed during export");
+                        archiveHash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(archive)));
+                        exportStatus=currentAttempt?"AVAILABLE":"CURRENT_ATTEMPT_UNAVAILABLE";
+                    } catch(Exception unavailable) { exportStatus="UNAVAILABLE"; }
+                    laterRefinementFailureEvidence=evidence.substring(0,evidence.length()-1)+",\"registryExport\":\""+exportStatus+"\",\"archiveSha256\":"+(archiveHash==null?"null":"\""+archiveHash+"\"")+"}";
+                    System.err.println("Later refinement diagnostics: "+laterRefinementFailureEvidence);
+                    writeSummary(report.resolveSibling("later-refinement-diagnostics.json"),laterRefinementFailureEvidence+"\n");
+                } catch(Exception diagnosticFailure) { failure.addSuppressed(diagnosticFailure); }
+                throw failure;
+            } finally {onEventThread(()->{requiredNamed(dialog.getContentPane(),"stage",javax.swing.JLabel.class).removePropertyChangeListener(listener);requiredNamed(dialog.getContentPane(),"refineA",javax.swing.JButton.class).removePropertyChangeListener(listener);requiredNamed(dialog.getContentPane(),button,javax.swing.JButton.class).removeActionListener(actionListener);return null;});}
+        }
     }
     private static void confirmStepwise(JDialog dialog) throws Exception {
         var accepted=new AtomicBoolean();
@@ -475,6 +706,17 @@ public final class PublicGuiSmokeMain {
         var layer = new org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer(info);
         layer.getDisplaySettings().setAutoLoad(false);
         add.accept(layer);
+    }
+    static void requireClosedExportAccounting(long workflow, long registry, long total, boolean available,
+            boolean windowDisplayable, boolean previewVisible, boolean overlayAttached) {
+        if (workflow != 0 || registry <= 0 || total != registry || !available || windowDisplayable || previewVisible || overlayAttached)
+            throw new IllegalStateException("Closed review/export accounting differs");
+    }
+    static void requireExportIdentity(AlignmentMode expectedMode, AlignmentMode actualMode, String expectedStage,
+            String actualStage, String expectedChoice, String actualChoice, boolean geometryAvailable, boolean receiptAvailable) {
+        if (expectedMode != actualMode || !java.util.Objects.equals(expectedStage, actualStage)
+            || !java.util.Objects.equals(expectedChoice, actualChoice) || !geometryAvailable || !receiptAvailable)
+            throw new IllegalStateException("Exported review identity or evidence differs");
     }
     static void requireKeyboardReady(boolean enabled, boolean focused) {
         if (!enabled || !focused) throw new IllegalStateException("Keyboard target is disabled or unfocused");

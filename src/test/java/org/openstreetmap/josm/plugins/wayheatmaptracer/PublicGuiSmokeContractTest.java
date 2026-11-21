@@ -211,6 +211,66 @@ class PublicGuiSmokeContractTest {
         assertEquals(PublicGuiSmokeMain.diagnosticAttemptRows(java.util.Collections.nCopies(64, aborted)),
             PublicGuiSmokeMain.diagnosticAttemptRows(java.util.Collections.nCopies(65, aborted)));
     }
+    @Test void exportedReviewRequiresRetainedBytesAndExactIdentity() {
+        var mode = org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.PRECISE_SHAPE;
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireClosedExportAccounting(1, 4, 5, true, false, false, false));
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireClosedExportAccounting(0, 4, 0, true, false, false, false));
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireClosedExportAccounting(0, 0, 0, false, false, false, false));
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireClosedExportAccounting(0, 4, 4, true, false, false, true));
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireClosedExportAccounting(0, 4, 4, true, true, false, false));
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireClosedExportAccounting(0, 4, 4, true, false, true, false));
+        PublicGuiSmokeMain.requireClosedExportAccounting(0, 4, 4, true, false, false, false);
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireExportIdentity(mode, mode, "s", "other", "c", "c", true, true));
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireExportIdentity(mode, mode, "s", "s", "c", "c", true, false));
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireExportIdentity(mode, mode, "s", "s", "c", "other", true, true));
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireExportIdentity(mode, mode, "s", "s", "c", "c", false, true));
+        PublicGuiSmokeMain.requireExportIdentity(mode, mode, "s", "s", "c", "c", true, true);
+    }
+    @Test void laterFailureRejectsStalePublishedReceiptForSameSelection() {
+        var session=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.SessionId(java.util.UUID.randomUUID());
+        var root=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageId(java.util.UUID.randomUUID());
+        var stage=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageId(java.util.UUID.randomUUID());
+        var rootChoice=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.CandidateId("root");
+        var choice=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.CandidateId("selected");
+        var key=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.CandidateKey(stage,choice);
+        var mode=org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.PRECISE_SHAPE;
+        var first=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.OperationTicket(session,1,root,rootChoice,TrackerMode.CORRIDOR_AWARE,mode);
+        var second=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.OperationTicket(session,2,stage,choice,TrackerMode.PROBABILISTIC,mode);
+        var firstBinding=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Binding(first,root,"source","network","settings","frozen","parent");
+        var secondBinding=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Binding(second,root,"source","network","settings","frozen","parent");
+        var firstReceipt=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementOperationReceipt(first,"parent","network",org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Outcome.COMPLETE,List.of(),java.util.Optional.empty(),false);
+        var secondReceipt=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementOperationReceipt(second,"parent","network",org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Outcome.RESOURCE_LIMIT,List.of(),java.util.Optional.empty(),false);
+        var stale=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics(firstBinding,java.util.Optional.of(firstReceipt),org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Publication.PUBLISHED,org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Phase.PUBLICATION,org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Cause.NONE,0);
+        var failed=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics(secondBinding,java.util.Optional.of(secondReceipt),org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Publication.NO_CHILD,org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Phase.PIPELINE,org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT,0);
+        var availability=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Availability.AVAILABLE;
+        var old=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.LatestPublication(stale,key);
+        var current=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.LatestPublication(failed,key);
+        assertFalse(PublicGuiSmokeMain.isCurrentAttemptDiagnostic(java.util.Optional.of(stale),stage,choice,org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageKind.REFINE_B));
+        assertTrue(PublicGuiSmokeMain.isCurrentAttemptDiagnostic(java.util.Optional.of(failed),stage,choice,org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageKind.REFINE_B));
+        assertFalse(PublicGuiSmokeMain.isCurrentAttemptDiagnostic(java.util.Optional.empty(),stage,choice,org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageKind.REFINE_B));
+        assertTrue(PublicGuiSmokeMain.isPublishedAttemptDiagnostic(java.util.Optional.of(stale),org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageKind.REFINE_A,java.util.Optional.of(root),java.util.Optional.of(rootChoice),org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageKind.REFINE_A));
+        assertFalse(PublicGuiSmokeMain.isPublishedAttemptDiagnostic(java.util.Optional.of(stale),org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageKind.REFINE_A,java.util.Optional.of(root),java.util.Optional.of(rootChoice),org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageKind.REFINE_B));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireLatestAttemptBinding(java.util.Optional.of(failed),availability,java.util.Optional.of(old),java.util.Optional.of(firstReceipt),"AVAILABLE",key));
+        PublicGuiSmokeMain.requireLatestAttemptBinding(java.util.Optional.of(failed),availability,java.util.Optional.of(current),java.util.Optional.of(secondReceipt),"AVAILABLE",key);
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireLatestAttemptBinding(java.util.Optional.empty(),org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Availability.NONE,java.util.Optional.of(old),java.util.Optional.empty(),"NONE",key));
+        PublicGuiSmokeMain.requireLatestAttemptBinding(java.util.Optional.empty(),org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Availability.NONE,java.util.Optional.empty(),java.util.Optional.empty(),"NONE",key);
+        PublicGuiSmokeMain.requireLatestAttemptBinding(java.util.Optional.of(stale),availability,java.util.Optional.of(old),java.util.Optional.of(firstReceipt),"AVAILABLE",null);
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireLatestAttemptBinding(java.util.Optional.of(failed),availability,java.util.Optional.of(current),java.util.Optional.of(firstReceipt),"AVAILABLE",key));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireLatestAttemptBinding(java.util.Optional.of(failed),availability,java.util.Optional.of(current),java.util.Optional.of(secondReceipt),"NONE",key));
+    }
+    @Test void reviewStatusRejectsWrongGeometryAndAppliedSelection() {
+        String good="{\"state\":\"applied\",\"mode\":\"PRECISE_SHAPE\",\"latestAttemptAvailability\":\"AVAILABLE\",\"currentStage\":\"stage\",\"currentChoice\":\"choice\",\"currentGeometry\":\"geometry/x.csv\",\"currentGeometrySha256\":\"hash\",\"applied\":{\"stage\":\"stage\",\"choice\":\"choice\"}}";
+        PublicGuiSmokeMain.requireReviewStatus(good,"applied","PRECISE_SHAPE","AVAILABLE","stage","choice","geometry/x.csv","hash",true);
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireReviewStatus(good.replace("geometry/x.csv","geometry/y.csv"),"applied","PRECISE_SHAPE","AVAILABLE","stage","choice","geometry/x.csv","hash",true));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireReviewStatus(good.replace("\"applied\":{\"stage\":\"stage\"","\"applied\":{\"stage\":\"other\""),"applied","PRECISE_SHAPE","AVAILABLE","stage","choice","geometry/x.csv","hash",true));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireReviewStatus(good.replace("\"currentChoice\":\"choice\"","\"currentChoice\":\"other\""),"applied","PRECISE_SHAPE","AVAILABLE","stage","choice","geometry/x.csv","hash",true));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireReviewStatus(good.replace("\"currentStage\":\"stage\"","\"currentStage\":\"other\""),"applied","PRECISE_SHAPE","AVAILABLE","stage","choice","geometry/x.csv","hash",true));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireReviewStatus(good.replace("\"currentGeometrySha256\":\"hash\"","\"currentGeometrySha256\":\"wrong\""),"applied","PRECISE_SHAPE","AVAILABLE","stage","choice","geometry/x.csv","hash",true));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireReviewStatus(good.replace("\"applied\":{\"stage\":\"stage\",\"choice\":\"choice\"}","\"applied\":{\"stage\":\"stage\",\"choice\":\"other\"}"),"applied","PRECISE_SHAPE","AVAILABLE","stage","choice","geometry/x.csv","hash",true));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireReviewStatus(good.replace("\"currentStage\":\"stage\"","\"currentStage\":\"stage\",\"currentStage\":\"stage\""),"applied","PRECISE_SHAPE","AVAILABLE","stage","choice","geometry/x.csv","hash",true));
+        String cancelled=good.replace("\"state\":\"applied\"","\"state\":\"cancelled\"").replace("\"applied\":{\"stage\":\"stage\",\"choice\":\"choice\"}","\"applied\":null");
+        PublicGuiSmokeMain.requireReviewStatus(cancelled,"cancelled","PRECISE_SHAPE","AVAILABLE","stage","choice","geometry/x.csv","hash",false);
+    }
     @Test void stepwisePublicFixtureHasEveryNativePaletteAtBothZooms() throws Exception {
         Path root=temporary.resolve("stepwise-cache");
         var fixture=PublicGuiSmokeFixture.create(temporary.resolve("stepwise-input"));
