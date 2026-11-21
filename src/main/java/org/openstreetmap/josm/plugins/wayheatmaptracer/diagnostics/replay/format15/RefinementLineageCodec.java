@@ -83,10 +83,15 @@ public final class RefinementLineageCodec {
         }
     }
     /** An independent latest unsuccessful attempt need not have produced a child or native work. */
-    public record Document(Binding binding, OriginalOsm originalOsm, List<StageEntry> stages, Optional<RefinementOperationReceipt> latestAttempt) {
+    public record LatestPublication(RefinementAttemptDiagnostics diagnostic,CandidateKey resultingSelection) {
+        public LatestPublication {Objects.requireNonNull(diagnostic);Objects.requireNonNull(resultingSelection);}
+    }
+    public record Document(Binding binding, OriginalOsm originalOsm, List<StageEntry> stages, Optional<RefinementOperationReceipt> latestAttempt,
+            Optional<LatestPublication> latestPublication) {
+        public Document(Binding binding,OriginalOsm originalOsm,List<StageEntry> stages,Optional<RefinementOperationReceipt> latestAttempt){this(binding,originalOsm,stages,latestAttempt,Optional.empty());}
         public Document {
-            Objects.requireNonNull(binding); Objects.requireNonNull(originalOsm); stages=List.copyOf(stages); Objects.requireNonNull(latestAttempt);
-            validate(binding,stages,latestAttempt);
+            Objects.requireNonNull(binding); Objects.requireNonNull(originalOsm); stages=List.copyOf(stages); Objects.requireNonNull(latestAttempt);Objects.requireNonNull(latestPublication);
+            validate(binding,originalOsm,stages,latestAttempt,latestPublication);
         }
     }
 
@@ -96,6 +101,11 @@ public final class RefinementLineageCodec {
     public static Document capture(String build, String sourceHash, String settingsHash, AlignmentMode mode,
             SessionId session, String originalOsmIdentity, Format15Artifact originalGeometry, List<Stage> history, StageId current,
             Optional<RefinementOperationReceipt> latest, Map<CandidateKey,Format15Artifact> geometry) {
+        return capture(build,sourceHash,settingsHash,mode,session,originalOsmIdentity,originalGeometry,history,current,latest,geometry,Optional.empty());
+    }
+    public static Document capture(String build,String sourceHash,String settingsHash,AlignmentMode mode,
+            SessionId session,String originalOsmIdentity,Format15Artifact originalGeometry,List<Stage> history,StageId current,
+            Optional<RefinementOperationReceipt> latest,Map<CandidateKey,Format15Artifact> geometry,Optional<LatestPublication> publication) {
         if(history==null || history.isEmpty() || history.size()>8 || geometry==null || originalGeometry==null) throw invalid();
         var originalOsm=new OriginalOsm(originalOsmIdentity,new GeometryRef(originalGeometry.name(),originalGeometry.sha256()));
         var entries=new ArrayList<StageEntry>(); var expected=new HashSet<CandidateKey>();
@@ -113,7 +123,7 @@ public final class RefinementLineageCodec {
         }
         if(!expected.equals(geometry.keySet())) throw invalid();
         var selected=history.stream().filter(s->s.id().equals(current)).findFirst().orElseThrow(RefinementLineageCodec::invalid).selected();
-        return new Document(new Binding(build,sourceHash,settingsHash,mode,session,history.get(0).id(),current,selected),originalOsm,entries,latest);
+        return new Document(new Binding(build,sourceHash,settingsHash,mode,session,history.get(0).id(),current,selected),originalOsm,entries,latest,publication);
     }
 
     /** Encodes a deterministic JSON artifact with an explicit schema and bounded content. */
@@ -130,7 +140,10 @@ public final class RefinementLineageCodec {
             String content=StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(artifact.bytes())).toString();
             checkNesting(content);
-            var root=fields(new Format15ArchiveReader.JsonParser(content).parse(),"schema","binding","originalOsm","stages","latestAttempt");
+            Object parsed=new Format15ArchiveReader.JsonParser(content).parse();
+            var root=parsed instanceof Map<?,?> values&&values.containsKey("latestPublication")
+                ?fields(parsed,"schema","binding","originalOsm","stages","latestAttempt","latestPublication")
+                :fields(parsed,"schema","binding","originalOsm","stages","latestAttempt");
             if(number(root.get("schema"))!=1) throw invalid();
             var b=fields(root.get("binding"),"build","source","settings","mode","session","root","current","currentChoice");
             var binding=new Binding(string(b.get("build")),string(b.get("source")),string(b.get("settings")),
@@ -155,7 +168,8 @@ public final class RefinementLineageCodec {
                     enumeration(StageKind.class,s.get("kind")),enumeration(TrackerMode.class,s.get("engine")),
                     candidate(s.get("selected")),smoothing(s.get("smoothingInput")),cs));
             }
-            return new Document(binding,originalOsm,entries,optionalReceipt(root.get("latestAttempt")));
+            var latest=optionalReceipt(root.get("latestAttempt"));
+            return new Document(binding,originalOsm,entries,latest,readPublication(root.get("latestPublication"),latest));
         } catch (java.nio.charset.CharacterCodingException | RuntimeException error) {
             throw new IllegalArgumentException("Invalid refinement lineage",error);
         }
@@ -187,7 +201,7 @@ public final class RefinementLineageCodec {
         if(actual==null || !actual.sha256().equals(reference.sha256())) throw invalid();
     }
 
-    private static void validate(Binding b,List<StageEntry> stages,Optional<RefinementOperationReceipt> latest) {
+    private static void validate(Binding b,OriginalOsm original,List<StageEntry> stages,Optional<RefinementOperationReceipt> latest,Optional<LatestPublication> publication) {
         if(stages.isEmpty() || stages.size()>8 || !stages.get(0).id().equals(b.root())) throw invalid();
         var retained=new LinkedHashMap<StageId,StageEntry>();
         var allIds=new HashSet<StageId>(); for(var s:stages) allIds.add(s.id());
@@ -229,11 +243,47 @@ public final class RefinementLineageCodec {
         }
         requireChoice(retained,b.current(),b.currentChoice());
         if(!retained.get(b.current()).selected().equals(b.currentChoice())) throw invalid();
-        if(latest.isPresent()) {
+        if(publication.isPresent()) {
+            validatePublication(b,original,retained,sequences,lastSequence,latest,publication.get());
+        } else if(latest.isPresent()) {
             var r=latest.get(); validateReceipt(r,b,retained);
             requireChoice(retained,r.ticket().parent(),r.ticket().choice());
             if(r.outcome()==Outcome.COMPLETE || r.outcome()==Outcome.PARTIAL
                     || sequences.containsKey(r.ticket().sequence()) || r.ticket().sequence()<=lastSequence) throw invalid();
+        }
+    }
+    private static void validatePublication(Binding b,OriginalOsm original,Map<StageId,StageEntry> retained,
+            Map<Long,RefinementOperationReceipt> sequences,long lastSequence,Optional<RefinementOperationReceipt> latest,LatestPublication state) {
+        var diagnostic=state.diagnostic();var binding=diagnostic.binding();var ticket=binding.ticket();
+        if(!ticket.session().equals(b.session())||ticket.mode()!=b.mode()||!binding.rootStage().equals(b.root())
+                ||!Format15Safety.sha256(binding.rootSourceIdentity()).equals(b.sourceIdentityHash())
+                ||!binding.rootParameterHash().equals(b.parameterHash())||!binding.originalNetworkHash().equals(original.immutableIdentity())
+                ||!diagnostic.pipeline().equals(latest))throw invalid();
+        identity(binding.rootSourceIdentity());identity(binding.frozenGeometryIdentity());identity(binding.parentIdentity());
+        Format15Safety.requiredHash(binding.originalNetworkHash(),"original network hash");
+        if(diagnostic.publication()==RefinementAttemptDiagnostics.Publication.PUBLISHED&&ticket.smoothingInput().isPresent()) {
+            var input=ticket.smoothingInput().get();
+            requireChoice(retained,input.unsmoothedParent(),input.unsmoothedChoice());
+            if(retained.containsKey(input.owner()))requireChoice(retained,input.owner(),input.choice());
+        } else requireChoice(retained,ticket.parent(),ticket.choice());
+        requireChoice(retained,state.resultingSelection().stage(),state.resultingSelection().candidate());
+        for(var receipt:sequences.values())if(!receipt.originalNetworkHash().equals(binding.originalNetworkHash()))throw invalid();
+        latest.ifPresent(receipt->{validateReceipt(receipt,b,retained);if(!receipt.ticket().equals(ticket)||!receipt.parentIdentity().equals(binding.parentIdentity())
+            ||!receipt.originalNetworkHash().equals(binding.originalNetworkHash()))throw invalid();});
+        var disposition=diagnostic.publication();var cause=diagnostic.cause();
+        if(disposition==RefinementAttemptDiagnostics.Publication.PUBLISHED) {
+            StageId newest=null;for(var retainedStage:retained.keySet())newest=retainedStage;
+            if(latest.isEmpty()||cause!=RefinementAttemptDiagnostics.Cause.NONE||diagnostic.phase()!=RefinementAttemptDiagnostics.Phase.PUBLICATION
+                    ||ticket.sequence()!=lastSequence||!state.resultingSelection().stage().equals(newest)||!latest.get().equals(sequences.get(ticket.sequence())))throw invalid();
+            var stage=retained.get(state.resultingSelection().stage());
+            if(stage.kind()!=ticket.kind()||stage.engine()!=ticket.engine()||!stage.parent().equals(Optional.of(ticket.smoothingInput().map(SmoothingInput::unsmoothedParent).orElse(ticket.parent())))
+                    ||!stage.parentChoice().equals(Optional.of(ticket.smoothingInput().map(SmoothingInput::unsmoothedChoice).orElse(ticket.choice())))
+                    ||stage.candidates().stream().filter(c->c.id().equals(state.resultingSelection().candidate())).noneMatch(c->c.operation().equals(latest)))throw invalid();
+        } else {
+            if(!state.resultingSelection().equals(new CandidateKey(ticket.parent(),ticket.choice()))||sequences.containsKey(ticket.sequence())||ticket.sequence()<=lastSequence)throw invalid();
+            if(disposition==RefinementAttemptDiagnostics.Publication.CANCELLED&&cause!=RefinementAttemptDiagnostics.Cause.CANCELLED
+                    ||disposition==RefinementAttemptDiagnostics.Publication.STALE&&cause!=RefinementAttemptDiagnostics.Cause.STALE
+                    ||cause==RefinementAttemptDiagnostics.Cause.NONE)throw invalid();
         }
     }
     private static void requireChoice(Map<StageId,StageEntry> retained,StageId id,CandidateId choice) {
@@ -279,11 +329,28 @@ public final class RefinementLineageCodec {
                 "parentChoice",s.parentChoice().map(CandidateId::value).orElse(null),"kind",s.kind().name(),"engine",s.engine().name(),
                 "selected",s.selected().value(),"smoothingInput",smoothingMap(s.smoothingInput()),"candidates",cs));
         }
-        return map("schema",1,"originalOsm",map("identity",d.originalOsm().immutableIdentity(),
+        var result=map("schema",1,"originalOsm",map("identity",d.originalOsm().immutableIdentity(),
             "geometry",map("artifact",d.originalOsm().geometry().artifact(),"sha256",d.originalOsm().geometry().sha256())),"binding",map("build",b.buildIdentity(),"source",b.sourceIdentityHash(),"settings",b.parameterHash(),
             "mode",b.mode().name(),"session",b.session().value().toString(),"root",b.root().value().toString(),
             "current",b.current().value().toString(),"currentChoice",b.currentChoice().value()),"stages",stages,
             "latestAttempt",d.latestAttempt().map(RefinementLineageCodec::receiptMap).orElse(null));
+        d.latestPublication().ifPresent(state->result.put("latestPublication",publicationMap(state)));return result;
+    }
+    private static Map<String,Object> publicationMap(LatestPublication state) {
+        var d=state.diagnostic();var b=d.binding();
+        return map("ticket",ticketMap(b.ticket()),"root",b.rootStage().value().toString(),"sourceIdentity",b.rootSourceIdentity(),
+            "originalNetworkHash",b.originalNetworkHash(),"rootParameters",b.rootParameterHash(),"frozenGeometry",b.frozenGeometryIdentity(),"parentIdentity",b.parentIdentity(),
+            "publication",d.publication().name(),"phase",d.phase().name(),"cause",d.cause().name(),"refusals",d.materializationRefusals(),
+            "resultStage",state.resultingSelection().stage().value().toString(),"resultChoice",state.resultingSelection().candidate().value());
+    }
+    private static Optional<LatestPublication> readPublication(Object value,Optional<RefinementOperationReceipt> receipt) {
+        if(value==null)return Optional.empty();
+        var p=fields(value,"ticket","root","sourceIdentity","originalNetworkHash","rootParameters","frozenGeometry","parentIdentity","publication","phase","cause","refusals","resultStage","resultChoice");
+        var binding=new RefinementAttemptDiagnostics.Binding(readTicket(p.get("ticket")),stage(p.get("root")),string(p.get("sourceIdentity")),string(p.get("originalNetworkHash")),
+            string(p.get("rootParameters")),string(p.get("frozenGeometry")),string(p.get("parentIdentity")));
+        var diagnostic=new RefinementAttemptDiagnostics(binding,receipt,enumeration(RefinementAttemptDiagnostics.Publication.class,p.get("publication")),
+            enumeration(RefinementAttemptDiagnostics.Phase.class,p.get("phase")),enumeration(RefinementAttemptDiagnostics.Cause.class,p.get("cause")),integer(p.get("refusals")));
+        return Optional.of(new LatestPublication(diagnostic,new CandidateKey(stage(p.get("resultStage")),candidate(p.get("resultChoice")))));
     }
     private static Object smoothingMap(Optional<SmoothingInput> input) {
         return input.map(s->map("owner",s.owner().value().toString(),"choice",s.choice().value(),"unsmoothedParent",s.unsmoothedParent().value().toString(),
@@ -296,10 +363,17 @@ public final class RefinementLineageCodec {
             "nativeCalls",a.nativeCalls().isPresent()?a.nativeCalls().getAsInt():null,"work",workMap(a.actualWork()),
             "evidence",a.evidenceHash().orElse(null),"parameters",a.parameterHash().orElse(null),"sampler",a.samplerId().orElse(null),
             "nativeStatus",a.nativeStatus().map(Enum::name).orElse(null),"nativeCandidates",a.nativeCandidateIds()));
-        return map("ticket",map("session",t.session().value().toString(),"sequence",t.sequence(),"parent",t.parent().value().toString(),
-            "choice",t.choice().value(),"engine",t.engine().name(),"mode",t.mode().name(),"kind",t.kind().name(),
-            "smoothingInput",smoothingMap(t.smoothingInput())),"parentIdentity",r.parentIdentity(),"originalNetworkHash",r.originalNetworkHash(),
+        return map("ticket",ticketMap(t),"parentIdentity",r.parentIdentity(),"originalNetworkHash",r.originalNetworkHash(),
             "outcome",r.outcome().name(),"attempts",attempts,"work",workMap(r.actualWork()),"truncated",r.truncated());
+    }
+    private static Map<String,Object> ticketMap(OperationTicket t) {
+        return map("session",t.session().value().toString(),"sequence",t.sequence(),"parent",t.parent().value().toString(),"choice",t.choice().value(),
+            "engine",t.engine().name(),"mode",t.mode().name(),"kind",t.kind().name(),"smoothingInput",smoothingMap(t.smoothingInput()));
+    }
+    private static OperationTicket readTicket(Object value) {
+        var t=fields(value,"session","sequence","parent","choice","engine","mode","kind","smoothingInput");
+        return new OperationTicket(session(t.get("session")),number(t.get("sequence")),stage(t.get("parent")),candidate(t.get("choice")),
+            enumeration(TrackerMode.class,t.get("engine")),enumeration(AlignmentMode.class,t.get("mode")),enumeration(StageKind.class,t.get("kind")),smoothing(t.get("smoothingInput")));
     }
     private static Object workMap(Optional<TraceWorkUsage> work) {
         return work.map(w->List.of(w.pairVisits(),w.transitions(),(long)w.rawAlternatives(),(long)w.distinctAlternatives())).orElse(null);
@@ -307,10 +381,7 @@ public final class RefinementLineageCodec {
     private static Optional<RefinementOperationReceipt> optionalReceipt(Object value) {
         if(value==null) return Optional.empty();
         var r=fields(value,"ticket","parentIdentity","originalNetworkHash","outcome","attempts","work","truncated");
-        var t=fields(r.get("ticket"),"session","sequence","parent","choice","engine","mode","kind","smoothingInput");
-        var ticket=new OperationTicket(session(t.get("session")),number(t.get("sequence")),stage(t.get("parent")),candidate(t.get("choice")),
-            enumeration(TrackerMode.class,t.get("engine")),enumeration(AlignmentMode.class,t.get("mode")),
-            enumeration(StageKind.class,t.get("kind")),smoothing(t.get("smoothingInput")));
+        var ticket=readTicket(r.get("ticket"));
         var attempts=new ArrayList<RefinementOperationReceipt.Attempt>();
         for(var item:array(r.get("attempts"),MAX_ATTEMPTS)) {
             var a=fields(item,"palette","mapping","kind","first","last","reason","outcome","nativeCalls","work", "evidence","parameters","sampler","nativeStatus","nativeCandidates");

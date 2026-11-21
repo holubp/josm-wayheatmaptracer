@@ -45,6 +45,67 @@ class RefinementLineageCodecTest {
     }
     Format15Bundle bundle() { return new Format15Bundle("synthetic-build",SOURCE,SETTINGS,Map.of(geometry.name(),geometry,originalGeometry.name(),originalGeometry)); }
 
+    @Test void completePipelineReceiptWithFailedPresentationMustRemainFactual() {
+        var root=root();var actual=receipt(ticket(root,1),Outcome.COMPLETE,Optional.of(new TraceWorkUsage(9,17,2,1)));
+        var old=capture(List.of(root),root,Optional.empty());
+        var binding=new RefinementLineageCodec.Binding("synthetic-build",Format15Safety.sha256("runtime-source"),SETTINGS,AlignmentMode.PRECISE_SHAPE,session,root.id(),root.id(),root.selected());
+        var original=new RefinementAttemptDiagnostics.Binding(actual.ticket(),root.id(),"runtime-source",actual.originalNetworkHash(),SETTINGS,"frozen-proof",actual.parentIdentity());
+        var diagnostic=new RefinementAttemptDiagnostics(original,Optional.of(actual),RefinementAttemptDiagnostics.Publication.FAILED,RefinementAttemptDiagnostics.Phase.PUBLICATION,RefinementAttemptDiagnostics.Cause.PRESENTATION_FAILED,0);
+        var publication=new RefinementLineageCodec.LatestPublication(diagnostic,new RefinementLineageCodec.CandidateKey(root.id(),root.selected()));
+        var doc=assertDoesNotThrow(()->new RefinementLineageCodec.Document(binding,new RefinementLineageCodec.OriginalOsm(actual.originalNetworkHash(),old.originalOsm().geometry()),old.stages(),Optional.of(actual),Optional.of(publication)),"Later presentation failure must not force rewriting COMPLETE native outcome");
+        var decoded=RefinementLineageCodec.read(RefinementLineageCodec.artifact(doc));
+        assertEquals(Outcome.COMPLETE,decoded.latestAttempt().orElseThrow().outcome());assertEquals(publication,decoded.latestPublication().orElseThrow());
+    }
+
+    RefinementLineageCodec.Document publicationDocument(List<Stage> stages,Stage current,OperationTicket ticket,
+            Optional<RefinementOperationReceipt> receipt,RefinementAttemptDiagnostics.Publication publication,
+            RefinementAttemptDiagnostics.Phase phase,RefinementAttemptDiagnostics.Cause cause,RefinementLineageCodec.CandidateKey result) {
+        var base=capture(stages,current,Optional.empty());
+        var header=new RefinementLineageCodec.Binding("synthetic-build",Format15Safety.sha256("runtime-source"),SETTINGS,AlignmentMode.PRECISE_SHAPE,session,stages.get(0).id(),current.id(),current.selected());
+        var binding=new RefinementAttemptDiagnostics.Binding(ticket,stages.get(0).id(),"runtime-source",SOURCE,SETTINGS,"frozen-proof",receipt.map(RefinementOperationReceipt::parentIdentity).orElse("parent-identity"));
+        var diagnostic=new RefinementAttemptDiagnostics(binding,receipt,publication,phase,cause,0);
+        return new RefinementLineageCodec.Document(header,new RefinementLineageCodec.OriginalOsm(SOURCE,base.originalOsm().geometry()),base.stages(),receipt,
+            Optional.of(new RefinementLineageCodec.LatestPublication(diagnostic,result)));
+    }
+    @Test void prePipelineFailureHasPublicationButNoInventedReceiptOrWork() {
+        var root=root();var doc=publicationDocument(List.of(root),root,ticket(root,1),Optional.empty(),RefinementAttemptDiagnostics.Publication.FAILED,
+            RefinementAttemptDiagnostics.Phase.ACQUISITION,RefinementAttemptDiagnostics.Cause.FAILED,new RefinementLineageCodec.CandidateKey(root.id(),root.selected()));
+        var decoded=RefinementLineageCodec.read(RefinementLineageCodec.artifact(doc));assertEquals(doc,decoded);
+        assertTrue(decoded.latestAttempt().isEmpty());assertTrue(decoded.latestPublication().orElseThrow().diagnostic().pipeline().isEmpty());
+        var old=capture(List.of(root),root,Optional.empty());assertTrue(RefinementLineageCodec.read(RefinementLineageCodec.artifact(old)).latestPublication().isEmpty());
+    }
+    @Test void publishedAttemptMustMatchItsRetainedCandidateOwnedReceiptExactly() {
+        var root=root();var ticket=ticket(root,1);var receipt=receipt(ticket,Outcome.COMPLETE,Optional.of(new TraceWorkUsage(9,17,2,1)));
+        var child=Stage.child(ticket,List.of(candidate("blue",Optional.of(receipt))),blue);
+        var doc=publicationDocument(List.of(root,child),child,ticket,Optional.of(receipt),RefinementAttemptDiagnostics.Publication.PUBLISHED,
+            RefinementAttemptDiagnostics.Phase.PUBLICATION,RefinementAttemptDiagnostics.Cause.NONE,new RefinementLineageCodec.CandidateKey(child.id(),blue));
+        assertEquals(doc,RefinementLineageCodec.read(RefinementLineageCodec.artifact(doc)));
+        var other=receipt(ticket,Outcome.COMPLETE,Optional.of(new TraceWorkUsage(10,18,2,1)));
+        assertThrows(IllegalArgumentException.class,()->publicationDocument(List.of(root,child),child,ticket,Optional.of(other),RefinementAttemptDiagnostics.Publication.PUBLISHED,
+            RefinementAttemptDiagnostics.Phase.PUBLICATION,RefinementAttemptDiagnostics.Cause.NONE,new RefinementLineageCodec.CandidateKey(child.id(),blue)));
+        assertThrows(IllegalArgumentException.class,()->capture(List.of(root,child),child,Optional.of(receipt)),"Old unqualified duplicate receipt remains refused");
+    }
+    @Test void publishedMetadataCannotCallAnOlderRetainedOperationLatest() {
+        var root=root();var first=ticket(root,1);var receipt1=receipt(first,Outcome.COMPLETE,Optional.empty());
+        var a=Stage.child(first,List.of(candidate("blue",Optional.of(receipt1))),blue);
+        var second=ticket(a,2);var receipt2=receipt(second,Outcome.COMPLETE,Optional.empty());var b=Stage.child(second,List.of(candidate("purple",Optional.of(receipt2))),purple);
+        assertThrows(IllegalArgumentException.class,()->publicationDocument(List.of(root,a,b),a,first,Optional.of(receipt1),RefinementAttemptDiagnostics.Publication.PUBLISHED,
+            RefinementAttemptDiagnostics.Phase.PUBLICATION,RefinementAttemptDiagnostics.Cause.NONE,new RefinementLineageCodec.CandidateKey(a.id(),blue)),"Historical current selection cannot relabel its older operation as latest");
+    }
+    @Test void publicationCannotRelabelWrongRootSourceSettingsOrResultSelection() {
+        var root=root();var receipt=receipt(ticket(root,1),Outcome.COMPLETE,Optional.empty());
+        var valid=publicationDocument(List.of(root),root,receipt.ticket(),Optional.of(receipt),RefinementAttemptDiagnostics.Publication.FAILED,
+            RefinementAttemptDiagnostics.Phase.PUBLICATION,RefinementAttemptDiagnostics.Cause.PRESENTATION_FAILED,new RefinementLineageCodec.CandidateKey(root.id(),root.selected()));
+        var b=valid.binding();var p=valid.latestPublication();
+        assertAll(
+            ()->assertThrows(IllegalArgumentException.class,()->new RefinementLineageCodec.Document(new RefinementLineageCodec.Binding(b.buildIdentity(),SOURCE,b.parameterHash(),b.mode(),b.session(),b.root(),b.current(),b.currentChoice()),valid.originalOsm(),valid.stages(),valid.latestAttempt(),p)),
+            ()->assertThrows(IllegalArgumentException.class,()->new RefinementLineageCodec.Document(new RefinementLineageCodec.Binding(b.buildIdentity(),b.sourceIdentityHash(),SOURCE,b.mode(),b.session(),b.root(),b.current(),b.currentChoice()),valid.originalOsm(),valid.stages(),valid.latestAttempt(),p)),
+            ()->assertThrows(IllegalArgumentException.class,()->new RefinementLineageCodec.Document(b,new RefinementLineageCodec.OriginalOsm("wrong-original",valid.originalOsm().geometry()),valid.stages(),valid.latestAttempt(),p)),
+            ()->assertThrows(IllegalArgumentException.class,()->publicationDocument(List.of(root),root,receipt.ticket(),Optional.of(receipt),RefinementAttemptDiagnostics.Publication.FAILED,
+                RefinementAttemptDiagnostics.Phase.PUBLICATION,RefinementAttemptDiagnostics.Cause.PRESENTATION_FAILED,new RefinementLineageCodec.CandidateKey(root.id(),blue))),
+            ()->assertThrows(IllegalArgumentException.class,()->capture(List.of(root),root,Optional.of(receipt)),"COMPLETE without matching publication metadata remains refused"));
+    }
+
     @Test void originalOsmMustBeBoundEvenForRootOnlyHistoryWithoutReceipt() {
         var root=root(); var doc=capture(List.of(root),root,Optional.empty());
         var replaced=Format15Artifact.text("original-geometry.json","replaced-original");
@@ -146,6 +207,38 @@ class RefinementLineageCodecTest {
                 replacement.id(),Optional.empty(),refs(history.history()));
             assertEquals(first.id(),doc.stages().get(1).smoothingInput().orElseThrow().owner());
             assertEquals(doc,RefinementLineageCodec.read(RefinementLineageCodec.artifact(doc)));
+        });
+    }
+    @Test void actualPublishedSmoothingReplacementKeepsFactualDiscardedInvocationOwner() throws Exception {
+        // Reuse the existing synthetic authority fixture without widening its production API.
+        var fixture=Class.forName("org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementParentFixtures");
+        var factory=fixture.getDeclaredMethod("authority",AlignmentMode.class); factory.setAccessible(true);
+        var authority=(RefinementRootAuthority)factory.invoke(null,AlignmentMode.PRECISE_SHAPE);
+        javax.swing.SwingUtilities.invokeAndWait(()->{
+            var root=root();
+            var history=new RefinementSession(root,authority.effectiveConfig(),authority.sourceIdentity(),authority,RefinementLimits.defaults());
+            var medium=history.beginSmoothing("Medium");
+            var first=Stage.child(medium,List.of(candidate("blue",Optional.empty())),blue);
+            history.reserve(medium,1,history.availablePayloadBytes()); assertTrue(history.publish(medium,first));
+            var strong=history.beginSmoothing("Strong");
+            var replacement=Stage.child(strong,List.of(candidate("blue",Optional.of(receipt(strong,Outcome.COMPLETE,Optional.empty())))),blue);
+            history.reserve(strong,1,history.availablePayloadBytes()); assertTrue(history.publish(strong,replacement));
+            assertEquals(2,history.history().size());
+            assertFalse(history.history().stream().anyMatch(stage->stage.id().equals(first.id())));
+            var actual=replacement.candidates().get(0).payload().nativeReview().orElseThrow().operation().orElseThrow();
+            var binding=new RefinementAttemptDiagnostics.Binding(strong,root.id(),"runtime-source",SOURCE,SETTINGS,"frozen-proof",actual.parentIdentity());
+            var diagnostic=new RefinementAttemptDiagnostics(binding,Optional.of(actual),RefinementAttemptDiagnostics.Publication.PUBLISHED,
+                RefinementAttemptDiagnostics.Phase.PUBLICATION,RefinementAttemptDiagnostics.Cause.NONE,0);
+            var published=new RefinementLineageCodec.LatestPublication(diagnostic,new RefinementLineageCodec.CandidateKey(replacement.id(),blue));
+            var doc=RefinementLineageCodec.capture("synthetic-build",Format15Safety.sha256("runtime-source"),SETTINGS,AlignmentMode.PRECISE_SHAPE,strong.session(),SOURCE,originalGeometry,history.history(),
+                replacement.id(),Optional.of(actual),refs(history.history()),Optional.of(published));
+            assertEquals(first.id(),doc.latestAttempt().orElseThrow().ticket().parent());
+            assertEquals(doc,RefinementLineageCodec.read(RefinementLineageCodec.artifact(doc)));
+            var failed=new RefinementAttemptDiagnostics(binding,Optional.of(actual),RefinementAttemptDiagnostics.Publication.FAILED,
+                RefinementAttemptDiagnostics.Phase.PUBLICATION,RefinementAttemptDiagnostics.Cause.PRESENTATION_FAILED,0);
+            assertThrows(IllegalArgumentException.class,()->RefinementLineageCodec.capture("synthetic-build",Format15Safety.sha256("runtime-source"),SETTINGS,AlignmentMode.PRECISE_SHAPE,strong.session(),SOURCE,originalGeometry,history.history(),
+                replacement.id(),Optional.of(actual),refs(history.history()),Optional.of(new RefinementLineageCodec.LatestPublication(failed,new RefinementLineageCodec.CandidateKey(first.id(),blue)))));
+            history.close();
         });
     }
     @Test void unavailableAttemptsPreserveExplicitZeroCallsAndUnavailableWork() {
