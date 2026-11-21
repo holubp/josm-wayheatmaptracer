@@ -55,6 +55,251 @@ public final class LongScaleNormalFairing {
         public boolean requiresSourceValidation() { return true; }
     }
 
+    /** Separate requested-only entry: no source eligibility, validation or Apply authority. */
+    public record CaptureRequest(FinalControlBasis basis, CaptureScaleFairingPolicy policy,
+            long maximumWorkVisits, long maximumScratchBytes) {
+        public CaptureRequest {
+            Objects.requireNonNull(basis); Objects.requireNonNull(policy);
+            if (maximumWorkVisits < 0 || maximumScratchBytes < 0 || maximumScratchBytes > MAX_SCRATCH)
+                throw new IllegalArgumentException("Invalid requested-shape resource budget");
+        }
+    }
+    public enum RequestedStatus { UNCHANGED, REQUESTED, REFUSED_RESOURCE, REFUSED_GEOMETRY }
+    public record CaptureMovement(int finalIndex, double requestedNormalPixels,
+            double clippedNormalPixels, double boundaryNormalPixels) { }
+    public record CaptureRequestedResult(java.util.Optional<List<MetricPoint>> requestedPoints,
+            RequestedStatus status, List<CaptureMovement> movements, long workVisits, String reason) {
+        public CaptureRequestedResult {
+            requestedPoints = requestedPoints.map(LongScaleNormalFairing::captureImmutable);
+            movements = captureImmutable(movements);
+        }
+        public boolean isApplicable() { return false; }
+    }
+    public static CaptureRequestedResult requestCaptureScale(CaptureRequest request, CancellationProbe cancellation) {
+        return requestCaptureScaleInternal(request, cancellation, null);
+    }
+
+    /** Proposal and retained output charge. The caller must close after discarding every output reference. */
+    public record OwnedCaptureRequest(CaptureRequestedResult result,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MemoryLease output)
+            implements AutoCloseable {
+        @Override public void close() { output.close(); }
+    }
+
+    /** Uses the caller's monotonic attempt context; this produces no Apply authority. */
+    public static OwnedCaptureRequest requestCaptureScale(CaptureRequest request, CancellationProbe cancellation,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext context) {
+        Objects.requireNonNull(request); Objects.requireNonNull(cancellation); Objects.requireNonNull(context);
+        long n = request.basis().size();
+        long scratch = Math.addExact(request.basis().scratchReservationBytes(), Math.multiplyExact(2048L, n));
+        long outputBytes = Math.addExact(1024L, Math.multiplyExact(256L, n));
+        try (var scratchReservation = context.reserve("capture-scale-scratch", scratch);
+             var outputReservation = context.reserve("capture-scale-output", outputBytes)) {
+            var result = requestCaptureScaleInternal(request, cancellation, context);
+            return new OwnedCaptureRequest(result, outputReservation.adopt(result));
+        }
+    }
+
+    private static CaptureRequestedResult requestCaptureScaleInternal(CaptureRequest request, CancellationProbe cancellation,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext context) {
+        Objects.requireNonNull(request); Objects.requireNonNull(cancellation);
+        cancellation.checkpoint();
+        Budget budget = new Budget(request.maximumWorkVisits(), cancellation, context);
+        try {
+            budget.visit();
+            FinalControlBasis basis = request.basis();
+            List<MetricPoint> raw = basis.initialCoordinates();
+            long reservation = basis.scratchReservationBytes() + 1_024L * raw.size();
+            if (reservation > request.maximumScratchBytes()) throw new Refusal("scratch-limit");
+            budget.reserve(reservation);
+            if (request.policy().gain() == 0)
+                return captureResult(raw, RequestedStatus.UNCHANGED, List.of(), budget, "gain-zero");
+            List<Integer> indices = basis.independentIndices();
+            List<MetricPoint> anchors = new ArrayList<>(indices.size());
+            for (int index : indices) { budget.visit(); anchors.add(raw.get(index)); }
+            // Only factual independent controls define the immutable reference. An
+            // inserted dependent occurrence keeps its own origin through basis.lift.
+            Reference reference = new Reference(anchors, budget);
+            double[] pixels = new double[anchors.size()];
+            for (int i = 1; i < pixels.length; i++) {
+                budget.visit();
+                pixels[i] = pixels[i-1] + request.policy().referenceDistance(sub(anchors.get(i), anchors.get(i-1)));
+                if (!(pixels[i] > pixels[i-1]) || !Double.isFinite(pixels[i])
+                        || !(reference.s[i] > reference.s[i-1]))
+                    throw new IllegalArgumentException("Unresolvable reference chainage");
+            }
+            TreeSet<Integer> protectedPositions = new TreeSet<>();
+            protectedPositions.add(0); protectedPositions.add(indices.size()-1);
+            for (int slot : basis.protectedIndices()) {
+                budget.visit(); protectedPositions.add(java.util.Collections.binarySearch(indices, slot));
+            }
+            if (protectedPositions.size() == indices.size())
+                return captureResult(raw, RequestedStatus.UNCHANGED, List.of(), budget, "no-movable-interior");
+            var policy = request.policy();
+            // A physical quadrature grid with <=1/4 reference-pixel arclength per
+            // step in every direction. The Frobenius inverse norm is conservative
+            // for anisotropic/skewed frames; it is not source uncertainty.
+            double inverseNorm = Math.hypot(policy.referenceDistance(new MetricPoint(1,0)),
+                    policy.referenceDistance(new MetricPoint(0,1)));
+            double step = .25 / inverseNorm;
+            if (!(step > 0) || !Double.isFinite(step)) throw new Refusal("quadrature-limit");
+            List<MetricPoint> controls;
+            if (context == null) controls = new ArrayList<>(raw);
+            else {
+                controls = new ArrayList<>(raw.size());
+                for (var point : raw) { budget.contextOnly(1); controls.add(point); }
+            }
+            List<CaptureMovement> movements = context == null ? new ArrayList<>() : new ArrayList<>(indices.size() - 2);
+            for (int position = 1; position < indices.size()-1; position++) {
+                budget.visit(); if (protectedPositions.contains(position)) continue;
+                int slot = indices.get(position);
+                MetricPoint point = anchors.get(position);
+                MetricPoint tangent = sub(reference.at(Math.min(reference.length, reference.s[position]+6)),
+                        reference.at(Math.max(0, reference.s[position]-6)));
+                double length = norm(tangent);
+                if (!(length > 0) || !Double.isFinite(length))
+                    throw new IllegalArgumentException("Undefined frozen ground normal");
+                MetricPoint normal = new MetricPoint(-tangent.yMeters()/length, tangent.xMeters()/length);
+                MetricPoint target = captureTarget(reference, pixels, position, policy, step, budget);
+                double normalPixelMeters = policy.normalPixelMeters(normal);
+                double requested = dot(target, normal) / normalPixelMeters;
+                double clipped = Math.max(-policy.maximumNormalPixels(), Math.min(policy.maximumNormalPixels(), requested));
+                double boundaryDistance = Math.min(pixels[position]-pixels[protectedPositions.lower(position)],
+                        pixels[protectedPositions.higher(position)]-pixels[position]);
+                double conditioned = clipped * policy.gain() * policy.fade(boundaryDistance);
+                if (!Double.isFinite(requested) || !Double.isFinite(conditioned))
+                    throw new IllegalArgumentException("Nonfinite requested movement");
+                movements.add(new CaptureMovement(slot, requested, clipped, conditioned));
+                double dx = normal.xMeters() * conditioned * normalPixelMeters;
+                double dy = normal.yMeters() * conditioned * normalPixelMeters;
+                double x = dx == 0 ? point.xMeters() : point.xMeters()+dx;
+                double y = dy == 0 ? point.yMeters() : point.yMeters()+dy;
+                controls.set(slot, x == point.xMeters() && y == point.yMeters() ? point : new MetricPoint(x,y));
+            }
+            List<MetricPoint> requested;
+            if (context == null) {
+                budget.add(raw.size());
+                requested = basis.lift(controls);
+            } else {
+                requested = captureLift(basis, controls, budget);
+            }
+            boolean changed = !samePhysicalGeometry(raw, requested, budget);
+            return captureResult(changed ? requested : raw,
+                    changed ? RequestedStatus.REQUESTED : RequestedStatus.UNCHANGED, movements, budget,
+                    changed ? "unvalidated-geometric-request-no-apply" : "no-geometric-change");
+        } catch (Refusal refusal) {
+            return new CaptureRequestedResult(java.util.Optional.empty(), RequestedStatus.REFUSED_RESOURCE,
+                    List.of(), budget.used, refusal.getMessage());
+        } catch (IllegalArgumentException invalid) {
+            return new CaptureRequestedResult(java.util.Optional.empty(), RequestedStatus.REFUSED_GEOMETRY,
+                    List.of(), budget.used, "invalid-reference-or-request");
+        }
+    }
+
+    private static CaptureRequestedResult captureResult(List<MetricPoint> points, RequestedStatus status,
+            List<CaptureMovement> movements, Budget budget, String reason) {
+        if (budget.context != null) {
+            points = new CaptureImmutableList<>(points, budget);
+            movements = new CaptureImmutableList<>(movements, budget);
+        }
+        return new CaptureRequestedResult(java.util.Optional.of(points), status, movements, budget.used, reason);
+    }
+
+    private static <T> List<T> captureImmutable(List<T> source) {
+        return source instanceof CaptureImmutableList<?> ? source : List.copyOf(source);
+    }
+
+    /** Private immutable copy, populated with bounded cancellation checkpoints. */
+    private static final class CaptureImmutableList<T> extends java.util.AbstractList<T>
+            implements java.util.RandomAccess {
+        private final List<T> values;
+        CaptureImmutableList(List<T> source, Budget budget) {
+            var copy = new ArrayList<T>(source.size());
+            for (var value : source) { budget.contextOnly(1); copy.add(Objects.requireNonNull(value)); }
+            values = copy;
+        }
+        @Override public T get(int index) { return values.get(index); }
+        @Override public int size() { return values.size(); }
+    }
+
+    // Equivalent to FinalControlBasis.lift, with cooperative metering interleaved
+    // with its validation and per-row arithmetic for the shared-context path.
+    private static List<MetricPoint> captureLift(FinalControlBasis basis, List<MetricPoint> controls, Budget budget) {
+        var raw = basis.initialCoordinates();
+        for (var point : controls) {
+            budget.contextOnly(1);
+            if (point == null || !Double.isFinite(point.xMeters()) || !Double.isFinite(point.yMeters()))
+                throw new IllegalArgumentException("Invalid independent values");
+        }
+        for (int i : basis.protectedIndices()) {
+            budget.contextOnly(1);
+            var a = raw.get(i); var b = controls.get(i);
+            if (Double.doubleToRawLongBits(a.xMeters()) != Double.doubleToRawLongBits(b.xMeters())
+                    || Double.doubleToRawLongBits(a.yMeters()) != Double.doubleToRawLongBits(b.yMeters()))
+                throw new IllegalArgumentException("Protected movement");
+        }
+        var result = new ArrayList<MetricPoint>(basis.size());
+        for (var row : basis.rows()) {
+            budget.visit();
+            int i = row.finalIndex();
+            if (row.independent()) { result.add(controls.get(i)); continue; }
+            var origin = raw.get(i); var left0 = raw.get(row.leftIndependent()); var right0 = raw.get(row.rightIndependent());
+            var left = controls.get(row.leftIndependent()); var right = controls.get(row.rightIndependent());
+            double lx = left.xMeters()-left0.xMeters(), ly = left.yMeters()-left0.yMeters();
+            double rx = right.xMeters()-right0.xMeters(), ry = right.yMeters()-right0.yMeters();
+            if (lx == 0 && ly == 0 && rx == 0 && ry == 0) { result.add(origin); continue; }
+            double dx = (1.0-row.weight())*lx + row.weight()*rx;
+            double dy = (1.0-row.weight())*ly + row.weight()*ry;
+            double x = dx == 0 ? origin.xMeters() : origin.xMeters()+dx;
+            double y = dy == 0 ? origin.yMeters() : origin.yMeters()+dy;
+            if (!Double.isFinite(x) || !Double.isFinite(y)) throw new IllegalArgumentException("Control arithmetic overflow");
+            result.add(x == origin.xMeters() && y == origin.yMeters() ? origin : new MetricPoint(x,y));
+        }
+        return new CaptureImmutableList<>(result, budget);
+    }
+
+    /** Physical-arclength integration; no quadrature coordinates are retained or exported. */
+    private static MetricPoint captureTarget(Reference reference, double[] pixels, int position,
+            CaptureScaleFairingPolicy policy, double step, Budget budget) {
+        double center = pixels[position];
+        double first = captureStation(Math.max(0, center-policy.radiusReferencePixels()), pixels, reference.s, budget);
+        double last = captureStation(Math.min(pixels[pixels.length-1], center+policy.radiusReferencePixels()), pixels, reference.s, budget);
+        double divisions = (last-first)/step;
+        if (!Double.isFinite(divisions) || divisions+2 > GeometricCurvatureOperator.MAXIMUM_MESH_POINTS)
+            throw new Refusal("quadrature-limit");
+        if (!(last > first)) throw new Refusal("quadrature-resolution");
+        MetricPoint origin = reference.points.get(position);
+        int count = Math.max(1, (int)Math.ceil(divisions));
+        double sum = 0, x = 0, y = 0;
+        // Anchor the uniform physical panels to THIS stencil, not global chainage:
+        // changing geometry outside support must not shift the integration phase.
+        // All panels have the same ds, which cancels from the normalized integral.
+        for (int tap = 0; tap < count; tap++) {
+            budget.visit();
+            double middle = first+(last-first)*((tap+.5)/count);
+            double offset = captureStation(middle, reference.s, pixels, budget)-center;
+            double weight = policy.kernelWeight(offset);
+            if (weight > 0) {
+                MetricPoint delta = sub(reference.at(middle), origin);
+                double total = sum+weight;
+                x += (delta.xMeters()-x)*(weight/total); y += (delta.yMeters()-y)*(weight/total);
+                sum = total;
+            }
+        }
+        if (!(sum > 0)) throw new IllegalArgumentException("No finite reference support");
+        return new MetricPoint(x,y);
+    }
+
+    private static double captureStation(double station, double[] from, double[] to, Budget budget) {
+        budget.visit(); int index = Arrays.binarySearch(from, station);
+        if (index >= 0) return to[index];
+        int right = -index-1;
+        if (right == 0) return to[0];
+        if (right == from.length) return to[to.length-1];
+        double t = (station-from[right-1])/(from[right]-from[right-1]);
+        return to[right-1]+t*(to[right]-to[right-1]);
+    }
+
     /** Runs one fixed physical fairing field with independent island backtracking and one budget. */
     public static Result propose(Request request, CancellationProbe cancellation) {
         Objects.requireNonNull(request); Objects.requireNonNull(cancellation);
@@ -373,12 +618,22 @@ public final class LongScaleNormalFairing {
     private static final class Refusal extends RuntimeException { Refusal(String reason) { super(reason); } }
     private static final class Budget {
         final long maximum; final CancellationProbe cancellation; long used, scratch, externalCalls;
-        Budget(long maximum, CancellationProbe cancellation) { this.maximum = maximum; this.cancellation = cancellation; }
+        final org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext context;
+        Budget(long maximum, CancellationProbe cancellation) { this(maximum, cancellation, null); }
+        Budget(long maximum, CancellationProbe cancellation, org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext context) { this.maximum = maximum; this.cancellation = cancellation; this.context = context; }
         void visit() { add(1); }
         void add(long count) {
             cancellation.checkpoint();
             if (count > maximum - used) throw new Refusal("work-limit");
+            contextOnly(count);
             used += count;
+        }
+        void contextOnly(long count) {
+            if (context != null) while (count > 0) {
+                long batch = Math.min(count, 256);
+                context.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.COPY, batch);
+                count -= batch;
+            }
         }
         void reserve(long count) {
             if (count < 0 || count > MAX_SCRATCH - scratch) throw new Refusal("scratch-limit");
