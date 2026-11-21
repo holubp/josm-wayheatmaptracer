@@ -9,10 +9,30 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedModernPreviewSource;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.VisibleRefinementCaptureTest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.*;
 class RefinementAcquisitionTest {
+ @Test void frozenVisiblePlanConvertsSameEpochPixelsAndRejectsShortFrameBeforeScalarWork() {
+  var source=VisibleEvidencePlanTest.source(TrackerMode.CORRIDOR_AWARE);var epoch=new org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch();
+  var ledger=AttemptMemoryLedger.production();try(var owner=ledger.rootOwner()) {
+   var work=VisibleEvidencePlanTest.work(owner);var old=VisibleEvidencePlanTest.original(source,epoch,1);
+   var original=new LegacyVisibleSource(old.minimumEast(),old.minimumNorth(),old.maximumEast(),old.maximumNorth(),10,6,OptionalDouble.of(1),old.projectionCode(),old.sourceReceipt(),old.decisionRadiusMeters(),old.sampleStepMeters());
+   var plan=VisibleEvidencePlan.create(source,VisibleEvidencePlanTest.factual(original),work);var raster=VisibleRefinementCaptureTest.raster(plan);
+   var captured=RefinementAcquisition.captureVisible(source,plan,raster,"blue",work);var evidence=captured.value().evidence();
+   assertEquals(plan.grid().transform(),evidence.transform());assertEquals(plan.grid().width(),evidence.resampling().outputWidth());assertEquals(1,evidence.resolution().outputRasterPitchMeters());
+   assertTrue(work.counters().get(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.MAP)>0);
+   var descriptor=captured.value().retentionDescriptor(source.requests().stream().filter(r->r.palette().equals("blue")&&r.mapping().equals("blue")).findFirst().orElseThrow(),evidence);
+   assertEquals(original.sourceReceipt(),descriptor.visibleReceipt().orElseThrow());assertFalse(descriptor.inputByteHash().isEmpty());
+   long mapped=work.counters().get(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.MAP);
+   var tiny=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService.VisibleRaster(6,6,new int[36],original.minimumEast(),original.minimumNorth(),original.minimumEast()+10,original.minimumNorth()+10,10,6,OptionalDouble.of(1),raster.sourceIdentity(),raster.projectionCode(),original.sourceReceipt());
+   assertThrows(IllegalStateException.class,()->RefinementAcquisition.captureVisible(source,plan,tiny,"blue",work));assertEquals(mapped,work.counters().get(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.MAP));
+   var coarser=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService.VisibleRaster(raster.width(),raster.height(),raster.argb(),raster.minimumEast(),raster.minimumNorth(),raster.maximumEast(),raster.maximumNorth(),10,6,OptionalDouble.of(2),raster.sourceIdentity(),raster.projectionCode(),original.sourceReceipt());
+   assertThrows(UnsupportedOperationException.class,()->RefinementAcquisition.captureVisible(source,plan,coarser,"blue",work));assertEquals(mapped,work.counters().get(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.MAP));
+   epoch.sourceChanged();assertThrows(VisibleEvidencePlan.StaleSource.class,descriptor::requireCurrent);assertThrows(VisibleEvidencePlan.StaleSource.class,captured.value()::evidence);captured.owner().close();
+  }assertEquals(0,ledger.currentBytes());
+ }
  static final class EventCancellation implements CancellationProbe {
   private final java.util.concurrent.atomic.AtomicBoolean cancelled=new java.util.concurrent.atomic.AtomicBoolean();
   private final java.util.concurrent.CopyOnWriteArrayList<Runnable> listeners=new java.util.concurrent.CopyOnWriteArrayList<>();

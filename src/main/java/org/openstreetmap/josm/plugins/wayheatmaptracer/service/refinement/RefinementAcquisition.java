@@ -10,6 +10,58 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.*;
 
 /** Parent-centered coordinator acquisition and scalar-before-resampling evidence, without OSM writes. */
 public final class RefinementAcquisition {
+    /** One preflight authority shared verbatim with the renderer request and scalar capture. */
+    public static VisibleEvidencePlan.Support visibleSupport(VisibleEvidencePlan plan,LiveBPreviewService.VisibleRaster raster) {
+        return Objects.requireNonNull(plan).support(raster);
+    }
+    /** Live conversion is explicit; standalone port capture never pays for this additional copy. */
+    public static Accounted<VisibleCapture> captureVisible(RefinementSourcePlanner.Plan sourcePlan,
+            VisibleEvidencePlan evidencePlan,VisibleRefinementCapture.Frame frame,String mapping,GeometryWorkContext work) {
+        evidencePlan.requireWork(work);
+        if(evidencePlan.sourcePlan()!=sourcePlan)throw new IllegalArgumentException("Visible plan identity differs");
+        if(frame.evidencePlan()!=evidencePlan)throw new IllegalArgumentException("Visible frame belongs to another plan");
+        frame.requireCurrent();
+        if(!frame.commonResolution())throw new UnsupportedOperationException("visible-spatial-resolution-unavailable");
+        if(sourcePlan.requests().stream().noneMatch(r->r.palette().equals(sourcePlan.settings().selectedPalette())&&r.mapping().equals(mapping)&&!r.aggregate()&&r.unavailableReason().isEmpty()))throw new IllegalArgumentException("Visible mapping not requested");
+        evidencePlan.requireActualSourcePitch(frame.nativePitchMeters().orElse(frame.groundMetersPerViewPixel()/6));
+        var copied=frame.copyRaster(work);
+        try{return captureVisible(sourcePlan,evidencePlan,copied.value(),mapping,work);}finally{copied.owner().close();}
+    }
+    public static Accounted<VisibleCapture> captureVisible(RefinementSourcePlanner.Plan sourcePlan,
+            VisibleEvidencePlan evidencePlan,LiveBPreviewService.VisibleRaster raster,String mapping,GeometryWorkContext work) {
+        evidencePlan.requireWork(work);
+        if(evidencePlan.sourcePlan()!=sourcePlan)throw new IllegalArgumentException("Visible plan identity differs");
+        if(visibleSupport(evidencePlan,raster)!=VisibleEvidencePlan.Support.COVERED)throw new IllegalStateException("Actual visible frame lacks engine support");
+        evidencePlan.requireActualSourcePitch(raster.nativePitchMeters().orElse(raster.groundMetersPerViewPixel()/6));
+        if(javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Visible evidence copies require worker thread");
+        var request=sourcePlan.requests().stream().filter(r->r.palette().equals(sourcePlan.settings().selectedPalette())&&r.mapping().equals(mapping)&&!r.aggregate()&&r.unavailableReason().isEmpty()).findFirst().orElseThrow(()->new IllegalArgumentException("Visible mapping not requested"));
+        var memory=work.owner().child("frozen-visible-conversion");
+        try {
+            long count=Math.multiplyExact((long)raster.width(),raster.height());
+            try(var copies=work.reserveOn(memory,"visible-copy-and-validity",Math.addExact(8192,Math.multiplyExact(count,9)))) {
+                for(long start=0;start<count;start+=256)work.visit(GeometryWorkContext.Kind.COPY,Math.min(256,count-start));
+                var argb=raster.argb();
+                var image=new java.awt.image.BufferedImage(raster.width(),raster.height(),java.awt.image.BufferedImage.TYPE_INT_ARGB);
+                var valid=new boolean[Math.toIntExact(count)];
+                for(int y=0;y<raster.height();y++)for(int x=0;x<raster.width();x+=256) {
+                    int length=Math.min(256,raster.width()-x);work.visit(GeometryWorkContext.Kind.COPY,length);
+                    image.setRGB(x,y,length,1,argb,y*raster.width()+x,raster.width());Arrays.fill(valid,y*raster.width()+x,y*raster.width()+x+length,true);
+                }
+                String inputHash=RasterEvidenceCapture.hashOriginalArgb(image,work,memory);
+                var grid=evidencePlan.grid();var transform=org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform.visibleWebMercator(raster.minimumEast(),raster.maximumNorth(),raster.projectionUnitsPerViewPixel(),6);
+                double inputPitch=raster.groundMetersPerViewPixel()/6;
+                var resolution=raster.nativePitchMeters().isPresent()?EvidenceResolution.nativeSource(raster.nativePitchMeters().getAsDouble(),inputPitch):EvidenceResolution.renderedOnly(inputPitch);
+                var lineage=new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.VISIBLE_RENDER,EvidenceFieldLineage.DerivationKind.NATIVE_PALETTE_MAPPING,mapping,EvidenceCorrelationGroup.STRAVA_RENDERINGS,false);
+                var field=RasterEvidenceCapture.FieldSpec.direct("native",v->ManagedModernPreviewSource.scalarIntensity(v,mapping,sourcePlan.settings().intensity()),lineage);
+                CancellationProbe guard=()->{work.visit(GeometryWorkContext.Kind.BIND,1);evidencePlan.requireCurrent();return false;};
+                var converted=new RasterEvidenceCapture().captureWithMetricSource(evidencePlan.canonicalIdentity()+"/"+mapping,image,valid,sourcePlan.parent().points().stream().map(grid.coordinateFrame()::toGeographic).toList(),sourcePlan.parent().points(),transform,grid,resolution,evidencePlan.decisionRadiusMeters(),raster.sourceIdentity(),EvidenceFieldLineage.AcquisitionKind.VISIBLE_RENDER,List.of(field),guard,work,memory);
+                evidencePlan.requireCurrent();var receipt=evidencePlan.original().sourceReceipt();
+                var descriptor=new RetainedSmoothingSource(request,sourcePlan.settings().intensity(),"native",converted.evidence(),transform,raster.width(),raster.height(),converted.retainedBytes(),evidencePlan::requireCurrent,raster.sourceIdentity()+"/visible-input-ownership/"+receipt.revision()+"/"+transform.parameterIdentity()+"/"+inputHash,inputHash,OptionalLong.empty(),Optional.of(receipt),Optional.empty(),RasterEvidenceCapture.ORIGINAL_ARGB_PROTOCOL);
+                try(var metadata=work.reserveOn(memory,"visible-descriptor",descriptor.descriptorBytes())){metadata.adopt(descriptor);}
+                return new Accounted<>(new VisibleCapture(sourcePlan,converted.evidence(),receipt,memory,descriptor),memory);
+            }
+        }catch(RuntimeException|Error failure){memory.close();throw failure;}
+    }
     private final ManagedModernPreviewSource source;
     private final TileFetchCoordinator coordinator;
     public RefinementAcquisition(ManagedModernPreviewSource source,TileFetchCoordinator coordinator) {
@@ -95,7 +147,7 @@ public final class RefinementAcquisition {
         public RefinementSourcePlanner.Plan plan(){return plan;}
         public void requireCurrent() {
             if(owner.isClosed())throw new IllegalStateException("Visible evidence owner has settled");
-            receipt.owner().requireCurrent(receipt);
+            try{receipt.owner().requireCurrent(receipt);}catch(IllegalStateException stale){throw new VisibleEvidencePlan.StaleSource(plan);}
         }
         public EvidenceSnapshot evidence(){requireCurrent();return evidence;}
         public RetainedSmoothingSource retentionDescriptor(RefinementSourcePlanner.SourceRequest source,EvidenceSnapshot actual) {

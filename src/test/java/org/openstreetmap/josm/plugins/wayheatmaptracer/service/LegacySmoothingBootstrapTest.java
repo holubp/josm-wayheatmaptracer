@@ -89,7 +89,7 @@ class LegacySmoothingBootstrapTest {
                     if(managed)captured=new AlignmentService(new TileHeatmapSampler(coordinator)).alignLegacyReviewed(selected,null,null,cfg,new AlignmentService.LegacyCaptureObserver(){public void managed(TileHeatmapSampler.AcquisitionReceipt actual){receipt.set(actual);}});
                     var image=managed?null:new BufferedImage(600,600,BufferedImage.TYPE_INT_ARGB);if(image!=null)for(int y=0;y<600;y++)for(int x=0;x<600;x++)image.setRGB(x,y,0xffffffff);
                     var result=new AlignmentResult(selected,image,List.of(shortDiagnostic,a,b),source,first,List.of(),null,managed?captured.tileMosaics():null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(shortDiagnostic.id(),a.id(),b.id()),"","")),List.of(a,b));
-                    var center=Projections.getProjectionByCode("EPSG:3857").latlon2eastNorth(new LatLon(50,14));var visible=managed?null:new LegacyVisibleSource(center.east()-300,center.north()-300,center.east()+300,center.north()+300,6,3.86,OptionalDouble.empty(),"EPSG:3857",new VisibleSourceEpoch().captureStable(),OptionalDouble.of(3.5),OptionalDouble.of(1.2));
+                    var center=Projections.getProjectionByCode("EPSG:3857").latlon2eastNorth(new LatLon(50,14));var visible=managed?null:LegacyVisibleRefinementBootstrapTest.factualFrame(new LegacyVisibleSource(center.east()-300,center.north()-300,center.east()+300,center.north()+300,6,3.86,OptionalDouble.empty(),"EPSG:3857",new VisibleSourceEpoch().captureStable(),OptionalDouble.of(3.5),OptionalDouble.of(1.2)),600,600,0,0);
                     current.captured(result,visible,receipt.get());current.select(a);assertEquals("legacy-choice-1",current.choiceId(a));
                     if(managed)nativeSeed.set(new LegacyRefinementBootstrap().capture(current,coordinator,owner));
                     seed.set(new LegacyRefinementBootstrap().captureForSmoothing(current,coordinator,work));
@@ -170,7 +170,7 @@ class LegacySmoothingBootstrapTest {
                     var image=new BufferedImage(600,600,BufferedImage.TYPE_INT_ARGB);for(int y=0;y<600;y++)for(int x=0;x<600;x++)image.setRGB(x,y,0xffffffff);
                     var candidate=new CenterlineCandidate("visible-lower",1,List.of(),List.of(),points,points,Map.of(),List.of(),1,CandidateEvidence.empty(),CandidateCleanupEvidence.empty(),List.of());
                     var result=new AlignmentResult(selected,image,List.of(candidate),points,points,List.of(),null,null,List.of(new DetectorAttempt("hot","hot-corridor",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(candidate.id()),"","")),List.of(candidate));
-                    var metadata=new LegacyVisibleSource(center.east()-300,center.north()-300,center.east()+300,center.north()+300,6,3.86,OptionalDouble.empty(),"EPSG:3857",epoch.captureStable(),OptionalDouble.of(3.5),OptionalDouble.of(1.2));
+                    var metadata=LegacyVisibleRefinementBootstrapTest.factualFrame(new LegacyVisibleSource(center.east()-300,center.north()-300,center.east()+300,center.north()+300,6,3.86,OptionalDouble.empty(),"EPSG:3857",epoch.captureStable(),OptionalDouble.of(3.5),OptionalDouble.of(1.2)),600,600,0,0);
                     current.captured(result,metadata);current.select(candidate);seed.set(new LegacyRefinementBootstrap().captureForSmoothing(current,coordinator,work));
                 });
                 var root=new LegacyRefinementBootstrap().completeForSmoothing(seed.get(),coordinator,work);

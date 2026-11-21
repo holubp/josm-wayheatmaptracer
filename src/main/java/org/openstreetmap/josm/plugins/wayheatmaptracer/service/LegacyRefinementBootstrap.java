@@ -63,7 +63,7 @@ public final class LegacyRefinementBootstrap {
             LegacyVisibleSource metadata) implements SmoothingSeed { }
     public record SmoothingRoot(Root root,Candidate selected,RetainedSmoothingSource source) { }
     public enum SmoothingUnavailableReason { SOURCE_MAPPING_UNAVAILABLE, ORIGINAL_SOURCE_UNAVAILABLE,
-        VISIBLE_PROJECTION_TRANSFORM_UNAVAILABLE, VISIBLE_SAMPLING_METADATA_UNAVAILABLE, VISIBLE_EPOCH_UNAVAILABLE, SOURCE_COVERAGE_UNAVAILABLE, SELECTED_FINAL_PREVIEW_UNAVAILABLE }
+        VISIBLE_PROJECTION_TRANSFORM_UNAVAILABLE, VISIBLE_SAMPLING_METADATA_UNAVAILABLE, VISIBLE_EPOCH_UNAVAILABLE, VISIBLE_PAINTED_FRAME_UNAVAILABLE, SOURCE_COVERAGE_UNAVAILABLE, SELECTED_FINAL_PREVIEW_UNAVAILABLE }
     public static final class SmoothingUnavailable extends IllegalStateException {
         private final SmoothingUnavailableReason reason;
         public SmoothingUnavailable(SmoothingUnavailableReason reason){super(reason.name().toLowerCase(Locale.ROOT).replace('_','-'));this.reason=reason;}
@@ -104,6 +104,9 @@ public final class LegacyRefinementBootstrap {
             visible.sourceReceipt().owner().requireCurrent(visible.sourceReceipt());
             if(visible.decisionRadiusMeters().isEmpty()||visible.sampleStepMeters().isEmpty())throw new SmoothingUnavailable(SmoothingUnavailableReason.VISIBLE_SAMPLING_METADATA_UNAVAILABLE);
             if(source.aggregate())throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
+            var painted=visible.paintedFrame().orElseThrow(()->new SmoothingUnavailable(SmoothingUnavailableReason.VISIBLE_PAINTED_FRAME_UNAVAILABLE));
+            if(!painted.projectionCode().equals(visible.projectionCode())||!painted.commonResolution()||painted.width()!=original.capturedHeatmap().getWidth()||painted.height()!=original.capturedHeatmap().getHeight())
+                throw new SmoothingUnavailable(SmoothingUnavailableReason.VISIBLE_PAINTED_FRAME_UNAVAILABLE);
             radius=visible.decisionRadiusMeters().getAsDouble();step=visible.sampleStepMeters().getAsDouble();
         }
         var facts=previous==null?new LiveBPreviewService().captureLegacyRootSeed(review.dataSet(),original.selection(),config,radius,step,review.sourceIdentity(),owner,work).value():previous.facts();
@@ -182,12 +185,14 @@ public final class LegacyRefinementBootstrap {
             }
             currentness.run();
         } else {
-            var visible=(VisibleSeed)seed;var metadata=visible.metadata();var frozen=metadata.freeze(seed.original().capturedHeatmap(),facts.sourceIdentity(),work,owner);
+            var visible=(VisibleSeed)seed;var metadata=visible.metadata();var painted=metadata.paintedFrame().orElseThrow(()->new SmoothingUnavailable(SmoothingUnavailableReason.VISIBLE_PAINTED_FRAME_UNAVAILABLE));
+            if(!painted.commonResolution()||painted.width()!=seed.original().capturedHeatmap().getWidth()||painted.height()!=seed.original().capturedHeatmap().getHeight())throw new SmoothingUnavailable(SmoothingUnavailableReason.VISIBLE_PAINTED_FRAME_UNAVAILABLE);
+            var frozen=metadata.freeze(seed.original().capturedHeatmap(),facts.sourceIdentity(),work,owner);
             var image=frozen.copyImage(work,owner);width=frozen.width();height=frozen.height();inputHash=frozen.inputByteHash();
-            transform=SupportedInputRasterTransform.visibleWebMercator(metadata.minimumEast(),metadata.maximumNorth(),metadata.projectionUnitsPerViewPixel(),RenderedHeatmapSampler.RASTER_SCALE);
-            double pitch=metadata.groundMetersPerViewPixel()/RenderedHeatmapSampler.RASTER_SCALE;
+            transform=SupportedInputRasterTransform.visibleWebMercator(painted.minimumEast(),painted.maximumNorth(),painted.projectionUnitsPerViewPixel(),RenderedHeatmapSampler.RASTER_SCALE);
+            double pitch=painted.groundMetersPerViewPixel()/RenderedHeatmapSampler.RASTER_SCALE;
             var grid=visibleSmoothingGrid(facts,pitch,work);requireCovered(transform,grid,width,height);
-            var receipt=metadata.sourceReceipt();currentness=()->receipt.owner().requireCurrent(receipt);imageIdentity=facts.sourceIdentity()+"/original-visible-input/"+receipt.revision();
+            var receipt=metadata.sourceReceipt();currentness=()->receipt.owner().requireCurrent(receipt);imageIdentity=facts.sourceIdentity()+"/original-visible-input/"+receipt.revision()+"/"+transform.parameterIdentity();
             long count=Math.multiplyExact((long)width,height);
             try(var validMemory=work.reserve("original-visible-validity",AttemptMemoryLedger.arrayBytes(count,1))) {
                 var valid=new boolean[Math.toIntExact(count)];for(int i=0;i<valid.length;i++){work.visit(GeometryWorkContext.Kind.COPY,1);valid[i]=true;}
@@ -196,7 +201,7 @@ public final class LegacyRefinementBootstrap {
                     mode.usesColorMapping()?selected.mapping():selected.palette()+"/"+mode.detectorName(),EvidenceCorrelationGroup.STRAVA_RENDERINGS,false);
                 var field=RasterEvidenceCapture.FieldSpec.direct("native",argb->ManagedModernPreviewSource.scalarIntensity(argb,selected.mapping(),mode),lineage);
                 admitted=capture.captureWithMetricSource(facts.network().snapshotId()+"/smoothing-source/"+selected.mapping(),image,valid,facts.sourceGeographic(),facts.sourceMetric(),transform,grid,
-                    metadata.nativePitchMeters().isPresent()?EvidenceResolution.nativeSource(metadata.nativePitchMeters().getAsDouble(),pitch):EvidenceResolution.renderedOnly(pitch),
+                    painted.nativePitchMeters().isPresent()?EvidenceResolution.nativeSource(painted.nativePitchMeters().getAsDouble(),pitch):EvidenceResolution.renderedOnly(pitch),
                     facts.decisionRadiusMeters(),facts.sourceIdentity(),lineage.acquisitionKind(),List.of(field),CancellationProbe.NONE,work,owner);
             }
             currentness.run();

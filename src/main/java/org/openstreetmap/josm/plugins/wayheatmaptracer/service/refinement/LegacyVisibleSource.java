@@ -2,6 +2,8 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement;
 
 import java.awt.image.BufferedImage;
 import java.util.OptionalDouble;
+import java.util.Optional;
+import java.util.List;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
@@ -12,7 +14,13 @@ public record LegacyVisibleSource(double minimumEast, double minimumNorth,
         double maximumEast, double maximumNorth, double projectionUnitsPerViewPixel,
         double groundMetersPerViewPixel, OptionalDouble nativePitchMeters,
         String projectionCode, VisibleSourceEpoch.Receipt sourceReceipt,
-        OptionalDouble decisionRadiusMeters,OptionalDouble sampleStepMeters) {
+        OptionalDouble decisionRadiusMeters,OptionalDouble sampleStepMeters,Optional<PaintedFrame> paintedFrame) {
+    /** Historical geometry fields describe Legacy's compatibility frame, not an attested paint frame. */
+    public LegacyVisibleSource(double minimumEast,double minimumNorth,double maximumEast,double maximumNorth,
+            double projectionUnitsPerViewPixel,double groundMetersPerViewPixel,OptionalDouble nativePitchMeters,
+            String projectionCode,VisibleSourceEpoch.Receipt sourceReceipt,OptionalDouble decisionRadiusMeters,OptionalDouble sampleStepMeters) {
+        this(minimumEast,minimumNorth,maximumEast,maximumNorth,projectionUnitsPerViewPixel,groundMetersPerViewPixel,nativePitchMeters,projectionCode,sourceReceipt,decisionRadiusMeters,sampleStepMeters,Optional.empty());
+    }
     /** Historical captures retain honest absence of their effective slide-time sampling metadata. */
     public LegacyVisibleSource(double minimumEast,double minimumNorth,double maximumEast,double maximumNorth,
             double projectionUnitsPerViewPixel,double groundMetersPerViewPixel,OptionalDouble nativePitchMeters,
@@ -20,6 +28,7 @@ public record LegacyVisibleSource(double minimumEast, double minimumNorth,
         this(minimumEast,minimumNorth,maximumEast,maximumNorth,projectionUnitsPerViewPixel,groundMetersPerViewPixel,nativePitchMeters,projectionCode,sourceReceipt,OptionalDouble.empty(),OptionalDouble.empty());
     }
     public LegacyVisibleSource {
+        paintedFrame=paintedFrame==null?Optional.empty():paintedFrame;
         if (!Double.isFinite(minimumEast) || !Double.isFinite(minimumNorth)
                 || !Double.isFinite(maximumEast) || !Double.isFinite(maximumNorth)
                 || minimumEast >= maximumEast || minimumNorth >= maximumNorth
@@ -38,6 +47,57 @@ public record LegacyVisibleSource(double minimumEast, double minimumNorth,
                 || nativePitchMeters.getAsDouble() <= 0)) {
             throw new IllegalArgumentException("Original native pitch is invalid");
         }
+    }
+    /** Explicit producer attestation; historical callers never infer factual geometry from compatibility fields. */
+    public LegacyVisibleSource withPaintedFrame(PaintedFrame frame) {
+        if(!projectionCode.equals(frame.projectionCode()))throw new IllegalArgumentException("Paint projection differs from original source");
+        return new LegacyVisibleSource(minimumEast,minimumNorth,maximumEast,maximumNorth,projectionUnitsPerViewPixel,groundMetersPerViewPixel,nativePitchMeters,projectionCode,sourceReceipt,decisionRadiusMeters,sampleStepMeters,Optional.of(frame));
+    }
+    public record PaintedChunk(int rasterX,int rasterY,int width,int height,double minimumEast,double minimumNorth,
+            double maximumEast,double maximumNorth,double projectionUnitsPerViewPixel,double groundMetersPerViewPixel,
+            OptionalDouble nativePitchMeters,int sourceZoom,String projectionCode) {
+        public PaintedChunk {
+            if(rasterX<0||rasterY<0||width<1||height<1||!Double.isFinite(minimumEast)||!Double.isFinite(minimumNorth)||!Double.isFinite(maximumEast)||!Double.isFinite(maximumNorth)
+                    ||minimumEast>=maximumEast||minimumNorth>=maximumNorth||!Double.isFinite(projectionUnitsPerViewPixel)||projectionUnitsPerViewPixel<=0
+                    ||!Double.isFinite(groundMetersPerViewPixel)||groundMetersPerViewPixel<=0||nativePitchMeters==null||projectionCode==null||projectionCode.isBlank()
+                    ||nativePitchMeters.isPresent()&&(!Double.isFinite(nativePitchMeters.getAsDouble())||nativePitchMeters.getAsDouble()<=0))throw new IllegalArgumentException("Invalid actual painted chunk");
+        }
+    }
+    /** Immutable factual painted lattice, distinct from every Legacy compatibility coordinate. */
+    public record PaintedFrame(int width,int height,double minimumEast,double minimumNorth,double maximumEast,double maximumNorth,
+            double projectionUnitsPerViewPixel,double groundMetersPerViewPixel,OptionalDouble nativePitchMeters,
+            String projectionCode,List<PaintedChunk> chunks) {
+        public PaintedFrame {
+            chunks=List.copyOf(chunks);
+            if(!coherent(width,height,minimumEast,minimumNorth,maximumEast,maximumNorth,projectionUnitsPerViewPixel,projectionCode,chunks)
+                    ||!Double.isFinite(groundMetersPerViewPixel)||groundMetersPerViewPixel<=0||nativePitchMeters==null
+                    ||groundMetersPerViewPixel!=chunks.get(0).groundMetersPerViewPixel())throw new IllegalArgumentException("Incoherent painted lattice");
+            var first=chunks.get(0);var expected=chunks.stream().allMatch(c->c.nativePitchMeters().equals(first.nativePitchMeters())&&c.sourceZoom()==first.sourceZoom())?first.nativePitchMeters():OptionalDouble.empty();
+            if(!nativePitchMeters.equals(expected))throw new IllegalArgumentException("Actual source resolution differs from chunk facts");
+        }
+        public boolean commonResolution(){var first=chunks.get(0);return chunks.stream().allMatch(c->c.sourceZoom()==first.sourceZoom()&&c.nativePitchMeters().equals(first.nativePitchMeters())&&c.groundMetersPerViewPixel()==first.groundMetersPerViewPixel());}
+        /** Returns no frame for an unknown, gapped, overlapping or differently phased mosaic. */
+        public static Optional<PaintedFrame> common(int width,int height,List<PaintedChunk> chunks) {
+            if(chunks.isEmpty())return Optional.empty();var first=chunks.get(0);double pitch=first.projectionUnitsPerViewPixel()/6;
+            double left=first.minimumEast()-first.rasterX()*pitch,top=first.maximumNorth()+first.rasterY()*pitch;
+            var nativePitch=chunks.stream().allMatch(c->c.nativePitchMeters().equals(first.nativePitchMeters())&&c.sourceZoom()==first.sourceZoom())?first.nativePitchMeters():OptionalDouble.empty();
+            try{return Optional.of(new PaintedFrame(width,height,left,top-height*pitch,left+width*pitch,top,first.projectionUnitsPerViewPixel(),first.groundMetersPerViewPixel(),nativePitch,first.projectionCode(),chunks));}
+            catch(IllegalArgumentException invalid){return Optional.empty();}
+        }
+        private static boolean coherent(int width,int height,double left,double bottom,double right,double top,double scale,String projection,List<PaintedChunk> chunks) {
+            if(width<2||height<2||(long)width*height>Integer.MAX_VALUE||chunks.isEmpty()||!Double.isFinite(scale)||scale<=0||projection==null||projection.isBlank())return false;
+            double pitch=scale/6;if(!same(left,right-width*pitch)||!same(top,bottom+height*pitch))return false;
+            int x=0,y=0,rowHeight=0;
+            for(var c:chunks) {
+                if(c.rasterX()!=x||c.rasterY()!=y||c.projectionUnitsPerViewPixel()!=scale||!c.projectionCode().equals(projection)||(long)x+c.width()>width||(long)y+c.height()>height)return false;
+                if(x==0)rowHeight=c.height();else if(c.height()!=rowHeight)return false;
+                if(!same(c.minimumEast(),left+x*pitch)||!same(c.maximumEast(),left+(x+c.width())*pitch)
+                        ||!same(c.maximumNorth(),top-y*pitch)||!same(c.minimumNorth(),top-(y+c.height())*pitch))return false;
+                x+=c.width();if(x==width){x=0;y+=rowHeight;}
+            }
+            return x==0&&y==height;
+        }
+        private static boolean same(double a,double b){return Double.isFinite(a)&&Double.isFinite(b)&&Math.abs(a-b)<=32*Math.max(Math.ulp(a),Math.ulp(b));}
     }
     /** Freezes pixels only for an explicit operation, after validating the original source receipt. */
     LiveBPreviewService.VisibleRaster freeze(BufferedImage raster, String sourceIdentity) {

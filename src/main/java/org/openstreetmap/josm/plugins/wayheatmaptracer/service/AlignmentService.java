@@ -422,7 +422,7 @@ public final class AlignmentService {
                     effectiveSampling.samplingScale().groundMetersPerViewPixel(),
                     capture.sourceResolution().metersPerPixel(), ProjectionRegistry.getProjection().toCode(),
                     originalReceipt,java.util.OptionalDouble.of(effectiveSampling.effectiveHalfWidthGroundMeters()),
-                    java.util.OptionalDouble.of(effectiveSampling.effectiveStepGroundMeters())));
+                    java.util.OptionalDouble.of(effectiveSampling.effectiveStepGroundMeters()),capture.paintedFrame()));
         }
         PluginLog.verbose(
             "Effective visible-layer sampling: configured halfWidth=%d px step=%d px; measured halfWidth=%.2f m "
@@ -2998,6 +2998,51 @@ public final class AlignmentService {
         return Math.toDegrees(Math.acos(cosine));
     }
 
+    /** Explicit frozen-frame rendering port. Pixel/copy work is owned by VisibleRefinementCapture. */
+    public VisibleRefinementCapture.Renderer visibleRefinementRenderer(ImageryLayer layer,MapView view,Runnable originalReviewGuard) {
+        java.util.Objects.requireNonNull(layer);java.util.Objects.requireNonNull(view);java.util.Objects.requireNonNull(originalReviewGuard);
+        return new VisibleRefinementCapture.Renderer() {
+            @Override public void requireCurrent(VisibleRefinementCapture.Request request) {
+                if(!javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Visible renderer requires EDT");
+                try{originalReviewGuard.run();}catch(IllegalStateException changed){throw request.evidencePlan().sourceContextChanged();}
+                request.evidencePlan().requireCurrent();
+                if(!MainApplication.getLayerManager().containsLayer(layer)||ProjectionRegistry.getProjection()==null
+                        ||!ProjectionRegistry.getProjection().toCode().equals(request.evidencePlan().original().projectionCode())
+                        ||!(layer instanceof ManagedHeatmapLayer managed)||managed.sourceEpoch()!=request.evidencePlan().original().sourceReceipt().owner())
+                    throw request.evidencePlan().sourceContextChanged();
+            }
+            @Override public VisibleRefinementCapture.Viewport snapshot() {
+                var center=view.getCenter();return new VisibleRefinementCapture.Viewport(center.east(),center.north(),view.getScale(),view.getWidth(),view.getHeight());
+            }
+            @Override public VisibleRefinementCapture.RenderedChunk render(VisibleRefinementCapture.Request request,VisibleRefinementCapture.Chunk chunk) {
+                requireCurrent(request);return captureVisibleHeatmap(layer,view,request,chunk);
+            }
+            @Override public void restore(VisibleRefinementCapture.Viewport saved) {
+                view.setSize(saved.width(),saved.height());view.prepareToDraw();view.zoomTo(new EastNorth(saved.east(),saved.north()),saved.scale(),false);
+            }
+        };
+    }
+    /** One admitted virtual chunk; caller restores the callback-time user viewport in finally. */
+    public VisibleRefinementCapture.RenderedChunk captureVisibleHeatmap(ImageryLayer layer,MapView view,
+            VisibleRefinementCapture.Request request,VisibleRefinementCapture.Chunk chunk) {
+        if(!javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Visible renderer requires EDT");
+        request.requireChunk(chunk);request.evidencePlan().requireCurrent();
+        if(ProjectionRegistry.getProjection()==null||!ProjectionRegistry.getProjection().toCode().equals(request.evidencePlan().original().projectionCode()))throw request.evidencePlan().sourceContextChanged();
+        var bounds=chunk.bounds();double scale=request.evidencePlan().projectedScale();
+        view.setSize(chunk.viewWidth(),chunk.viewHeight());
+        view.prepareToDraw();
+        view.zoomTo(new EastNorth((bounds.minimumEast()+bounds.maximumEast())/2,(bounds.minimumNorth()+bounds.maximumNorth())/2),scale,false);
+        var actual=view.getProjectionBounds();
+        var raster=sampler.captureLayer(layer,view);
+        var zoom=capturedTileZoom(layer);
+        var points=request.projectedParent().stream().map(p->new EastNorth(p.east(),p.north())).toList();
+        var physical=ProjectionGroundScale.measure(points,scale);
+        double latitude=points.stream().map(ProjectionRegistry.getProjection()::eastNorth2latlon).mapToDouble(LatLon::lat).average().orElseThrow();
+        var resolution=new VisibleSourceResolutionResolver().resolveAtZoom(layer,zoom.sourceTileZoom(),latitude);
+        request.evidencePlan().requireCurrent();
+        return new VisibleRefinementCapture.RenderedChunk(raster,new VisibleRefinementCapture.Bounds(actual.minEast,actual.minNorth,actual.maxEast,actual.maxNorth),zoom.sourceTileZoom(),resolution.metersPerPixel(),physical.representativeMetersPerProjectionUnit()*scale);
+    }
+
     private RenderedCapture captureVisibleHeatmap(
         ImageryLayer imageryLayer,
         MapView mapView,
@@ -3014,15 +3059,18 @@ public final class AlignmentService {
         ProjectionBounds captureBounds = captureBoundsForSize(requestedBounds.getCenter(), captureSize, targetScale);
         VisibleCaptureState captureState = new VisibleCaptureState(originalCenter, originalScale, originalBounds,
             originalSize, requestedBounds, captureBounds, captureSize, targetScale, false, 1);
+        List<LegacyVisibleSource.PaintedChunk> paintedChunks=new ArrayList<>();
         try {
             BufferedImage raster;
             if (captureSize.width <= MAX_CAPTURE_VIEW_DIMENSION_PX && captureSize.height <= MAX_CAPTURE_VIEW_DIMENSION_PX) {
                 captureState = captureState.withCapturePlan(false, 1);
                 mapView.setSize(captureSize);
                 mapView.zoomTo(captureBounds.getCenter(), targetScale, false);
+                PaintObservation observation=observePaintGeometry(mapView,captureSize.width,captureSize.height);
                 raster = sampler.captureLayer(imageryLayer, mapView);
+                observePaintedChunk(paintedChunks,observation,imageryLayer,mapView,sourcePolyline,0,0,raster.getWidth(),raster.getHeight());
             } else {
-                raster = captureLayerInChunks(imageryLayer, mapView, captureBounds, captureSize, targetScale, originalSize);
+                raster = captureLayerInChunks(imageryLayer, mapView, captureBounds, captureSize, targetScale, originalSize,sourcePolyline,paintedChunks);
                 int chunkCount = chunkCount(captureSize, chunkSize(originalSize));
                 captureState = captureState.withCapturePlan(true, chunkCount);
             }
@@ -3042,7 +3090,8 @@ public final class AlignmentService {
                 captureState,
                 capturedZoom.sourceTileZoom(),
                 capturedZoom.bestSourceTileZoom(),
-                sourceResolution
+                sourceResolution,
+                LegacyVisibleSource.PaintedFrame.common(raster.getWidth(),raster.getHeight(),paintedChunks)
             );
         } finally {
             mapView.setSize(originalSize);
@@ -3057,7 +3106,9 @@ public final class AlignmentService {
         ProjectionBounds captureBounds,
         Dimension captureSize,
         double targetScale,
-        Dimension originalSize
+        Dimension originalSize,
+        List<EastNorth> sourcePolyline,
+        List<LegacyVisibleSource.PaintedChunk> paintedChunks
     ) {
         Dimension chunkSize = chunkSize(originalSize);
         BufferedImage mosaic = new BufferedImage(
@@ -3078,7 +3129,9 @@ public final class AlignmentService {
                         captureBounds.maxNorth - (y + viewHeight / 2.0) * targetScale
                     );
                     mapView.zoomTo(center, targetScale, false);
+                    PaintObservation observation=observePaintGeometry(mapView,viewWidth,viewHeight);
                     BufferedImage chunk = sampler.captureLayer(imageryLayer, mapView);
+                    observePaintedChunk(paintedChunks,observation,imageryLayer,mapView,sourcePolyline,x*6,y*6,chunk.getWidth(),chunk.getHeight());
                     graphics.drawImage(chunk,
                         (int) Math.round(x * RenderedHeatmapSampler.RASTER_SCALE),
                         (int) Math.round(y * RenderedHeatmapSampler.RASTER_SCALE),
@@ -3093,6 +3146,26 @@ public final class AlignmentService {
             "Rendered heatmap extent in %d JOSM viewport chunks at %.3f projection-units/view-px.",
             chunks, targetScale);
         return mosaic;
+    }
+
+    private record PaintObservation(double left,double bottom,double right,double top,double scale,String projection) { }
+    /** Observe the clip actually painted, without preparing/recentering the Legacy viewport. */
+    private PaintObservation observePaintGeometry(MapView view,int width,int height) {
+        try {
+            var bounds=view.getProjectionBounds(new java.awt.Rectangle(0,0,width,height));
+            return new PaintObservation(bounds.minEast,bounds.minNorth,bounds.maxEast,bounds.maxNorth,view.getScale(),ProjectionRegistry.getProjection().toCode());
+        }catch(RuntimeException unavailable){return null;}
+    }
+    private void observePaintedChunk(List<LegacyVisibleSource.PaintedChunk> chunks,PaintObservation before,ImageryLayer layer,
+            MapView view,List<EastNorth> parent,int x,int y,int width,int height) {
+        try {
+            var after=observePaintGeometry(view,width/6,height/6);
+            if(before==null||after==null||!before.equals(after))return;
+            var zoom=capturedTileZoom(layer);double latitude=parent.stream().map(ProjectionRegistry.getProjection()::eastNorth2latlon).mapToDouble(LatLon::lat).average().orElseThrow();
+            var resolution=new VisibleSourceResolutionResolver().resolveAtZoom(layer,zoom.sourceTileZoom(),latitude);
+            double ground=ProjectionGroundScale.measure(parent,before.scale()).representativeMetersPerProjectionUnit()*before.scale();
+            chunks.add(new LegacyVisibleSource.PaintedChunk(x,y,width,height,before.left(),before.bottom(),before.right(),before.top(),before.scale(),ground,resolution.metersPerPixel(),zoom.sourceTileZoom(),before.projection()));
+        }catch(RuntimeException unavailable){/* Optional facts cannot alter ordinary Legacy output. */}
     }
 
     private ProjectionBounds expandedBounds(List<EastNorth> points, double marginProjectionUnits) {
@@ -4227,7 +4300,8 @@ public final class AlignmentService {
         VisibleCaptureState state,
         int sourceTileZoom,
         int bestSourceTileZoom,
-        VisibleSourceResolutionResolver.SourceResolution sourceResolution
+        VisibleSourceResolutionResolver.SourceResolution sourceResolution,
+        java.util.Optional<LegacyVisibleSource.PaintedFrame> paintedFrame
     ) {
         RenderedCapture {
             if (sourceResolution == null) {

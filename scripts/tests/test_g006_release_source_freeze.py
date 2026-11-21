@@ -22,7 +22,7 @@ G004_REVIEWED_SOURCE_SHA256 = {
 SERVICE_DIR = "src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/service"
 G004_REVIEWED_LEGACY_CAPTURE_SHA256 = {
     f"{SERVICE_DIR}/AlignmentService.java":
-        "267aac29c1848cce2b61a560241c7a2f86c593411219a1563c0c8ae24670db82",
+        "c3bfcc66a6904208b47a59d12e2c3a7821abb052e67e9cc68e86d36e21872c70",
     f"{SERVICE_DIR}/TileHeatmapSampler.java":
         "41acb4d80367ef2d1cfdd8b37f484806b74bbaa6d1c338e90ab24f46d4910e11",
 }

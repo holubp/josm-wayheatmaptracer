@@ -26,6 +26,12 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.*;
 
 class LegacyVisibleRefinementBootstrapTest {
+    /** Explicit synthetic painted pixels; never used by historical production readers. */
+    static LegacyVisibleSource factualFrame(LegacyVisibleSource metadata,int width,int height,double eastShift,double northShift) {
+        double pitch=metadata.projectionUnitsPerViewPixel()/6,left=metadata.minimumEast()+eastShift,top=metadata.maximumNorth()+northShift;
+        var chunk=new LegacyVisibleSource.PaintedChunk(0,0,width,height,left,top-height*pitch,left+width*pitch,top,metadata.projectionUnitsPerViewPixel(),metadata.groundMetersPerViewPixel(),metadata.nativePitchMeters(),15,metadata.projectionCode());
+        return metadata.withPaintedFrame(LegacyVisibleSource.PaintedFrame.common(width,height,List.of(chunk)).orElseThrow());
+    }
     @TempDir Path temp;
     @BeforeAll static void setup(){var preferences=new org.openstreetmap.josm.data.Preferences();preferences.enableSaveOnPut(false);Config.setPreferencesInstance(preferences);ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));}
     private static AlignmentConfig config(AlignmentMode mode,boolean managed) {
@@ -62,13 +68,15 @@ class LegacyVisibleRefinementBootstrapTest {
                     var top=new CenterlineCandidate("visible-top",1,List.of(),List.of(),points,points,Map.of(),List.of(),1,CandidateEvidence.empty(),CandidateCleanupEvidence.empty(),List.of());
                     var result=new AlignmentResult(selected,image,List.of(shortDiagnostic,top,candidate),points,points,List.of(),null,null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(shortDiagnostic.id(),top.id()),"",""),new DetectorAttempt("hot","hot-corridor",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(candidate.id()),"","")),List.of(candidate));
                     var metadata=new LegacyVisibleSource(center.east()-300,center.north()-300,center.east()+300,center.north()+300,6,3.86,OptionalDouble.empty(),"EPSG:3857",epoch.captureStable(),OptionalDouble.of(3.5),OptionalDouble.of(1.2));
-                    current.captured(result,metadata);current.select(candidate);seed.set(new LegacyRefinementBootstrap().capture(current,coordinator,work));
+                    current.captured(result,factualFrame(metadata,600,600,12,-18));current.select(candidate);seed.set(new LegacyRefinementBootstrap().capture(current,coordinator,work));
                 });
                 assertFalse(seed.get().originalSource().managed());
                 assertThrows(IllegalStateException.class,seed.get()::receipt);
                 var alien=new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,owner);
                 assertThrows(IllegalArgumentException.class,()->new LegacyRefinementBootstrap().complete(seed.get(),coordinator,alien));
                 var root=new LegacyRefinementBootstrap().complete(seed.get(),coordinator,work);
+                var actual=root.originalConversion().referenceTransform().toRasterCenter(new GeographicPoint(50,14));
+                assertEquals(288,actual.x(),1e-6);assertEquals(282,actual.y(),1e-6);
                 assertEquals(3.5,root.authority().request().permissions().ordinaryRadiusMeters());
                 assertEquals(1.2,root.authority().request().configuredSampleStepMeters());
                 var selected=root.stage().candidates().stream().filter(c->c.id().equals(root.stage().selected())).findFirst().orElseThrow();
@@ -90,7 +98,10 @@ class LegacyVisibleRefinementBootstrapTest {
                 assertEquals(independentInput(seed.get().original().capturedHeatmap()),root.originalConversion().inputByteHash());
                 var transform=(org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform.VisibleWebMercator)root.originalConversion().referenceTransform();
                 var pixel=transform.toRasterCenter(new GeographicPoint(50,14));
-                assertEquals(300,pixel.x(),1e-8);assertEquals(300,pixel.y(),1e-8);
+                assertEquals(288,pixel.x(),1e-8);assertEquals(282,pixel.y(),1e-8);
+                var compatibility=((LegacyRefinementBootstrap.VisibleOriginalSource)seed.get().originalSource()).metadata();
+                var oldPixel=org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform.visibleWebMercator(compatibility.minimumEast(),compatibility.maximumNorth(),compatibility.projectionUnitsPerViewPixel(),6).toRasterCenter(new GeographicPoint(50,14));
+                assertEquals(300,oldPixel.x(),1e-8);assertEquals(300,oldPixel.y(),1e-8);
                 epoch.sourceChanged();assertThrows(IllegalStateException.class,()->seed.get().originalSource().requireCurrent(coordinator));
                 SwingUtilities.invokeAndWait(()->assertFalse(review.get().dataSet().isModified()));
             }finally{if(review.get()!=null)SwingUtilities.invokeAndWait(review.get()::close);}
@@ -123,7 +134,7 @@ class LegacyVisibleRefinementBootstrapTest {
                     var image=new BufferedImage(600,600,BufferedImage.TYPE_INT_ARGB);
                     var candidate=new CenterlineCandidate("visible",1,List.of(),List.of(),points,points,Map.of(),List.of(),1,CandidateEvidence.empty(),CandidateCleanupEvidence.empty(),List.of());
                     var result=new AlignmentResult(selected,image,List.of(candidate),points,points,List.of(),null,null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(candidate.id()),"","")),List.of(candidate));
-                    current.captured(result,new LegacyVisibleSource(center.east()-300,center.north()-300,center.east()+300,center.north()+300,6,3.86,OptionalDouble.empty(),"EPSG:3857",new VisibleSourceEpoch().captureStable(),OptionalDouble.of(3.5),OptionalDouble.of(1.2)));current.select(candidate);
+                    current.captured(result,factualFrame(new LegacyVisibleSource(center.east()-300,center.north()-300,center.east()+300,center.north()+300,6,3.86,OptionalDouble.empty(),"EPSG:3857",new VisibleSourceEpoch().captureStable(),OptionalDouble.of(3.5),OptionalDouble.of(1.2)),600,600,0,0));current.select(candidate);
                     seed.set(new LegacyRefinementBootstrap().capture(current,coordinator,work));
                 });
                 assertThrows(java.util.concurrent.CancellationException.class,()->new LegacyRefinementBootstrap().complete(seed.get(),coordinator,work));
@@ -154,7 +165,7 @@ class LegacyVisibleRefinementBootstrapTest {
                     var data=new DataSet();var selected=selection(data);var current=LegacyReviewOwner.begin(data,selected,config(AlignmentMode.PRECISE_SHAPE,false));review.set(current);
                     var points=selected.segmentNodes().stream().map(Node::getEastNorth).toList();var center=Projections.getProjectionByCode("EPSG:3857").latlon2eastNorth(new LatLon(50,14));
                     var candidate=new CenterlineCandidate("visible",1,List.of(),List.of(),points,points,Map.of(),List.of(),1,CandidateEvidence.empty(),CandidateCleanupEvidence.empty(),List.of());
-                    current.captured(new AlignmentResult(selected,new BufferedImage(600,600,BufferedImage.TYPE_INT_ARGB),List.of(candidate),points,points,List.of(),null,null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(candidate.id()),"","")),List.of(candidate)),new LegacyVisibleSource(center.east()-300,center.north()-300,center.east()+300,center.north()+300,6,3.86,OptionalDouble.empty(),"EPSG:3857",new VisibleSourceEpoch().captureStable(),OptionalDouble.of(3.5),OptionalDouble.of(1.2)));current.select(candidate);
+                    current.captured(new AlignmentResult(selected,new BufferedImage(600,600,BufferedImage.TYPE_INT_ARGB),List.of(candidate),points,points,List.of(),null,null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(candidate.id()),"","")),List.of(candidate)),factualFrame(new LegacyVisibleSource(center.east()-300,center.north()-300,center.east()+300,center.north()+300,6,3.86,OptionalDouble.empty(),"EPSG:3857",new VisibleSourceEpoch().captureStable(),OptionalDouble.of(3.5),OptionalDouble.of(1.2)),600,600,0,0));current.select(candidate);
                     seed.set(new LegacyRefinementBootstrap().capture(current,coordinator,work));
                 });
                 var worker=new Thread(()->{try{result.set(new LegacyRefinementBootstrap().complete(seed.get(),coordinator,work));}catch(Throwable failure){workerFailure.set(failure);}},"unit1-final-validation-worker");
@@ -175,7 +186,7 @@ class LegacyVisibleRefinementBootstrapTest {
         }
         assertEquals(0,ledger.currentBytes());
     }
-    @ParameterizedTest @org.junit.jupiter.params.provider.ValueSource(strings={"raster","radius","step","epoch","projection","mapping","aggregate","direct"})
+    @ParameterizedTest @org.junit.jupiter.params.provider.ValueSource(strings={"raster","radius","step","epoch","projection","mapping","aggregate","direct","actual-frame"})
     void visibleMissingFactsRefusesBeforeOptionalPixelsOrAuthority(String missing) throws Exception {
         var decoder=new TileDecoderClassifier();
         try(var coordinator=new TileFetchCoordinator((r,c)->{fail("Missing source facts must not acquire");return null;},new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults());var owner=AttemptMemoryLedger.production().rootOwner()) {
@@ -198,6 +209,7 @@ class LegacyVisibleRefinementBootstrapTest {
                         case "radius","step" -> LegacyRefinementBootstrap.SmoothingUnavailableReason.VISIBLE_SAMPLING_METADATA_UNAVAILABLE;
                         case "epoch" -> LegacyRefinementBootstrap.SmoothingUnavailableReason.VISIBLE_EPOCH_UNAVAILABLE;
                         case "projection" -> LegacyRefinementBootstrap.SmoothingUnavailableReason.VISIBLE_PROJECTION_TRANSFORM_UNAVAILABLE;
+                        case "actual-frame" -> LegacyRefinementBootstrap.SmoothingUnavailableReason.VISIBLE_PAINTED_FRAME_UNAVAILABLE;
                         default -> LegacyRefinementBootstrap.SmoothingUnavailableReason.SOURCE_MAPPING_UNAVAILABLE;
                     };
                     assertEquals(reason,unavailable.reason());
@@ -218,7 +230,7 @@ class LegacyVisibleRefinementBootstrapTest {
                     var data=new DataSet();var selected=selection(data);var current=LegacyReviewOwner.begin(data,selected,config(AlignmentMode.PRECISE_SHAPE,false));review.set(current);
                     var points=selected.segmentNodes().stream().map(Node::getEastNorth).toList();var center=Projections.getProjectionByCode("EPSG:3857").latlon2eastNorth(new LatLon(50,14));
                     var candidate=new CenterlineCandidate("visible",1,List.of(),List.of(),points,points,Map.of(),List.of(),1,CandidateEvidence.empty(),CandidateCleanupEvidence.empty(),List.of());
-                    current.captured(new AlignmentResult(selected,new BufferedImage(600,600,BufferedImage.TYPE_INT_ARGB),List.of(candidate),points,points,List.of(),null,null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(candidate.id()),"","")),List.of(candidate)),new LegacyVisibleSource(center.east()-300,center.north()-300,center.east()+300,center.north()+300,6,3.86,OptionalDouble.empty(),"EPSG:3857",new VisibleSourceEpoch().captureStable(),OptionalDouble.of(3.5),OptionalDouble.of(1.2)));current.select(candidate);
+                    current.captured(new AlignmentResult(selected,new BufferedImage(600,600,BufferedImage.TYPE_INT_ARGB),List.of(candidate),points,points,List.of(),null,null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(candidate.id()),"","")),List.of(candidate)),factualFrame(new LegacyVisibleSource(center.east()-300,center.north()-300,center.east()+300,center.north()+300,6,3.86,OptionalDouble.empty(),"EPSG:3857",new VisibleSourceEpoch().captureStable(),OptionalDouble.of(3.5),OptionalDouble.of(1.2)),600,600,0,0));current.select(candidate);
                     seed.set(new LegacyRefinementBootstrap().capture(current,coordinator,work));
                 });
                 if(limit.equals("visits")) {
@@ -245,7 +257,7 @@ class LegacyVisibleRefinementBootstrapTest {
                 try {
                     var points=selected.segmentNodes().stream().map(Node::getEastNorth).toList();var image=new BufferedImage(8,8,BufferedImage.TYPE_INT_ARGB);
                     var candidate=new CenterlineCandidate("visible",1,List.of(),List.of(),points,points,Map.of(),List.of(),1,CandidateEvidence.empty(),CandidateCleanupEvidence.empty(),List.of());
-                    review.captured(new AlignmentResult(selected,image,List.of(candidate),points,points,List.of(),null,null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(candidate.id()),"","")),List.of(candidate)),new LegacyVisibleSource(0,0,8,8,1,1,OptionalDouble.empty(),"EPSG:3857",new VisibleSourceEpoch().captureStable(),OptionalDouble.of(3.5),OptionalDouble.of(1.2)));review.select(candidate);
+                    review.captured(new AlignmentResult(selected,image,List.of(candidate),points,points,List.of(),null,null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(candidate.id()),"","")),List.of(candidate)),factualFrame(new LegacyVisibleSource(0,0,8,8,1,1,OptionalDouble.empty(),"EPSG:3857",new VisibleSourceEpoch().captureStable(),OptionalDouble.of(3.5),OptionalDouble.of(1.2)),8,8,0,0));review.select(candidate);
                     var work=new GeometryWorkContext(limit.equals("visits")?2:8_000_000,limit.equals("bytes")?1024:AttemptMemoryLedger.MAX_BYTES,limit.equals("deadline")?0:Long.MAX_VALUE,CancellationProbe.NONE,owner);
                     if(limit.equals("bytes"))assertThrows(AttemptMemoryLedger.ResourceLimitException.class,()->new LegacyRefinementBootstrap().capture(review,coordinator,work));
                     else assertThrows(GeometryWorkContext.LimitReached.class,()->new LegacyRefinementBootstrap().capture(review,coordinator,work));
@@ -263,7 +275,7 @@ class LegacyVisibleRefinementBootstrapTest {
                 var data=new DataSet();var selected=selection(data);var review=LegacyReviewOwner.begin(data,selected,config(AlignmentMode.PRECISE_SHAPE,false));
                 try {
                     var points=selected.segmentNodes().stream().map(Node::getEastNorth).toList();var candidate=new CenterlineCandidate("visible",1,List.of(),List.of(),points,points,Map.of(),List.of(),1,CandidateEvidence.empty(),CandidateCleanupEvidence.empty(),List.of());
-                    review.captured(new AlignmentResult(selected,new BufferedImage(8,8,BufferedImage.TYPE_INT_ARGB),List.of(candidate),points,points,List.of(),null,null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(candidate.id()),"","")),List.of(candidate)),new LegacyVisibleSource(0,0,8,8,1,1,OptionalDouble.empty(),"EPSG:3857",epoch.captureStable(),OptionalDouble.of(3.5),OptionalDouble.of(1.2)));review.select(candidate);
+                    review.captured(new AlignmentResult(selected,new BufferedImage(8,8,BufferedImage.TYPE_INT_ARGB),List.of(candidate),points,points,List.of(),null,null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(candidate.id()),"","")),List.of(candidate)),factualFrame(new LegacyVisibleSource(0,0,8,8,1,1,OptionalDouble.empty(),"EPSG:3857",epoch.captureStable(),OptionalDouble.of(3.5),OptionalDouble.of(1.2)),8,8,0,0));review.select(candidate);
                     if(change.equals("epoch"))epoch.sourceChanged();else if(change.equals("geometry"))selected.segmentNodes().get(2).setCoor(new LatLon(50.0001,14));else {String before=Config.getPref().get("wayheatmaptracer.activity","all");Config.getPref().put("wayheatmaptracer.activity","ride");Config.getPref().put("wayheatmaptracer.activity",before);}
                     var work=new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,owner);
                     var failure=assertThrows(IllegalStateException.class,()->new LegacyRefinementBootstrap().capture(review,coordinator,work));
