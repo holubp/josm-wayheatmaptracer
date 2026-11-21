@@ -107,6 +107,8 @@ public final class RefinementPayload {
         if(maximumBytes<1||bytes>maximumBytes)throw new RefinementSession.Refused(RefusalReason.PAYLOAD_LIMIT);
         return new RefinementPayload(copy(result),original.sourceNodes,original.sourceSelection,Optional.of(review));
     }
+    /** Immutable projected final preview, without copying any retained raster for metadata export. */
+    public List<org.openstreetmap.josm.data.coor.EastNorth> finalPreviewGeometry(){return result.previewPolyline();}
     public Optional<SourceSelection> sourceSelection(){return sourceSelection;}
     /** Returns a detached mutable-raster/point view; mutation cannot change retained history. */
     public AlignmentResult result() { return copy(result); }

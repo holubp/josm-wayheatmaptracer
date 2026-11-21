@@ -3597,6 +3597,8 @@ public class AlignWayAction extends JosmAction {
                 }
                 if(!message.isEmpty()) selectedCoverageStatus.setText(message);
             });
+        var originalLegacyDebug=DiagnosticsRegistry.getLastBundle();
+        workflow[0].enableRuntimeDiagnostics(()->originalLegacyDebug,()->candidateRatings);
         refreshButtons.run();
         RefinementControls refinementControls = workflow[0].controls();
         JPanel panel = buildSummaryPanel(
@@ -3632,7 +3634,7 @@ public class AlignWayAction extends JosmAction {
                 loadCandidateRating(candidateRatings.get(selected.id()), ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes);
                 loadingRating[0] = false;
                 refreshButtons.run();
-                updatePreviewBundle(current[0], candidateRatings, "preview-open");
+                updatePreviewBundle(current[0], candidateRatings, "preview-open", workflow[0]);
             } catch (Exception ex) {
                 if(rootPresentation.failedOwnedSelection())return;
                 Logging.warn("WayHeatmapTracer rejected preview candidate: " + ex.getMessage());
@@ -3642,13 +3644,13 @@ public class AlignWayAction extends JosmAction {
         });
         ratingBox.addActionListener(event -> {
             if (!loadingRating[0]) {
-                saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes);
+                saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes, workflow[0]);
             }
         });
-        offTheLine.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes));
-        jumping.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes));
-        unnecessaryKinks.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes));
-        badJunctionShapes.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes));
+        offTheLine.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes, workflow[0]));
+        jumping.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes, workflow[0]));
+        unnecessaryKinks.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes, workflow[0]));
+        badJunctionShapes.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes, workflow[0]));
 
         JButton cancel = new JButton(tr("Cancel"));
         JPanel buttons = new JPanel();
@@ -3718,15 +3720,15 @@ public class AlignWayAction extends JosmAction {
                 overlay.show(selection, current[0].result(), current[0].candidate(),
                     assessment.disposition(), true, PluginPreferences.isDebugEnabled());
                 comboBox.repaint();
-                workflow[0].refresh();
+                workflow[0].reviewedLegacy(reviewConfirmation[0]);workflow[0].refresh();
                 PluginLog.verbose("Candidate review confirmed: candidate=%s previewPoints=%d.",
                     current[0].candidate().id(), current[0].result().previewPolyline().size());
-                updatePreviewBundle(current[0], candidateRatings, "review-confirmed");
+                updatePreviewBundle(current[0], candidateRatings, "review-confirmed", workflow[0]);
             } catch (Exception ex) {
                 if(!livePreviewSession.isCurrent(rootOwner))return;
                 refreshButtons.run();
                 PluginLog.verbose("Candidate review confirmation failed: %s", ex.toString());
-                updatePreviewBundle(current[0], candidateRatings, "review-confirmation-failed");
+                updatePreviewBundle(current[0], candidateRatings, "review-confirmation-failed", workflow[0]);
                 showError(tr("WayHeatmapTracer review confirmation failed: {0}", ex.getMessage()));
             }
         });
@@ -3744,7 +3746,7 @@ public class AlignWayAction extends JosmAction {
 
             @Override
             public void windowClosing(WindowEvent e) {
-                cancelPreview(current[0], candidateRatings);
+                cancelPreview(current[0], candidateRatings,workflow[0]);
             }
         });
         apply.addActionListener(event -> {
@@ -3752,34 +3754,31 @@ public class AlignWayAction extends JosmAction {
                 if(!livePreviewSession.isCurrent(rootOwner))throw new IllegalStateException("The preview owner was superseded");
                 if(workflow[0].nativeSelected()) {
                     if(!config.allowUndownloadedAlignment()) requirePreviewWithinDownloadedArea(current[0].result().previewPolyline(), dataSet);
-                    UndoRedoHandler.getInstance().add(workflow[0].command());
+                    var publication=addReviewedCommand(UndoRedoHandler.getInstance(),workflow[0].command());
+                    if(livePreviewSession.isCurrent(rootOwner))workflow[0].appliedDiagnostics(publication==CommandPublication.COMMITTED_NOTIFICATION_FAILED);
                 } else {
                     if(workflow[0].busy())throw new IllegalStateException(tr("Refinement is still running."));
-                    applyPreview(dataSet, selection, current[0], config, candidateRatings, reviewConfirmation[0],legacyReview);
+                    applyPreview(dataSet, selection, current[0], config, candidateRatings, reviewConfirmation[0],legacyReview,workflow[0]);
                 }
+                if(!livePreviewSession.isCurrent(rootOwner))return;
                 dialog.dispose();
                 overlay.hide();
                 PluginLog.endSlideSession();
             } catch (Exception ex) {
-                Logging.error(ex);
-                PluginLog.verbose("Alignment apply failed with exception: %s", ex.toString());
-                DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
-                    current[0].result(),
-                    current[0].candidate(),
-                    current[0].initialCandidate(),
-                    reviewConfirmation[0] == null ? "apply-failed" : "review-apply-failed",
-                    PluginLog.currentSlideLog(),
-                    candidateRatings
-                ));
-                reviewConfirmation[0] = null;
-                overlay.hide();
-                PluginLog.endSlideSession();
-                dialog.dispose();
-                showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
+                ownedApplyFailure(livePreviewSession,rootOwner,workflow[0],()->{
+                    Logging.error(ex);
+                    PluginLog.verbose("Alignment apply failed with exception: %s", ex.toString());
+                    updatePreviewBundle(current[0],candidateRatings,"apply-failed",workflow[0]);
+                    reviewConfirmation[0] = null;
+                    overlay.hide();
+                    PluginLog.endSlideSession();
+                    dialog.dispose();
+                    if(livePreviewSession.isCurrent(rootOwner))showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
+                });
             }
         });
         cancel.addActionListener(event -> {
-            cancelPreview(current[0], candidateRatings);
+            cancelPreview(current[0], candidateRatings,workflow[0]);
             dialog.dispose();
         });
         dialog.setVisible(true);
@@ -4167,7 +4166,8 @@ public class AlignWayAction extends JosmAction {
         JCheckBox offTheLine,
         JCheckBox jumping,
         JCheckBox unnecessaryKinks,
-        JCheckBox badJunctionShapes
+        JCheckBox badJunctionShapes,
+        LegacyRefinementWorkflow workflow
     ) {
         String rating = (String) ratingBox.getSelectedItem();
         List<String> features = negativeFeatures(offTheLine, jumping, unnecessaryKinks, badJunctionShapes);
@@ -4179,7 +4179,7 @@ public class AlignWayAction extends JosmAction {
         }
         PluginLog.verbose("CandidateRating candidate=%s rating='%s' negativeFeatures=%s.",
             preview.candidate().id(), rating == null ? "" : rating, features);
-        updatePreviewBundle(preview, candidateRatings, "preview-open");
+        updatePreviewBundle(preview, candidateRatings, "preview-open",workflow);
     }
 
     private List<String> negativeFeatures(JCheckBox offTheLine, JCheckBox jumping, JCheckBox unnecessaryKinks, JCheckBox badJunctionShapes) {
@@ -4199,7 +4199,9 @@ public class AlignWayAction extends JosmAction {
         return features;
     }
 
-    private void updatePreviewBundle(PreviewSelection preview, Map<String, CandidateRating> candidateRatings, String status) {
+    private void updatePreviewBundle(PreviewSelection preview, Map<String, CandidateRating> candidateRatings, String status,LegacyRefinementWorkflow workflow) {
+        if(!workflow.ownsPublication())return;
+        if(workflow.handlesRuntimeDiagnostics()){workflow.diagnosticsChanged(status);return;}
         DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
             preview.result(),
             preview.candidate(),
@@ -4259,16 +4261,9 @@ public class AlignWayAction extends JosmAction {
     }
 
 
-    private void cancelPreview(PreviewSelection preview, Map<String, CandidateRating> candidateRatings) {
+    private void cancelPreview(PreviewSelection preview, Map<String, CandidateRating> candidateRatings,LegacyRefinementWorkflow workflow) {
         PluginLog.verbose("Alignment cancelled at preview dialog.");
-        DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
-            preview.result(),
-            preview.candidate(),
-            preview.initialCandidate(),
-            "cancelled",
-            PluginLog.currentSlideLog(),
-            candidateRatings
-        ));
+        updatePreviewBundle(preview,candidateRatings,"cancelled",workflow);
         overlay.hide();
         PluginLog.endSlideSession();
     }
@@ -4329,6 +4324,21 @@ public class AlignWayAction extends JosmAction {
         }
     }
 
+    static void ownedApplyFailure(PreviewSessionController<?> sessions,PreviewSessionController.Owner owner,LegacyRefinementWorkflow workflow,Runnable effects){
+        if(sessions.isCurrent(owner)&&workflow.ownsPublication())effects.run();
+    }
+
+    /** A void host add is not proof that executeCommand accepted the reviewed transaction. */
+    enum CommandPublication { COMMITTED, COMMITTED_NOTIFICATION_FAILED }
+    static CommandPublication addReviewedCommand(UndoRedoHandler history,org.openstreetmap.josm.command.Command command){
+        synchronized(history) {
+            if(!command.executeCommand())throw new IllegalStateException("The reviewed alignment command was refused");
+            history.addNoRedraw(command,false); // Queue the original object exactly once before host notifications.
+            try{history.afterAdd(command);}catch(RuntimeException notificationFailed){return CommandPublication.COMMITTED_NOTIFICATION_FAILED;}
+            return CommandPublication.COMMITTED;
+        }
+    }
+
     private void applyPreview(
         DataSet dataSet,
         SelectionContext selection,
@@ -4336,16 +4346,20 @@ public class AlignWayAction extends JosmAction {
         ManagedHeatmapConfig config,
         Map<String, CandidateRating> candidateRatings,
         CandidateReviewConfirmation reviewConfirmation,
-        LegacyReviewOwner legacyReview
+        LegacyReviewOwner legacyReview,
+        LegacyRefinementWorkflow workflow
     ) {
         CenterlineCandidate chosen = preview.candidate();
         AlignmentResult chosenResult = preview.result();
-        UndoRedoHandler.getInstance().add(createLegacyReviewCommand(legacyReview,alignmentService,
+        var publication=addReviewedCommand(UndoRedoHandler.getInstance(),createLegacyReviewCommand(legacyReview,alignmentService,
             dataSet, selection, chosenResult, chosen, config, reviewConfirmation));
-        DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
+        if(!workflow.ownsPublication())return;
+        boolean notificationFailed=publication==CommandPublication.COMMITTED_NOTIFICATION_FAILED;
+        if(workflow.handlesRuntimeDiagnostics())workflow.appliedDiagnostics(notificationFailed);
+        else DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
             chosenResult, chosen, preview.initialCandidate(),
             reviewConfirmation == null ? "applied" : "applied-after-review",
-            PluginLog.currentSlideLog(), candidateRatings));
+            PluginLog.currentSlideLog()+(notificationFailed?"\ncommand-publication=committed-notification-failed\n":""), candidateRatings));
     }
 
     private JPanel buildSummaryPanel(

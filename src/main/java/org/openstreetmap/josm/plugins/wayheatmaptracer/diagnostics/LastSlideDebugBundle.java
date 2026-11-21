@@ -75,6 +75,31 @@ public final class LastSlideDebugBundle {
     private final String tileAcquisitionJson;
     private final Map<String, BufferedImage> tileImages;
 
+    /** Current factual UI ratings, using the existing redacted calibration schema. */
+    public static String redactedCandidateRatings(Map<String,CandidateRating> ratings) {
+        return redactSensitiveValues(ratingsJson(ratings));
+    }
+
+    /** Additional retained context bound. Actual root rasters remain charged by the factual frozen root owner. */
+    public long retainedContextBytes(AlignmentResult original) {
+        long bytes=8192;
+        for(String text:List.of(diagnosticsJson,verboseLog,originalOsm,previewOsm,appliedOsm,candidateOsm,candidatePreviewOsm,
+                junctionSafetyCsv,proposedNodePositionsCsv,junctionContextOsm,statusJson,candidateRatingsJson,candidateMetricsCsv,
+                geometryCleanupCsv,geometryCleanupAnchorsCsv,geometryCleanupLocalShapeCsv,geometryQualityCsv,profilePeaksCsv,
+                paletteSamplesCsv,profileIntensityCsv,corridorBandsCsv,corridorTracksCsv,corridorBundlesCsv,bundlePointsCsv,
+                optimizerCostsCsv,scaleSpaceCsv,corridorTubeCsv,associationDecisionsCsv,endpointApproachesCsv,detectorPerformanceCsv,
+                parallelContextJson,tileManifestJson,aggregateMetadataJson,detectorAttemptsJson,tileAcquisitionJson))
+            bytes=Math.addExact(bytes,128L+2L*text.length());
+        var images=java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<BufferedImage,Boolean>());
+        if(original.capturedHeatmap()!=null)images.add(original.capturedHeatmap());
+        if(original.tileMosaics()!=null)for(var mosaic:original.tileMosaics().mosaics().values()){images.add(mosaic.image());images.addAll(mosaic.tileImages().values());}
+        for(var entry:tileImages.entrySet()) {
+            bytes=Math.addExact(bytes,128L+2L*entry.getKey().length());var image=entry.getValue();
+            if(images.add(image))bytes=Math.addExact(bytes,Math.addExact(256L,Math.multiplyExact(4L,(long)image.getWidth()*image.getHeight())));
+        }
+        return bytes;
+    }
+
     private LastSlideDebugBundle(
         String diagnosticsJson,
         String verboseLog,
@@ -606,7 +631,8 @@ public final class LastSlideDebugBundle {
         return matcher.find() ? matcher.group(1) : "";
     }
 
-    private static List<GeographicPoint> appliedGeographicPath(AlignmentResult result) {
+    /** Observes the actual post-command selected way segment; missing endpoint identity stays unavailable. */
+    public static List<GeographicPoint> appliedGeographicPath(AlignmentResult result) {
         List<Node> original = result.selection().segmentNodes();
         if (original.isEmpty()) {
             return List.of();

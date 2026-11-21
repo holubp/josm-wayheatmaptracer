@@ -113,6 +113,8 @@ public final class RefinementSession implements AutoCloseable {
         if (refusal != null) throw new Refused(refusal);
         history.add(root);
     }
+    /** Stable owner identity for factual diagnostics; navigation creates no new operation. */
+    public SessionId id(){requireEdt();return id;}
     public AlignmentConfig rootConfig() { requireEdt(); return config; }
     public String sourceIdentity() { requireEdt(); return sourceIdentity; }
     /** Factual detached root; live dataset/source revalidation remains a consumer obligation. */

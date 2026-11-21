@@ -6,7 +6,13 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 
 /** Latest current-owned attempt facts. No raster, request, mutable primitive or exception text is retained. */
 public record RefinementAttemptDiagnostics(Binding binding, Optional<RefinementOperationReceipt> pipeline,
-        Publication publication, Phase phase, Cause cause, int materializationRefusals) {
+        Publication publication, Phase phase, Cause cause, int materializationRefusals, boolean materializationComplete) {
+    /** Compatibility constructor: the supplied count is a completed observation. */
+    public RefinementAttemptDiagnostics(Binding binding, Optional<RefinementOperationReceipt> pipeline,
+            Publication publication, Phase phase, Cause cause, int materializationRefusals) {
+        this(binding,pipeline,publication,phase,cause,materializationRefusals,true);
+    }
+    // An incomplete count records only stable observations, never a measured final zero.
     public enum Availability { NONE, RUNNING, AVAILABLE, UNAVAILABLE_BUDGET }
     public enum Publication { PUBLISHED, NO_CHILD, CANCELLED, STALE, REFUSED, FAILED }
     public enum Phase { PREPARATION, ACQUISITION, PIPELINE, MATERIALIZATION, PUBLICATION }

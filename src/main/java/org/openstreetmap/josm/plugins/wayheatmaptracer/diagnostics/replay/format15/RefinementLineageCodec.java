@@ -273,7 +273,7 @@ public final class RefinementLineageCodec {
         var disposition=diagnostic.publication();var cause=diagnostic.cause();
         if(disposition==RefinementAttemptDiagnostics.Publication.PUBLISHED) {
             StageId newest=null;for(var retainedStage:retained.keySet())newest=retainedStage;
-            if(latest.isEmpty()||cause!=RefinementAttemptDiagnostics.Cause.NONE||diagnostic.phase()!=RefinementAttemptDiagnostics.Phase.PUBLICATION
+            if(!diagnostic.materializationComplete()||latest.isEmpty()||cause!=RefinementAttemptDiagnostics.Cause.NONE||diagnostic.phase()!=RefinementAttemptDiagnostics.Phase.PUBLICATION
                     ||ticket.sequence()!=lastSequence||!state.resultingSelection().stage().equals(newest)||!latest.get().equals(sequences.get(ticket.sequence())))throw invalid();
             var stage=retained.get(state.resultingSelection().stage());
             if(stage.kind()!=ticket.kind()||stage.engine()!=ticket.engine()||!stage.parent().equals(Optional.of(ticket.smoothingInput().map(SmoothingInput::unsmoothedParent).orElse(ticket.parent())))
@@ -340,16 +340,20 @@ public final class RefinementLineageCodec {
         var d=state.diagnostic();var b=d.binding();
         return map("ticket",ticketMap(b.ticket()),"root",b.rootStage().value().toString(),"sourceIdentity",b.rootSourceIdentity(),
             "originalNetworkHash",b.originalNetworkHash(),"rootParameters",b.rootParameterHash(),"frozenGeometry",b.frozenGeometryIdentity(),"parentIdentity",b.parentIdentity(),
-            "publication",d.publication().name(),"phase",d.phase().name(),"cause",d.cause().name(),"refusals",d.materializationRefusals(),
+            "publication",d.publication().name(),"phase",d.phase().name(),"cause",d.cause().name(),"refusals",d.materializationRefusals(),"refusalsComplete",d.materializationComplete(),
             "resultStage",state.resultingSelection().stage().value().toString(),"resultChoice",state.resultingSelection().candidate().value());
     }
     private static Optional<LatestPublication> readPublication(Object value,Optional<RefinementOperationReceipt> receipt) {
         if(value==null)return Optional.empty();
-        var p=fields(value,"ticket","root","sourceIdentity","originalNetworkHash","rootParameters","frozenGeometry","parentIdentity","publication","phase","cause","refusals","resultStage","resultChoice");
+        boolean hasCompleteness=value instanceof Map<?,?> m && m.containsKey("refusalsComplete");
+        var keys=new ArrayList<>(List.of("ticket","root","sourceIdentity","originalNetworkHash","rootParameters","frozenGeometry","parentIdentity","publication","phase","cause","refusals","resultStage","resultChoice"));
+        if(hasCompleteness)keys.add("refusalsComplete");
+        var p=fields(value,keys.toArray(String[]::new));
+        if(hasCompleteness && !(p.get("refusalsComplete") instanceof Boolean))throw invalid();
         var binding=new RefinementAttemptDiagnostics.Binding(readTicket(p.get("ticket")),stage(p.get("root")),string(p.get("sourceIdentity")),string(p.get("originalNetworkHash")),
             string(p.get("rootParameters")),string(p.get("frozenGeometry")),string(p.get("parentIdentity")));
         var diagnostic=new RefinementAttemptDiagnostics(binding,receipt,enumeration(RefinementAttemptDiagnostics.Publication.class,p.get("publication")),
-            enumeration(RefinementAttemptDiagnostics.Phase.class,p.get("phase")),enumeration(RefinementAttemptDiagnostics.Cause.class,p.get("cause")),integer(p.get("refusals")));
+            enumeration(RefinementAttemptDiagnostics.Phase.class,p.get("phase")),enumeration(RefinementAttemptDiagnostics.Cause.class,p.get("cause")),integer(p.get("refusals")),!hasCompleteness || (Boolean)p.get("refusalsComplete"));
         return Optional.of(new LatestPublication(diagnostic,new CandidateKey(stage(p.get("resultStage")),candidate(p.get("resultChoice")))));
     }
     private static Object smoothingMap(Optional<SmoothingInput> input) {

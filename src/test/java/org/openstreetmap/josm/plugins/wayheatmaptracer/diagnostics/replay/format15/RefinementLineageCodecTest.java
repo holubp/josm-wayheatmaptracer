@@ -67,6 +67,15 @@ class RefinementLineageCodecTest {
         return new RefinementLineageCodec.Document(header,new RefinementLineageCodec.OriginalOsm(SOURCE,base.originalOsm().geometry()),base.stages(),receipt,
             Optional.of(new RefinementLineageCodec.LatestPublication(diagnostic,result)));
     }
+    @Test void refusalCompletenessIsAdditiveAndOldMissingFieldMeansCompletedObservation() {
+        var root=root();var key=new RefinementLineageCodec.CandidateKey(root.id(),root.selected());
+        var old=publicationDocument(List.of(root),root,ticket(root,1),Optional.empty(),RefinementAttemptDiagnostics.Publication.CANCELLED,RefinementAttemptDiagnostics.Phase.PUBLICATION,RefinementAttemptDiagnostics.Cause.CANCELLED,key);
+        assertTrue(old.latestPublication().orElseThrow().diagnostic().materializationComplete());
+        var complete=old.latestPublication().orElseThrow().diagnostic();var incomplete=new RefinementAttemptDiagnostics(complete.binding(),Optional.empty(),complete.publication(),complete.phase(),complete.cause(),0,false);
+        var doc=new RefinementLineageCodec.Document(old.binding(),old.originalOsm(),old.stages(),old.latestAttempt(),Optional.of(new RefinementLineageCodec.LatestPublication(incomplete,key)));
+        String json=new String(RefinementLineageCodec.artifact(doc).bytes(),java.nio.charset.StandardCharsets.UTF_8);assertTrue(json.contains("\"refusalsComplete\":false"));assertFalse(RefinementLineageCodec.read(RefinementLineageCodec.artifact(doc)).latestPublication().orElseThrow().diagnostic().materializationComplete());
+        String legacy=new String(RefinementLineageCodec.artifact(old).bytes(),java.nio.charset.StandardCharsets.UTF_8).replace(",\"refusalsComplete\":true","");assertTrue(RefinementLineageCodec.read(Format15Artifact.text(RefinementLineageCodec.ARTIFACT,legacy)).latestPublication().orElseThrow().diagnostic().materializationComplete());
+    }
     @Test void prePipelineFailureHasPublicationButNoInventedReceiptOrWork() {
         var root=root();var doc=publicationDocument(List.of(root),root,ticket(root,1),Optional.empty(),RefinementAttemptDiagnostics.Publication.FAILED,
             RefinementAttemptDiagnostics.Phase.ACQUISITION,RefinementAttemptDiagnostics.Cause.FAILED,new RefinementLineageCodec.CandidateKey(root.id(),root.selected()));
@@ -80,6 +89,9 @@ class RefinementLineageCodecTest {
         var doc=publicationDocument(List.of(root,child),child,ticket,Optional.of(receipt),RefinementAttemptDiagnostics.Publication.PUBLISHED,
             RefinementAttemptDiagnostics.Phase.PUBLICATION,RefinementAttemptDiagnostics.Cause.NONE,new RefinementLineageCodec.CandidateKey(child.id(),blue));
         assertEquals(doc,RefinementLineageCodec.read(RefinementLineageCodec.artifact(doc)));
+        var actual=doc.latestPublication().orElseThrow();var d=actual.diagnostic();
+        var incomplete=new RefinementAttemptDiagnostics(d.binding(),d.pipeline(),d.publication(),d.phase(),d.cause(),d.materializationRefusals(),false);
+        assertThrows(IllegalArgumentException.class,()->new RefinementLineageCodec.Document(doc.binding(),doc.originalOsm(),doc.stages(),doc.latestAttempt(),Optional.of(new RefinementLineageCodec.LatestPublication(incomplete,actual.resultingSelection()))));
         var other=receipt(ticket,Outcome.COMPLETE,Optional.of(new TraceWorkUsage(10,18,2,1)));
         assertThrows(IllegalArgumentException.class,()->publicationDocument(List.of(root,child),child,ticket,Optional.of(other),RefinementAttemptDiagnostics.Publication.PUBLISHED,
             RefinementAttemptDiagnostics.Phase.PUBLICATION,RefinementAttemptDiagnostics.Cause.NONE,new RefinementLineageCodec.CandidateKey(child.id(),blue)));

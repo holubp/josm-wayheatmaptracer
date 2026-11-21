@@ -41,6 +41,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewOverlay;
  * Plugin entry point that registers WayHeatmapTracer menu actions and global shortcuts in JOSM.
  */
 public class WayHeatmapTracerPlugin extends Plugin {
+    private final org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.PluginOwner diagnosticOwner=
+        org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.beginPlugin();
+
     private static final List<ShortcutBinding> ALIGN_SHORTCUTS = List.of(
         new ShortcutBinding("wayheatmaptracer.align.global", KeyEvent.VK_Y,
             InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK),
@@ -102,6 +105,7 @@ public class WayHeatmapTracerPlugin extends Plugin {
      * Removes registered actions and shortcuts when JOSM unloads the plugin.
      */
     public void destroy() {
+        org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.clearPlugin(diagnosticOwner);
         AggregateIntensityLayer.removeExisting();
         closeModernPreviewRuntime(modernPreviewSession,
                 () -> PreviewOverlay.getInstance().hide(), ManagedTileRuntime::close);
