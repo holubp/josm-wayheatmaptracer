@@ -46,6 +46,7 @@ class VisibleRefinementWorkflowTest {
                     var metadata=new LegacyVisibleSource(-100,-100,100,100,6,6,OptionalDouble.empty(),"EPSG:3857",epoch.captureStable(),OptionalDouble.of(7.01),OptionalDouble.of(1.56));
                     owner[0].captured(result,LegacyVisibleRefinementBootstrapTest.factualFrame(metadata,200,200,0,0));owner[0].select(chosen);
                     workflow[0]=new LegacyRefinementWorkflow(owner[0],coordinator,owner[0]::select,d->{},s->{},work::add,publications::add);
+                    workflow[0].enableRuntimeDiagnostics(()->null);
                     assertTrue(((JButton)find(workflow[0].controls(),engine==TrackerMode.CORRIDOR_AWARE?"refineA":"refineB")).isEnabled(),"Factual visible Color Mapping enables refinement");
                     workflow[0].refine(engine);
                 });
@@ -61,6 +62,7 @@ class VisibleRefinementWorkflowTest {
                     var receipt=nativeReview.operation().orElseThrow();assertTrue(receipt.actualWork().isPresent());
                     assertEquals(4,receipt.attempts().stream().filter(attempt->attempt.kind()==RefinementPipeline.AttemptKind.UNAVAILABLE).count());
                     assertEquals(1,receipt.attempts().stream().filter(attempt->attempt.nativeCalls().orElse(0)>0).count());
+                    assertVisibleExport(workflow[0],temp.resolve("current-visible.zip"));
                     int calls=workflow[0].actualNativeCalls();((JButton)find(workflow[0].controls(),"undo")).doClick();assertEquals("legacy-choice-1",workflow[0].selectedChoiceIdentity());((JButton)find(workflow[0].controls(),"redo")).doClick();assertEquals(calls,workflow[0].actualNativeCalls());
                 });
                 // The selected native descendant, not root geometry, is the exact second-engine parent.
@@ -92,6 +94,21 @@ class VisibleRefinementWorkflowTest {
                 });
             } finally {SwingUtilities.invokeAndWait(()->{if(workflow[0]!=null)workflow[0].close();});if(workflow[0]!=null)drain(work,publications,workflow[0]);SwingUtilities.invokeAndWait(()->{if(owner[0]!=null)owner[0].close();});}
         }
+    }
+    static void assertVisibleExport(LegacyRefinementWorkflow workflow,Path file){
+        try {
+            var actual=workflow.latestAttemptDiagnostics().orElseThrow();workflow.prepareExport();
+            org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.writeLatest(file.toFile());
+            var archive=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader.read(file);
+            var bundle=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle(archive.buildIdentity(),archive.sourceIdentityHash(),archive.parameterHash(),archive.artifacts());
+            var stage=workflow.currentStage();var decoded=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.readBound(bundle,stage.id(),stage.selected()).orElseThrow();
+            assertEquals(actual,decoded.latestPublication().orElseThrow().diagnostic());
+            String json=new String(bundle.artifact("refinement-lineage.json").bytes(),java.nio.charset.StandardCharsets.UTF_8).replaceAll("\\s+","");
+            assertTrue(json.contains("\"sourceKind\":\"VISIBLE\""),"Actual current-owner export records factual visible source kind");
+            assertTrue(json.contains("\"coverage\":\"COVERED\""),"Covered reuse has a factual typed coverage record");
+            assertTrue(json.contains("\"frameWidth\":200"));assertTrue(json.contains("\"frameHeight\":200"));
+            assertFalse(json.contains("managedRequests"),"Absent managed work must remain unavailable");
+        } catch(Exception failure){throw new AssertionError(failure);}
     }
     static org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Stage stage(LegacyRefinementWorkflow workflow) throws Exception {
         var value=new java.util.concurrent.atomic.AtomicReference<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Stage>();SwingUtilities.invokeAndWait(()->value.set(workflow.currentStage()));return value.get();
