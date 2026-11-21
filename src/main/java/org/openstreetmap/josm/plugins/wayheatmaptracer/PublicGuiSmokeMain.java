@@ -67,6 +67,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedImagerySer
 public final class PublicGuiSmokeMain {
     private static String firstRefinementFailureEvidence;
     private static String laterRefinementFailureEvidence;
+    private static String shortcutFailureEvidence;
+    private static boolean shortcutRegistryBefore;
     private PublicGuiSmokeMain() { }
 
     public static void main(String[] args) throws Exception {
@@ -256,6 +258,7 @@ public final class PublicGuiSmokeMain {
                     + "\",\"errorType\":\"" + safeToken(failure.getClass().getSimpleName())
                     + "\"" + (firstRefinementFailureEvidence == null ? "" : ",\"firstRefinement\":" + firstRefinementFailureEvidence)
                     + (laterRefinementFailureEvidence == null ? "" : ",\"laterRefinement\":" + laterRefinementFailureEvidence)
+                    + (shortcutFailureEvidence == null ? "" : ",\"shortcut\":" + shortcutFailureEvidence)
                     + "}\n");
             failure.printStackTrace();
             System.exit(1);
@@ -269,14 +272,31 @@ public final class PublicGuiSmokeMain {
         ManagedHeatmapConfig savedSettings = PluginPreferences.load();
         TracingSettings savedTracing = PluginPreferences.loadTracingSettings();
         var opened=new CompletableFuture<JDialog>();
+        var blocked=new CompletableFuture<JDialog>();
         AWTEventListener openedListener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED
-            &&e.getWindow() instanceof JDialog dialog&&"legacy-review".equals(dialog.getName()))opened.complete(dialog);};
+            &&e.getWindow() instanceof JDialog dialog) {
+                if ("legacy-review".equals(dialog.getName())) opened.complete(dialog);
+                else if (savedEngine != TrackerMode.LEGACY_V02 && dialog.isModal()) blocked.complete(dialog);
+            }};
         Toolkit.getDefaultToolkit().addAWTEventListener(openedListener,AWTEvent.WINDOW_EVENT_MASK);
         JDialog preview;
         try{
             if (savedEngine == TrackerMode.LEGACY_V02) onEventThread(()->{action.actionPerformed(null);return null;});
             else dispatchEntryShortcut(savedEngine, action);
-            preview=opened.get(180,TimeUnit.SECONDS);
+            if (savedEngine == TrackerMode.LEGACY_V02) preview=opened.get(180,TimeUnit.SECONDS);
+            else {
+                try {
+                    Object first = CompletableFuture.anyOf(opened, blocked).get(180, TimeUnit.SECONDS);
+                    if (!opened.isDone() || first != opened.getNow(null)) {
+                        shortcutFailureEvidence = boundedShortcutEvidence(savedEngine, action, true);
+                        throw new IllegalStateException("Shortcut produced a modal before Legacy review");
+                    }
+                    preview = opened.getNow(null);
+                } catch (java.util.concurrent.TimeoutException timeout) {
+                    shortcutFailureEvidence = boundedShortcutEvidence(savedEngine, action, true);
+                    throw timeout;
+                }
+            }
         }
         finally{Toolkit.getDefaultToolkit().removeAWTEventListener(openedListener);}
         var owner=onEventThread(()->{
@@ -296,8 +316,7 @@ public final class PublicGuiSmokeMain {
             checkedMode(savedMode, PluginPreferences.load().alignmentMode());
             if (!savedSettings.equals(PluginPreferences.load()) || !savedTracing.equals(PluginPreferences.loadTracingSettings()))
                 throw new IllegalStateException("Shortcut changed saved alignment or source settings");
-            if (rootReview.originalConfig().heatmap().trackerMode() != TrackerMode.LEGACY_V02)
-                throw new IllegalStateException("Keyboard entry did not start Legacy");
+            requireLegacyMigrationRoot(() -> rootReview.originalConfig().heatmap().trackerMode());
         }
         String initialChoice=onEventThread(owner::selectedChoiceIdentity);
         String rootChoice=onEventThread(()->{
@@ -755,6 +774,10 @@ public final class PublicGuiSmokeMain {
     }
     static void requireKeyboardReady(boolean enabled, boolean focused) {
         if (!enabled || !focused) throw new IllegalStateException("Keyboard target is disabled or unfocused");
+    }
+    static void requireLegacyMigrationRoot(java.util.function.Supplier<TrackerMode> readEngine) throws Exception {
+        if (onEventThread(readEngine::get) != TrackerMode.LEGACY_V02)
+            throw new IllegalStateException("Keyboard entry did not start Legacy");
     }
     static void requireOperationChild(boolean operation, boolean child) {
         if (!operation || !child) throw new IllegalStateException("Keyboard activation did not publish requested operation and child");
@@ -1258,10 +1281,17 @@ public final class PublicGuiSmokeMain {
     }
 
     private static void dispatchEntryShortcut(TrackerMode savedEngine, AlignWayAction expected) throws Exception {
-        int key = savedEngine == TrackerMode.PROBABILISTIC ? java.awt.event.KeyEvent.VK_Y
-            : savedEngine == TrackerMode.LEGACY_THEN_B ? java.awt.event.KeyEvent.VK_S : java.awt.event.KeyEvent.VK_M;
-        int modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK | java.awt.event.InputEvent.SHIFT_DOWN_MASK
-            | (savedEngine == TrackerMode.PROBABILISTIC ? 0 : java.awt.event.InputEvent.ALT_DOWN_MASK);
+        shortcutRegistryBefore = onEventThread(DiagnosticsRegistry::hasLatest);
+        javax.swing.KeyStroke stroke;
+        try { stroke = entryStroke(savedEngine, expected); }
+        catch (Exception failure) {
+            shortcutFailureEvidence = boundedShortcutEvidence(savedEngine, expected, false);
+            throw failure;
+        }
+        int key = stroke.getKeyCode();
+        int modifiers = stroke.getModifiers() & (java.awt.event.InputEvent.CTRL_DOWN_MASK
+            | java.awt.event.InputEvent.SHIFT_DOWN_MASK | java.awt.event.InputEvent.ALT_DOWN_MASK
+            | java.awt.event.InputEvent.META_DOWN_MASK | java.awt.event.InputEvent.ALT_GRAPH_DOWN_MASK);
         var focused = new CompletableFuture<Void>();
         var delivered = new CompletableFuture<Void>();
         var manager = java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager();
@@ -1278,11 +1308,15 @@ public final class PublicGuiSmokeMain {
         Toolkit.getDefaultToolkit().addAWTEventListener(keyListener, AWTEvent.KEY_EVENT_MASK);
         try {
             onEventThread(() -> {
-                var root = MainApplication.getMainFrame().getRootPane();
-                Object binding = root.getInputMap(javax.swing.JComponent.WHEN_IN_FOCUSED_WINDOW)
-                    .get(javax.swing.KeyStroke.getKeyStroke(key, modifiers));
-                if (!entryActionKey(savedEngine).equals(binding) || root.getActionMap().get(binding) != expected)
-                    throw new IllegalStateException("Actual shortcut binding differs from registered action");
+                shortcutRegistryBefore = DiagnosticsRegistry.hasLatest();
+                if (MainApplication.getRegisteredActionShortcut(expected.getShortcut()) != expected) {
+                    shortcutFailureEvidence = shortcutEvidence(savedEngine, expected, false);
+                    throw new IllegalStateException("JOSM shortcut no longer resolves to expected action");
+                }
+                if (!expected.isEnabled()) {
+                    shortcutFailureEvidence = shortcutEvidence(savedEngine, expected, false);
+                    throw new IllegalStateException("Registered shortcut action is disabled");
+                }
                 MainApplication.getMainFrame().toFront();
                 MainApplication.getMap().mapView.requestFocusInWindow();
                 Component owner = manager.getFocusOwner();
@@ -1291,18 +1325,118 @@ public final class PublicGuiSmokeMain {
             });
             focused.get(30, TimeUnit.SECONDS);
             var robot = new java.awt.Robot();
-            robot.keyPress(java.awt.event.KeyEvent.VK_CONTROL);
-            robot.keyPress(java.awt.event.KeyEvent.VK_SHIFT);
-            if ((modifiers & java.awt.event.InputEvent.ALT_DOWN_MASK) != 0) robot.keyPress(java.awt.event.KeyEvent.VK_ALT);
+            int[] masks = {java.awt.event.InputEvent.CTRL_DOWN_MASK, java.awt.event.InputEvent.SHIFT_DOWN_MASK,
+                java.awt.event.InputEvent.ALT_DOWN_MASK, java.awt.event.InputEvent.META_DOWN_MASK,
+                java.awt.event.InputEvent.ALT_GRAPH_DOWN_MASK};
+            int[] keys = {java.awt.event.KeyEvent.VK_CONTROL, java.awt.event.KeyEvent.VK_SHIFT,
+                java.awt.event.KeyEvent.VK_ALT, java.awt.event.KeyEvent.VK_META, java.awt.event.KeyEvent.VK_ALT_GRAPH};
+            for (int i = 0; i < masks.length; i++) if ((modifiers & masks[i]) != 0) robot.keyPress(keys[i]);
             robot.keyPress(key); robot.keyRelease(key);
-            if ((modifiers & java.awt.event.InputEvent.ALT_DOWN_MASK) != 0) robot.keyRelease(java.awt.event.KeyEvent.VK_ALT);
-            robot.keyRelease(java.awt.event.KeyEvent.VK_SHIFT);
-            robot.keyRelease(java.awt.event.KeyEvent.VK_CONTROL);
+            for (int i = masks.length - 1; i >= 0; i--) if ((modifiers & masks[i]) != 0) robot.keyRelease(keys[i]);
             delivered.get(30, TimeUnit.SECONDS);
+        } catch (Exception failure) {
+            if (shortcutFailureEvidence == null)
+                shortcutFailureEvidence = boundedShortcutEvidence(savedEngine, expected, delivered.isDone());
+            throw failure;
         } finally {
             manager.removePropertyChangeListener("focusOwner", focusListener);
             Toolkit.getDefaultToolkit().removeAWTEventListener(keyListener);
         }
+    }
+
+    static javax.swing.KeyStroke entryStroke(TrackerMode savedEngine, AlignWayAction expected) throws Exception {
+        return onEventThread(() -> {
+            AlignmentMode mode = savedEngine == TrackerMode.PROBABILISTIC ? null
+                : savedEngine == TrackerMode.LEGACY_THEN_B ? AlignmentMode.PRECISE_SHAPE
+                : savedEngine == TrackerMode.CORRIDOR_AWARE ? AlignmentMode.MOVE_EXISTING_NODES
+                : throwUnknownEntry();
+            if (expected.forcedAlignmentMode() != mode) throw new IllegalStateException("Shortcut owns wrong mode override");
+            var shortcut = expected.getShortcut();
+            var stroke = shortcut == null ? null : shortcut.getKeyStroke();
+            if (stroke == null || stroke.isOnKeyRelease() || stroke.getKeyCode() == java.awt.event.KeyEvent.VK_UNDEFINED
+                    || MainApplication.getRegisteredActionShortcut(shortcut) != expected)
+                throw new IllegalStateException("JOSM shortcut is unavailable or resolves to another action");
+            return stroke;
+        });
+    }
+
+    private static AlignmentMode throwUnknownEntry() {
+        throw new IllegalArgumentException("No migration keyboard case");
+    }
+
+    private static String boundedShortcutEvidence(TrackerMode savedEngine, AlignWayAction expected, boolean delivered) {
+        var evidence = new CompletableFuture<String>();
+        SwingUtilities.invokeLater(() -> {
+            try { evidence.complete(shortcutEvidence(savedEngine, expected, delivered)); }
+            catch (RuntimeException failure) { evidence.complete("{\"capture\":\"failed\"}"); }
+        });
+        try { return evidence.get(2, TimeUnit.SECONDS); }
+        catch (Exception unavailable) { return "{\"capture\":\"edt-unavailable\",\"keyDelivered\":" + delivered + "}"; }
+    }
+
+    /** Bounded synthetic-CI facts; an absent retained log is not proof that the action never ran. */
+    private static String shortcutEvidence(TrackerMode savedEngine, AlignWayAction expected, boolean delivered) {
+        if (!SwingUtilities.isEventDispatchThread()) throw new IllegalStateException("Shortcut evidence requires EDT");
+        var registered = expected.getShortcut();
+        var stroke = registered == null ? null : registered.getKeyStroke();
+        String mode = expected.forcedAlignmentMode() == null ? "CONFIGURED" : expected.forcedAlignmentMode().name();
+        String expectedMode = savedEngine == TrackerMode.LEGACY_THEN_B ? "PRECISE_SHAPE"
+            : savedEngine == TrackerMode.CORRIDOR_AWARE ? "MOVE_EXISTING_NODES" : "CONFIGURED";
+        if (stroke == null) return "{\"keyDelivered\":" + delivered + ",\"registeredStroke\":\"unavailable\",\"expectedMode\":\""
+            + expectedMode + "\",\"actionMode\":\"" + mode + "\",\"actionIdentity\":" + System.identityHashCode(expected)
+            + ",\"actionEnabled\":" + expected.isEnabled() + ",\"registryBefore\":" + shortcutRegistryBefore
+            + ",\"registryAfter\":" + DiagnosticsRegistry.hasLatest() + "}";
+        var root = MainApplication.getMainFrame().getRootPane();
+        Object rootKey = root.getInputMap(javax.swing.JComponent.WHEN_IN_FOCUSED_WINDOW).get(stroke);
+        var map = MainApplication.getMap().mapView;
+        Object mapKey = map.getInputMap(javax.swing.JComponent.WHEN_IN_FOCUSED_WINDOW).get(stroke);
+        Component focused = java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner();
+        String focusedBinding = "unavailable";
+        boolean focusedResolvesAction = false;
+        if (focused instanceof javax.swing.JComponent component) {
+            Object value = component.getInputMap(javax.swing.JComponent.WHEN_FOCUSED).get(stroke);
+            focusedBinding = value == null ? "none" : entryActionKey(savedEngine).equals(value) ? "expected" : "other";
+            focusedResolvesAction = value != null && component.getActionMap().get(value) == expected;
+        }
+        String ancestorBinding = "none";
+        for (Component cursor = focused == null ? null : focused.getParent(); cursor != null; cursor = cursor.getParent()) {
+            if (cursor instanceof javax.swing.JComponent component) {
+                Object value = component.getInputMap(javax.swing.JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).get(stroke);
+                if (value != null) {
+                    ancestorBinding = component.getActionMap().get(value) == expected ? "expected" : "other";
+                    break;
+                }
+            }
+        }
+        var matches = org.openstreetmap.josm.tools.Shortcut.listAll().stream()
+            .filter(shortcut -> stroke.equals(shortcut.getKeyStroke())).limit(12)
+            .map(shortcut -> shortcut.getShortText() == null ? "unknown"
+                : safeToken(shortcut.getShortText().replaceAll("[^A-Za-z0-9._-]", "_")))
+            .map(name -> "\"" + name + "\"").toList();
+        int visible = 0, modal = 0, review = 0;
+        for (Window window : Window.getWindows()) if (window.isShowing()) {
+            visible++;
+            if (window instanceof JDialog dialog) {
+                if (dialog.isModal()) modal++;
+                if ("legacy-review".equals(dialog.getName())) review++;
+            }
+        }
+        boolean retained = org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog.currentSlideLog()
+            .contains("Align Way to Heatmap invoked.");
+        return "{\"keyDelivered\":" + delivered + ",\"expectedMode\":\"" + expectedMode
+            + "\",\"actionMode\":\"" + mode + "\",\"actionEnabled\":" + expected.isEnabled()
+            + ",\"actionIdentity\":" + System.identityHashCode(expected)
+            + ",\"josmResolvesAction\":" + (MainApplication.getRegisteredActionShortcut(registered) == expected)
+            + ",\"rootResolvesAction\":" + (rootKey != null && root.getActionMap().get(rootKey) == expected)
+            + ",\"mapResolvesAction\":" + (mapKey != null && map.getActionMap().get(mapKey) == expected)
+            + ",\"focusedClass\":\"" + (focused == null ? "none" : safeSymbol(focused.getClass().getName()))
+            + "\",\"focusedBinding\":\"" + focusedBinding + "\",\"focusedResolvesAction\":"
+            + focusedResolvesAction + ",\"ancestorBinding\":\"" + ancestorBinding + "\",\"assignedKey\":"
+            + (registered == null ? -1 : registered.getAssignedKey()) + ",\"assignedModifiers\":"
+            + (registered == null ? -1 : registered.getAssignedModifier()) + ",\"registryMatches\":["
+            + String.join(",", matches) + "],\"registryBefore\":" + shortcutRegistryBefore
+            + ",\"registryAfter\":" + DiagnosticsRegistry.hasLatest() + ",\"entryLogRetained\":" + retained
+            + ",\"visibleWindows\":" + visible + ",\"modalDialogs\":" + modal + ",\"legacyReviews\":" + review + "}";
     }
 
     private static JDialog currentProgressDialog() {

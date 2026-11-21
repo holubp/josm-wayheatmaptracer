@@ -58,6 +58,19 @@ class WayHeatmapTracerPluginTest {
             Field actionsField = WayHeatmapTracerPlugin.class.getDeclaredField("actions");
             actionsField.setAccessible(true);
             @SuppressWarnings("unchecked") List<JosmAction> actions = (List<JosmAction>) actionsField.get(plugin);
+            var preciseShortcut = actions.get(1).getShortcut();
+            assertTrue(preciseShortcut != null);
+            var preciseStroke = javax.swing.KeyStroke.getKeyStroke(KeyEvent.VK_S,
+                InputEvent.CTRL_DOWN_MASK | InputEvent.ALT_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK);
+            var registryMatches = org.openstreetmap.josm.tools.Shortcut.listAll().stream()
+                .filter(shortcut -> preciseStroke.equals(shortcut.getKeyStroke()))
+                .map(org.openstreetmap.josm.tools.Shortcut::getShortText).sorted().toList();
+            System.out.println("JOSM19555_PRECISE_SHORTCUT assignedKey=" + preciseShortcut.getAssignedKey()
+                + " assignedModifiers=" + preciseShortcut.getAssignedModifier() + " registryMatches=" + registryMatches);
+            assertSame(actions.get(1), MainApplication.getRegisteredActionShortcut(preciseShortcut));
+            assertEquals(preciseShortcut.getKeyStroke(), PublicGuiSmokeMain.entryStroke(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.LEGACY_THEN_B,
+                (AlignWayAction) actions.get(1)), "Dispatch the actual JOSM assignment");
             Field bindingsField = WayHeatmapTracerPlugin.class.getDeclaredField("ALIGN_SHORTCUTS");
             bindingsField.setAccessible(true);
             List<?> bindings = (List<?>) bindingsField.get(null);

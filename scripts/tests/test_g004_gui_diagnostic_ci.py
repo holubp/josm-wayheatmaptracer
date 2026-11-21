@@ -20,6 +20,7 @@ DIAGNOSTIC_MATRIX = [
     {"engine": "LEGACY_V02", "report": "public-gui-smoke-stepwise-precise-b-a", "mode": "PRECISE_SHAPE", "order": "B_A"},
     {"engine": "LEGACY_V02", "report": "public-gui-smoke-stepwise-move-a-b", "mode": "MOVE_EXISTING_NODES", "order": "A_B"},
     {"engine": "LEGACY_V02", "report": "public-gui-smoke-stepwise-move-b-a", "mode": "MOVE_EXISTING_NODES", "order": "B_A"},
+    {"engine": "LEGACY_THEN_B", "report": "public-gui-smoke-migrate-sequential", "mode": "PRECISE_SHAPE", "order": "A_B"},
 ]
 
 
@@ -83,6 +84,10 @@ def test_g004_diagnostic_gui_is_fast_native_and_diagnostic_only() -> None:
     assert "GITHUB_SHA" in metadata["run"]
     assert "releaseQualified" in metadata["run"]
     assert '"releaseQualified": False' in metadata["run"]
+    assert metadata["env"]["G004_ENGINE"] == "${{ matrix.engine }}"
+    assert '"engine": "LEGACY_V02"' in metadata["run"]
+    assert '"engineRole": "expected"' in metadata["run"]
+    assert '"savedEngine": os.environ["G004_ENGINE"]' in metadata["run"]
 
 
 def test_diagnostic_job_does_not_change_public_release_gates_or_permissions() -> None:
@@ -94,11 +99,12 @@ def test_diagnostic_job_does_not_change_public_release_gates_or_permissions() ->
         "legacy-normal-performance", "legacy-tracker-performance",
     }
     assert jobs["public-gui-smoke"]["needs"] == "public-validation"
-    assert jobs["public-gui-smoke"]["strategy"]["matrix"]["include"][-4:] == DIAGNOSTIC_MATRIX
+    assert jobs["public-gui-smoke"]["strategy"]["matrix"]["include"][-4:] == DIAGNOSTIC_MATRIX[:4]
     assert jobs["public-gui-smoke"]["strategy"]["matrix"]["include"][:3] == [
         {"engine": "PROBABILISTIC", "report": "public-gui-smoke-migrate-b", "mode": "PRECISE_SHAPE", "order": "A_B"},
         {"engine": "LEGACY_THEN_B", "report": "public-gui-smoke-migrate-sequential", "mode": "PRECISE_SHAPE", "order": "A_B"},
         {"engine": "CORRIDOR_AWARE", "report": "public-gui-smoke-migrate-a", "mode": "MOVE_EXISTING_NODES", "order": "A_B"},
     ]
+    assert jobs["public-gui-smoke"]["strategy"]["matrix"]["include"][1] == DIAGNOSTIC_MATRIX[4]
     assert jobs["public-validation"]["timeout-minutes"] == "300"
     assert jobs["public-validation"]["steps"][-1]["with"]["name"] == "public-validated-wayheatmaptracer"

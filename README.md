@@ -266,7 +266,7 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 - `Verbose logging` and `Debug overlay`: leave off for routine editing; enable before reproducing a bad slide for diagnostics.
 - `Bypass managed tile cache...`: use after expired cookies or failed authentication may have caused placeholder or low-quality tiles to be cached. It changes the managed layer URL and starts a new plugin source-tile cache generation, so both JOSM's visible managed layer and the fixed-resolution sampler fetch fresh tiles after you press `OK`.
 
-Shortcuts:
+Requested default shortcuts (JOSM may reassign conflicts or use your saved assignment; check Preferences → Keyboard Shortcuts for the actual binding):
 
 - `Ctrl+Shift+Y`: align using the mode saved in settings.
 - `Alt+Ctrl+Shift+S`: align once in `Precise Shape` mode without changing saved settings.
@@ -294,6 +294,8 @@ For rough new paths, draw a simple way approximately along the heatmap trace, se
 ### Menus And Shortcuts
 
 All actions are under JOSM `More tools`:
+
+The shortcut keys below are requested defaults. JOSM may reassign a conflict or use a saved assignment; check Preferences → Keyboard Shortcuts for the actual binding.
 
 - `Align Way to Heatmap`: `Ctrl+Shift+Y`
 - `Alt+Ctrl+Shift+S`: align once in Precise Shape mode (shortcut only)

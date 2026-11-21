@@ -315,6 +315,14 @@ class PublicGuiSmokeContractTest {
             org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.MOVE_EXISTING_NODES,
             org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.PRECISE_SHAPE));
     }
+    @Test void migrationRootReadsEngineOnEdtAndRejectsNonLegacy() throws Exception {
+        PublicGuiSmokeMain.requireLegacyMigrationRoot(() -> {
+            assertTrue(javax.swing.SwingUtilities.isEventDispatchThread());
+            return TrackerMode.LEGACY_V02;
+        });
+        assertThrows(IllegalStateException.class,
+            () -> PublicGuiSmokeMain.requireLegacyMigrationRoot(() -> TrackerMode.PROBABILISTIC));
+    }
     @Test void moveCannotReplaceOriginalOccurrencesAtIdenticalCoordinates() {
         var a=new org.openstreetmap.josm.data.osm.Node(new LatLon(0,0));var b=new org.openstreetmap.josm.data.osm.Node(new LatLon(0,.001));
         var originals=List.of(a,b);var replacements=List.of(new org.openstreetmap.josm.data.osm.Node(a.getCoor()),new org.openstreetmap.josm.data.osm.Node(b.getCoor()));
