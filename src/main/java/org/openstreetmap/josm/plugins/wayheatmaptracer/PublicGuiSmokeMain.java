@@ -277,7 +277,9 @@ public final class PublicGuiSmokeMain {
         boolean bFirst="B_A".equals(System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder","A_B"));
         var first=bFirst?StageKind.REFINE_B:StageKind.REFINE_A;
         var second=bFirst?StageKind.REFINE_A:StageKind.REFINE_B;
-        clickAndAwaitStage(preview,owner,bFirst?"refineB":"refineA",first);
+        checkDialogLayout(preview);
+        keyboardAndAwaitStage(preview,owner,bFirst?"refineB":"refineA",first);
+        checkDialogLayout(preview);
         onEventThread(()->{
             checkedMode(requestedMode,owner.currentNative().orElseThrow().operation().orElseThrow().ticket().mode());
             requireExactLegacyParent(owner,rootReview,rootChoice,rootCandidate,rootGeometry);
@@ -453,6 +455,139 @@ public final class PublicGuiSmokeMain {
         Field resultField=overlay.getClass().getDeclaredField("result");resultField.setAccessible(true);
         var result=(org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult)resultField.get(overlay);
         if(result==null||!result.previewPolyline().equals(expected))throw new IllegalStateException("Actual overlay differs from stored selected geometry");
+    }
+
+    static void requireKeyboardReady(boolean enabled, boolean focused) {
+        if (!enabled || !focused) throw new IllegalStateException("Keyboard target is disabled or unfocused");
+    }
+    static void requireOperationChild(boolean operation, boolean child) {
+        if (!operation || !child) throw new IllegalStateException("Keyboard activation did not publish requested operation and child");
+    }
+    static void requireFooterBounds(java.awt.Rectangle visible, java.awt.Rectangle control) {
+        if (control == null || control.isEmpty() || !visible.contains(control))
+            throw new IllegalStateException("Required footer control is missing or clipped");
+    }
+    static void requireFooterHierarchy(Container root, Component control, boolean showing) {
+        requireFooterHierarchy(root, control, showing, component -> component instanceof Window);
+    }
+    static void requireFooterHierarchy(Container root, Component control, boolean showing,
+            java.util.function.Predicate<Component> windowBoundary) {
+        if (!showing || control == null) throw new IllegalStateException("Footer control is not showing");
+        var rectangle = new java.awt.Rectangle(0, 0, control.getWidth(), control.getHeight());
+        if (rectangle.isEmpty()) throw new IllegalStateException("Footer control is empty");
+        boolean reachedRoot = false;
+        for (Component current = control; current != null; current = current.getParent()) {
+            if (!current.isVisible()) throw new IllegalStateException("Footer ancestor is hidden");
+            if (current == root) reachedRoot = true;
+            if (current != control) {
+                var inAncestor = SwingUtilities.convertRectangle(control, rectangle, current);
+                requireFooterBounds(new java.awt.Rectangle(0, 0, current.getWidth(), current.getHeight()), inAncestor);
+            }
+            if (windowBoundary.test(current)) break;
+        }
+        if (!reachedRoot) throw new IllegalStateException("Footer control is outside the dialog");
+    }
+    private static void keyboardAndAwaitStage(JDialog dialog, LegacyRefinementWorkflow owner,
+            String button, StageKind expected) throws Exception {
+        var focused = new CompletableFuture<Void>();
+        var keyDelivered = new CompletableFuture<Void>();
+        var ready = new CompletableFuture<Void>();
+        var target = onEventThread(() -> requiredNamed(dialog.getContentPane(), button, javax.swing.JButton.class));
+        java.awt.event.FocusListener focusListener = new java.awt.event.FocusAdapter() {
+            @Override public void focusGained(java.awt.event.FocusEvent event) { focused.complete(null); }
+        };
+        java.awt.event.KeyListener keyListener = new java.awt.event.KeyAdapter() {
+            @Override public void keyPressed(java.awt.event.KeyEvent event) {
+                if (event.getKeyCode() == java.awt.event.KeyEvent.VK_SPACE && target.isFocusOwner()) keyDelivered.complete(null);
+            }
+        };
+        Runnable check = () -> {
+            if (owner.busy()) return;
+            if (owner.nativeSelected() && owner.currentStage().kind() == expected) ready.complete(null);
+        };
+        java.beans.PropertyChangeListener listener = event -> SwingUtilities.invokeLater(check);
+        onEventThread(() -> {
+            if (!target.isEnabled()) throw new IllegalStateException("Keyboard refinement is disabled");
+            target.addFocusListener(focusListener); target.addKeyListener(keyListener);
+            requiredNamed(dialog.getContentPane(), "stage", javax.swing.JLabel.class).addPropertyChangeListener(listener);
+            requiredNamed(dialog.getContentPane(), "refineA", javax.swing.JButton.class).addPropertyChangeListener(listener);
+            target.scrollRectToVisible(new java.awt.Rectangle(0, 0, target.getWidth(), target.getHeight()));
+            if (target.isFocusOwner()) focused.complete(null); else target.requestFocusInWindow();
+            return null;
+        });
+        try {
+            focused.get(30, TimeUnit.SECONDS);
+            onEventThread(() -> { requireKeyboardReady(target.isEnabled(), target.isFocusOwner()); return null; });
+            var robot = new java.awt.Robot();
+            robot.keyPress(java.awt.event.KeyEvent.VK_SPACE);
+            robot.keyRelease(java.awt.event.KeyEvent.VK_SPACE);
+            keyDelivered.get(30, TimeUnit.SECONDS);
+            ready.get(180, TimeUnit.SECONDS);
+            onEventThread(() -> {
+                var nativeReview = owner.currentNative();
+                requireOperationChild(nativeReview.isPresent() && nativeReview.get().operation().isPresent()
+                    && nativeReview.get().operation().get().ticket().kind() == expected,
+                    owner.nativeSelected() && owner.currentStage().kind() == expected);
+                return null;
+            });
+        } finally {
+            onEventThread(() -> { target.removeFocusListener(focusListener); target.removeKeyListener(keyListener);
+                requiredNamed(dialog.getContentPane(), "stage", javax.swing.JLabel.class).removePropertyChangeListener(listener);
+                requiredNamed(dialog.getContentPane(), "refineA", javax.swing.JButton.class).removePropertyChangeListener(listener); return null; });
+        }
+    }
+    private static void checkDialogLayout(JDialog dialog) throws Exception {
+        onEventThread(() -> {
+            var size = dialog.getSize();
+            try {
+                verifyDialogLayout(dialog);
+                dialog.setSize(800, 600); dialog.validate();
+                verifyDialogLayout(dialog);
+            } finally { dialog.setSize(size); dialog.validate(); }
+            return null;
+        });
+    }
+    private static void verifyDialogLayout(JDialog dialog) {
+        var root = dialog.getContentPane();
+        var apply = requiredNamed(root, "legacy-apply", javax.swing.JButton.class);
+        var confirm = requiredNamed(root, "legacy-confirm", javax.swing.JButton.class);
+        var reviewScroll = requiredNamed(root, "legacy-review-scroll", javax.swing.JScrollPane.class);
+        var quality = requiredNamed(root, "quality", javax.swing.JTextArea.class);
+        var undo = requiredNamed(root, "undo", javax.swing.JButton.class);
+        if (!quality.getLineWrap() || !quality.getWrapStyleWord() || !(quality.getParent() instanceof javax.swing.JViewport))
+            throw new IllegalStateException("Reasons must wrap in a scroll viewport");
+        if (!undo.isEnabled() && (undo.getToolTipText() == null || undo.getToolTipText().isBlank()
+                || undo.getAccessibleContext().getAccessibleDescription() == null))
+            throw new IllegalStateException("Unavailable control needs an accessible explanation");
+        if (!(reviewScroll.getViewport().getView() instanceof Container)) throw new IllegalStateException("Review scroll missing content");
+        for (String name : List.of("refineA", "refineB", "smooth", "redo"))
+            requiredNamed(root, name, javax.swing.JButton.class);
+        var viewport = (javax.swing.JViewport) quality.getParent();
+        var reasonScroll = (javax.swing.JScrollPane) SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane.class, quality);
+        if (reasonScroll == null) throw new IllegalStateException("Reasons are not scrollable");
+        String oldText = quality.getText(); int oldCaret = quality.getCaretPosition();
+        java.awt.Point oldPosition = viewport.getViewPosition();
+        try {
+            quality.setText("Long interval reason with factual explanation and retained parent section. ".repeat(40));
+            quality.setCaretPosition(quality.getDocument().getLength());
+            reasonScroll.validate();
+            var bar = reasonScroll.getVerticalScrollBar();
+            if (bar.getMaximum() <= bar.getVisibleAmount()) throw new IllegalStateException("Long reasons do not scroll");
+            bar.setValue(bar.getMaximum());
+            if (bar.getValue() <= bar.getMinimum()) throw new IllegalStateException("Long reason end cannot be reached");
+        } finally { quality.setText(oldText); quality.setCaretPosition(Math.min(oldCaret, quality.getDocument().getLength())); viewport.setViewPosition(oldPosition); }
+        Container footer = apply.getParent();
+        javax.swing.JButton cancel = null;
+        for (Component component : footer.getComponents()) {
+            if (component instanceof javax.swing.JButton b && org.openstreetmap.josm.tools.I18n.tr("Cancel").equals(b.getText())) {
+                if (cancel != null) throw new IllegalStateException("Ambiguous footer Cancel");
+                cancel = b;
+            }
+            if (component.isVisible()) requireFooterHierarchy(root, component, component.isShowing());
+        }
+        requireFooterHierarchy(root, cancel, cancel != null && cancel.isShowing());
+        requireFooterHierarchy(root, apply, apply.isShowing());
+        if (confirm.isVisible()) requireFooterHierarchy(root, confirm, confirm.isShowing());
     }
 
     static void requireDisplay(boolean headless) {

@@ -76,6 +76,49 @@ class PublicGuiSmokeContractTest {
         var duplicate=new javax.swing.JButton("Other");duplicate.setName("legacy-apply");panel.add(duplicate);
         assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requiredNamed(panel,"legacy-apply",javax.swing.JButton.class));
     }
+    @Test void keyboardAndFooterOraclesRejectMissingEvidence() {
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireKeyboardReady(false, true));
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireKeyboardReady(true, false));
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireOperationChild(false, true));
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireOperationChild(true, false));
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireFooterBounds(new java.awt.Rectangle(0, 0, 100, 100), null));
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireFooterBounds(new java.awt.Rectangle(0, 0, 100, 100), new java.awt.Rectangle(90, 90, 20, 20)));
+        PublicGuiSmokeMain.requireKeyboardReady(true, true);
+        PublicGuiSmokeMain.requireOperationChild(true, true);
+        PublicGuiSmokeMain.requireFooterBounds(new java.awt.Rectangle(0, 0, 100, 100), new java.awt.Rectangle(10, 10, 20, 20));
+    }
+    @Test void footerHierarchyRejectsHiddenAncestor() {
+        var root = new JPanel(null); root.setSize(200, 200);
+        var footer = new JPanel(null); footer.setBounds(10, 10, 100, 100); root.add(footer);
+        var button = new javax.swing.JButton("Apply"); button.setBounds(10, 10, 30, 20); footer.add(button);
+        PublicGuiSmokeMain.requireFooterHierarchy(root, button, true);
+        footer.setVisible(false);
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireFooterHierarchy(root, button, true));
+    }
+    @Test void footerHierarchyRejectsClippingAncestor() {
+        var root = new JPanel(null); root.setSize(200, 200);
+        var footer = new JPanel(null); footer.setBounds(10, 10, 30, 30); root.add(footer);
+        var button = new javax.swing.JButton("Apply"); button.setBounds(20, 10, 30, 20); footer.add(button);
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireFooterHierarchy(root, button, true));
+        footer.setSize(100, 100);
+        PublicGuiSmokeMain.requireFooterHierarchy(root, button, true);
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireFooterHierarchy(root, button, false));
+    }
+    @Test void footerHierarchyStopsAtWindowBoundaryBeforeOwner() {
+        var outsideBoundary = new JPanel(null); outsideBoundary.setSize(20, 20);
+        var window = new JPanel(null); window.setBounds(50, 50, 200, 200); outsideBoundary.add(window);
+        var root = new JPanel(null); root.setBounds(0, 0, 180, 180); window.add(root);
+        var button = new javax.swing.JButton("Apply"); button.setBounds(10, 10, 30, 20); root.add(button);
+        assertThrows(IllegalStateException.class,
+            () -> PublicGuiSmokeMain.requireFooterHierarchy(root, button, true, component -> false));
+        PublicGuiSmokeMain.requireFooterHierarchy(root, button, true, component -> component == window);
+        window.setSize(20, 20);
+        assertThrows(IllegalStateException.class,
+            () -> PublicGuiSmokeMain.requireFooterHierarchy(root, button, true, component -> component == window));
+        window.setSize(200, 200);
+        assertThrows(IllegalStateException.class,
+            () -> PublicGuiSmokeMain.requireFooterHierarchy(new JPanel(), button, true, component -> component == window));
+    }
     @Test void stepwisePublicFixtureHasEveryNativePaletteAtBothZooms() throws Exception {
         Path root=temporary.resolve("stepwise-cache");
         var fixture=PublicGuiSmokeFixture.create(temporary.resolve("stepwise-input"));
