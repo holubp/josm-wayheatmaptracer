@@ -99,7 +99,7 @@ public final class PublicGuiSmokeMain {
                 OsmDataLayer layer = new OsmDataLayer(fixture.dataSet(),
                         "public-analytic-osm", null);
                 MainApplication.getLayerManager().addLayer(layer);
-                if(engine==TrackerMode.LEGACY_V02)ManagedImageryService.applyOrUpdateManagedLayer();
+                if(engine==TrackerMode.LEGACY_V02)addOfflineManagedLayer(PluginPreferences.load(), MainApplication.getLayerManager()::addLayer);
                 MainApplication.getLayerManager().setActiveLayer(layer);
                 fixture.dataSet().setSelected(fixture.selectedWay());
                 return loaded;
@@ -457,6 +457,21 @@ public final class PublicGuiSmokeMain {
         if(result==null||!result.previewPolyline().equals(expected))throw new IllegalStateException("Actual overlay differs from stored selected geometry");
     }
 
+    static void addOfflineManagedLayer(ManagedHeatmapConfig config,
+            java.util.function.Consumer<org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer> add) {
+        if (!config.hasManagedAccessValues()) throw new IllegalStateException("Managed heatmap access values are incomplete");
+        String activity = config.activity().trim().toLowerCase(java.util.Locale.ROOT);
+        String color = config.color().trim().toLowerCase(java.util.Locale.ROOT);
+        var template = new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileUrlBuilder()
+            .buildJosmTemplate(activity, color, new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(Math.max(0L, config.cacheBuster())));
+        var info = new org.openstreetmap.josm.data.imagery.ImageryInfo(
+            ManagedImageryService.MANAGED_LAYER_NAME + " (" + activity + "/" + color + ")", template,
+            "tms", null, config.toCookieHeader(), ManagedImageryService.MANAGED_LAYER_ID);
+        info.setDefaultMaxZoom(15);
+        var layer = new org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer(info);
+        layer.getDisplaySettings().setAutoLoad(false);
+        add.accept(layer);
+    }
     static void requireKeyboardReady(boolean enabled, boolean focused) {
         if (!enabled || !focused) throw new IllegalStateException("Keyboard target is disabled or unfocused");
     }

@@ -119,6 +119,27 @@ class PublicGuiSmokeContractTest {
         assertThrows(IllegalStateException.class,
             () -> PublicGuiSmokeMain.requireFooterHierarchy(new JPanel(), button, true, component -> component == window));
     }
+    @Test void managedDisplayAutoloadIsDisabledBeforeLayerIsAdded() {
+        File cacheRoot = new File(System.getProperty("java.io.tmpdir"), "josm-public-gui-smoke-contract");
+        Config.setBaseDirectoriesProvider(new org.openstreetmap.josm.spi.preferences.IBaseDirectories() {
+            @Override public File getPreferencesDirectory(boolean create) { return cacheRoot; }
+            @Override public File getUserDataDirectory(boolean create) { return cacheRoot; }
+            @Override public File getCacheDirectory(boolean create) { return cacheRoot; }
+        });
+        Config.getPref().putBoolean("imagery.generic.default_autoload", true);
+        var config = PublicGuiSmokeMain.stepwiseConfig(org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.PRECISE_SHAPE);
+        var added = new AtomicBoolean();
+        PublicGuiSmokeMain.addOfflineManagedLayer(config, layer -> {
+            assertFalse(layer.getDisplaySettings().isAutoLoad());
+            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedImageryService.MANAGED_LAYER_ID, layer.getInfo().getId());
+            String template = new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileUrlBuilder().buildJosmTemplate(
+                config.activity(), config.color(), new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(config.cacheBuster()));
+            assertEquals(template.substring("tms[15]:".length()), layer.getInfo().getUrl());
+            assertEquals(15, layer.getInfo().getMaxZoom());
+            added.set(true);
+        });
+        assertTrue(added.get());
+    }
     @Test void stepwisePublicFixtureHasEveryNativePaletteAtBothZooms() throws Exception {
         Path root=temporary.resolve("stepwise-cache");
         var fixture=PublicGuiSmokeFixture.create(temporary.resolve("stepwise-input"));
