@@ -85,7 +85,12 @@ jobs:
               filters=(--tests '*VisibleRefinementWorkflowTest')
               ;;
             refs/heads/codex/g004-smoothing-adapter-20261121)
-              filters=(--tests '*RefinementSmoothingAdapterTest' --tests '*PostprocessingValidationWorkTest')
+              filters=(
+                --tests '*RefinementSmoothingAdapterTest'
+                --tests '*PostprocessingValidationWorkTest'
+                --tests '*PostprocessedReferrerWorkTest'
+                --tests '*PostprocessedWayReferenceWorkTest'
+              )
               ;;
             *)
               echo "Unsupported ref for focused G004 tests" >&2
@@ -107,8 +112,10 @@ jobs:
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.VisibleRefinementWorkflowTest.xml",
               ],
               "refs/heads/codex/g004-smoothing-adapter-20261121": [
-                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.RefinementSmoothingAdapterTest.xml",
-                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.PostprocessingValidationWorkTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementSmoothingAdapterTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.PostprocessingValidationWorkTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.PostprocessedReferrerWorkTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.model.PostprocessedWayReferenceWorkTest.xml",
               ],
           }
           selected = names[os.environ["FOCUSED_REF"]]
@@ -135,6 +142,8 @@ jobs:
               "refs/heads/codex/g004-smoothing-adapter-20261121": [
                   "RefinementSmoothingAdapterTest",
                   "PostprocessingValidationWorkTest",
+                  "PostprocessedReferrerWorkTest",
+                  "PostprocessedWayReferenceWorkTest",
               ],
           }
           selected = classes[os.environ["FOCUSED_REF"]]
@@ -162,17 +171,24 @@ jobs:
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/VisibleRefinementWorkflowTest.java",
               ],
               "refs/heads/codex/g004-smoothing-adapter-20261121": [
-                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/RefinementSmoothingAdapterTest.java",
-                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/PostprocessingValidationWorkTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RefinementSmoothingAdapterTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/PostprocessingValidationWorkTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/PostprocessedReferrerWorkTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/model/PostprocessedWayReferenceWorkTest.java",
               ],
           }
-          source_root = Path("src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/service")
-          paths = sorted(source_root.rglob("*.java"))
-          paths.extend(Path("src/test/java") / name for name in test_names[os.environ["FOCUSED_REF"]])
+          package_root = Path("src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer")
+          source_roots = [package_root / name for name in ("service", "model", "actions")]
+          paths = sorted(path for root in source_roots for path in root.rglob("*.java"))
+          selected_tests = [Path("src/test/java") / name for name in test_names[os.environ["FOCUSED_REF"]]]
+          missing_tests = [path.as_posix() for path in selected_tests if not path.is_file()]
+          if missing_tests:
+              raise SystemExit("Selected test source is missing: " + ", ".join(missing_tests))
+          paths.extend(selected_tests)
           hashes = {}
           for path in paths:
               relative = path.as_posix()
-              hashes[relative] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+              hashes[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
           receipt = {
               "schema": "g004-focused-source-identity-v1",
               "sourceCommit": os.environ["FOCUSED_SHA"],
