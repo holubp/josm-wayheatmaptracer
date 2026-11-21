@@ -60,6 +60,140 @@ jobs:
           if-no-files-found: error
           retention-days: 5
 
+  g004-focused-tests:
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/codex/g004-stepwise-20261119' || github.ref == 'refs/heads/codex/g004-smoothing-adapter-20261121')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Prepare pinned JOSM 19555 host
+        run: |
+          python3 scripts/prepare-ci-josm19555.py --output-dir "$RUNNER_TEMP/josm19555-host"
+          echo "ORG_GRADLE_PROJECT_josm19555HostJar=$RUNNER_TEMP/josm19555-host/JOSM-Linux-java11-19555.jar" >> "$GITHUB_ENV"
+      - name: Run focused public JUnit tests
+        shell: bash
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/codex/g004-stepwise-20261119)
+              filters=(--tests '*VisibleRefinementWorkflowTest')
+              ;;
+            refs/heads/codex/g004-smoothing-adapter-20261121)
+              filters=(--tests '*RefinementSmoothingAdapterTest' --tests '*PostprocessingValidationWorkTest')
+              ;;
+            *)
+              echo "Unsupported ref for focused G004 tests" >&2
+              exit 2
+              ;;
+          esac
+          sh gradlew --no-daemon test --console=plain -PvalidationProfile=public "${filters[@]}"
+      - name: Require selected JUnit XML after a passing run
+        if: success()
+        env:
+          FOCUSED_REF: ${{ github.ref }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          names = {
+              "refs/heads/codex/g004-stepwise-20261119": [
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.VisibleRefinementWorkflowTest.xml",
+              ],
+              "refs/heads/codex/g004-smoothing-adapter-20261121": [
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.RefinementSmoothingAdapterTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.PostprocessingValidationWorkTest.xml",
+              ],
+          }
+          selected = names[os.environ["FOCUSED_REF"]]
+          results = Path("build/test-results/test")
+          found = [results / name for name in selected if (results / name).is_file()]
+          if not found:
+              raise SystemExit("No selected JUnit XML was produced")
+          missing = sorted(set(selected) - {path.name for path in found})
+          if missing:
+              raise SystemExit("Missing selected JUnit XML: " + ", ".join(missing))
+          PY
+      - name: Stage only selected JUnit XML
+        if: always()
+        env:
+          FOCUSED_REF: ${{ github.ref }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import shutil
+          from pathlib import Path
+
+          classes = {
+              "refs/heads/codex/g004-stepwise-20261119": ["VisibleRefinementWorkflowTest"],
+              "refs/heads/codex/g004-smoothing-adapter-20261121": [
+                  "RefinementSmoothingAdapterTest",
+                  "PostprocessingValidationWorkTest",
+              ],
+          }
+          selected = classes[os.environ["FOCUSED_REF"]]
+          source = Path("build/test-results/test")
+          destination = Path("build/reports/g004-focused-artifact/junit")
+          destination.mkdir(parents=True, exist_ok=True)
+          for report in source.glob("TEST-*.xml") if source.is_dir() else ():
+              if any(report.name.endswith("." + class_name + ".xml") for class_name in selected):
+                  shutil.copy2(report, destination / report.name)
+          PY
+      - name: Write focused source identity receipt
+        if: always()
+        env:
+          FOCUSED_REF: ${{ github.ref }}
+          FOCUSED_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          test_names = {
+              "refs/heads/codex/g004-stepwise-20261119": [
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/VisibleRefinementWorkflowTest.java",
+              ],
+              "refs/heads/codex/g004-smoothing-adapter-20261121": [
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/RefinementSmoothingAdapterTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/PostprocessingValidationWorkTest.java",
+              ],
+          }
+          source_root = Path("src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/service")
+          paths = sorted(source_root.rglob("*.java"))
+          paths.extend(Path("src/test/java") / name for name in test_names[os.environ["FOCUSED_REF"]])
+          hashes = {}
+          for path in paths:
+              relative = path.as_posix()
+              hashes[relative] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+          receipt = {
+              "schema": "g004-focused-source-identity-v1",
+              "sourceCommit": os.environ["FOCUSED_SHA"],
+              "ref": os.environ["FOCUSED_REF"],
+              "sha256": hashes,
+          }
+          output = Path("build/reports/g004-focused/source-identity.json")
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          PY
+      - name: Upload focused JUnit XML and source identity
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g004-focused-junit-and-source-identity
+          path: |
+            build/reports/g004-focused-artifact/junit/*.xml
+            build/reports/g004-focused/source-identity.json
+          if-no-files-found: ignore
+          retention-days: 5
+
   public-gui-smoke:
     needs: public-validation
     runs-on: ubuntu-24.04
