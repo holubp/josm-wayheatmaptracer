@@ -1169,6 +1169,18 @@ public final class LiveBPreviewService {
     public Accounted<LegacyRootSeed> captureLegacyRootSeed(DataSet dataSet, SelectionContext selection,
             AlignmentConfig config, double decisionRadiusMeters, double sampleStepMeters,
             String sourceIdentity, AttemptMemoryLedger.Owner owner) {
+        return captureLegacyRootSeed(dataSet,selection,config,decisionRadiusMeters,sampleStepMeters,sourceIdentity,owner,null);
+    }
+    /** New smoothing admission only; the original detached authority capture remains the same algorithm. */
+    public Accounted<LegacyRootSeed> captureLegacyRootSeed(DataSet dataSet,SelectionContext selection,
+            AlignmentConfig config,double decisionRadiusMeters,double sampleStepMeters,String sourceIdentity,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
+        java.util.Objects.requireNonNull(work);
+        return captureLegacyRootSeed(dataSet,selection,config,decisionRadiusMeters,sampleStepMeters,sourceIdentity,work.owner(),work);
+    }
+    private Accounted<LegacyRootSeed> captureLegacyRootSeed(DataSet dataSet,SelectionContext selection,
+            AlignmentConfig config,double decisionRadiusMeters,double sampleStepMeters,String sourceIdentity,AttemptMemoryLedger.Owner owner,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
         if (!SwingUtilities.isEventDispatchThread()) throw new IllegalStateException("Legacy root facts require the event thread");
         if (config.heatmap().trackerMode()!=TrackerMode.LEGACY_V02 || !"EPSG:3857".equals(ProjectionRegistry.getProjection().toCode())
                 || !Double.isFinite(decisionRadiusMeters) || decisionRadiusMeters<=0 || !Double.isFinite(sampleStepMeters) || sampleStepMeters<=0)
@@ -1176,11 +1188,12 @@ public final class LiveBPreviewService {
         var memory=owner.child("original-legacy-network-capture");
         try {
             // Admit inventory/metadata before any detached capture allocation. No imagery or engine work here.
-            var scratch=memory.reserve(16L*1024*1024);
+            var scratch=work==null?memory.reserve(16L*1024*1024):work.reserveOn(memory,"original-legacy-capture-workspace",16L*1024*1024);
             long count=(long)dataSet.getNodes().size()+dataSet.getWays().size()+dataSet.getRelations().size();
             long references=0;for(var way:dataSet.getWays())references=Math.addExact(references,way.getNodesCount());
             for(var relation:dataSet.getRelations())references=Math.addExact(references,relation.getMembersCount());
-            var retained=memory.reserve(Math.addExact(1048576L,Math.addExact(Math.multiplyExact(count,1024L),Math.multiplyExact(references,128L))));
+            long retainedBytes=Math.addExact(1048576L,Math.addExact(Math.multiplyExact(count,1024L),Math.multiplyExact(references,128L)));
+            var retained=work==null?memory.reserve(retainedBytes):work.reserveOn(memory,"original-legacy-capture-facts",retainedBytes);
             var source=selection.segmentNodes().stream().map(LiveBPreviewService::geographic).toList();
             var frame=ManagedModernPreviewSource.managedFrame(source,config.heatmap().inferenceZoom(),decisionRadiusMeters);
             var metric=source.stream().map(frame::toMetric).toList();

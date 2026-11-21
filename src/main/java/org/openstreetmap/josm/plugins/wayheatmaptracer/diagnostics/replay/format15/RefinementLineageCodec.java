@@ -338,22 +338,38 @@ public final class RefinementLineageCodec {
     }
     private static Map<String,Object> publicationMap(LatestPublication state) {
         var d=state.diagnostic();var b=d.binding();
-        return map("ticket",ticketMap(b.ticket()),"root",b.rootStage().value().toString(),"sourceIdentity",b.rootSourceIdentity(),
+        var result=map("ticket",ticketMap(b.ticket()),"root",b.rootStage().value().toString(),"sourceIdentity",b.rootSourceIdentity(),
             "originalNetworkHash",b.originalNetworkHash(),"rootParameters",b.rootParameterHash(),"frozenGeometry",b.frozenGeometryIdentity(),"parentIdentity",b.parentIdentity(),
             "publication",d.publication().name(),"phase",d.phase().name(),"cause",d.cause().name(),"refusals",d.materializationRefusals(),"refusalsComplete",d.materializationComplete(),
             "resultStage",state.resultingSelection().stage().value().toString(),"resultChoice",state.resultingSelection().candidate().value());
+        d.sourcePreparation().ifPresent(work->result.put("sourcePreparation",sourcePreparationMap(work)));return result;
+    }
+    private static Map<String,Object> sourcePreparationMap(RefinementAttemptDiagnostics.SourcePreparationWork work) {
+        var counters=new LinkedHashMap<String,Object>();for(var kind:org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values())counters.put(kind.name(),work.counters().get(kind));
+        Object source=work.failedSource().map(s->map("palette",s.palette(),"mapping",s.mapping(),"aggregate",s.aggregate(),"unavailable",s.unavailableReason())).orElse(null);
+        Object nativeWork=work.nativeWork().map(n->map("outcome",n.outcome().name(),"work",workMap(n.actualWork()),"calls",n.nativeCalls().isPresent()?n.nativeCalls().getAsInt():null)).orElse(null);
+        return map("phase","SOURCE_PREPARATION","cause",work.cause().name(),"visits",work.visits(),"counters",counters,"failedSource",source,"nativeWork",nativeWork);
+    }
+    private static Optional<RefinementAttemptDiagnostics.SourcePreparationWork> readSourcePreparation(Object value) {
+        if(value==null)return Optional.empty();var p=fields(value,"phase","cause","visits","counters","failedSource","nativeWork");if(!"SOURCE_PREPARATION".equals(p.get("phase")))throw invalid();
+        var kinds=org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values();var names=Arrays.stream(kinds).map(Enum::name).toArray(String[]::new);var raw=fields(p.get("counters"),names);
+        var counters=new EnumMap<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind,Long>(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.class);for(var kind:kinds)counters.put(kind,number(raw.get(kind.name())));
+        Optional<RefinementSourcePlanner.SourceRequest> source=Optional.empty();if(p.get("failedSource")!=null){var v=fields(p.get("failedSource"),"palette","mapping","aggregate","unavailable");if(!(v.get("aggregate") instanceof Boolean))throw invalid();source=Optional.of(new RefinementSourcePlanner.SourceRequest(string(v.get("palette")),string(v.get("mapping")),(Boolean)v.get("aggregate"),string(v.get("unavailable"))));}
+        Optional<RefinementAttemptDiagnostics.NativeWork> nativeWork=Optional.empty();if(p.get("nativeWork")!=null){var v=fields(p.get("nativeWork"),"outcome","work","calls");nativeWork=Optional.of(new RefinementAttemptDiagnostics.NativeWork(enumeration(Outcome.class,v.get("outcome")),work(v.get("work")),v.get("calls")==null?OptionalInt.empty():OptionalInt.of(integer(v.get("calls")))));}
+        return Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(enumeration(RefinementAttemptDiagnostics.Cause.class,p.get("cause")),number(p.get("visits")),counters,source,nativeWork));
     }
     private static Optional<LatestPublication> readPublication(Object value,Optional<RefinementOperationReceipt> receipt) {
         if(value==null)return Optional.empty();
         boolean hasCompleteness=value instanceof Map<?,?> m && m.containsKey("refusalsComplete");
         var keys=new ArrayList<>(List.of("ticket","root","sourceIdentity","originalNetworkHash","rootParameters","frozenGeometry","parentIdentity","publication","phase","cause","refusals","resultStage","resultChoice"));
         if(hasCompleteness)keys.add("refusalsComplete");
+        if(value instanceof Map<?,?> values&&values.containsKey("sourcePreparation"))keys.add("sourcePreparation");
         var p=fields(value,keys.toArray(String[]::new));
         if(hasCompleteness && !(p.get("refusalsComplete") instanceof Boolean))throw invalid();
         var binding=new RefinementAttemptDiagnostics.Binding(readTicket(p.get("ticket")),stage(p.get("root")),string(p.get("sourceIdentity")),string(p.get("originalNetworkHash")),
             string(p.get("rootParameters")),string(p.get("frozenGeometry")),string(p.get("parentIdentity")));
         var diagnostic=new RefinementAttemptDiagnostics(binding,receipt,enumeration(RefinementAttemptDiagnostics.Publication.class,p.get("publication")),
-            enumeration(RefinementAttemptDiagnostics.Phase.class,p.get("phase")),enumeration(RefinementAttemptDiagnostics.Cause.class,p.get("cause")),integer(p.get("refusals")),!hasCompleteness || (Boolean)p.get("refusalsComplete"));
+            enumeration(RefinementAttemptDiagnostics.Phase.class,p.get("phase")),enumeration(RefinementAttemptDiagnostics.Cause.class,p.get("cause")),integer(p.get("refusals")),!hasCompleteness || (Boolean)p.get("refusalsComplete"),readSourcePreparation(p.get("sourcePreparation")));
         return Optional.of(new LatestPublication(diagnostic,new CandidateKey(stage(p.get("resultStage")),candidate(p.get("resultChoice")))));
     }
     private static Object smoothingMap(Optional<SmoothingInput> input) {

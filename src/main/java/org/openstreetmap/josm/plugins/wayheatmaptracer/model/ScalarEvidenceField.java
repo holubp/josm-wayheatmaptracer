@@ -20,6 +20,11 @@ public final class ScalarEvidenceField {
     /** Creates a deeply copied scalar field with explicit complete-cell interpolation support. */
     public ScalarEvidenceField(int width, int height, double[] values, boolean[] valid,
             boolean[] interpolationValid, EvidenceFieldLineage lineage) {
+        this(width,height,values,valid,interpolationValid,lineage,null);
+    }
+    /** Admitted copy used only by explicit optional source conversion. */
+    public ScalarEvidenceField(int width,int height,double[] values,boolean[] valid,boolean[] interpolationValid,EvidenceFieldLineage lineage,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
         if (width <= 0 || height <= 0 || values == null || valid == null || lineage == null
             || interpolationValid == null || values.length != Math.multiplyExact(width, height)
             || values.length != valid.length
@@ -28,11 +33,17 @@ public final class ScalarEvidenceField {
         }
         this.width = width;
         this.height = height;
-        this.values = values.clone();
-        this.valid = valid.clone();
-        this.interpolationValid = interpolationValid.clone();
+        if(work==null) {
+            this.values=values.clone();this.valid=valid.clone();this.interpolationValid=interpolationValid.clone();
+        } else {
+            this.values=new double[values.length];this.valid=new boolean[valid.length];this.interpolationValid=new boolean[interpolationValid.length];
+            for(int i=0;i<values.length;i++){work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.COPY,1);this.values[i]=values[i];}
+            for(int i=0;i<valid.length;i++){work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.COPY,1);this.valid[i]=valid[i];}
+            for(int i=0;i<interpolationValid.length;i++){work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.COPY,1);this.interpolationValid[i]=interpolationValid[i];}
+        }
         this.lineage = lineage;
         for (int index = 0; index < this.values.length; index++) {
+            if(work!=null)work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.MAP,1);
             if (this.valid[index] && (!Double.isFinite(this.values[index])
                 || this.values[index] < 0.0 || this.values[index] > 1.0)) {
                 throw new IllegalArgumentException("Valid scalar evidence must be finite and normalized");
@@ -74,6 +85,32 @@ public final class ScalarEvidenceField {
     /** Returns a defensive copy of complete support for every adjacent interpolation cell. */
     public boolean[] copiedInterpolationValidity() {
         return interpolationValid.clone();
+    }
+    /** Copies into admitted caller storage, charging every element before reading it. */
+    public void copyValuesInto(double[] destination,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
+        if(destination==null||destination.length!=values.length)throw new IllegalArgumentException("Scalar copy dimensions differ");
+        for(int i=0;i<values.length;i++){work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.COPY,1);destination[i]=values[i];}
+    }
+    /** Copies the original per-pixel validity without exposing its backing array. */
+    public void copyValidityInto(boolean[] destination,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
+        if(destination==null||destination.length!=valid.length)throw new IllegalArgumentException("Validity copy dimensions differ");
+        for(int i=0;i<valid.length;i++){work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.COPY,1);destination[i]=valid[i];}
+    }
+    /** Copies complete-cell support without exposing its backing array. */
+    public void copyInterpolationValidityInto(boolean[] destination,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
+        if(destination==null||destination.length!=interpolationValid.length)throw new IllegalArgumentException("Cell copy dimensions differ");
+        for(int i=0;i<interpolationValid.length;i++){work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.COPY,1);destination[i]=interpolationValid[i];}
+    }
+    /** Streaming equivalent of canonical serialization's defensive-copy branch. */
+    void encodeCanonical(CanonicalEncoder encoder,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
+        for(int i=0;i<values.length;i++) {
+            work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.HASH,1);
+            encoder.field(valid[i]).fieldHexDouble(values[i]);
+        }
+        for(boolean complete:interpolationValid) {
+            work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.HASH,1);
+            encoder.field("cell-support").field(complete);
+        }
     }
 
     /** Returns whether one adjacent raster cell has complete source support throughout its area. */

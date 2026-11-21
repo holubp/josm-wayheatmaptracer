@@ -21,6 +21,26 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 
 /** Detached scalar-capture regressions for modern engines. */
 class V022RasterEvidenceCaptureTest {
+    @Test void admittedCapturePreservesOldScalarBytesAndStopsInsideMapping() {
+        var frame=frame();var image=image(40,30);var grid=new MetricRasterGrid(frame,new MetricPoint(.25,.25),1,0,0,1,1,38,30);
+        var geographic=List.of(metric(frame,10,15),metric(frame,28,15));var points=List.of(new MetricPoint(10,15),new MetricPoint(28,15));
+        var specs=List.of(RasterEvidenceCapture.FieldSpec.direct("hot",pixel->(pixel>>>16&255)/255.,lineage()));
+        var old=new RasterEvidenceCapture().captureWithMetricSource("capture",image,valid(image),geographic,points,inverse(frame),grid,EvidenceResolution.nativeSource(1,1),3,"safe-source",lineage().acquisitionKind(),specs,CancellationProbe.NONE);
+        var ledger=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+        try(var owner=ledger.rootOwner()) {
+            var work=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(1_000_000,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,owner);
+            var current=new RasterEvidenceCapture().captureWithMetricSource("capture",image,valid(image),geographic,points,inverse(frame),grid,EvidenceResolution.nativeSource(1,1),3,"safe-source",lineage().acquisitionKind(),specs,CancellationProbe.NONE,work);
+            assertEquals(old.canonicalHash(),current.evidence().canonicalHash());assertTrue(current.retainedBytes()>0);
+        }
+        assertEquals(0,ledger.currentBytes());
+        var refusedLedger=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+        try(var owner=refusedLedger.rootOwner()) {
+            var work=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(257,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,owner);
+            assertThrows(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached.class,()->
+                new RasterEvidenceCapture().captureWithMetricSource("capture",image,valid(image),geographic,points,inverse(frame),grid,EvidenceResolution.nativeSource(1,1),3,"safe-source",lineage().acquisitionKind(),specs,CancellationProbe.NONE,work));
+            assertEquals(0,refusedLedger.currentBytes());assertTrue(work.visits()<=257);
+        }
+    }
     @Test
     void selectedRasterCanFitWhileOptionalScalarCopyGetsTypedResourceRefusal() {
         long inputPixels = 16_777_216L;
@@ -97,6 +117,14 @@ class V022RasterEvidenceCaptureTest {
                 snapshot.fields().get("aggregate").sample(10, 15).orElseThrow(), 1.0e-12);
         assertEquals(aggregate.derivationKind(),
                 snapshot.fields().get("aggregate").lineage().derivationKind());
+        try(var owner=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production().rootOwner()) {
+            var work=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(1_000_000,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,owner);
+            var admitted=new RasterEvidenceCapture().captureWithMetricScalarSource("aggregate-capture",image,valid(image),scalar,
+                List.of(metric(frame,10,15),metric(frame,28,15)),List.of(new MetricPoint(10,15),new MetricPoint(28,15)),inverse(frame),grid,
+                EvidenceResolution.nativeSource(1,1),3,"aggregate-source",aggregate.acquisitionKind(),"aggregate",aggregate,CancellationProbe.NONE,work);
+            assertEquals(snapshot.canonicalHash(),admitted.evidence().canonicalHash());
+            assertEquals(Double.doubleToRawLongBits(snapshot.fields().get("aggregate").sample(10,15).orElseThrow()),Double.doubleToRawLongBits(admitted.evidence().fields().get("aggregate").sample(10,15).orElseThrow()));
+        }
         assertThrows(IllegalArgumentException.class, () ->
                 new RasterEvidenceCapture().captureWithMetricScalarSource("bad-size", image,
                         valid(image), new double[1],

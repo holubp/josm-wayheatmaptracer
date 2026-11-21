@@ -9,6 +9,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.Refine
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
 
 /** Lazy, admitted conversion of an actual retained original Legacy acquisition. Never runs Legacy again. */
 public final class LegacyRefinementBootstrap {
@@ -18,6 +19,213 @@ public final class LegacyRefinementBootstrap {
             AttemptMemoryLedger.Owner memory, long payloadLimit) { }
     public record Root(RefinementRootAuthority authority, Stage stage,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture.CapturedSnapshot receipt) { }
+    public sealed interface SmoothingSeed permits ManagedSeed,VisibleSeed {
+        LiveBPreviewService.LegacyRootSeed facts();AlignmentResult original();AlignmentConfig config();
+        String selectedChoice();RefinementSourcePlanner.SourceRequest selectedSource();AttemptMemoryLedger.Owner memory();long payloadLimit();
+    }
+    public record ManagedSeed(LiveBPreviewService.LegacyRootSeed facts,AlignmentResult original,AlignmentConfig config,
+            String selectedChoice,RefinementSourcePlanner.SourceRequest selectedSource,AttemptMemoryLedger.Owner memory,long payloadLimit,
+            TileHeatmapSampler.AcquisitionReceipt receipt) implements SmoothingSeed { }
+    public record VisibleSeed(LiveBPreviewService.LegacyRootSeed facts,AlignmentResult original,AlignmentConfig config,
+            String selectedChoice,RefinementSourcePlanner.SourceRequest selectedSource,AttemptMemoryLedger.Owner memory,long payloadLimit,
+            LegacyVisibleSource metadata) implements SmoothingSeed { }
+    public record SmoothingRoot(Root root,Candidate selected,RetainedSmoothingSource source) { }
+    public enum SmoothingUnavailableReason { SOURCE_MAPPING_UNAVAILABLE, ORIGINAL_SOURCE_UNAVAILABLE,
+        VISIBLE_PROJECTION_TRANSFORM_UNAVAILABLE, VISIBLE_SAMPLING_METADATA_UNAVAILABLE, VISIBLE_EPOCH_UNAVAILABLE, SOURCE_COVERAGE_UNAVAILABLE, SELECTED_FINAL_PREVIEW_UNAVAILABLE }
+    public static final class SmoothingUnavailable extends IllegalStateException {
+        private final SmoothingUnavailableReason reason;
+        public SmoothingUnavailable(SmoothingUnavailableReason reason){super(reason.name().toLowerCase(Locale.ROOT).replace('_','-'));this.reason=reason;}
+        public SmoothingUnavailableReason reason(){return reason;}
+    }
+
+    /** Explicit-click metadata capture only. It never copies/maps/hashes pixels or starts acquisition. */
+    public SmoothingSeed captureForSmoothing(LegacyReviewOwner review,TileFetchCoordinator coordinator,GeometryWorkContext work) {
+        return captureForSmoothing(review,coordinator,work,null);
+    }
+    /** Reuses already-frozen original facts for a later selection; never mints a new authority. */
+    public SmoothingSeed captureForSmoothing(LegacyReviewOwner review,TileFetchCoordinator coordinator,GeometryWorkContext work,SmoothingSeed previous) {
+        if(!SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Original smoothing facts require EDT");
+        work.visit(GeometryWorkContext.Kind.BIND,1);review.requireOriginalAttemptCurrent();
+        var original=review.originalResult();var config=review.originalConfig();var selected=review.selectedCandidate();
+        if(selected.finalPreviewPoints().size()<2)throw new SmoothingUnavailable(SmoothingUnavailableReason.SELECTED_FINAL_PREVIEW_UNAVAILABLE);
+        var attempts=original.detectorAttempts().stream().filter(a->a.candidateIds().contains(selected.id())).toList();
+        var bindings=attempts.stream().map(a->new RefinementSourcePlanner.SourceRequest(a.sourcePalette(),a.mappingName(),a.mappingName().equals("all-colors-combined"),"")).distinct().toList();
+        if(bindings.size()!=1)throw new SmoothingUnavailable(SmoothingUnavailableReason.SOURCE_MAPPING_UNAVAILABLE);
+        var source=bindings.get(0);long maximum=RefinementLimits.defaults().maxPayloadBytes();
+        if(previous!=null&&(!previous.facts().sourceIdentity().equals(review.sourceIdentity())||previous.original()!=original||!previous.config().equals(config)))
+            throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
+        var receipt=review.managedReceipt();var visible=review.originalVisibleSource();
+        double radius,step;
+        if(receipt!=null) {
+            receipt.requireCurrent(coordinator,original.tileMosaics());
+            var mosaic=original.tileMosaics().require(AlignmentTileSourcePlan.from(config.heatmap()).selectedColor());
+            double length=0;for(int i=1;i<original.sourcePolyline().size();i++){work.visit(GeometryWorkContext.Kind.BIND,1);length+=original.sourcePolyline().get(i).distance(original.sourcePolyline().get(i-1));}
+            var shape=TileHeatmapSampler.legacySamplingShape(length,original.sourcePolyline().size(),mosaic.parameters());
+            radius=shape.referenceHalfWidthPx()*RenderedHeatmapSampler.RASTER_SCALE/mosaic.virtualRasterScale()*mosaic.parameters().metersPerPixel();step=mosaic.parameters().sampleStepMeters();
+        } else {
+            if(visible==null||original.capturedHeatmap()==null)throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
+            if(!"EPSG:3857".equals(visible.projectionCode()))throw new SmoothingUnavailable(SmoothingUnavailableReason.VISIBLE_PROJECTION_TRANSFORM_UNAVAILABLE);
+            if(visible.sourceReceipt()==null)throw new SmoothingUnavailable(SmoothingUnavailableReason.VISIBLE_EPOCH_UNAVAILABLE);
+            visible.sourceReceipt().owner().requireCurrent(visible.sourceReceipt());
+            if(visible.decisionRadiusMeters().isEmpty()||visible.sampleStepMeters().isEmpty())throw new SmoothingUnavailable(SmoothingUnavailableReason.VISIBLE_SAMPLING_METADATA_UNAVAILABLE);
+            if(source.aggregate())throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
+            radius=visible.decisionRadiusMeters().getAsDouble();step=visible.sampleStepMeters().getAsDouble();
+        }
+        var facts=previous==null?new LiveBPreviewService().captureLegacyRootSeed(review.dataSet(),original.selection(),config,radius,step,review.sourceIdentity(),work).value():previous.facts();
+        if(facts.decisionRadiusMeters()!=radius||facts.sampleStepMeters()!=step)throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
+        // Alias an existing original group on Back/Redo rather than registering it twice.
+        try{work.owner().retainIfAbsent(original);}catch(IllegalArgumentException absent){
+            long estimate=RefinementPayload.estimateBytes(original);if(estimate>maximum)throw new RefinementSession.Refused(RefusalReason.PAYLOAD_LIMIT);
+            work.reserve("original-legacy-source",estimate).adopt(original);
+        }
+        review.requireOriginalAttemptCurrent();
+        return receipt!=null?new ManagedSeed(facts,original,config,review.choiceId(selected),source,work.owner(),maximum,receipt):
+            new VisibleSeed(facts,original,config,review.choiceId(selected),source,work.owner(),maximum,visible);
+    }
+
+    /** Maps the exact selected original source lazily, using one admitted operation context. */
+    public SmoothingRoot completeForSmoothing(SmoothingSeed seed,TileFetchCoordinator coordinator,GeometryWorkContext work) {
+        return completeForSmoothing(seed,coordinator,work,null);
+    }
+    /** A later binding preserves the already-published original root verbatim. */
+    public SmoothingRoot completeForSmoothing(SmoothingSeed seed,TileFetchCoordinator coordinator,GeometryWorkContext work,Root existing) {
+        if(SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Original smoothing pixels require worker thread");
+        if(seed.memory()!=work.owner())throw new IllegalArgumentException("Smoothing preparation must use its original operation owner");
+        work.visit(GeometryWorkContext.Kind.BIND,1);
+        var facts=seed.facts();var selected=seed.selectedSource();var intensity=seed.config().heatmap().intensitySamplingMode();
+        try(var frameWorkspace=work.reserve("original-smoothing-frame",Math.addExact(262144L,Math.multiplyExact(1024L,facts.sourceMetric().size())))) {
+        if(intensity==null)intensity=IntensitySamplingMode.COLOR_MAPPING;final var mode=intensity;
+        var capture=new RasterEvidenceCapture();RasterEvidenceCapture.AdmittedEvidence admitted;SupportedInputRasterTransform transform;
+        int width,height;String imageIdentity,inputHash="";Runnable currentness;
+        String inputHashProtocol=selected.aggregate()?RasterEvidenceCapture.ORIGINAL_ARGB_SET_PROTOCOL:RasterEvidenceCapture.ORIGINAL_ARGB_PROTOCOL;
+        if(seed instanceof ManagedSeed managed) {
+            managed.receipt().requireCurrent(coordinator,seed.original().tileMosaics());
+            var mosaics=seed.original().tileMosaics();var mosaic=mosaics.require(selected.palette());
+            width=mosaic.image().getWidth();height=mosaic.image().getHeight();
+            // TileMosaic coordinates use512-world pixels; the exact transform uses256-world pixels.
+            transform=SupportedInputRasterTransform.webMercator(mosaic.zoom(),mosaic.originWorldPxX()/2,mosaic.originWorldPxY()/2,2.0);
+            var grid=ManagedModernPreviewSource.managedOutputGrid(facts.frame(),facts.sourceMetric(),mosaic.zoom(),facts.decisionRadiusMeters());
+            requireCovered(transform,grid,width,height);
+            var guard=managed.receipt().generationGuard();currentness=()->guard.getAsLong();imageIdentity=facts.sourceIdentity()+"/original-managed-input/"+(selected.aggregate()?"all-colors":selected.palette());
+            long count=Math.multiplyExact((long)width,height);
+            try(var validMemory=work.reserve("original-managed-validity",AttemptMemoryLedger.arrayBytes(count,1))) {
+                var valid=new boolean[Math.toIntExact(count)];for(int i=0;i<valid.length;i++){work.visit(GeometryWorkContext.Kind.COPY,1);valid[i]=true;}
+                var lineage=new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.MANAGED_TILE,
+                    selected.aggregate()?EvidenceFieldLineage.DerivationKind.ALL_COLOR_AGGREGATE:mode.usesColorMapping()?EvidenceFieldLineage.DerivationKind.NATIVE_PALETTE_MAPPING:EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,
+                    mode.usesColorMapping()?selected.mapping():selected.palette()+"/"+mode.detectorName(),EvidenceCorrelationGroup.STRAVA_RENDERINGS,selected.aggregate());
+                if(selected.aggregate()) {
+                    if(!mode.usesColorMapping())throw new SmoothingUnavailable(SmoothingUnavailableReason.SOURCE_MAPPING_UNAVAILABLE);
+                    var images=new LinkedHashMap<String,java.awt.image.BufferedImage>();
+                    for(var other:mosaics.mosaics().values())if(other.zoom()==mosaic.zoom()&&RefinementSourcePlanner.BASE_PALETTES.contains(other.color())) {
+                        work.visit(GeometryWorkContext.Kind.BIND,1);
+                        if(Math.abs(other.originWorldPxX()-mosaic.originWorldPxX())>=1e-9||Math.abs(other.originWorldPxY()-mosaic.originWorldPxY())>=1e-9
+                                ||other.image().getWidth()!=width||other.image().getHeight()!=height||Math.abs(other.virtualRasterScale()-mosaic.virtualRasterScale())>=1e-9)
+                            throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
+                        if(images.put(other.color(),other.image())!=null)throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
+                    }
+                    if(!images.keySet().containsAll(RefinementSourcePlanner.BASE_PALETTES)||images.size()!=5)throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
+                    var originals=images.entrySet().stream().map(entry->new RasterEvidenceCapture.NamedOriginalRaster(entry.getKey(),entry.getValue(),transform)).toList();
+                    inputHash=RasterEvidenceCapture.hashOriginalArgbSet(originals,work);currentness.run();
+                    try(var scalarMemory=work.reserve("original-aggregate-scalar",AttemptMemoryLedger.arrayBytes(count,8))) {
+                        var scalar=new double[Math.toIntExact(count)];
+                        for(int y=0;y<height;y++)for(int x=0;x<width;x++) {
+                            // The unchanged native aggregate reads four image samples from each of five palettes.
+                            work.visit(GeometryWorkContext.Kind.MAP,20);scalar[y*width+x]=RenderedHeatmapSampler.aggregatedSourceIntensityAt(images,x,y);
+                        }
+                        admitted=capture.captureWithMetricScalarSource(facts.network().snapshotId()+"/smoothing-source/"+selected.mapping(),mosaic.image(),valid,scalar,facts.sourceGeographic(),facts.sourceMetric(),transform,grid,
+                            EvidenceResolution.nativeSource(mosaic.parameters().metersPerPixel(),grid.pitchMeters()),facts.decisionRadiusMeters(),facts.sourceIdentity(),lineage.acquisitionKind(),"native",lineage,CancellationProbe.NONE,work);
+                    }
+                } else {
+                    inputHash=RasterEvidenceCapture.hashOriginalArgb(mosaic.image(),work);currentness.run();
+                    var field=RasterEvidenceCapture.FieldSpec.direct("native",argb->ManagedModernPreviewSource.scalarIntensity(argb,selected.mapping(),mode),lineage);
+                    admitted=capture.captureWithMetricSource(facts.network().snapshotId()+"/smoothing-source/"+selected.mapping(),mosaic.image(),valid,facts.sourceGeographic(),facts.sourceMetric(),transform,grid,
+                        EvidenceResolution.nativeSource(mosaic.parameters().metersPerPixel(),grid.pitchMeters()),facts.decisionRadiusMeters(),facts.sourceIdentity(),lineage.acquisitionKind(),List.of(field),CancellationProbe.NONE,work);
+                }
+            }
+            currentness.run();
+        } else {
+            var visible=(VisibleSeed)seed;var metadata=visible.metadata();var frozen=metadata.freeze(seed.original().capturedHeatmap(),facts.sourceIdentity(),work);
+            var image=frozen.copyImage(work);width=frozen.width();height=frozen.height();inputHash=frozen.inputByteHash();
+            transform=SupportedInputRasterTransform.visibleWebMercator(metadata.minimumEast(),metadata.maximumNorth(),metadata.projectionUnitsPerViewPixel(),RenderedHeatmapSampler.RASTER_SCALE);
+            double pitch=metadata.groundMetersPerViewPixel()/RenderedHeatmapSampler.RASTER_SCALE;
+            var grid=visibleSmoothingGrid(facts,pitch,work);requireCovered(transform,grid,width,height);
+            var receipt=metadata.sourceReceipt();currentness=()->receipt.owner().requireCurrent(receipt);imageIdentity=facts.sourceIdentity()+"/original-visible-input/"+receipt.revision();
+            long count=Math.multiplyExact((long)width,height);
+            try(var validMemory=work.reserve("original-visible-validity",AttemptMemoryLedger.arrayBytes(count,1))) {
+                var valid=new boolean[Math.toIntExact(count)];for(int i=0;i<valid.length;i++){work.visit(GeometryWorkContext.Kind.COPY,1);valid[i]=true;}
+                var lineage=new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.VISIBLE_RENDER,
+                    mode.usesColorMapping()?EvidenceFieldLineage.DerivationKind.NATIVE_PALETTE_MAPPING:EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,
+                    mode.usesColorMapping()?selected.mapping():selected.palette()+"/"+mode.detectorName(),EvidenceCorrelationGroup.STRAVA_RENDERINGS,false);
+                var field=RasterEvidenceCapture.FieldSpec.direct("native",argb->ManagedModernPreviewSource.scalarIntensity(argb,selected.mapping(),mode),lineage);
+                admitted=capture.captureWithMetricSource(facts.network().snapshotId()+"/smoothing-source/"+selected.mapping(),image,valid,facts.sourceGeographic(),facts.sourceMetric(),transform,grid,
+                    metadata.nativePitchMeters().isPresent()?EvidenceResolution.nativeSource(metadata.nativePitchMeters().getAsDouble(),pitch):EvidenceResolution.renderedOnly(pitch),
+                    facts.decisionRadiusMeters(),facts.sourceIdentity(),lineage.acquisitionKind(),List.of(field),CancellationProbe.NONE,work);
+            }
+            currentness.run();
+        }
+        CenterlineCandidate originalSelected=null;
+        for(int i=0;i<seed.original().candidates().size();i++)if(seed.selectedChoice().equals("legacy-choice-"+i)){originalSelected=seed.original().candidates().get(i);break;}
+        if(originalSelected==null)throw new SmoothingUnavailable(SmoothingUnavailableReason.SOURCE_MAPPING_UNAVAILABLE);
+        var disposition=new RetainedSmoothingSource.LegacyDisposition(originalSelected.id(),seed.original().applicableCandidates().contains(originalSelected));
+        var source=RetainedSmoothingSource.fromOriginalConversion(selected,mode,"native",admitted.evidence(),transform,width,height,admitted.retainedBytes(),currentness,imageIdentity,inputHash,
+            seed instanceof ManagedSeed managed?OptionalLong.of(managed.receipt().generation().value()):OptionalLong.empty(),
+            seed instanceof VisibleSeed visible?Optional.of(visible.metadata().sourceReceipt()):Optional.empty(),Optional.of(disposition),inputHashProtocol,work);
+        Root root;
+        if(existing!=null) {
+            if(existing.authority().network()!=facts.network()||!existing.authority().sourceIdentity().equals(facts.sourceIdentity())||!existing.authority().effectiveConfig().equals(seed.config()))
+                throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
+            root=existing;
+        } else root=materializeSmoothingRoot(seed,source,work);
+        var candidate=root.stage().candidates().stream().filter(c->c.id().value().equals(seed.selectedChoice())).findFirst().orElseThrow();
+        source.requireCurrent();return new SmoothingRoot(root,candidate,source);
+        }
+    }
+
+    private static void requireCovered(SupportedInputRasterTransform transform,MetricRasterGrid grid,int width,int height) {
+        var bounds=transform.boundsForMetricCell(grid.coordinateFrame(),grid.footprint().polygons().get(0));
+        if(bounds.minimumX()<0||bounds.minimumY()<0||bounds.maximumX()>=width-1||bounds.maximumY()>=height-1)
+            throw new SmoothingUnavailable(SmoothingUnavailableReason.SOURCE_COVERAGE_UNAVAILABLE);
+    }
+    private static MetricRasterGrid visibleSmoothingGrid(LiveBPreviewService.LegacyRootSeed facts,double pitch,GeometryWorkContext work) {
+        var decision=MetricCorridorRegion.aroundPolyline(facts.sourceMetric(),facts.decisionRadiusMeters());
+        double minX=Double.POSITIVE_INFINITY,minY=minX,maxX=Double.NEGATIVE_INFINITY,maxY=maxX;
+        for(var polygon:decision.polygons())for(var point:polygon){work.visit(GeometryWorkContext.Kind.BIND,1);minX=Math.min(minX,point.xMeters());minY=Math.min(minY,point.yMeters());maxX=Math.max(maxX,point.xMeters());maxY=Math.max(maxY,point.yMeters());}
+        minX-=pitch;minY-=pitch;maxX+=pitch;maxY+=pitch;
+        double width=Math.ceil((maxX-minX)/pitch),height=Math.ceil((maxY-minY)/pitch);
+        if(!Double.isFinite(width)||!Double.isFinite(height)||width>Integer.MAX_VALUE||height>Integer.MAX_VALUE)throw new SmoothingUnavailable(SmoothingUnavailableReason.SOURCE_COVERAGE_UNAVAILABLE);
+        return new MetricRasterGrid(facts.frame(),new MetricPoint(minX+.5*pitch,maxY-.5*pitch),1,0,0,-1,pitch,Math.max(2,(int)width),Math.max(2,(int)height));
+    }
+
+    private Root materializeSmoothingRoot(SmoothingSeed seed,RetainedSmoothingSource source,GeometryWorkContext work) {
+        var facts=seed.facts();var evidence=source.evidence();var config=seed.config();
+        var chainage=new ProbabilisticProfileFactory().profileChainage(facts.sourceMetric(),facts.sampleStepMeters());
+        var request=new TraceRequest(facts.specification().selectedWayKey(),facts.specification().selectedRange(),TrackerMode.LEGACY_V02,config.heatmap().alignmentMode(),facts.specification().permissions(),TraceBudgets.defaults(),
+            evidence.snapshotId(),evidence.canonicalHash(work),facts.network().snapshotId(),facts.network().canonicalHash(),facts.settingsHash(),"original-legacy-authority-v1","original-legacy-reference-window-v1",facts.sampleStepMeters(),chainage,evidence.resolution());
+        var authority=new RefinementRootAuthority(facts.network(),request,evidence,config,facts.projectionCode(),facts.sourceIdentity(),facts.partition(),source,work);
+        var way=(DetachedWay)facts.network().primitives().get(request.selectedWayKey());var sourceNodes=new ArrayList<RefinementPayload.SourceNode>();
+        for(var key:way.nodeKeys()){work.visit(GeometryWorkContext.Kind.BIND,1);var node=(DetachedNode)facts.network().primitives().get(key);sourceNodes.add(new RefinementPayload.SourceNode(key.id(),node.coordinate().latitudeDegrees(),node.coordinate().longitudeDegrees()));}
+        var provenance=new RefinementPayload.SourceSelection(way.key().id(),request.selectedRange().firstIndex(),request.selectedRange().lastIndex(),sourceNodes,
+            way.nodeKeys().subList(request.selectedRange().firstIndex(),request.selectedRange().lastIndex()+1).stream().map(PrimitiveKey::id).toList());
+        long metadataBytes=Math.addExact(16384L,Math.multiplyExact(8192L,(long)way.nodeKeys().size()+seed.original().candidates().stream().mapToLong(c->c.finalPreviewPoints().size()).sum()));
+        try(var materialization=work.reserve("legacy-smoothing-root-choices",metadataBytes)) {
+            var choices=new ArrayList<Candidate>();int index=0;
+            for(var original:seed.original().candidates()) {
+                work.visit(GeometryWorkContext.Kind.BIND,1);
+                var id=new CandidateId("legacy-choice-"+index++);
+                if(original.finalPreviewPoints().size()<2)continue;
+                var one=new AlignmentResult(seed.original().selection(),null,List.of(original),seed.original().sourcePolyline(),original.finalPreviewPoints(),List.of(),null,null,
+                    seed.original().detectorAttempts().stream().filter(a->a.candidateIds().contains(original.id())).toList(),
+                    seed.original().applicableCandidates().contains(original)?List.of(original):List.of());
+                var payload=RefinementPayload.captureOriginal(one,provenance,seed.payloadLimit());
+                var projection=org.openstreetmap.josm.data.projection.Projections.getProjectionByCode(facts.projectionCode());
+                var points=original.finalPreviewPoints().stream().map(p->{work.visit(GeometryWorkContext.Kind.BIND,1);var ll=projection.eastNorth2latlon(p);return facts.frame().toMetric(new GeographicPoint(ll.lat(),ll.lon()));}).toList();
+                var arcs=correspondence(facts,original,points);var palettes=one.detectorAttempts().stream().map(DetectorAttempt::sourcePalette).distinct().toList();
+                if(palettes.size()!=1)throw new SmoothingUnavailable(SmoothingUnavailableReason.SOURCE_MAPPING_UNAVAILABLE);
+                choices.add(new Candidate(id,payload,arcs,facts.sourceIdentity()+"/"+id.value(),original.id(),palettes.get(0)));
+            }
+            var stage=Stage.root(choices,new CandidateId(seed.selectedChoice()));materialization.adopt(stage);return new Root(authority,stage,facts.receipt());
+        }
+    }
 
     public Seed capture(LegacyReviewOwner review, TileFetchCoordinator coordinator, AttemptMemoryLedger.Owner memory) {
         if(!SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Original facts require EDT");
@@ -76,17 +284,17 @@ public final class LegacyRefinementBootstrap {
             var choices=new ArrayList<Candidate>();int index=0;
             for(var original:seed.original().candidates()) {
                 cancellation.checkpoint();
+                var id=new CandidateId("legacy-choice-"+index++);
+                if(original.finalPreviewPoints().size()<2)continue;
                 // Per-choice payload isolates duplicate native IDs without relabeling the native geometry.
                 var one=new AlignmentResult(seed.original().selection(),null,List.of(original),seed.original().sourcePolyline(),original.finalPreviewPoints(),List.of(),null,null,
                     seed.original().detectorAttempts().stream().filter(a->a.candidateIds().contains(original.id())).toList(),List.of(original));
                 var payload=RefinementPayload.captureOriginal(one,provenance,seed.payloadLimit());
                 var projected=original.finalPreviewPoints();
-                if(projected.size()<2)continue;
                 var points=projected.stream().map(p->{var ll=org.openstreetmap.josm.data.projection.Projections.getProjectionByCode(facts.projectionCode()).eastNorth2latlon(p);return facts.frame().toMetric(new GeographicPoint(ll.lat(),ll.lon()));}).toList();
                 var arcs=correspondence(facts,original,points);
                 var palettes=one.detectorAttempts().stream().map(DetectorAttempt::sourcePalette).distinct().toList();
                 if(palettes.size()!=1)throw new IllegalStateException("The original candidate source palette is ambiguous");
-                var id=new CandidateId("legacy-choice-"+index++);
                 choices.add(new Candidate(id,payload,arcs,facts.sourceIdentity()+"/"+id.value(),original.id(),palettes.get(0)));
             }
             var stage=Stage.root(choices,new CandidateId(seed.selectedChoice()));

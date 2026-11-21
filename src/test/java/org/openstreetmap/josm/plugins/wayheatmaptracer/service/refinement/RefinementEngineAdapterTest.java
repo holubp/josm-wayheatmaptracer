@@ -6,6 +6,29 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.*;
 class RefinementEngineAdapterTest {
+ @Test void refinedNativeMetadataKeepsTypedSlotsAndFactualReferenceRowsWithoutInventingBasis(){
+  for(var engine:List.of(TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC)) {
+   var root=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);
+   var parent=new ParentReferenceBinder().bind(root,new StageId(UUID.randomUUID()),RefinementParentFixtures.parent(root,"blue"));
+   try(var owner=AttemptMemoryLedger.production().rootOwner()) {
+    var run=new RefinementEngineAdapter(engine,"native").run(parent,root.evidence(),TraceBudgets.defaults(),CancellationProbe.NONE,owner).value();
+    for(var route:run.finalized().orElseThrow().routes()) {
+     var provenance=run.finalProvenance().get(route.hypothesis().id());
+     assertEquals(route.pointIds(),provenance.pointIds());assertEquals(route.hypothesis().points().size(),provenance.referenceChainages().size());
+     assertTrue(provenance.nativeBasis().isEmpty(),"Refined finalization never produced a native control basis");
+     assertEquals(route.quality(),provenance.quality());
+     assertEquals(run.nativeRun().orElseThrow().corridorReceipt(),provenance.corridorReceipt());
+     var nativeTrace=provenance.nativeTrace().orElseThrow();
+     assertEquals(route.rawHypothesis().id(),nativeTrace.nativeCandidateId());
+     assertEquals(route.rawHypothesis().points(),nativeTrace.points().stream().map(ModernTracePipeline.NativePoint::point).toList());
+     assertEquals(run.nativePointReferenceChainages().get(route.rawHypothesis().id()),nativeTrace.points().stream().map(ModernTracePipeline.NativePoint::referenceChainage).toList());
+     assertEquals(route.rawHypothesis().support(),nativeTrace.points().stream().map(ModernTracePipeline.NativePoint::ownership).toList());
+     assertEquals(0,provenance.referenceChainages().get(0));
+     assertEquals(parent.occurrenceChainage(parent.originalRange().lastIndex()),provenance.referenceChainages().get(provenance.referenceChainages().size()-1),1e-7);
+    }
+   }
+  }
+ }
  @Test void actualAPreciseRefinesSelectedParentAndFinalizesAgainstOriginalAuthority(){run(TrackerMode.CORRIDOR_AWARE,AlignmentMode.PRECISE_SHAPE);}
  @Test void actualAMoveRefinesSelectedParentAndAssessesExistingNodeOutput(){run(TrackerMode.CORRIDOR_AWARE,AlignmentMode.MOVE_EXISTING_NODES);}
  @Test void actualBPreciseRefinesSelectedParentAndFinalizesAgainstOriginalAuthority(){run(TrackerMode.PROBABILISTIC,AlignmentMode.PRECISE_SHAPE);}

@@ -307,15 +307,23 @@ public final class ImageCostField {
     /** Creates a deep immutable image field from already mapped scalar evidence. */
     public ImageCostField(ScalarEvidenceField field, RasterMetricTransform transform,
             MetricRegion decisionRegion, double sourcePitchMeters) {
+        this(field,transform,decisionRegion,sourcePitchMeters,null);
+    }
+    private ImageCostField(ScalarEvidenceField field,RasterMetricTransform transform,MetricRegion decisionRegion,
+            double sourcePitchMeters,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
         if (field == null || transform == null || decisionRegion == null
                 || !Double.isFinite(sourcePitchMeters) || sourcePitchMeters <= 0.0) {
             throw new IllegalArgumentException("Image cost field inputs must be complete and physical");
         }
         this.width = field.width();
         this.height = field.height();
-        this.intensity = field.copiedValues();
-        this.valid = field.copiedValidity();
-        this.interpolationValid = field.copiedInterpolationValidity();
+        if(work==null) {
+            this.intensity=field.copiedValues();this.valid=field.copiedValidity();this.interpolationValid=field.copiedInterpolationValidity();
+        } else {
+            this.intensity=new double[Math.multiplyExact(width,height)];
+            this.valid=new boolean[intensity.length];this.interpolationValid=new boolean[Math.multiplyExact(width-1,height-1)];
+            field.copyValuesInto(intensity,work);field.copyValidityInto(valid,work);field.copyInterpolationValidityInto(interpolationValid,work);
+        }
         this.scalarField = field;
         this.transform = transform;
         this.decisionRegion = decisionRegion;
@@ -330,6 +338,26 @@ public final class ImageCostField {
         }
         return new ImageCostField(evidence.fields().get(fieldName), evidence.transform(),
                 evidence.decisionRegion(), evidence.resolution().effectivePitchMeters());
+    }
+    /** Explicit opt-in admitted/cancellable image copy; existing native callers keep their old path. */
+    public static ImageCostField fromEvidence(EvidenceSnapshot evidence,String fieldName,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
+        return fromEvidence(evidence,fieldName,work,work.owner());
+    }
+    static ImageCostField fromEvidence(EvidenceSnapshot evidence,String fieldName,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner) {
+        if(evidence==null||fieldName==null||!evidence.fields().containsKey(fieldName))throw new IllegalArgumentException("Named scalar evidence is unavailable");
+        var field=evidence.fields().get(fieldName);long cells=Math.multiplyExact((long)field.width(),field.height());
+        long interpolation=Math.multiplyExact((long)field.width()-1,field.height()-1);
+        long bytes=Math.addExact(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.objectBytes(256),
+            Math.addExact(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.arrayBytes(cells,8),
+                Math.addExact(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.arrayBytes(cells,1),
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.arrayBytes(interpolation,1))));
+        try(var reservation=work.reserveOn(owner,"selected-source-image",bytes)) {
+            var result=new ImageCostField(field,evidence.transform(),evidence.decisionRegion(),evidence.resolution().effectivePitchMeters(),work);
+            reservation.adopt(result);return result;
+        }
     }
 
     /** Returns the physical source-pixel pitch used for uncertainty and trust limits. */

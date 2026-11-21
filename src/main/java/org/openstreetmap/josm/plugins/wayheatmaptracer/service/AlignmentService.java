@@ -421,7 +421,8 @@ public final class AlignmentService {
                     bounds.maxEast, bounds.maxNorth, capture.projectionUnitsPerViewPixel(),
                     effectiveSampling.samplingScale().groundMetersPerViewPixel(),
                     capture.sourceResolution().metersPerPixel(), ProjectionRegistry.getProjection().toCode(),
-                    originalReceipt));
+                    originalReceipt,java.util.OptionalDouble.of(effectiveSampling.effectiveHalfWidthGroundMeters()),
+                    java.util.OptionalDouble.of(effectiveSampling.effectiveStepGroundMeters())));
         }
         PluginLog.verbose(
             "Effective visible-layer sampling: configured halfWidth=%d px step=%d px; measured halfWidth=%.2f m "

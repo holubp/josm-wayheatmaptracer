@@ -21,8 +21,22 @@ public final class RefinementPayload {
     public record NativeReview(AlignmentEditPlan plan,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality,
             Optional<RefinementOperationReceipt> operation,List<RefinementSourcePlanner.SourceRequest> sources,
-            OptionalInt retainedParentSections) {
-        public NativeReview {sources=List.copyOf(sources);}
+            OptionalInt retainedParentSections,Map<RefinementSourcePlanner.SourceRequest,RetainedSmoothingSource> retainedSources,
+            List<RefinementPipeline.SourceSpan> sourceSpans,Optional<List<FinalRoutePointId>> finalPointIds) {
+        public NativeReview {sources=List.copyOf(sources);retainedSources=Map.copyOf(retainedSources);sourceSpans=List.copyOf(sourceSpans);
+            finalPointIds=finalPointIds.map(List::copyOf);
+            for(var entry:retainedSources.entrySet())if(!sources.contains(entry.getKey())||!entry.getKey().equals(entry.getValue().source()))
+                throw new IllegalArgumentException("Retained source differs from candidate source ownership");
+        }
+        public NativeReview(AlignmentEditPlan plan,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality,
+                Optional<RefinementOperationReceipt> operation,List<RefinementSourcePlanner.SourceRequest> sources,OptionalInt retainedParentSections,
+                Map<RefinementSourcePlanner.SourceRequest,RetainedSmoothingSource> retainedSources,List<RefinementPipeline.SourceSpan> sourceSpans) {
+            this(plan,quality,operation,sources,retainedParentSections,retainedSources,sourceSpans,Optional.empty());
+        }
+        public NativeReview(AlignmentEditPlan plan,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality,
+                Optional<RefinementOperationReceipt> operation,List<RefinementSourcePlanner.SourceRequest> sources,OptionalInt retainedParentSections) {
+            this(plan,quality,operation,sources,retainedParentSections,Map.of(),List.of());
+        }
         public NativeReview(AlignmentEditPlan plan,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality) {
             this(plan,quality,Optional.empty(),List.of(),OptionalInt.empty());
         }
@@ -42,7 +56,7 @@ public final class RefinementPayload {
         this.result = result;
         sourceNodes = List.copyOf(nodes);
         charges = measure(result);
-        nativeReview.ifPresent(review->charges.putAll(RefinementRootAuthority.detachedCharges(review)));
+        nativeReview.ifPresent(review->charges.putAll(nativeReviewCharges(review)));
         charges.put(this,96L);
         charges.put(selection.<Object>map(value->value).orElse(sourceNodes),sourceCharge(nodes.size(),selection.map(v->v.selectedNodeIds().size()).orElse(0)));
     }
@@ -102,11 +116,30 @@ public final class RefinementPayload {
         return captureNative(result,original,new NativeReview(plan,quality),maximumBytes);
     }
     public static RefinementPayload captureNative(AlignmentResult result,RefinementPayload original,NativeReview review,long maximumBytes) {
-        long bytes=add(add(sum(measure(result)),sum(RefinementRootAuthority.detachedCharges(review))),
+        long bytes=add(add(sum(measure(result)),sum(nativeReviewCharges(review))),
             sourceCharge(original.sourceNodes.size(),original.sourceSelection.map(v->v.selectedNodeIds().size()).orElse(0))+96L);
         if(maximumBytes<1||bytes>maximumBytes)throw new RefinementSession.Refused(RefusalReason.PAYLOAD_LIMIT);
         return new RefinementPayload(copy(result),original.sourceNodes,original.sourceSelection,Optional.of(review));
     }
+    /** Native materialization only: pre-admit fresh wrappers and the marginal union of factual borrowed groups. */
+    static RefinementPayload captureNative(AlignmentResult result,RefinementPayload original,NativeReview review,
+            MarginalPayloadAdmission admission,long containerMetadataBytes) {
+        if(result.capturedHeatmap()!=null||result.tileMosaics()!=null||result.candidates().stream().anyMatch(c->!c.screenPoints().isEmpty()))
+            throw new IllegalArgumentException("Native marginal materialization requires immutable projected geometry");
+        var prospective=measure(result);
+        // copy() allocates these wrappers even when their input already exists in history.
+        fresh(prospective,result);if(result.selection()!=null)fresh(prospective,result.selection());
+        var wrappers=new IdentityHashMap<Object,Boolean>();
+        for(var candidate:result.candidates())if(wrappers.put(candidate,true)==null)fresh(prospective,candidate);
+        if(!result.candidates().isEmpty())fresh(prospective,result.candidates());
+        if(!result.applicableCandidates().isEmpty()&&result.applicableCandidates()!=result.candidates())fresh(prospective,result.applicableCandidates());
+        prospective.putAll(nativeReviewCharges(review));prospective.put(new Object(),96L);
+        prospective.put(original.sourceSelection.<Object>map(value->value).orElse(original.sourceNodes),sourceCharge(original.sourceNodes.size(),original.sourceSelection.map(v->v.selectedNodeIds().size()).orElse(0)));
+        long bound=admission.require(prospective,containerMetadataBytes);prospective.clear();
+        var payload=new RefinementPayload(copy(result),original.sourceNodes,original.sourceSelection,Optional.of(review));
+        admission.admit(payload.charges(),containerMetadataBytes,bound);return payload;
+    }
+    private static void fresh(IdentityHashMap<Object,Long> inventory,Object identity){Long bytes=inventory.remove(identity);if(bytes!=null)inventory.put(new Object(),bytes);}
     /** Immutable projected final preview, without copying any retained raster for metadata export. */
     public List<org.openstreetmap.josm.data.coor.EastNorth> finalPreviewGeometry(){return result.previewPolyline();}
     public Optional<SourceSelection> sourceSelection(){return sourceSelection;}
@@ -121,10 +154,97 @@ public final class RefinementPayload {
         return result.candidates().stream().map(c->new NativeGeometry(c.id(),c.finalPreviewPoints(),c.proposedNodePositions())).toList();
     }
     public List<DetectorAttempt> detectorAttempts(){return result.detectorAttempts();}
+    private CenterlineCandidate exactCandidate(String id) {
+        CenterlineCandidate selected=null;
+        for(var candidate:result.candidates())if(candidate.id().equals(id)) {
+            if(selected!=null)throw new ParentReferenceBinder.Refused(ParentReferenceBinder.Reason.SELECTION_UNAVAILABLE);selected=candidate;
+        }
+        if(selected==null)throw new ParentReferenceBinder.Refused(ParentReferenceBinder.Reason.SELECTION_UNAVAILABLE);return selected;
+    }
+    private CenterlineCandidate exactCandidate(String id,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
+        CenterlineCandidate selected=null;
+        for(var candidate:result.candidates()) {
+            work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.BIND,1);
+            if(candidate.id().equals(id)){if(selected!=null)throw new ParentReferenceBinder.Refused(ParentReferenceBinder.Reason.SELECTION_UNAVAILABLE);selected=candidate;}
+        }
+        if(selected==null)throw new ParentReferenceBinder.Refused(ParentReferenceBinder.Reason.SELECTION_UNAVAILABLE);return selected;
+    }
+    int nativePointCount(String id){return exactCandidate(id).finalPreviewPoints().size();}
+    int nativePointCount(String id,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work){return exactCandidate(id,work).finalPreviewPoints().size();}
+    boolean hasExistingAssignment(String id,long nodeId){return exactCandidate(id).proposedNodePositions().containsKey(nodeId);}
+    /** Conservative view/hash materialization bound; no backing evidence arrays are counted again. */
+    long smoothingFactsBytes(String id) {return smoothingFactsBytes(id,null);}
+    long smoothingFactsBytes(String id,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
+        var selected=work==null?exactCandidate(id):exactCandidate(id,work);long bytes=65536L;
+        for(var finding:selected.junctionSafetyFindings()){metadataVisit(work);bytes=Math.addExact(bytes,Math.addExact(4096L,Math.multiplyExact(16L,(long)finding.reasonCode().length()+finding.geometryStage().length())));}
+        for(var warning:selected.safetyWarnings()){metadataVisit(work);bytes=Math.addExact(bytes,Math.addExact(256L,Math.multiplyExact(16L,warning.length())));}
+        for(var mode:selected.evidence().consensusModes()){metadataVisit(work);bytes=Math.addExact(bytes,Math.addExact(256L,Math.multiplyExact(16L,mode.length())));}
+        for(var reason:selected.geometryCleanup().reasons()){metadataVisit(work);bytes=Math.addExact(bytes,Math.addExact(256L,Math.multiplyExact(16L,reason.length())));}
+        for(var attempt:result.detectorAttempts()){metadataVisit(work);bytes=Math.addExact(bytes,Math.addExact(4096L,Math.multiplyExact(32L,(long)attempt.sourcePalette().length()+attempt.mappingName().length()+attempt.candidateIds().size())));}
+        if(nativeReview.isPresent())for(var span:nativeReview.get().sourceSpans()) {
+            metadataVisit(work);bytes=Math.addExact(bytes,4096L);
+            if(span.nativeProvenance().isPresent()) {
+                var p=span.nativeProvenance().get();bytes=Math.addExact(bytes,Math.multiplyExact(1024L,p.pointIds().size()));
+                if(p.nativeTrace().isPresent())bytes=Math.addExact(bytes,Math.multiplyExact(2048L,p.nativeTrace().get().points().size()));
+                if(p.corridorReceipt().isPresent())bytes=Math.addExact(bytes,Math.addExact(2_097_152L,p.corridorReceipt().get().originalCostPolicyMetadataBytes().orElse(0)));
+            }
+        }
+        return bytes;
+    }
+    private static void metadataVisit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work){if(work!=null)work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.BIND,1);}
+    static boolean detectorContains(DetectorAttempt attempt,String id,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
+        metadataVisit(work);boolean found=false;for(String candidate:attempt.candidateIds()){metadataVisit(work);if(candidate.equals(id))found=true;}return found;
+    }
+    SmoothingModels.NativeFacts smoothingFacts(String id,RetainedSmoothingSource source,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
+        var selected=exactCandidate(id,work);var request=source.source();
+        var attempts=new ArrayList<DetectorAttempt>();
+        for(var attempt:result.detectorAttempts())if(detectorContains(attempt,id,work)&&attempt.sourcePalette().equals(request.palette())&&attempt.mappingName().equals(request.mapping()))attempts.add(attempt);
+        if(attempts.isEmpty())throw new IllegalArgumentException("Selected source has no actual detector finding");
+        return new SmoothingModels.NativeFacts(source,selected.evidence(),selected.geometryCleanup(),selected.safetyWarnings(),selected.junctionSafetyFindings(),
+            source.legacyDisposition().filter(d->d.nativeCandidateId().equals(id)).map(RetainedSmoothingSource.LegacyDisposition::applicable)
+                .orElseGet(()->{boolean applicable=false;for(var candidate:result.applicableCandidates()){metadataVisit(work);if(candidate.id().equals(id))applicable=true;}return applicable;}),attempts,nativeReview.map(NativeReview::quality),
+            nativeReview.map(r->r.plan().validation().disposition()),nativeReview.map(NativeReview::sourceSpans).orElse(List.of()));
+    }
     public long retainedBytes() { return sum(charges); }
     /** Frozen original full-way coordinate/occurrence values, independent of the retained live handles. */
     public List<SourceNode> sourceNodes() { return sourceNodes; }
     Map<Object, Long> charges() { return Collections.unmodifiableMap(charges); }
+    /** Borrowed evidence keeps its acquisition's grouped scalar/mask charge, never a second array inventory. */
+    private static Map<Object,Long> nativeReviewCharges(NativeReview review) {
+        var values=new IdentityHashMap<Object,Long>();
+        values.putAll(RefinementRootAuthority.detachedCharges(review.plan(),review.quality(),review.operation(),review.sources(),review.retainedParentSections(),review.finalPointIds()));
+        values.put(review,512L);values.put(review.retainedSources(),128L+128L*review.retainedSources().size());
+        values.put(review.sourceSpans(),128L+32L*review.sourceSpans().size());
+        review.retainedSources().values().forEach(source->values.putAll(source.charges()));
+        for(var span:review.sourceSpans()) {
+            values.put(span,256L);values.putAll(RefinementRootAuthority.detachedCharges(span.source(),span.span()));
+            span.nativeProvenance().ifPresent(provenance->{
+                values.put(provenance,256L);
+                values.putAll(RefinementRootAuthority.detachedCharges(provenance.pointIds(),provenance.referenceChainages(),provenance.quality(),provenance.nativeTrace()));
+                provenance.nativeBasis().ifPresent(basis->values.put(basis,basis.scratchReservationBytes()));
+                provenance.corridorReceipt().ifPresent(receipt->{
+                    // Bounded native record (<=512 track rows), including its factual policy map.
+                    long bytes=Math.addExact(1_048_576L,receipt.originalCostPolicyMetadataBytes().orElse(0));
+                    values.put(receipt,bytes);
+                });
+            });
+        }
+        return values;
+    }
+    /** Acquire already-admitted raster/descriptor identities before worker ownership settles. */
+    void retainSmoothingSources( org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner destination) {
+        nativeReview.ifPresent(review->review.retainedSources().values().forEach(source->source.retainInto(destination)));
+    }
+    /** Newly published metadata excludes the separately co-owned acquisition identities. */
+    long publicationBytes() {
+        return sum(publicationCharges());
+    }
+    Map<Object,Long> publicationCharges() {
+        var borrowed=new IdentityHashMap<Object,Long>();
+        nativeReview.ifPresent(review->review.retainedSources().values().forEach(source->borrowed.putAll(source.charges())));
+        var allocated=new IdentityHashMap<Object,Long>(charges);
+        borrowed.keySet().forEach(allocated::remove);return Collections.unmodifiableMap(allocated);
+    }
     static long add(long left, long right) {
         if (left < 0 || right < 0 || left > Long.MAX_VALUE - right) return Long.MAX_VALUE;
         return left + right;

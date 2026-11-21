@@ -31,11 +31,19 @@ public final class RefinementEngineAdapter {
     public record Run(ParentTraceReference reference,TraceRequest request,Optional<NativeExecution> execution,
             Optional<TraceEngineRun> nativeRun,Optional<ModernTracePipeline.Result> finalized,
             Map<String,List<Double>> nativePointReferenceChainages,Map<String,List<RefinementModels.ParentArc>> finalCorrespondence,
-            int nativeCalls,Optional<ParentTraceReference.Unavailable> unavailable,RefinementModels.Outcome outcome) {
+            int nativeCalls,Optional<ParentTraceReference.Unavailable> unavailable,RefinementModels.Outcome outcome,
+            Map<String,ModernTracePipeline.FinalProvenance> finalProvenance) {
+        public Run(ParentTraceReference reference,TraceRequest request,Optional<NativeExecution> execution,
+                Optional<TraceEngineRun> nativeRun,Optional<ModernTracePipeline.Result> finalized,
+                Map<String,List<Double>> nativePointReferenceChainages,Map<String,List<RefinementModels.ParentArc>> finalCorrespondence,
+                int nativeCalls,Optional<ParentTraceReference.Unavailable> unavailable,RefinementModels.Outcome outcome) {
+            this(reference,request,execution,nativeRun,finalized,nativePointReferenceChainages,finalCorrespondence,nativeCalls,unavailable,outcome,Map.of());
+        }
         public Run {
             Objects.requireNonNull(reference);Objects.requireNonNull(nativeRun);Objects.requireNonNull(finalized);
             Objects.requireNonNull(unavailable);Objects.requireNonNull(execution);Objects.requireNonNull(outcome);
             nativePointReferenceChainages=Map.copyOf(nativePointReferenceChainages);finalCorrespondence=Map.copyOf(finalCorrespondence);
+            finalProvenance=Map.copyOf(finalProvenance);
             if(nativeCalls<0||nativeCalls>1||(nativeRun.isPresent()&&nativeCalls!=1)||execution.isPresent()!=nativeRun.isPresent())
                 throw new IllegalArgumentException("Native call availability differs");
         }
@@ -113,7 +121,7 @@ public final class RefinementEngineAdapter {
                 parent.root().network(),options,execution,cancellation);
             var result=new Run(parent,request,Optional.of(execution),Optional.of(nativeAccount.value()),Optional.of(finalized.result()),
                 finalized.nativePointReferenceChainages(),finalized.finalCorrespondence(),1,Optional.empty(),
-                finalized.result().routes().isEmpty()?RefinementModels.Outcome.NO_USABLE_RESULT:RefinementModels.Outcome.COMPLETE);
+                finalized.result().routes().isEmpty()?RefinementModels.Outcome.NO_USABLE_RESULT:RefinementModels.Outcome.COMPLETE,finalized.finalProvenance());
             finalization.adopt(result);
             return new Accounted<>(result,invocation);
         } catch(ParentTraceReference.UnavailableException unavailable) {

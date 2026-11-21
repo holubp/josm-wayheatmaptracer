@@ -18,22 +18,29 @@ public final class RefinementPipeline {
         EvidenceSnapshot evidence(RefinementSourcePlanner.SourceRequest source,CancellationProbe cancellation);
         default Optional<ManagedModernPreviewSource.RefinementWorkReceipt> actualSourceWork(){return Optional.empty();}
         default Optional<RefinementSourcePlanner.Plan> binding(){return Optional.empty();}
+        default Optional<RetainedSmoothingSource> retentionDescriptor(RefinementSourcePlanner.SourceRequest source,EvidenceSnapshot evidence){return Optional.empty();}
     }
     /** Uses the coordinator-sealed source generation, acquisition outcomes and factual work receipt. */
     public static Sources managedSources(RefinementAcquisition.Capture capture,TileFetchCoordinator coordinator) {
+        return managedSources(capture,coordinator,null);
+    }
+    /** Caller-owned auxiliary hashing shares this operation's actual final deadline and attempt ledger. */
+    public static Sources managedSources(RefinementAcquisition.Capture capture,TileFetchCoordinator coordinator,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext hashWork) {
         return new Sources() {
             public void requireCurrent(){if(!capture.isCurrent(coordinator))throw new IllegalStateException("Refinement source invalidated");}
             public EvidenceSnapshot evidence(RefinementSourcePlanner.SourceRequest source,CancellationProbe cancellation) {
                 requireCurrent();
                 if(source.aggregate()) {
                     if(!capture.completeAggregate())throw new SourceUnavailable();
-                    return capture.aggregateEvidence(cancellation);
+                    return capture.aggregateEvidence(cancellation,hashWork);
                 }
                 if(!capture.palettes().contains(source.palette()))throw new SourceUnavailable();
-                return source.mapping().equals(source.palette())?capture.evidence(source.palette(),cancellation):capture.mappingEvidence(source.mapping(),cancellation);
+                return source.mapping().equals(source.palette())?capture.evidence(source.palette(),cancellation,hashWork):capture.mappingEvidence(source.mapping(),cancellation,hashWork);
             }
             public Optional<ManagedModernPreviewSource.RefinementWorkReceipt> actualSourceWork(){return Optional.of(capture.workReceipt());}
             public Optional<RefinementSourcePlanner.Plan> binding(){return Optional.of(capture.plan());}
+            public Optional<RetainedSmoothingSource> retentionDescriptor(RefinementSourcePlanner.SourceRequest source,EvidenceSnapshot evidence){return Optional.of(capture.retentionDescriptor(source,evidence));}
         };
     }
     /** Each supplied mapping keeps its captured visible-layer epoch; it cannot supply other palettes. */
@@ -48,9 +55,26 @@ public final class RefinementPipeline {
                 if(source.aggregate()||capture==null)throw new SourceUnavailable();return capture.evidence();
             }
             public Optional<RefinementSourcePlanner.Plan> binding(){return Optional.of(plans.get(0));}
+            public Optional<RetainedSmoothingSource> retentionDescriptor(RefinementSourcePlanner.SourceRequest source,EvidenceSnapshot evidence){
+                var capture=frozen.get(source.mapping());return capture==null?Optional.empty():Optional.of(capture.retentionDescriptor(source,evidence));
+            }
         };
     }
     public static final class SourceUnavailable extends IllegalStateException { }
+    static final class SourcePreparationFailure extends IllegalStateException {
+        final Outcome outcome;
+        // This typed ledger exception contains only its original numeric refusal, never capture/source objects.
+        final AttemptMemoryLedger.ResourceLimitException memoryRefusal;
+        SourcePreparationFailure(Outcome outcome,RuntimeException failure){this.outcome=outcome;memoryRefusal=failure instanceof SourcePreparationFailure prepared?prepared.memoryRefusal:failure instanceof AttemptMemoryLedger.ResourceLimitException limited?limited:null;}
+    }
+    static Outcome sourcePreparationFailure(RuntimeException failure,Sources sources,CancellationProbe cancellation) {
+        if(failure instanceof SourcePreparationFailure prepared)return prepared.outcome;
+        try{sources.requireCurrent();}catch(CancellationException cancelled){return Outcome.CANCELLED;}catch(RuntimeException stale){return Outcome.STALE;}
+        try{cancellation.checkpoint();}catch(CancellationException cancelled){return Outcome.CANCELLED;}
+        if(failure instanceof DeadlineReached||failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached||failure instanceof AttemptMemoryLedger.ResourceLimitException)return Outcome.RESOURCE_LIMIT;
+        return failure instanceof CancellationException?Outcome.CANCELLED:Outcome.FAILED;
+    }
+    static String sourcePreparationReason(Outcome outcome){return switch(outcome){case RESOURCE_LIMIT->"source-preparation-resource-limit";case CANCELLED->"source-preparation-cancelled";case STALE->"source-preparation-stale";default->"source-preparation-failed";};}
     @FunctionalInterface public interface NativeRunner {
         RefinementEngineAdapter.Run run(OperationTicket ticket,ParentTraceReference parent,EvidenceSnapshot evidence,
             TraceBudgets remaining,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner);
@@ -70,8 +94,14 @@ public final class RefinementPipeline {
             return run.isPresent()?OptionalInt.of(run.get().nativeCalls()):kind==AttemptKind.WHOLE||kind==AttemptKind.INTERVAL?OptionalInt.empty():OptionalInt.of(0);
         }
     }
-    public record Retained(ParentBackedComposer.Assessed assessed,List<RefinementSourcePlanner.SourceRequest> sources) {
-        public Retained {Objects.requireNonNull(assessed);sources=List.copyOf(sources);}
+    public record SourceSpan(RefinementSourcePlanner.SourceRequest source,ParentBackedComposer.Span span,
+            Optional<ModernTracePipeline.FinalProvenance> nativeProvenance) {
+        public SourceSpan {Objects.requireNonNull(source);Objects.requireNonNull(span);Objects.requireNonNull(nativeProvenance);}
+    }
+    public record Retained(ParentBackedComposer.Assessed assessed,List<RefinementSourcePlanner.SourceRequest> sources,
+            Map<RefinementSourcePlanner.SourceRequest,RetainedSmoothingSource> retainedSources,List<SourceSpan> sourceSpans) {
+        public Retained(ParentBackedComposer.Assessed assessed,List<RefinementSourcePlanner.SourceRequest> sources){this(assessed,sources,Map.of(),List.of());}
+        public Retained {Objects.requireNonNull(assessed);sources=List.copyOf(sources);retainedSources=Map.copyOf(retainedSources);sourceSpans=List.copyOf(sourceSpans);}
     }
     public record SourceOutcome(RefinementSourcePlanner.SourceRequest source,List<ParentBackedComposer.Assessed> assessments,List<Attempt> attempts) {
         public SourceOutcome {Objects.requireNonNull(source);assessments=List.copyOf(assessments);attempts=List.copyOf(attempts);}
@@ -94,6 +124,8 @@ public final class RefinementPipeline {
             started=clock.getAsLong();duration=durationNanos;reserve=finalReserveNanos;
         }
         public static OperationBudget production(TraceBudgets maximum) {return new OperationBudget(maximum,System::nanoTime,300_000_000_000L,5_000_000_000L);}
+        /** Absolute final deadline in the supplied clock's units; production uses System.nanoTime. */
+        public long finalDeadlineNanos(){return Math.addExact(started,duration);}
         private void claim(TraceBudgets root) {
             if(claimed||maximum.maximumStatesPerProfile()!=root.maximumStatesPerProfile()||maximum.maximumPairVisits()>root.maximumPairVisits()
                 ||maximum.maximumTransitions()>root.maximumTransitions()||maximum.maximumRawAlternatives()>root.maximumRawAlternatives()
@@ -157,6 +189,8 @@ public final class RefinementPipeline {
         var attempts=new ArrayList<Attempt>();var completed=new ArrayList<SourceCandidates>();var rejected=new ArrayList<ParentBackedComposer.Assessed>();
         var intervals=new RefinementIntervalPlanner().plan(parent);var composer=new ParentBackedComposer();
         var assessedBySource=new LinkedHashMap<RefinementSourcePlanner.SourceRequest,List<ParentBackedComposer.Assessed>>();
+        var retainedSources=new LinkedHashMap<RefinementSourcePlanner.SourceRequest,RetainedSmoothingSource>();
+        var spanProvenance=new IdentityHashMap<ParentBackedComposer.Assessed,List<Optional<ModernTracePipeline.FinalProvenance>>>();
         long fallbackCalls=intervals.stream().filter(i->i.eligible()&&!i.range().equals(parent.originalRange())).count();
         var owner=adapters.owner().child("refinement-operation");AttemptMemoryLedger.Reservation retained=null;
         Outcome outcome=Outcome.COMPLETE;boolean stopped=false,partial=false;int sourceIndex=0;
@@ -181,7 +215,13 @@ public final class RefinementPipeline {
                 admissionGate=PipelineAdmissionObserver.Gate.SCALAR_PREPARATION;observedEvidence=null;
                 try{evidence=adapters.sources().evidence(source,finalProbe);}
                 catch(SourceUnavailable unavailable){attempts.add(new Attempt(source,AttemptKind.UNAVAILABLE,parent.originalRange(),Optional.empty(),"source-unavailable"));partial=true;continue;}
+                catch(RuntimeException failure){
+                    var failed=sourcePreparationFailure(failure,adapters.sources(),cancellation);var prepared=new SourcePreparationFailure(failed,failure);
+                    if(admissionObserver!=null&&admissionGate!=null&&prepared.memoryRefusal!=null)admissionObserver.memory(ticket,admissionGate,parent,intervals.size(),vertices,observedEvidence,prepared.memoryRefusal);
+                    attempts.add(new Attempt(source,AttemptKind.UNAVAILABLE,parent.originalRange(),Optional.empty(),sourcePreparationReason(failed)));throw prepared;
+                }
                 observedEvidence=evidence;
+                adapters.sources().retentionDescriptor(source,evidence).ifPresent(value->retainedSources.put(source,value));
                 finalProbe.checkpoint();
                 // One reusable assessment/export scratch reservation. 65,536 cached scalar rows
                 // and local-window rows, 2,048 directed supports (bounded by edit-region diameter),
@@ -197,6 +237,7 @@ public final class RefinementPipeline {
                     if(whole.finalized().isPresent())for(var route:whole.finalized().get().routes()) {
                         var choice=choice(whole,route,source);
                         var assessed=assess(composer,parent,List.of(choice),List.of(route),evidence,finalProbe,identity(ticket,source,"whole",candidates.size()+rejected.size()));
+                        spanProvenance.put(assessed,List.of(Optional.ofNullable(whole.finalProvenance().get(route.hypothesis().id()))));
                         sourceAssessments.add(assessed);
                         if(usable(assessed))candidates.add(assessed);else rejected.add(assessed);
                     }
@@ -219,11 +260,12 @@ public final class RefinementPipeline {
                         if(local.outcome()==Outcome.RESOURCE_LIMIT){stopped=true;outcome=Outcome.RESOURCE_LIMIT;partial=true;continue;}
                         var usable=local.finalized().stream().flatMap(r->r.routes().stream()).filter(r->r.quality().disposition()!=FinalGeometryEvaluator.Disposition.HARD_BLOCKED).toList();
                         if(usable.isEmpty()){partial=true;continue;}
-                        selected.add(new Selected(choice(local,usable.get(0),source),usable.get(0)));
-                        for(int i=1;i<usable.size();i++)alternatives.add(new Selected(choice(local,usable.get(i),source),usable.get(i)));
+                        selected.add(new Selected(choice(local,usable.get(0),source),usable.get(0),Optional.ofNullable(local.finalProvenance().get(usable.get(0).hypothesis().id()))));
+                        for(int i=1;i<usable.size();i++)alternatives.add(new Selected(choice(local,usable.get(i),source),usable.get(i),Optional.ofNullable(local.finalProvenance().get(usable.get(i).hypothesis().id()))));
                     }
                     if(!selected.isEmpty()) {
                         var primary=assess(composer,parent,selected.stream().map(Selected::choice).toList(),selected.stream().map(Selected::route).toList(),evidence,finalProbe,identity(ticket,source,"assembled",0));
+                        spanProvenance.put(primary,selected.stream().map(Selected::provenance).toList());
                         sourceAssessments.add(primary);
                         if(usable(primary))candidates.add(primary);else rejected.add(primary);
                         // Each extra changes one interval of the primary. No palette/interval product.
@@ -232,6 +274,7 @@ public final class RefinementPipeline {
                             var single=new ArrayList<>(selected);
                             for(int i=0;i<single.size();i++)if(single.get(i).choice().reference().originalRange().equals(alternative.choice().reference().originalRange()))single.set(i,alternative);
                             var assessed=assess(composer,parent,single.stream().map(Selected::choice).toList(),single.stream().map(Selected::route).toList(),evidence,finalProbe,identity(ticket,source,"single-interval",candidates.size()+rejected.size()));
+                            spanProvenance.put(assessed,single.stream().map(Selected::provenance).toList());
                             sourceAssessments.add(assessed);
                             if(usable(assessed))candidates.add(assessed);else rejected.add(assessed);
                         }
@@ -240,13 +283,15 @@ public final class RefinementPipeline {
                 }
             }
             finalProbe.checkpoint();
-        } catch(DeadlineReached limited) {outcome=Outcome.RESOURCE_LIMIT;stopped=true;}
+        } catch(SourcePreparationFailure failure){outcome=failure.outcome;stopped=true;}
+        catch(DeadlineReached limited) {outcome=Outcome.RESOURCE_LIMIT;stopped=true;}
         catch(SourceInvalid stale){outcome=Outcome.STALE;stopped=true;}
         catch(CancellationException cancelled){outcome=Outcome.CANCELLED;stopped=true;}
         catch(AttemptMemoryLedger.ResourceLimitException limited){
             if(admissionObserver!=null&&admissionGate!=null)admissionObserver.memory(ticket,admissionGate,parent,intervals.size(),vertices,observedEvidence,limited);
             outcome=Outcome.RESOURCE_LIMIT;stopped=true;
         }
+        catch(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached limited){outcome=Outcome.RESOURCE_LIMIT;stopped=true;}
         catch(UnknownWork unavailable){outcome=Outcome.FAILED;stopped=true;}
         catch(RuntimeException invalid){outcome=Outcome.FAILED;stopped=true;}
         if(outcome==Outcome.RESOURCE_LIMIT&&admissionObserver!=null&&budget.expiredGate!=null)
@@ -257,6 +302,22 @@ public final class RefinementPipeline {
             if(!already)attempts.add(unattempted(source,parent.originalRange(),"operation-aborted"));
         }
         var retainedCandidates=retain(completed,ticket.engine(),sourcePlan.requests());
+        retainedCandidates=retainedCandidates.stream().map(candidate->{
+            var bound=new LinkedHashMap<RefinementSourcePlanner.SourceRequest,RetainedSmoothingSource>();
+            var spans=new ArrayList<SourceSpan>();
+            for(var source:candidate.sources()) {
+                if(retainedSources.containsKey(source))bound.put(source,retainedSources.get(source));
+                var actual=assessedBySource.getOrDefault(source,List.of()).stream().filter(value->value.candidate().points().equals(candidate.assessed().candidate().points())
+                    &&value.quality().disposition()==candidate.assessed().quality().disposition()&&value.quality().findings().equals(candidate.assessed().quality().findings())
+                    &&value.topologyFindings().equals(candidate.assessed().topologyFindings())).findFirst().orElseThrow();
+                int nativeIndex=0;var nativeValues=spanProvenance.getOrDefault(actual,List.of());
+                for(var span:actual.candidate().spans()) {
+                    var provenance=span.parentRetained()?Optional.<ModernTracePipeline.FinalProvenance>empty():nativeValues.get(nativeIndex++);
+                    spans.add(new SourceSpan(source,span,provenance));
+                }
+            }
+            return new Retained(candidate.assessed(),candidate.sources(),bound,spans);
+        }).toList();
         if(budget.unknown||outcome==Outcome.CANCELLED||outcome==Outcome.STALE||outcome==Outcome.FAILED)retainedCandidates=List.of();
         if(outcome==Outcome.COMPLETE)outcome=retainedCandidates.isEmpty()?Outcome.NO_USABLE_RESULT:partial?Outcome.PARTIAL:Outcome.COMPLETE;
         var sourceOutcomes=sourcePlan.requests().stream().map(s->new SourceOutcome(s,assessedBySource.getOrDefault(s,List.of()),attempts.stream().filter(a->a.source().equals(s)).toList())).toList();
@@ -267,7 +328,7 @@ public final class RefinementPipeline {
         return result;
     }
     private record SourceCandidates(RefinementSourcePlanner.SourceRequest source,List<ParentBackedComposer.Assessed> candidates) { }
-    private record Selected(ParentBackedComposer.Choice choice,ModernTracePipeline.Route route) { }
+    private record Selected(ParentBackedComposer.Choice choice,ModernTracePipeline.Route route,Optional<ModernTracePipeline.FinalProvenance> provenance) { }
     private static final class UnknownWork extends IllegalStateException { }
     private static void requireCurrent(Sources sources){try{sources.requireCurrent();}catch(RuntimeException invalid){throw new SourceInvalid();}}
     private static Attempt unattempted(RefinementSourcePlanner.SourceRequest source,OccurrenceRange range,String reason){return new Attempt(source,AttemptKind.UNATTEMPTED,range,Optional.empty(),reason);}

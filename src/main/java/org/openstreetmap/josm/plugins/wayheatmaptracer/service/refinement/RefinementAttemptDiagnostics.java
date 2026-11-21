@@ -6,7 +6,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 
 /** Latest current-owned attempt facts. No raster, request, mutable primitive or exception text is retained. */
 public record RefinementAttemptDiagnostics(Binding binding, Optional<RefinementOperationReceipt> pipeline,
-        Publication publication, Phase phase, Cause cause, int materializationRefusals, boolean materializationComplete) {
+        Publication publication, Phase phase, Cause cause, int materializationRefusals, boolean materializationComplete,
+        Optional<SourcePreparationWork> sourcePreparation) {
+    public RefinementAttemptDiagnostics(Binding binding,Optional<RefinementOperationReceipt> pipeline,Publication publication,
+            Phase phase,Cause cause,int refusals,boolean complete){this(binding,pipeline,publication,phase,cause,refusals,complete,Optional.empty());}
     /** Compatibility constructor: the supplied count is a completed observation. */
     public RefinementAttemptDiagnostics(Binding binding, Optional<RefinementOperationReceipt> pipeline,
             Publication publication, Phase phase, Cause cause, int materializationRefusals) {
@@ -15,8 +18,24 @@ public record RefinementAttemptDiagnostics(Binding binding, Optional<RefinementO
     // An incomplete count records only stable observations, never a measured final zero.
     public enum Availability { NONE, RUNNING, AVAILABLE, UNAVAILABLE_BUDGET }
     public enum Publication { PUBLISHED, NO_CHILD, CANCELLED, STALE, REFUSED, FAILED }
-    public enum Phase { PREPARATION, ACQUISITION, PIPELINE, MATERIALIZATION, PUBLICATION }
+    public enum Phase { PREPARATION, ACQUISITION, SOURCE_PREPARATION, PIPELINE, MATERIALIZATION, PUBLICATION }
     public enum Cause { NONE, NO_USABLE_RESULT, PLAN_REFUSED, CANCELLED, STALE, RESOURCE_LIMIT, FAILED, PUBLICATION_REFUSED, PRESENTATION_FAILED }
+    /** Fixed-size observed auxiliary work. NONE means no source-preparation failure was observed, not that every source ran. */
+    public record SourcePreparationWork(Cause cause,long visits,
+            Map<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind,Long> counters,
+            Optional<RefinementSourcePlanner.SourceRequest> failedSource,Optional<NativeWork> nativeWork) {
+        public SourcePreparationWork {
+            Objects.requireNonNull(cause);Objects.requireNonNull(failedSource);Objects.requireNonNull(nativeWork);counters=Map.copyOf(counters);
+            if(!Set.of(Cause.NONE,Cause.RESOURCE_LIMIT,Cause.CANCELLED,Cause.STALE,Cause.FAILED).contains(cause)||visits<0||visits>8_000_000L
+                    ||counters.size()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values().length
+                    ||(cause==Cause.NONE)!=failedSource.isEmpty())throw new IllegalArgumentException("Invalid auxiliary source work");
+            long sum=0;for(var kind:org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values()) {var count=counters.get(kind);if(count==null||count<0)throw new IllegalArgumentException("Invalid auxiliary counter");sum=Math.addExact(sum,count);}if(sum!=visits)throw new IllegalArgumentException("Auxiliary counter sum differs");
+        }
+    }
+    public record NativeWork(Outcome outcome,Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage> actualWork,OptionalInt nativeCalls) {
+        public NativeWork {Objects.requireNonNull(outcome);Objects.requireNonNull(actualWork);Objects.requireNonNull(nativeCalls);if(nativeCalls.orElse(0)<0)throw new IllegalArgumentException("Negative native calls");}
+        static NativeWork capture(RefinementPipeline.Result result){int calls=0;boolean known=true;for(var attempt:result.attempts()){var count=attempt.nativeCallAvailability();if(count.isEmpty())known=false;else calls=Math.addExact(calls,count.getAsInt());}return new NativeWork(result.outcome(),result.actualWork(),known?OptionalInt.of(calls):OptionalInt.empty());}
+    }
     public record Binding(OperationTicket ticket, StageId rootStage, String rootSourceIdentity,
             String originalNetworkHash, String rootParameterHash, String frozenGeometryIdentity, String parentIdentity) {
         public Binding {
@@ -26,7 +45,7 @@ public record RefinementAttemptDiagnostics(Binding binding, Optional<RefinementO
         }
     }
     public RefinementAttemptDiagnostics {
-        Objects.requireNonNull(binding);Objects.requireNonNull(pipeline);Objects.requireNonNull(publication);Objects.requireNonNull(phase);Objects.requireNonNull(cause);
+        Objects.requireNonNull(binding);Objects.requireNonNull(pipeline);Objects.requireNonNull(publication);Objects.requireNonNull(phase);Objects.requireNonNull(cause);Objects.requireNonNull(sourcePreparation);
         if(materializationRefusals<0)throw new IllegalArgumentException("Negative observed refusal count");
         pipeline.ifPresent(receipt->{if(!receipt.ticket().equals(binding.ticket())||!receipt.parentIdentity().equals(binding.parentIdentity())
             ||!receipt.originalNetworkHash().equals(binding.originalNetworkHash()))throw new IllegalArgumentException("Attempt receipt binding differs");});
@@ -64,7 +83,7 @@ public record RefinementAttemptDiagnostics(Binding binding, Optional<RefinementO
             return Optional.of(RefinementOperationReceipt.capture(binding.ticket(),parent,result));
         }
         boolean retain(RefinementAttemptDiagnostics value) {
-            if(unavailable)return false;
+            // A full receipt may exceed the slot while the bounded core/auxiliary summary still fits.
             long total=0;
             for(long charge:RefinementRootAuthority.detachedCharges(value).values())total=add(total,charge);
             if(total>bytes){unavailable=true;return false;}

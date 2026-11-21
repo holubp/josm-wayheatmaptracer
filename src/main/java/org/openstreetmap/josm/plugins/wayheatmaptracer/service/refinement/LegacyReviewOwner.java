@@ -126,6 +126,8 @@ public final class LegacyReviewOwner implements AutoCloseable {
     /** Thread-safe invalidation probe; never traverses live dataset primitives. */
     public boolean invalidated() { return changed.get() || settingsChanged.get(); }
     public AlignmentConfig originalConfig() { requireOpen(); return config; }
+    /** Original capture metadata only; obtaining it performs no optional pixel work. */
+    public LegacyVisibleSource originalVisibleSource(){requireOpen();return source;}
     /** Requires original facts before lazy capture; this check never refreshes authority. */
     public void requireOriginalAttemptCurrent() {
         requireOpen();
@@ -163,6 +165,13 @@ public final class LegacyReviewOwner implements AutoCloseable {
         var frozen = source.freeze(result.capturedHeatmap(), sourceIdentity);
         requireOriginalAttemptCurrent();
         return frozen;
+    }
+    /** Explicit optional preparation. Ordinary Legacy Confirm/Apply never enters this overload. */
+    LegacyVisibleSource.SmoothingRaster freezeVisibleSource(String sourceIdentity,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
+        requireOriginalAttemptCurrent();
+        if(result==null||source==null)throw new IllegalStateException("Original visible capture is unavailable");
+        var frozen=source.freeze(result.capturedHeatmap(),sourceIdentity,work);requireOriginalAttemptCurrent();return frozen;
     }
     @Override public void close() {
         requireEdt();

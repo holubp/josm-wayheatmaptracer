@@ -360,11 +360,38 @@ public final class ModernTracePipeline {
     }
 
     /** Final production reconstruction from one factual native run and its exact parent reference rows. */
+    /** Factual ordered native row, not an independent-control DOF or a reconstructed final-slot alias. */
+    public record NativePoint(int index,MetricPoint point,double referenceChainage,ObservationOwnership ownership) {
+        public NativePoint {if(index<0||point==null||!Double.isFinite(referenceChainage)||ownership==null)throw new IllegalArgumentException("Native row metadata is incomplete");}
+    }
+    public record NativeTrace(String nativeCandidateId,List<NativePoint> points) {
+        public NativeTrace {if(nativeCandidateId==null||nativeCandidateId.isBlank())throw new IllegalArgumentException("Native candidate identity required");points=List.copyOf(points);
+            for(int i=0;i<points.size();i++)if(points.get(i).index()!=i)throw new IllegalArgumentException("Native rows must preserve their actual index order");}
+    }
+    public record FinalProvenance(java.util.Optional<FinalControlBasis> nativeBasis,
+            List<FinalRoutePointId> pointIds, List<Double> referenceChainages,
+            FinalGeometryEvaluator.Result quality, java.util.Optional<CorridorExecutionReceipt> corridorReceipt,java.util.Optional<NativeTrace> nativeTrace) {
+        public FinalProvenance(java.util.Optional<FinalControlBasis> nativeBasis,List<FinalRoutePointId> pointIds,List<Double> referenceChainages,
+                FinalGeometryEvaluator.Result quality,java.util.Optional<CorridorExecutionReceipt> corridorReceipt){this(nativeBasis,pointIds,referenceChainages,quality,corridorReceipt,java.util.Optional.empty());}
+        public FinalProvenance {
+            java.util.Objects.requireNonNull(nativeBasis);java.util.Objects.requireNonNull(quality);
+            java.util.Objects.requireNonNull(corridorReceipt);
+            java.util.Objects.requireNonNull(nativeTrace);
+            pointIds=List.copyOf(pointIds);referenceChainages=List.copyOf(referenceChainages);
+            if(pointIds.size()!=referenceChainages.size())throw new IllegalArgumentException("Final provenance slot count differs");
+        }
+    }
     public record RefinedFinalization(Result result, Map<String,List<Double>> nativePointReferenceChainages,
-            Map<String,List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.ParentArc>> finalCorrespondence) {
+            Map<String,List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.ParentArc>> finalCorrespondence,
+            Map<String,FinalProvenance> finalProvenance) {
+        public RefinedFinalization(Result result,Map<String,List<Double>> nativePointReferenceChainages,
+                Map<String,List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.ParentArc>> finalCorrespondence) {
+            this(result,nativePointReferenceChainages,finalCorrespondence,Map.of());
+        }
         public RefinedFinalization {
             nativePointReferenceChainages=Map.copyOf(nativePointReferenceChainages);
             finalCorrespondence=Map.copyOf(finalCorrespondence);
+            finalProvenance=Map.copyOf(finalProvenance);
         }
     }
 
@@ -384,10 +411,14 @@ public final class ModernTracePipeline {
         var image=new ImageCostField(field,evidence.transform(),evidence.decisionRegion(),evidence.resolution().effectivePitchMeters());
         var routes=new ArrayList<Route>();var rows=new LinkedHashMap<String,List<Double>>();
         var mappings=new LinkedHashMap<String,List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.ParentArc>>();
+        var provenance=new LinkedHashMap<String,FinalProvenance>();
         var way=(DetachedWay)network.primitives().get(request.selectedWayKey());
         for(var raw:nativeRun.result().hypotheses()) {
             cancellation.checkpoint();
             List<Double> nativeChainages=referenceRows(raw,request,nativeRun);
+            var nativePoints=new ArrayList<NativePoint>();
+            for(int i=0;i<raw.points().size();i++)nativePoints.add(new NativePoint(i,raw.points().get(i),nativeChainages.get(i),raw.support().get(i)));
+            var nativeTrace=new NativeTrace(raw.id(),nativePoints);
             rows.put(raw.id(),nativeChainages);
             var entries=new ArrayList<SeedEntry>();
             String scope=raw.id()+"/"+request.parameterHash();
@@ -437,6 +468,9 @@ public final class ModernTracePipeline {
             routes.add(new Route(raw,finalHypothesis,ids,assignments,ownership,quality,ImageSupportedLocalCleanup.Status.UNCHANGED,!points.equals(raw.points())));
             var arcs=new ArrayList<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.ParentArc>();
             var outputRows=finalEntries.stream().map(SeedEntry::fraction).toList();
+            // This path never built ControlProvenance. Preserve honest absence, including A;
+            // typed slot/reference metadata is factual but is not a native-control basis.
+            provenance.put(raw.id(),new FinalProvenance(java.util.Optional.empty(),ids,outputRows,quality,nativeRun.corridorReceipt(),java.util.Optional.of(nativeTrace)));
             for(int occurrence=request.selectedRange().firstIndex();occurrence<=request.selectedRange().lastIndex();occurrence++) {
                 double s=parent.occurrenceChainage(occurrence);int edge=referenceEdge(outputRows,s);
                 double f=(s-outputRows.get(edge))/(outputRows.get(edge+1)-outputRows.get(edge));
@@ -445,7 +479,7 @@ public final class ModernTracePipeline {
             }
             mappings.put(raw.id(),List.copyOf(arcs));
         }
-        return new RefinedFinalization(new Result(nativeRun.result(),rankRoutes(routes,request.engine(),options)),rows,mappings);
+        return new RefinedFinalization(new Result(nativeRun.result(),rankRoutes(routes,request.engine(),options)),rows,mappings,provenance);
     }
 
     /** Native row correspondence is factual: prepared A schedules are never replaced by output arc length. */

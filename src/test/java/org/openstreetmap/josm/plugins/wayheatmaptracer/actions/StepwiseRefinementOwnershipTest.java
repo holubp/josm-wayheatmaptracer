@@ -33,6 +33,32 @@ class StepwiseRefinementOwnershipTest {
     }
     @Test void sameWayAndConfigSupersessionWaitsForActualLateResultDiscard() throws Exception {exercise(false);}
     @Test void ignoredInterruptCannotReleaseNativeInputPinsBeforeWorkerAndQueuedCleanup() throws Exception {exercise(true);}
+    @Test void comboChoiceSelectionPinsAdmittedMetadataForTheNextRefinement() throws Exception {selectedInputPin(false);}
+    @Test void sameChoiceSelectionPinsAdmittedMetadataForTheNextRefinement() throws Exception {selectedInputPin(true);}
+    private void selectedInputPin(boolean sameChoice) throws Exception {
+        var decoder=new TileDecoderClassifier();
+        try(var coordinator=new TileFetchCoordinator((request,credentials)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",ridge(request.address()),null,Duration.ZERO,""),new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults());
+            var session=new PreviewSessionController<LiveBPreviewService.Computed>(SwingUtilities::invokeLater)) {
+            var work=new LinkedBlockingQueue<Runnable>();var publications=new LinkedBlockingQueue<Runnable>();var state=new Fixture[1];var nativeCalls=new AtomicInteger();
+            try {
+                SwingUtilities.invokeAndWait(()->{state[0]=fixture(coordinator,session,work,publications,new AtomicInteger());((JButton)find(state[0].workflow.controls(),"refineA")).doClick();});
+                work.remove().run();SwingUtilities.invokeAndWait(publications.remove());work.remove().run();SwingUtilities.invokeAndWait(publications.remove());
+                SwingUtilities.invokeAndWait(()->{
+                    var f=state[0];assertTrue(f.workflow.nativeSelected());var old=f.workflow.currentStage();nativeCalls.set(f.workflow.actualNativeCalls());
+                    if(sameChoice)workflowSession(f.workflow).select(old.selected());
+                    else {var combo=(JComboBox<?>)find(f.workflow.controls(),"candidate");combo.setSelectedIndex((combo.getSelectedIndex()+1)%combo.getItemCount());}
+                    assertNotSame(old,f.workflow.currentStage(),"Selection creates a new wrapper around the same admitted candidate metadata");assertSourcesLeased(f.workflow,f.workflow.currentStage());
+                    ((JButton)find(f.workflow.controls(),"refineB")).doClick();assertTrue(f.workflow.busy(),"The selected input must dispatch using its stable admitted metadata identity");assertEquals(1,work.size());
+                    ((JButton)find(f.workflow.controls(),"cancel")).doClick();
+                });
+                work.remove().run();assertTrue(state[0].workflow.ownedBytes()>0);SwingUtilities.invokeAndWait(publications.remove());
+                SwingUtilities.invokeAndWait(()->{var f=state[0];assertFalse(f.workflow.busy());assertTrue(f.workflow.nativeSelected());assertSourcesLeased(f.workflow,f.workflow.currentStage());assertEquals(nativeCalls.get(),f.workflow.actualNativeCalls());assertFalse(f.data.isModified());});
+            }finally{
+                SwingUtilities.invokeAndWait(()->{if(state[0]!=null)state[0].workflow.close();});while(!work.isEmpty())work.remove().run();while(!publications.isEmpty())SwingUtilities.invokeAndWait(publications.remove());
+                SwingUtilities.invokeAndWait(()->{if(state[0]!=null){assertEquals(0,state[0].workflow.ownedBytes());state[0].review.close();}session.closeAll();});
+            }
+        }
+    }
     @Test void returningToLegacyKeepsTheOriginalManagedSourceAuthority() throws Exception {
         var decoder=new TileDecoderClassifier();
         try(var coordinator=new TileFetchCoordinator((request,credentials)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",ridge(request.address()),null,Duration.ZERO,""),
@@ -166,13 +192,14 @@ class StepwiseRefinementOwnershipTest {
                 });
                 work.remove().run();SwingUtilities.invokeAndWait(publications.remove());work.remove().run();SwingUtilities.invokeAndWait(publications.remove());
                 SwingUtilities.invokeAndWait(()->{
-                    var f=state[0];assertTrue(f.workflow.nativeSelected());before[1]=f.workflow.currentStage();
+                    var f=state[0];assertTrue(f.workflow.nativeSelected());before[1]=f.workflow.currentStage();assertSourcesLeased(f.workflow,before[1]);
                     ((JButton)find(f.workflow.controls(),"undo")).doClick();before[0]=f.workflow.currentStage();bytes[0]=f.workflow.ownedBytes();
                     assertEquals(f.workflow.selectedGeometry(),shown.get());((JButton)find(f.workflow.controls(),"refineB")).doClick();
                 });
                 work.remove().run(); // exact successful replacement result is held before publication
                 assertFalse(session.workGate().settlement().toCompletableFuture().isDone());
                 SwingUtilities.invokeAndWait(()->{
+                    assertSourcesLeased(state[0].workflow,before[1]);
                     assertFalse(state[0].review.invalidated());assertFalse(state[0].data.isModified());
                     if(sourceStale){coordinator.updateActiveGeneration(new ManagedTileGeneration(8));coordinator.updateActiveGeneration(new ManagedTileGeneration(7));}
                     else {throwDisplay.set(true);throwRoot.set(restoreFails);}
@@ -184,6 +211,9 @@ class StepwiseRefinementOwnershipTest {
                     var f=state[0];var diagnostic=f.workflow.latestAttemptDiagnostics().orElseThrow();
                     assertEquals(before[0],f.workflow.currentStage(),"Failed replacement must preserve exact parent");
                     assertEquals(List.of(before[0],before[1]),workflowSession(f.workflow).history(),"Failed replacement must preserve old forward history");
+                    assertSourcesLeased(f.workflow,before[1]);
+                    var retained=before[1].candidates().stream().flatMap(c->c.payload().nativeReview().orElseThrow().retainedSources().values().stream()).distinct().toList();
+                    for(var source:retained)if(sourceStale)assertThrows(IllegalStateException.class,source::requireCurrent);else source.requireCurrent();
                     assertEquals(f.workflow.selectedGeometry(),shown.get());assertEquals(!restoreFails,f.workflow.hasCurrentPresentation());assertFalse(f.workflow.canApplyNative());
                     assertThrows(IllegalStateException.class,f.workflow::confirm);assertThrows(IllegalStateException.class,f.workflow::command);
                     var apply=new JButton("Apply");var confirm=new JButton("Confirm");
@@ -263,6 +293,15 @@ class StepwiseRefinementOwnershipTest {
     private static RefinementSession workflowSession(LegacyRefinementWorkflow workflow) {
         try {var field=LegacyRefinementWorkflow.class.getDeclaredField("session");field.setAccessible(true);return (RefinementSession)field.get(workflow);}
         catch(ReflectiveOperationException failure){throw new AssertionError(failure);}
+    }
+    private static void assertSourcesLeased(LegacyRefinementWorkflow workflow,org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Stage stage) {
+        try {
+            var field=LegacyRefinementWorkflow.class.getDeclaredField("rootMemory");field.setAccessible(true);
+            var memory=(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner)field.get(workflow);
+            long before=memory.currentBytes();var sources=stage.candidates().stream().flatMap(c->c.payload().nativeReview().orElseThrow().retainedSources().values().stream()).distinct().toList();
+            assertFalse(sources.isEmpty());try(var probe=memory.child("source-lease-check")){sources.forEach(s->s.retainInto(probe));assertEquals(before,memory.currentBytes(),"Actual source groups remain charged once across old forward/queued replacement pins");}
+            assertEquals(before,memory.currentBytes());
+        }catch(ReflectiveOperationException failure){throw new AssertionError(failure);}
     }
     private void exercise(boolean holdWorker) throws Exception {
         var decoder=new TileDecoderClassifier();

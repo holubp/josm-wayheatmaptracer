@@ -21,6 +21,87 @@ class RefinementAcquisitionTest {
   void cancel(){cancelled.set(true);listeners.forEach(Runnable::run);}
  }
  @TempDir java.nio.file.Path temp;
+ @Test void captureEpochCannotResurrectBeforeTheFirstMapping() throws Exception {
+  var parent=nearBoundaryHaloParent();var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(parent),RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.DIRECT_VALUE,false),parent);
+  var bytes=png();var decoder=new TileDecoderClassifier();
+  try(var coordinator=new TileFetchCoordinator((r,c)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",bytes,null,Duration.ZERO,""),new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())) {
+   coordinator.updateActiveGeneration(new ManagedTileGeneration(9));var ledger=AttemptMemoryLedger.production();try(var owner=ledger.rootOwner()) {
+    var capture=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,owner).value();
+    coordinator.updateActiveGeneration(new ManagedTileGeneration(10));coordinator.updateActiveGeneration(new ManagedTileGeneration(9));
+    long before=ledger.currentBytes();assertFalse(capture.isCurrent(coordinator));assertThrows(IllegalStateException.class,()->capture.evidence("blue",CancellationProbe.NONE));assertEquals(before,ledger.currentBytes());
+   }assertEquals(0,ledger.currentBytes());
+  }
+ }
+ @Test void retainedSourceSurvivesWorkerSettlementAndStillChecksExternalGeneration() throws Exception {
+  var parent=nearBoundaryHaloParent();
+  var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(parent),RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.DIRECT_VALUE,false),parent);
+  var bytes=png();var decoder=new TileDecoderClassifier();
+  try(var coordinator=new TileFetchCoordinator((r,c)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",bytes,null,Duration.ZERO,""),new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())) {
+   coordinator.updateActiveGeneration(new ManagedTileGeneration(9));var ledger=AttemptMemoryLedger.production();
+   try(var root=ledger.rootOwner()) {
+    var worker=root.child("worker");var publication=root.child("publication");
+    var capture=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,worker).value();
+    var request=plan.requests().stream().filter(s->s.palette().equals("blue")&&s.mapping().equals("blue")).findFirst().orElseThrow();
+    var evidence=capture.evidence("blue",CancellationProbe.NONE);
+    var retained=capture.retentionDescriptor(request,evidence);
+    assertTrue(retained.inputByteHash().isEmpty());assertTrue(retained.inputHashProtocol().isEmpty(),"Old source API keeps honest ineligible absence and performs no optional input hashing");
+    assertSame(evidence,retained.evidence());assertEquals(IntensitySamplingMode.DIRECT_VALUE,retained.intensityMode());
+    assertEquals(9,retained.generation().orElseThrow());assertTrue(retained.visibleReceipt().isEmpty());
+    assertEquals("blue",retained.source().palette());assertEquals("blue",retained.source().mapping());
+    assertEquals(evidence.resampling().inputWidth(),retained.referenceWidth());
+    assertEquals(evidence.resampling().sourceTransformIdentity(),retained.referenceTransform().parameterIdentity());
+    long charged=ledger.currentBytes();retained.retainInto(publication);retained.retainInto(publication);
+    assertEquals(charged,ledger.currentBytes(),"co-ownership must not double-charge immutable arrays or descriptors");
+    worker.close();retained.requireCurrent();assertTrue(ledger.currentBytes()>=retained.backingBytes());
+    assertSame(evidence.fields().get("native"),retained.evidence().fields().get(retained.fieldName()));
+    coordinator.updateActiveGeneration(new ManagedTileGeneration(10));assertThrows(IllegalStateException.class,retained::requireCurrent);
+    coordinator.updateActiveGeneration(new ManagedTileGeneration(9));assertThrows(IllegalStateException.class,retained::requireCurrent,"A recycled numeric generation is not the original lifetime");
+    publication.close();assertEquals(0,ledger.currentBytes());
+   }
+  }
+ }
+ @Test void sameImageMappingsHaveDistinctChargedEvidenceGroupsAfterSettlement() throws Exception {
+  var parent=RefinementSourcePlannerTest.parent();var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(parent),RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.COLOR_MAPPING,false),parent);
+  var bytes=png();var decoder=new TileDecoderClassifier();
+  try(var coordinator=new TileFetchCoordinator((r,c)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",bytes,null,Duration.ZERO,""),new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())) {
+   coordinator.updateActiveGeneration(new ManagedTileGeneration(9));var ledger=AttemptMemoryLedger.production();try(var root=ledger.rootOwner()) {
+    var worker=root.child("mapping-worker");var publication=root.child("mapping-publication");
+    var capture=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,worker).value();
+    var hashWork=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,System.nanoTime()+300_000_000_000L,CancellationProbe.NONE,worker);
+    var base=capture.evidence("blue",CancellationProbe.NONE,hashWork);long firstHashVisits=hashWork.visits();var alternative=capture.mappingEvidence("hot-corridor",CancellationProbe.NONE,hashWork);
+    assertTrue(hashWork.visits()-firstHashVisits<=2,"Actual second mapping must reuse the factual acquired-image hash");
+    var first=capture.retentionDescriptor(plan.requests().stream().filter(s->s.palette().equals("blue")&&s.mapping().equals("blue")).findFirst().orElseThrow(),base);
+    var second=capture.retentionDescriptor(plan.requests().stream().filter(s->s.mapping().equals("hot-corridor")).findFirst().orElseThrow(),alternative);
+    assertNotSame(base,alternative);assertNotSame(base.fields().get("native"),alternative.fields().get("native"));
+    assertEquals(first.imageOwnershipIdentity(),second.imageOwnershipIdentity());assertNotEquals(first.source(),second.source());
+    var sourceField=RefinementAcquisition.Capture.class.getDeclaredField("sources");sourceField.setAccessible(true);
+    var actualInputs=(ManagedModernPreviewSource.RefinementSources)sourceField.get(capture);var inputImage=actualInputs.raster("blue",coordinator).image();
+    var independent=java.security.MessageDigest.getInstance("SHA-256");for(int y=0;y<inputImage.getHeight();y++)for(int x=0;x<inputImage.getWidth();x++){int pixel=inputImage.getRGB(x,y);independent.update((byte)(pixel>>>24));independent.update((byte)(pixel>>>16));independent.update((byte)(pixel>>>8));independent.update((byte)pixel);}
+    assertEquals(java.util.HexFormat.of().formatHex(independent.digest()),first.inputByteHash());assertEquals(first.inputByteHash(),second.inputByteHash());
+    assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEvidenceCapture.ORIGINAL_ARGB_PROTOCOL,first.inputHashProtocol());
+    long before=ledger.currentBytes();first.retainInto(publication);second.retainInto(publication);first.retainInto(publication);assertEquals(before,ledger.currentBytes());
+    worker.close();first.requireCurrent();second.requireCurrent();
+    assertEquals(first.backingBytes()+first.descriptorBytes()+second.backingBytes()+second.descriptorBytes(),ledger.currentBytes());
+    assertNotEquals(base.canonicalHash(),alternative.canonicalHash(),"Mapping lineage is part of scalar evidence identity");
+    publication.close();assertEquals(0,ledger.currentBytes());
+   }
+  }
+ }
+ @Test void admittedOriginalHashRefusesBeforeCopiesAndRejectsStaleGenerationDuringHashing() throws Exception {
+  var parent=RefinementSourcePlannerTest.parent();var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(parent),RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.COLOR_MAPPING,false),parent);var bytes=png();var decoder=new TileDecoderClassifier();
+  try(var coordinator=new TileFetchCoordinator((r,c)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",bytes,null,Duration.ZERO,""),new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())) {
+   coordinator.updateActiveGeneration(new ManagedTileGeneration(9));var ledger=AttemptMemoryLedger.production();try(var owner=ledger.rootOwner()) {
+    var capture=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,owner).value();long before=ledger.currentBytes();
+    var refused=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(0,AttemptMemoryLedger.MAX_BYTES,System.nanoTime()+60_000_000_000L,CancellationProbe.NONE,owner);
+    assertThrows(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached.class,()->capture.evidence("blue",CancellationProbe.NONE,refused));assertEquals(before,ledger.currentBytes());
+    var changed=new java.util.concurrent.atomic.AtomicBoolean();var workRef=new java.util.concurrent.atomic.AtomicReference<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext>();
+    CancellationProbe epochDuringHash=()->{var actual=workRef.get();if(actual!=null&&actual.counters().get(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.HASH)>256&&changed.compareAndSet(false,true))coordinator.updateActiveGeneration(new ManagedTileGeneration(10));return false;};
+    var work=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,System.nanoTime()+60_000_000_000L,epochDuringHash,owner);workRef.set(work);
+    assertThrows(IllegalStateException.class,()->capture.evidence("blue",CancellationProbe.NONE,work));assertTrue(changed.get());assertFalse(capture.isCurrent(coordinator));
+    assertDoesNotThrow(parent::requireComplete,"Parent reference remains available after source refusal");
+   }assertEquals(0,ledger.currentBytes());
+  }
+ }
  @Test void managedNearTileBoundaryRidgeRetainsMeasuredNativeAReductionFour() throws Exception {
   var parent=nearBoundaryHaloParent();
   var ticket=new OperationTicket(new SessionId(UUID.randomUUID()),1,parent.parentStage(),parent.parentChoice(),TrackerMode.CORRIDOR_AWARE,AlignmentMode.PRECISE_SHAPE);
@@ -153,7 +234,7 @@ class RefinementAcquisitionTest {
     var type=RefinementAcquisition.Capture.class;var fields=new HashMap<String,Object>();for(var name:List.of("sources","owner","grid","geographic")){var f=type.getDeclaredField(name);f.setAccessible(true);fields.put(name,f.get(actual));}
     // Same certified original frame, real coordinator-owned raster and receipts; only the requested image footprint disagrees.
     var badGrid=new MetricRasterGrid(parent.root().evidence().coordinateFrame(),new MetricPoint(-1000,100),1,0,0,-1,10,201,21);
-    var constructor=type.getDeclaredConstructors()[0];constructor.setAccessible(true);
+    var constructor=type.getDeclaredConstructor(RefinementSourcePlanner.Plan.class,ManagedModernPreviewSource.RefinementSources.class,AttemptMemoryLedger.Owner.class,TileFetchCoordinator.class,MetricRasterGrid.class,List.class);constructor.setAccessible(true);
     var mismatched=(RefinementAcquisition.Capture)constructor.newInstance(plan,fields.get("sources"),fields.get("owner"),coordinator,badGrid,fields.get("geographic"));
     long memory=ledger.currentBytes();int attempts=calls.get();var receipt=actual.workReceipt();
     var failure=assertThrows(ParentTraceReference.UnavailableException.class,()->mismatched.evidence("blue",CancellationProbe.NONE));
@@ -223,8 +304,19 @@ class RefinementAcquisitionTest {
   var epoch=new org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch();int size=600;var pixels=new int[size*size];Arrays.fill(pixels,0xffff4000);
   var raster=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService.VisibleRaster(size,size,pixels,center.east()-100,center.north()-200,center.east()+500,center.north()+400,6,3.86,OptionalDouble.empty(),p.root().sourceIdentity(),"EPSG:3857",epoch.captureStable());
   var ledger=AttemptMemoryLedger.production();try(var owner=ledger.rootOwner()){
-   var result=RefinementAcquisition.captureVisible(plan,raster,"blue",()->false,owner);assertEquals(p.root().evidence().coordinateFrame(),result.value().evidence().coordinateFrame());assertTrue(result.value().evidence().decisionRegion().contains(p.points().get(2)));assertEquals(EvidenceFieldLineage.AcquisitionKind.VISIBLE_RENDER,result.value().evidence().fields().get("native").lineage().acquisitionKind());
+   var hashWork=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,System.nanoTime()+300_000_000_000L,CancellationProbe.NONE,owner);
+   var hashes=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEvidenceCapture.OriginalInputHashes(hashWork);
+   var result=RefinementAcquisition.captureVisible(plan,raster,"blue",()->false,owner,hashWork,hashes);assertEquals(p.root().evidence().coordinateFrame(),result.value().evidence().coordinateFrame());assertTrue(result.value().evidence().decisionRegion().contains(p.points().get(2)));assertEquals(EvidenceFieldLineage.AcquisitionKind.VISIBLE_RENDER,result.value().evidence().fields().get("native").lineage().acquisitionKind());
+   var descriptor=result.value().retentionDescriptor(plan.requests().stream().filter(s->s.palette().equals("blue")&&s.mapping().equals("blue")).findFirst().orElseThrow(),result.value().evidence());
+   var expected=java.security.MessageDigest.getInstance("SHA-256");for(int pixel:pixels){expected.update((byte)(pixel>>>24));expected.update((byte)(pixel>>>16));expected.update((byte)(pixel>>>8));expected.update((byte)pixel);}
+   assertEquals(java.util.HexFormat.of().formatHex(expected.digest()),descriptor.inputByteHash());
+   long visits=hashWork.visits();var other=RefinementAcquisition.captureVisible(plan,raster,"hot-corridor",()->false,owner,hashWork,hashes);
+   assertEquals(1,hashes.singleImagesHashed());assertTrue(hashWork.visits()-visits<=2);assertNotEquals(other.value().evidence().canonicalHash(),result.value().evidence().canonicalHash());
+   var publication=owner.child("visible-publication");descriptor.retainInto(publication);result.owner().close();descriptor.requireCurrent();
+   assertSame(raster.sourceReceipt(),descriptor.visibleReceipt().orElseThrow());assertTrue(descriptor.generation().isEmpty());
+   assertEquals(600,descriptor.referenceWidth());assertEquals(600,descriptor.referenceHeight());
    epoch.sourceChanged();assertThrows(IllegalStateException.class,()->result.value().evidence());assertThrows(IllegalStateException.class,()->RefinementAcquisition.captureVisible(plan,raster,"blue",()->false,owner));
+   assertThrows(IllegalStateException.class,descriptor::requireCurrent);
   }assertEquals(0,ledger.currentBytes());
  }
  @Test void cacheHitsConsumeLogicalTileBudgetButNotNewTransportAttempts() throws Exception {

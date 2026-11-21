@@ -15,6 +15,30 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneratio
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 
 class RefinementPipelineTest {
+    @ParameterizedTest @ValueSource(ints={0,1})
+    void sourcePreparationDeadlineKeepsResourceOutcomeAndPriorNativeCandidates(int failingSource) {
+        var parent=ParentBackedComposerTest.copyParent();var ticket=ticket(parent,TrackerMode.PROBABILISTIC);var plan=plan(ticket,parent,true);
+        var clock=new AtomicLong();var budget=new RefinementPipeline.OperationBudget(parent.root().request().budgets(),clock::get,1000,200);
+        var ordinal=new java.util.concurrent.atomic.AtomicInteger();var entries=new java.util.concurrent.atomic.AtomicInteger();
+        var sources=new RefinementPipeline.Sources(){
+            public void requireCurrent(){}
+            public EvidenceSnapshot evidence(RefinementSourcePlanner.SourceRequest source,CancellationProbe cancellation){
+                if(ordinal.getAndIncrement()==failingSource){clock.set(1001);cancellation.checkpoint();fail("Expired final probe must stop evidence preparation");}
+                return parent.root().evidence();
+            }
+        };
+        try(var scope=PipelineAdmissionObserver.openForTesting(value->{});var owner=AttemptMemoryLedger.production().rootOwner()) {
+            var result=new RefinementPipeline().run(ticket,parent,plan,new RefinementPipeline.Adapters(sources,RefinementPipeline.productionRunner(t->entries.incrementAndGet()),owner),budget,CancellationProbe.NONE);
+            System.out.println("source-deadline ordinal="+failingSource+" outcome="+result.outcome()+" candidates="+result.candidates().size()+" native="+entries.get()+" work="+result.actualWork()+" attempts="+result.attempts().stream().map(a->a.kind()+":"+a.reason()).toList());
+            assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());assertEquals(failingSource,entries.get());
+            var failed=result.attempts().stream().filter(a->a.source().equals(plan.requests().get(failingSource))).findFirst().orElseThrow();
+            assertEquals(RefinementPipeline.AttemptKind.UNAVAILABLE,failed.kind());assertEquals("source-preparation-resource-limit",failed.reason());assertEquals(0,failed.nativeCallAvailability().orElseThrow());
+            assertEquals(PipelineAdmissionObserver.Gate.FINAL_DEADLINE,scope.latest(ticket).orElseThrow().gate());
+            if(failingSource==0){assertTrue(result.candidates().isEmpty());assertEquals(TraceWorkUsage.none(),result.actualWork().orElseThrow());}
+            else {assertFalse(result.candidates().isEmpty(),"Deadline during a later source must retain the earlier actual assessed native candidates");assertTrue(result.actualWork().orElseThrow().transitions()>0);assertTrue(result.attempts().stream().anyMatch(a->a.kind()==RefinementPipeline.AttemptKind.WHOLE&&a.nativeCallAvailability().orElseThrow()==1));}
+            var receipt=RefinementOperationReceipt.capture(ticket,parent,result);assertEquals(result.actualWork(),receipt.actualWork());assertEquals(Outcome.RESOURCE_LIMIT,receipt.outcome());
+        }
+    }
     static OperationTicket ticket(ParentTraceReference parent,TrackerMode engine) {
         return new OperationTicket(new SessionId(UUID.randomUUID()),1,parent.parentStage(),parent.parentChoice(),engine,parent.root().request().geometryMode());
     }
@@ -131,7 +155,8 @@ class RefinementPipelineTest {
     }
     @Test void admissionObserverDistinguishesScalarPreparationFromAssessmentScratch() {
         var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
-        for(boolean scalar:List.of(true,false))try(var scope=PipelineAdmissionObserver.openForTesting(value->{});
+        var events=new java.util.concurrent.atomic.AtomicInteger();
+        for(boolean scalar:List.of(true,false))try(var scope=PipelineAdmissionObserver.openForTesting(value->events.incrementAndGet());
                 var owner=new AttemptMemoryLedger(32L*1024*1024).rootOwner()) {
             var source=new RefinementPipeline.Sources(){
                 public void requireCurrent() { }
@@ -139,14 +164,31 @@ class RefinementPipelineTest {
                     if(scalar)owner.reserve(AttemptMemoryLedger.MAX_BYTES);return parent.root().evidence();
                 }
             };
-            var result=admissionRefusal(parent,ticket,owner,source,RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()));
-            assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());var observed=scope.latest(ticket).orElseThrow();
+            events.set(0);var result=admissionRefusal(parent,ticket,owner,source,RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()));
+            assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());var observed=scope.latest(ticket).orElseThrow();assertEquals(1,events.get(),"One original admission refusal emits exactly one event");
             assertEquals(scalar?PipelineAdmissionObserver.Gate.SCALAR_PREPARATION:PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH,observed.gate());
             assertTrue(observed.currentBytes().orElseThrow()>0);assertEquals(32L*1024*1024,observed.limitBytes().orElseThrow());
             assertTrue(observed.requestedBytes().orElseThrow()>observed.limitBytes().orElseThrow()-observed.currentBytes().orElseThrow());
             assertEquals(!scalar,observed.currentEvidence().isPresent());
             if(!scalar)assertEquals(parent.root().evidence().resampling().outputWidth(),observed.currentEvidence().orElseThrow().outputWidth());
             assertTrue(result.attempts().stream().allMatch(a->a.nativeCallAvailability().orElse(-1)==0));
+        }
+    }
+    @Test void sourcePreparationObserverPreservesOriginalNumericLedgerRefusalThroughWorkflowStyleWrapper() {
+        var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
+        var raw=new java.util.concurrent.atomic.AtomicReference<AttemptMemoryLedger.ResourceLimitException>();var events=new java.util.concurrent.atomic.AtomicInteger();
+        try(var scope=PipelineAdmissionObserver.openForTesting(value->events.incrementAndGet());var owner=new AttemptMemoryLedger(32L*1024*1024).rootOwner()) {
+            var source=new RefinementPipeline.Sources(){
+                public void requireCurrent(){}
+                public EvidenceSnapshot evidence(RefinementSourcePlanner.SourceRequest request,CancellationProbe cancel){
+                    try{owner.reserve(AttemptMemoryLedger.MAX_BYTES);throw new AssertionError("Ledger must refuse this allocation");}
+                    catch(AttemptMemoryLedger.ResourceLimitException limited){raw.set(limited);throw new RefinementPipeline.SourcePreparationFailure(Outcome.RESOURCE_LIMIT,limited);}
+                }
+            };
+            var result=admissionRefusal(parent,ticket,owner,source,RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()));
+            assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());assertNotNull(raw.get());var observed=scope.latest(ticket).orElseThrow();assertEquals(1,events.get());
+            assertEquals(PipelineAdmissionObserver.Gate.SCALAR_PREPARATION,observed.gate());assertEquals(raw.get().requestedBytes(),observed.requestedBytes().orElseThrow());assertEquals(raw.get().currentBytes(),observed.currentBytes().orElseThrow());assertEquals(raw.get().limitBytes(),observed.limitBytes().orElseThrow());
+            assertTrue(observed.currentEvidence().isEmpty());assertEquals("source-preparation-resource-limit",result.attempts().get(0).reason());assertTrue(result.attempts().stream().allMatch(a->a.nativeCallAvailability().orElse(-1)==0));
         }
     }
     @Test void admissionObserverUsesActualInjectedDeadlineElapsedAndPreservesUnknownMemory() {

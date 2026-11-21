@@ -67,8 +67,16 @@ public record EvidenceSnapshot(
 
     /** Returns a content-bound hash over coordinates, masks, scalar values, resolution, and source lineage. */
     public String canonicalHash() {
+        return canonicalHashImpl(null);
+    }
+    /** Same canonical bytes, with admitted streaming/cancellable scalar and string reads. */
+    public String canonicalHash(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
+        java.util.Objects.requireNonNull(work);
+        try(var scratch=work.reserve("evidence-canonical-hash",4096L)) {return canonicalHashImpl(work);}
+    }
+    private String canonicalHashImpl(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
         boolean completeFrame = coordinateFrame.hasCompleteNumericalIdentity();
-        CanonicalEncoder encoder = new CanonicalEncoder().field(
+        CanonicalEncoder encoder = new CanonicalEncoder(work).field(
                 completeFrame ? "evidence-snapshot-v4" : "evidence-snapshot-v3")
             .field(sourceIdentity).field(coordinateFrame.projectionId())
             .field(Double.toHexString(coordinateFrame.origin().latitudeDegrees()))
@@ -126,6 +134,7 @@ public record EvidenceSnapshot(
                 .field(lineage.sourcePalette()).field(lineage.correlationGroup().name())
                 .field(lineage.completeAggregate());
             lineage.scalarOperations().forEach(operation -> encoder.field("operation").field(operation));
+            if(work!=null){field.encodeCanonical(encoder,work);return;}
             double[] values = field.copiedValues();
             boolean[] valid = field.copiedValidity();
             for (int index = 0; index < values.length; index++) {

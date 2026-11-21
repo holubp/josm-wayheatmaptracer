@@ -34,9 +34,34 @@ public final class RefinementRootAuthority {
     public RefinementRootAuthority(NetworkSnapshot network,TraceRequest request,EvidenceSnapshot evidence,
             AlignmentConfig effectiveConfig,String projectionCode,String sourceIdentity,
             SelectedWayIntervalPartitioner.Partition capturedPartition) {
+        this(network,request,evidence,effectiveConfig,projectionCode,sourceIdentity,capturedPartition,null,null);
+    }
+    /** Same factual authority validation, with a producer-admitted same-ledger evidence group.
+     * The new owner adopts metadata only; immutable scalar/mask arrays retain their original lease.
+     */
+    public RefinementRootAuthority(NetworkSnapshot network,TraceRequest request,EvidenceSnapshot evidence,
+            AlignmentConfig effectiveConfig,String projectionCode,String sourceIdentity,
+            SelectedWayIntervalPartitioner.Partition capturedPartition,RetainedSmoothingSource source,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
         Objects.requireNonNull(network); Objects.requireNonNull(request); Objects.requireNonNull(evidence);
         Objects.requireNonNull(effectiveConfig);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Reservation metadata=null;
+        if(source!=null||work!=null) {
+            if(source==null||work==null||source.evidence()!=evidence)throw new IllegalArgumentException("Root evidence group is foreign");
+            work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.BIND,1);
+            source.requireCurrent();source.retainInto(work.owner());
+            long objects=Math.addExact(network.primitives().size(),Math.addExact(request.selectedRange().size(),
+                Math.addExact(evidence.decisionRegion().polygons().size(),evidence.evidenceRegion().polygons().size())));
+            long chars=(long)sourceIdentity.length()+projectionCode.length()+request.settingsHash().length()+request.parameterHash().length();
+            metadata=work.reserve("original-root-metadata",Math.addExact(16384L,Math.addExact(Math.multiplyExact(8192L,objects),Math.multiplyExact(16L,chars))));
+        }
+        try {
         var inventory=new Inventory();
+        if(source!=null) {
+            var minimum=new Inventory();minimum.visit(evidence);
+            if(source.backingBytes()<minimum.total)throw new IllegalArgumentException("Root evidence group is undercosted");
+            inventory.put(evidence,source.backingBytes());
+        }
         inventory.visit(network);inventory.visit(request);inventory.visit(evidence);inventory.visit(effectiveConfig);
         inventory.visit(projectionCode);inventory.visit(sourceIdentity);
         inventory.visit(capturedPartition);
@@ -44,7 +69,7 @@ public final class RefinementRootAuthority {
                 || !request.networkSnapshotId().equals(network.snapshotId())
                 || !request.networkContentHash().equals(network.canonicalHash())
                 || !request.evidenceSnapshotId().equals(evidence.snapshotId())
-                || !request.evidenceContentHash().equals(evidence.canonicalHash())
+                || !request.evidenceContentHash().equals(work==null?evidence.canonicalHash():evidence.canonicalHash(work))
                 || !request.evidenceResolution().equals(evidence.resolution())
                 || request.geometryMode() != effectiveConfig.heatmap().alignmentMode()
                 || effectiveConfig.heatmap().trackerMode()!=TrackerMode.LEGACY_V02 || request.selectedRange().size()<2
@@ -77,6 +102,8 @@ public final class RefinementRootAuthority {
         inventory.visit(frozenGeometryProof);
         inventory.put(this,256);
         charges=Collections.unmodifiableMap(inventory.owned);retainedBytes=inventory.total;
+        if(source!=null){source.requireCurrent();metadata.adopt(this);}
+        } finally {if(metadata!=null)metadata.close();}
     }
     public NetworkSnapshot network(){return network;}
     public TraceRequest request(){return request;}

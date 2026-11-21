@@ -10,6 +10,16 @@ import java.util.Random;
 import org.junit.jupiter.api.Test;
 
 class CanonicalEncoderTest {
+    @Test void admittedUtf8MatchesOldBytesAndEmptyFieldsStillRequireWork() {
+        try(var owner=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production().rootOwner()) {
+            var work=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(10000,4096,Long.MAX_VALUE,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE,owner);
+            var old=new CanonicalEncoder();var admitted=new CanonicalEncoder(work);
+            for(String field:new String[]{"","ASCII","žlutý","\uD83D\uDE00","\uD800",null}){old.field(field);admitted.field(field);}
+            assertEquals(old.sha256(),admitted.sha256());
+            var exhausted=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(0,4096,Long.MAX_VALUE,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE,owner);
+            org.junit.jupiter.api.Assertions.assertThrows(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached.class,()->new CanonicalEncoder(exhausted).field(""));
+        }
+    }
     @Test
     void hexadecimalDoubleFieldsPreserveJava17CanonicalBytes() {
         long[] edges = {0L, Long.MIN_VALUE, 1L, Long.MIN_VALUE | 1L,

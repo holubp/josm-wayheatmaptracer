@@ -4,6 +4,7 @@ import java.util.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEvidenceCapture;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.*;
 
@@ -18,7 +19,14 @@ public final class RefinementAcquisition {
     public static Accounted<VisibleCapture> captureVisible(RefinementSourcePlanner.Plan plan,
             LiveBPreviewService.VisibleRaster raster,String mapping,CancellationProbe cancellation,
             AttemptMemoryLedger.Owner owner) {
+        return captureVisible(plan,raster,mapping,cancellation,owner,null,null);
+    }
+    public static Accounted<VisibleCapture> captureVisible(RefinementSourcePlanner.Plan plan,
+            LiveBPreviewService.VisibleRaster raster,String mapping,CancellationProbe cancellation,
+            AttemptMemoryLedger.Owner owner,GeometryWorkContext hashWork,RasterEvidenceCapture.OriginalInputHashes hashes) {
         if(javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Visible evidence copies require worker thread");
+        if((hashWork==null)!=(hashes==null))throw new IllegalArgumentException("Shared original hash context and cache required together");
+        if(hashWork!=null){if(!owner.sharesLedgerWith(hashWork.owner()))throw new IllegalArgumentException("Original hash owner belongs to another attempt");hashes.requireContext(hashWork);}
         requirePlan(plan);
         if(plan.settings().managed()||!plan.settings().intensity().usesColorMapping()
                 ||plan.ticket().kind()==RefinementModels.StageKind.SMOOTH)
@@ -49,6 +57,8 @@ public final class RefinementAcquisition {
             var retained=memory.reserve(retainedEvidenceBytes(plan,grid,mapping));
             var image=new java.awt.image.BufferedImage(raster.width(),raster.height(),java.awt.image.BufferedImage.TYPE_INT_ARGB);
             image.setRGB(0,0,raster.width(),raster.height(),raster.argb(),0,raster.width());
+            String inputHash=hashes==null?"":hashes.single(raster,image);
+            cancellation.checkpoint();raster.sourceReceipt().owner().requireCurrent(raster.sourceReceipt());
             var valid=new boolean[Math.multiplyExact(raster.width(),raster.height())];Arrays.fill(valid,true);
             var resolution=raster.nativePitchMeters().isPresent()?EvidenceResolution.nativeSource(raster.nativePitchMeters().getAsDouble(),pitch):EvidenceResolution.renderedOnly(pitch);
             var lineage=new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.VISIBLE_RENDER,
@@ -60,7 +70,14 @@ public final class RefinementAcquisition {
                 plan.parent().root().request().permissions().ordinaryRadiusMeters(),raster.sourceIdentity(),
                 EvidenceFieldLineage.AcquisitionKind.VISIBLE_RENDER,List.of(field),cancellation);
             cancellation.checkpoint();raster.sourceReceipt().owner().requireCurrent(raster.sourceReceipt());
-            retained.adopt(result);reservation.close();return new Accounted<>(new VisibleCapture(plan,result,raster.sourceReceipt(),memory),memory);
+            var request=plan.requests().stream().filter(s->s.palette().equals(plan.settings().selectedPalette())&&s.mapping().equals(mapping)
+                &&!s.aggregate()&&s.unavailableReason().isEmpty()).findFirst().orElseThrow();
+            var receipt=raster.sourceReceipt();
+            var descriptor=new RetainedSmoothingSource(request,plan.settings().intensity(),"native",result,transform,raster.width(),raster.height(),
+                retainedEvidenceBytes(plan,grid,mapping),()->receipt.owner().requireCurrent(receipt),raster.sourceIdentity()+"/visible-input-ownership/"+receipt.revision(),inputHash,OptionalLong.empty(),Optional.of(receipt),Optional.empty(),
+                hashes==null?"":RasterEvidenceCapture.ORIGINAL_ARGB_PROTOCOL);
+            var metadata=memory.reserve(descriptor.descriptorBytes());
+            retained.adopt(result);metadata.adopt(descriptor);reservation.close();return new Accounted<>(new VisibleCapture(plan,result,raster.sourceReceipt(),memory,descriptor),memory);
         } catch(RuntimeException|Error failure){memory.close();throw failure;}
     }
     /** Visible evidence retains its actual source receipt and native memory ownership. */
@@ -69,9 +86,11 @@ public final class RefinementAcquisition {
         private final EvidenceSnapshot evidence;
         private final org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch.Receipt receipt;
         private final AttemptMemoryLedger.Owner owner;
+        private final RetainedSmoothingSource descriptor;
         private VisibleCapture(RefinementSourcePlanner.Plan plan,EvidenceSnapshot evidence,
-                org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch.Receipt receipt,AttemptMemoryLedger.Owner owner) {
-            this.plan=plan;this.evidence=evidence;this.receipt=receipt;this.owner=owner;
+                org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch.Receipt receipt,AttemptMemoryLedger.Owner owner,
+                RetainedSmoothingSource descriptor) {
+            this.plan=plan;this.evidence=evidence;this.receipt=receipt;this.owner=owner;this.descriptor=descriptor;
         }
         public RefinementSourcePlanner.Plan plan(){return plan;}
         public void requireCurrent() {
@@ -79,6 +98,10 @@ public final class RefinementAcquisition {
             receipt.owner().requireCurrent(receipt);
         }
         public EvidenceSnapshot evidence(){requireCurrent();return evidence;}
+        public RetainedSmoothingSource retentionDescriptor(RefinementSourcePlanner.SourceRequest source,EvidenceSnapshot actual) {
+            if(actual!=evidence||!source.equals(descriptor.source()))throw new IllegalArgumentException("Visible mapping belongs to another capture");
+            descriptor.requireCurrent();return descriptor;
+        }
     }
     /** Returned imagery/evidence stays owned by the supplied native operation ledger, not its cache. */
     public Accounted<Capture> acquire(RefinementSourcePlanner.Plan plan,CredentialSnapshot credentials,
@@ -106,10 +129,12 @@ public final class RefinementAcquisition {
         certifyImageGrid(grid);
         var request=new ManagedModernPreviewSource.Request(geographic,settings.activity(),plan.acquiredPalettes().get(0),
             settings.inferenceZoom(),settings.generation(),radius,root.request().configuredSampleStepMeters(),root.sourceIdentity(),plan.acquiredPalettes());
+        var stamp=coordinator.captureGenerationStamp(settings.generation());
         var acquired=source.acquireRefinementSources(request,new LinkedHashSet<>(List.of(settings.inferenceZoom(),settings.validationZoom())),
             plan.aggregateRequested(),credentials,cancellation,operation,budget,grid);
         acquired.value().requireCurrent(coordinator);
-        var capture=new Capture(plan,acquired.value(),operation,coordinator,grid,geographic);
+        if(!coordinator.isCurrent(stamp))throw new IllegalStateException("Acquired source generation is stale");
+        var capture=new Capture(plan,acquired.value(),operation,coordinator,grid,geographic,stamp);
         geometry.adopt(capture);
         return new Accounted<>(capture,operation);
         } catch(RuntimeException|Error failure){operation.close();throw failure;}
@@ -122,9 +147,19 @@ public final class RefinementAcquisition {
         private final TileFetchCoordinator coordinator;
         private final MetricRasterGrid grid;
         private final List<GeographicPoint> geographic;
+        private final TileFetchCoordinator.GenerationStamp generationStamp;
+        private final Map<EvidenceSnapshot,RetainedSmoothingSource> retainedSources=new IdentityHashMap<>();
+        private GeometryWorkContext hashWork;
+        private RasterEvidenceCapture.OriginalInputHashes inputHashes;
         private Capture(RefinementSourcePlanner.Plan plan,ManagedModernPreviewSource.RefinementSources sources,
                 AttemptMemoryLedger.Owner owner,TileFetchCoordinator coordinator,MetricRasterGrid grid,List<GeographicPoint> geographic) {
+            this(plan,sources,owner,coordinator,grid,geographic,coordinator.captureGenerationStamp(plan.settings().generation()));
+        }
+        private Capture(RefinementSourcePlanner.Plan plan,ManagedModernPreviewSource.RefinementSources sources,
+                AttemptMemoryLedger.Owner owner,TileFetchCoordinator coordinator,MetricRasterGrid grid,List<GeographicPoint> geographic,
+                TileFetchCoordinator.GenerationStamp generationStamp) {
             this.plan=plan;this.sources=sources;this.owner=owner;this.coordinator=coordinator;this.grid=grid;this.geographic=List.copyOf(geographic);
+            this.generationStamp=generationStamp;
         }
         public RefinementSourcePlanner.Plan plan(){return plan;}
         public Set<String> palettes(){return sources.palettes();}
@@ -132,24 +167,54 @@ public final class RefinementAcquisition {
         public boolean completeAggregate(){return sources.completeAggregate();}
         public Map<String,Map<Integer,ManagedModernPreviewSource.ZoomReceipt>> sourceReceipts(){return sources.sourceReceipts();}
         public ManagedModernPreviewSource.RefinementWorkReceipt workReceipt(){return sources.workReceipt();}
-        public boolean isCurrent(TileFetchCoordinator actual){return sources.isCurrent(actual);}
+        public boolean isCurrent(TileFetchCoordinator actual){return actual==coordinator&&coordinator.isCurrent(generationStamp)&&sources.isCurrent(actual);}
+        private void requireCurrent(){if(!isCurrent(coordinator))throw new IllegalStateException("Acquired source generation is stale");}
+        /** Only a scalar snapshot produced by this capture may be published as its retained source. */
+        public RetainedSmoothingSource retentionDescriptor(RefinementSourcePlanner.SourceRequest source,EvidenceSnapshot evidence) {
+            var descriptor=retainedSources.get(evidence);
+            if(descriptor==null||!descriptor.source().equals(source))throw new IllegalArgumentException("Selected source was not produced by this capture");
+            descriptor.requireCurrent();return descriptor;
+        }
         /** Fresh evidence/profile locations belong to the exact selected parent, never root-centered rows. */
         public EvidenceSnapshot evidence(String palette,CancellationProbe cancellation) {
             return evidence(palette,palette,false,cancellation);
         }
+        public EvidenceSnapshot evidence(String palette,CancellationProbe cancellation,GeometryWorkContext work){return evidence(palette,palette,false,cancellation,work);}
         /** Explicit selected-raster variants are mappings, not additional acquired palettes. */
         public EvidenceSnapshot mappingEvidence(String mapping,CancellationProbe cancellation) {
+            return mappingEvidence(mapping,cancellation,null);
+        }
+        public EvidenceSnapshot mappingEvidence(String mapping,CancellationProbe cancellation,GeometryWorkContext work) {
             if(!plan.settings().intensity().usesColorMapping()||!plan.settings().alternatives().contains(mapping))throw new IllegalArgumentException("Detector mapping was not requested");
-            return evidence(plan.settings().selectedPalette(),mapping,false,cancellation);
+            return evidence(plan.settings().selectedPalette(),mapping,false,cancellation,work);
         }
         public EvidenceSnapshot aggregateEvidence(CancellationProbe cancellation) {
+            return aggregateEvidence(cancellation,null);
+        }
+        public EvidenceSnapshot aggregateEvidence(CancellationProbe cancellation,GeometryWorkContext work) {
             if(!plan.aggregateRequested()||!completeAggregate())throw new IllegalStateException("Complete aggregate unavailable");
-            return evidence(plan.acquiredPalettes().get(0),"all-colors-combined",true,cancellation);
+            return evidence(plan.acquiredPalettes().get(0),"all-colors-combined",true,cancellation,work);
         }
         private EvidenceSnapshot evidence(String palette,String mapping,boolean aggregate,CancellationProbe cancellation) {
+            return evidence(palette,mapping,aggregate,cancellation,null);
+        }
+        private EvidenceSnapshot evidence(String palette,String mapping,boolean aggregate,CancellationProbe cancellation,GeometryWorkContext work) {
             if(javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Evidence copies require worker thread");
-            cancellation.checkpoint();sources.requireCurrent(coordinator);
+            cancellation.checkpoint();requireCurrent();sources.requireCurrent(coordinator);
+            if(work!=null) {
+                if(!owner.sharesLedgerWith(work.owner()))throw new IllegalArgumentException("Original hash owner belongs to another attempt");
+                if(inputHashes==null){hashWork=work;inputHashes=new RasterEvidenceCapture.OriginalInputHashes(work);}else inputHashes.requireContext(work);
+            }
             var raster=sources.raster(palette,coordinator);
+            String inputHash="",inputHashProtocol="";
+            if(work!=null) {
+                if(aggregate) {
+                    var originals=new ArrayList<RasterEvidenceCapture.NamedOriginalRaster>();
+                    for(String name:RefinementSourcePlanner.BASE_PALETTES){var original=sources.raster(name,coordinator);originals.add(new RasterEvidenceCapture.NamedOriginalRaster(name,original.image(),original.transform()));}
+                    inputHash=inputHashes.completeSet(sources,originals);inputHashProtocol=RasterEvidenceCapture.ORIGINAL_ARGB_SET_PROTOCOL;
+                }else{inputHash=inputHashes.single(raster.image(),raster.image());inputHashProtocol=RasterEvidenceCapture.ORIGINAL_ARGB_PROTOCOL;}
+                cancellation.checkpoint();requireCurrent();sources.requireCurrent(coordinator);
+            }
             var bounds=raster.transform().boundsForMetricCell(grid.coordinateFrame(),grid.footprint().polygons().get(0));
             if(bounds.minimumX()<0||bounds.minimumY()<0||bounds.maximumX()>=raster.image().getWidth()-1
                     ||bounds.maximumY()>=raster.image().getHeight()-1)
@@ -171,7 +236,17 @@ public final class RefinementAcquisition {
                     geographic,plan.parent().points(),raster.transform(),grid,EvidenceResolution.nativeSource(pitch,grid.pitchMeters()),
                     plan.parent().root().request().permissions().ordinaryRadiusMeters(),raster.sourceIdentity(),
                     EvidenceFieldLineage.AcquisitionKind.MANAGED_TILE,"native",lineage,cancellation);
-                cancellation.checkpoint();sources.requireCurrent(coordinator);retained.adopt(result);reservation.close();return result;
+                cancellation.checkpoint();requireCurrent();sources.requireCurrent(coordinator);
+                var request=plan.requests().stream().filter(s->s.palette().equals(aggregate?plan.settings().selectedPalette():palette)
+                    &&s.mapping().equals(mapping)&&s.aggregate()==aggregate&&s.unavailableReason().isEmpty()).findFirst().orElseThrow();
+                // Capture only the external generation owner, never the disposed five-palette acquisition.
+                var externalCoordinator=coordinator;var stamp=generationStamp;
+                var descriptor=new RetainedSmoothingSource(request,plan.settings().intensity(),"native",result,raster.transform(),
+                    raster.image().getWidth(),raster.image().getHeight(),retainedEvidenceBytes(plan,grid,mapping),
+                    ()->{if(!externalCoordinator.isCurrent(stamp))throw new IllegalStateException("Retained source generation is stale");},
+                    plan.operationIdentity()+"/input-ownership/"+(aggregate?"all-colors":palette),inputHash,OptionalLong.of(plan.settings().generation().value()),Optional.empty(),Optional.empty(),inputHashProtocol);
+                var metadata=owner.reserve(descriptor.descriptorBytes());
+                retained.adopt(result);metadata.adopt(descriptor);retainedSources.put(result,descriptor);reservation.close();return result;
             } catch(RuntimeException|Error failure){if(retained!=null)retained.close();reservation.close();throw failure;}
         }
     }

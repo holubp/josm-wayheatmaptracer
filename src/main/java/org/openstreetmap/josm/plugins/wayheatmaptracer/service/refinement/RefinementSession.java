@@ -121,6 +121,19 @@ public final class RefinementSession implements AutoCloseable {
     public RefinementRootAuthority authority() { requireEdt(); return authority; }
     public Stage current() { requireEdt(); return history.get(cursor); }
     public List<Stage> history() { requireEdt(); return List.copyOf(history); }
+    /** Small admitted borrow list; the worker clears it before queued publication can discard old history. */
+    long admissionInventoryReferenceBytes() {
+        requireEdt();long count=1;
+        for(var stage:history)count=Math.addExact(count,stage.candidates().size());
+        for(var pins:inputPins.values())for(var stage:pins)count=Math.addExact(count,stage.candidates().size());
+        return Math.addExact(1024L,Math.multiplyExact(64L,Math.addExact(count,32L)));
+    }
+    ArrayList<Map<Object,Long>> admissionInventories() {
+        requireEdt();var inventories=new ArrayList<Map<Object,Long>>();inventories.add(authority.charges());
+        for(var stage:history)for(var candidate:stage.candidates())inventories.add(candidate.payload().charges());
+        for(var pins:inputPins.values())for(var stage:pins)for(var candidate:stage.candidates())inventories.add(candidate.payload().charges());
+        return inventories;
+    }
     public void select(CandidateId id) {
         requireIdle();
         Stage updated = current().withSelected(id);
@@ -252,12 +265,10 @@ public final class RefinementSession implements AutoCloseable {
         long bytes = authority.retainedBytes();
         for (Stage stage : stages) {
             if (charges.put(stage, 0L) != null) continue;
-            bytes = RefinementPayload.add(bytes, 256L + 8L * stage.candidates().size());
+            bytes = RefinementPayload.add(bytes, stageMetadataBytes(stage.candidates().size()));
             for (Candidate candidate : stage.candidates()) {
                 if (charges.put(candidate, 0L) == null) {
-                    bytes = RefinementPayload.add(bytes, 384L + 32L * candidate.correspondence().size()
-                        + 2L * candidate.immutableIdentity().length() + 2L * candidate.id().value().length()
-                        + 2L * candidate.nativeCandidateId().length() + 2L * candidate.sourcePalette().length());
+                    bytes = RefinementPayload.add(bytes,candidateMetadataBytes(candidate.id(),candidate.immutableIdentity(),candidate.nativeCandidateId(),candidate.sourcePalette(),candidate.correspondence().size()));
                 }
                 for (Map.Entry<Object, Long> entry : candidate.payload().charges().entrySet()) {
                     Long previous=charges.get(entry.getKey());
@@ -270,6 +281,8 @@ public final class RefinementSession implements AutoCloseable {
         }
         return bytes;
     }
+    static long stageMetadataBytes(int count){return 256L+8L*count;}
+    static long candidateMetadataBytes(CandidateId id,String identity,String nativeId,String palette,int arcs){return 384L+32L*arcs+2L*identity.length()+2L*id.value().length()+2L*nativeId.length()+2L*palette.length();}
     private void requireIdle() {
         requireEdt();
         if (terminal || active != null) throw new IllegalStateException("Session is terminal or an operation is running");

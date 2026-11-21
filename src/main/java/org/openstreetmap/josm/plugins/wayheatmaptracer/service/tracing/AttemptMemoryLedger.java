@@ -96,12 +96,16 @@ public final class AttemptMemoryLedger {
     }
 
     private synchronized Reservation reserve(Owner owner, long bytes) {
+        return reserveWithin(owner,limitBytes,bytes);
+    }
+    private synchronized Reservation reserveWithin(Owner owner,long maximumAttemptBytes,long bytes) {
         owner.ensureOpen();
-        if (bytes < 0) {
+        if (bytes < 0 || maximumAttemptBytes<0) {
             throw new IllegalArgumentException("reservation bytes must be non-negative");
         }
-        if (bytes > limitBytes - currentBytes) {
-            throw new ResourceLimitException(bytes, currentBytes, limitBytes);
+        long effectiveLimit=Math.min(limitBytes,maximumAttemptBytes);
+        if (bytes > effectiveLimit - currentBytes) {
+            throw new ResourceLimitException(bytes, currentBytes, effectiveLimit);
         }
         currentBytes = Math.addExact(currentBytes, bytes);
         peakBytes = Math.max(peakBytes, currentBytes);
@@ -335,6 +339,12 @@ public final class AttemptMemoryLedger {
         public Reservation reserve(long bytes) {
             return ledger.reserve(this, bytes);
         }
+        /** Atomic tighter total-attempt admission; never raises the attempt's production cap. */
+        public Reservation reserveWithin(long maximumAttemptBytes,long bytes) {
+            return ledger.reserveWithin(this,maximumAttemptBytes,bytes);
+        }
+        /** Identity relation only, for attributing one context's reservations to same-ledger children. */
+        public boolean sharesLedgerWith(Owner other){return other!=null&&ledger==other.ledger;}
 
         /** Adds an uncharged co-ownership reference to an identity charged earlier in this attempt. */
         public MemoryLease retain(Object alreadyAccountedIdentity) {

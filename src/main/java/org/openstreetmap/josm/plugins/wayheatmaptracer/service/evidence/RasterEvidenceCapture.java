@@ -19,9 +19,69 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterResamplingPro
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.MetricCorridorRegion;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
 
 /** Captures an acquired raster into an exact detached local-metric evidence grid. */
 public final class RasterEvidenceCapture {
+    public static final String ORIGINAL_ARGB_PROTOCOL="decoded-original-argb-v1";
+    public static final String ORIGINAL_ARGB_SET_PROTOCOL="decoded-original-argb-five-v1";
+    private static final List<String> ORIGINAL_PALETTES=List.of("hot","blue","bluered","purple","gray");
+    /** One actual original input; transforms must agree before a complete aggregate hash is claimed. */
+    public record NamedOriginalRaster(String palette,BufferedImage image,SupportedInputRasterTransform transform) {
+        public NamedOriginalRaster {java.util.Objects.requireNonNull(palette);java.util.Objects.requireNonNull(image);java.util.Objects.requireNonNull(transform);}
+    }
+    /** SHA-256 of decoded original pixels, row-major A/R/G/B bytes; not a PNG checksum. */
+    public static String hashOriginalArgb(BufferedImage original,GeometryWorkContext work) {
+        java.util.Objects.requireNonNull(original);java.util.Objects.requireNonNull(work);
+        try(var retained=work.reserve("original-argb-digest",256);var scratch=work.reserve("original-argb-hash-scratch",4096)) {
+            var digest=sha256Digest();var pixels=new int[256];hashPixels(original,digest,pixels,work);
+            var result=java.util.HexFormat.of().formatHex(digest.digest());retained.adopt(result);return result;
+        }
+    }
+    /** Versioned actual complete input set, never selected-image-only or output scalar bytes. */
+    public static String hashOriginalArgbSet(List<NamedOriginalRaster> actualInputs,GeometryWorkContext work) {
+        java.util.Objects.requireNonNull(actualInputs);java.util.Objects.requireNonNull(work);
+        try(var retained=work.reserve("original-argb-set-digest",256);var scratch=work.reserve("original-argb-set-hash-scratch",8192)) {
+            if(actualInputs.size()!=5)throw new IllegalArgumentException("Complete original five-raster input required");
+            var inputs=new LinkedHashMap<String,NamedOriginalRaster>();
+            for(var input:actualInputs){work.visit(GeometryWorkContext.Kind.HASH,1);if(!ORIGINAL_PALETTES.contains(input.palette())||inputs.put(input.palette(),input)!=null)throw new IllegalArgumentException("Original aggregate palette set differs");}
+            var first=inputs.get("hot");
+            for(var input:inputs.values())if(input.image().getWidth()!=first.image().getWidth()||input.image().getHeight()!=first.image().getHeight()
+                    ||!input.transform().kindId().equals(first.transform().kindId())||!input.transform().parameterIdentity().equals(first.transform().parameterIdentity()))throw new IllegalArgumentException("Original aggregate rasters are misaligned");
+            var digest=sha256Digest();var pixels=new int[256];work.visit(GeometryWorkContext.Kind.HASH,1);
+            digest.update("g004-original-argb-set-v1\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII));hashInt(digest,5);
+            for(String palette:ORIGINAL_PALETTES) {
+                var input=inputs.get(palette);work.visit(GeometryWorkContext.Kind.HASH,1);var name=palette.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+                hashInt(digest,name.length);digest.update(name);hashInt(digest,input.image().getWidth());hashInt(digest,input.image().getHeight());hashPixels(input.image(),digest,pixels,work);
+            }
+            var result=java.util.HexFormat.of().formatHex(digest.digest());retained.adopt(result);return result;
+        }
+    }
+    /** Operation-local cache. Its keys never escape their existing source owner's physical lifetime. */
+    public static final class OriginalInputHashes {
+        private record Entry(String hash) { }
+        private final GeometryWorkContext work;
+        private final java.util.IdentityHashMap<Object,Entry> singles,sets;
+        public OriginalInputHashes(GeometryWorkContext work){this.work=java.util.Objects.requireNonNull(work);try(var admitted=work.reserve("original-hash-cache",4096)){singles=new java.util.IdentityHashMap<>();sets=new java.util.IdentityHashMap<>();admitted.adopt(this);}}
+        public void requireContext(GeometryWorkContext actual){if(actual!=work)throw new IllegalArgumentException("Original hash cache belongs to another operation context");}
+        public String single(Object originalIdentity,BufferedImage original){return cached(singles,originalIdentity,()->hashOriginalArgb(original,work));}
+        public String completeSet(Object originalIdentity,List<NamedOriginalRaster> originals){return cached(sets,originalIdentity,()->hashOriginalArgbSet(originals,work));}
+        private String cached(java.util.IdentityHashMap<Object,Entry> cache,Object identity,java.util.function.Supplier<String> hash) {
+            java.util.Objects.requireNonNull(identity);work.visit(GeometryWorkContext.Kind.HASH,1);var known=cache.get(identity);if(known!=null)return known.hash();
+            try(var admitted=work.reserve("original-hash-cache-entry",256)){var entry=new Entry(hash.get());admitted.adopt(entry);cache.put(identity,entry);return entry.hash();}
+        }
+        public int singleImagesHashed(){return singles.size();}
+    }
+    private static java.security.MessageDigest sha256Digest(){try{return java.security.MessageDigest.getInstance("SHA-256");}catch(java.security.NoSuchAlgorithmException impossible){throw new IllegalStateException(impossible);}}
+    private static void hashInt(java.security.MessageDigest digest,int value){digest.update((byte)(value>>>24));digest.update((byte)(value>>>16));digest.update((byte)(value>>>8));digest.update((byte)value);}
+    private static void hashPixels(BufferedImage original,java.security.MessageDigest digest,int[] pixels,GeometryWorkContext work) {
+        for(int y=0;y<original.getHeight();y++)for(int x=0;x<original.getWidth();) {
+            int count=Math.min(pixels.length,original.getWidth()-x);work.visit(GeometryWorkContext.Kind.HASH,count);
+            original.getRGB(x,y,count,1,pixels,0,count);for(int i=0;i<count;i++)hashInt(digest,pixels[i]);x+=count;
+        }
+    }
+    /** Receipt for the one grouped immutable evidence charge, including its private scalar/mask arrays. */
+    public record AdmittedEvidence(EvidenceSnapshot evidence,long retainedBytes) { }
     static final long MAX_INPUT_PIXELS = 16_777_216L;
     static final long MAX_OUTPUT_PIXELS = 16_777_216L;
     static final int MAX_FIELDS = 16;
@@ -187,6 +247,48 @@ public final class RasterEvidenceCapture {
                 acquisitionKind, List.of(field), cancellation, scalarSource);
     }
 
+    /** New optional-copy path. All new arrays coexist under the same operation's admitted workspace. */
+    public AdmittedEvidence captureWithMetricSource(String snapshotId,BufferedImage inputRaster,boolean[] acquisitionValidity,
+            List<GeographicPoint> sourcePolyline,List<MetricPoint> metricSource,SupportedInputRasterTransform inputTransform,
+            MetricRasterGrid outputGrid,EvidenceResolution resolution,double radius,String sourceIdentity,
+            EvidenceFieldLineage.AcquisitionKind acquisitionKind,List<FieldSpec> fields,CancellationProbe cancellation,GeometryWorkContext work) {
+        return captureAdmitted(snapshotId,inputRaster,acquisitionValidity,sourcePolyline,metricSource,inputTransform,outputGrid,resolution,radius,sourceIdentity,acquisitionKind,fields,cancellation,work,null);
+    }
+    /** Exact precomputed scalar source; no display-image quantization or palette remapping. */
+    public AdmittedEvidence captureWithMetricScalarSource(String snapshotId,BufferedImage inputRaster,boolean[] acquisitionValidity,double[] scalarSource,
+            List<GeographicPoint> sourcePolyline,List<MetricPoint> metricSource,SupportedInputRasterTransform inputTransform,
+            MetricRasterGrid outputGrid,EvidenceResolution resolution,double radius,String sourceIdentity,
+            EvidenceFieldLineage.AcquisitionKind acquisitionKind,String fieldName,EvidenceFieldLineage lineage,CancellationProbe cancellation,GeometryWorkContext work) {
+        java.util.Objects.requireNonNull(work);
+        try(var header=work.reserve("precomputed-source-header",4096L)) {
+        work.visit(GeometryWorkContext.Kind.MAP,1);
+        if(inputRaster==null||scalarSource==null||acquisitionValidity==null||scalarSource.length!=Math.multiplyExact(inputRaster.getWidth(),inputRaster.getHeight())||acquisitionValidity.length!=scalarSource.length)
+            throw new IllegalArgumentException("Precomputed scalar source dimensions differ");
+        for(int i=0;i<scalarSource.length;i++){work.visit(GeometryWorkContext.Kind.MAP,1);if(acquisitionValidity[i]&&(!Double.isFinite(scalarSource[i])||scalarSource[i]<0||scalarSource[i]>1))throw new IllegalArgumentException("Valid scalar source must be normalized");}
+        var field=FieldSpec.direct(fieldName,ignored->{throw new IllegalStateException("Precomputed scalar mapping was bypassed");},lineage);
+        return captureAdmitted(snapshotId,inputRaster,acquisitionValidity,sourcePolyline,metricSource,inputTransform,outputGrid,resolution,radius,sourceIdentity,acquisitionKind,List.of(field),cancellation,work,scalarSource);
+        }
+    }
+    private AdmittedEvidence captureAdmitted(String snapshotId,BufferedImage inputRaster,boolean[] acquisitionValidity,
+            List<GeographicPoint> sourcePolyline,List<MetricPoint> metricSource,SupportedInputRasterTransform inputTransform,
+            MetricRasterGrid outputGrid,EvidenceResolution resolution,double radius,String sourceIdentity,
+            EvidenceFieldLineage.AcquisitionKind acquisitionKind,List<FieldSpec> fields,CancellationProbe cancellation,GeometryWorkContext work,double[] scalarOverride) {
+        java.util.Objects.requireNonNull(work);
+        try(var header=work.reserve("source-capture-header",4096L)) {
+        work.visit(GeometryWorkContext.Kind.MAP,1);
+        if(fields.stream().anyMatch(field->!field.separableKernel().isEmpty()||!field.lineage().scalarOperations().isEmpty()))throw new IllegalArgumentException("Optional source conversion requires an unfiltered native mapping");
+        validateInputs(snapshotId,inputRaster,acquisitionValidity,sourcePolyline,inputTransform,outputGrid,resolution,radius,sourceIdentity,acquisitionKind,fields,cancellation);
+        long input=Math.multiplyExact((long)inputRaster.getWidth(),inputRaster.getHeight()),output=Math.multiplyExact((long)outputGrid.width(),outputGrid.height());
+        long retainedBytes=Math.addExact(4096L,estimatedRetainedEvidenceBytes(outputGrid.width(),outputGrid.height(),sourcePolyline,resolution,snapshotId,sourceIdentity,inputTransform,fields));
+        long scratchBytes=Math.addExact(estimatedPeakWorkingBytes(input,output,fields),Math.addExact(retainedBytes,Math.multiplyExact(2048L,sourcePolyline.size())));
+        try(var retained=work.reserve("optional-source-evidence",retainedBytes);var scratch=work.reserve("optional-source-conversion",scratchBytes)) {
+            var result=captureInternal(snapshotId,inputRaster,acquisitionValidity,sourcePolyline,metricSource,inputTransform,outputGrid,resolution,radius,
+                sourceIdentity,acquisitionKind,fields,cancellation,scalarOverride,work);
+            retained.adopt(result);return new AdmittedEvidence(result,retainedBytes);
+        }
+        }
+    }
+
     private EvidenceSnapshot captureInternal(String snapshotId, BufferedImage inputRaster,
             boolean[] acquisitionValidity, List<GeographicPoint> sourcePolyline,
             List<MetricPoint> suppliedMetricSource,
@@ -195,6 +297,14 @@ public final class RasterEvidenceCapture {
             double decisionRadiusMeters, String sourceIdentity,
             EvidenceFieldLineage.AcquisitionKind acquisitionKind, List<FieldSpec> fieldSpecs,
             CancellationProbe cancellation, double[] scalarOverride) {
+        return captureInternal(snapshotId,inputRaster,acquisitionValidity,sourcePolyline,suppliedMetricSource,inputTransform,outputGrid,sourceResolution,
+            decisionRadiusMeters,sourceIdentity,acquisitionKind,fieldSpecs,cancellation,scalarOverride,null);
+    }
+    private EvidenceSnapshot captureInternal(String snapshotId, BufferedImage inputRaster,
+            boolean[] acquisitionValidity,List<GeographicPoint> sourcePolyline,List<MetricPoint> suppliedMetricSource,
+            SupportedInputRasterTransform inputTransform,MetricRasterGrid outputGrid,EvidenceResolution sourceResolution,
+            double decisionRadiusMeters,String sourceIdentity,EvidenceFieldLineage.AcquisitionKind acquisitionKind,List<FieldSpec> fieldSpecs,
+            CancellationProbe cancellation,double[] scalarOverride,GeometryWorkContext work) {
         validateInputs(snapshotId, inputRaster, acquisitionValidity, sourcePolyline,
                 inputTransform, outputGrid, sourceResolution, decisionRadiusMeters,
                 sourceIdentity, acquisitionKind, fieldSpecs, cancellation);
@@ -219,7 +329,10 @@ public final class RasterEvidenceCapture {
         }
         cancellation.checkpoint();
 
-        if (scalarOverride != null) scalarOverride = scalarOverride.clone();
+        if (scalarOverride != null) {
+            if(work==null)scalarOverride=scalarOverride.clone();
+            else {var original=scalarOverride;scalarOverride=new double[original.length];for(int i=0;i<original.length;i++){work.visit(GeometryWorkContext.Kind.COPY,1);scalarOverride[i]=original[i];}}
+        }
 
         LocalMetricFrame frame = outputGrid.coordinateFrame();
         MetricRegion footprint = outputGrid.footprint();
@@ -237,27 +350,30 @@ public final class RasterEvidenceCapture {
                     + " [geometry=" + handoffFingerprint(outputGrid, metricSource, decisionRadiusMeters) + "]");
         }
 
-        boolean[] inputValid = acquisitionValidity.clone();
+        boolean[] inputValid;
+        if(work==null)inputValid=acquisitionValidity.clone();
+        else {inputValid=new boolean[inputCount];for(int i=0;i<inputCount;i++){work.visit(GeometryWorkContext.Kind.COPY,1);inputValid[i]=acquisitionValidity[i];}}
         int[] argb = scalarOverride == null ? new int[inputCount] : null;
         if (argb != null) {
             for (int y = 0; y < inputHeight; y++) {
                 cancellation.checkpoint();
-                inputRaster.getRGB(0, y, inputWidth, 1, argb, y * inputWidth, inputWidth);
+                if(work==null)inputRaster.getRGB(0,y,inputWidth,1,argb,y*inputWidth,inputWidth);
+                else for(int x=0;x<inputWidth;x+=256){int count=Math.min(256,inputWidth-x);work.visit(GeometryWorkContext.Kind.COPY,count);inputRaster.getRGB(x,y,count,1,argb,y*inputWidth+x,inputWidth);}
             }
         }
         InverseLookup lookup = inverseLookup(outputGrid, inputTransform,
-                inputWidth, inputHeight, inputValid, cancellation);
+                inputWidth, inputHeight, inputValid, cancellation,work);
         Map<String, ScalarEvidenceField> fields = new LinkedHashMap<>();
         for (FieldSpec spec : fieldSpecs) {
             double[] sourceValues = scalarOverride == null
                     ? mapInput(argb, inputValid, inputWidth, inputHeight,
-                            spec.argbMapping(), cancellation)
+                            spec.argbMapping(), cancellation,work)
                     : scalarOverride;
             ScalarEvidenceField resampled = resample(sourceValues, inputWidth, outputGrid,
-                    lookup, spec.lineage(), cancellation);
+                    lookup, spec.lineage(), cancellation,work);
             ScalarEvidenceField result = spec.separableKernel().isEmpty() ? resampled
                     : resampled.convolveSeparable(spec.copiedKernel(), cancellation::checkpoint);
-            validatePostMapping(result, outputGrid, lookup);
+            validatePostMapping(result, outputGrid, lookup,work);
             cancellation.checkpoint();
             fields.put(spec.name(), result);
         }
@@ -631,7 +747,7 @@ public final class RasterEvidenceCapture {
 
     private static InverseLookup inverseLookup(MetricRasterGrid grid,
             SupportedInputRasterTransform inputTransform,
-            int inputWidth, int inputHeight, boolean[] inputValid, CancellationProbe cancellation) {
+            int inputWidth, int inputHeight, boolean[] inputValid, CancellationProbe cancellation,GeometryWorkContext work) {
         int count = Math.multiplyExact(grid.width(), grid.height());
         double[] sourceX = new double[count];
         double[] sourceY = new double[count];
@@ -639,6 +755,7 @@ public final class RasterEvidenceCapture {
         for (int y = 0; y < grid.height(); y++) {
             cancellation.checkpoint();
             for (int x = 0; x < grid.width(); x++) {
+                visit(work,GeometryWorkContext.Kind.MAP,5);
                 int index = y * grid.width() + x;
                 MetricPoint metric = grid.pixelCenterToMetric(x, y);
                 RasterPoint source = inputTransform.toRasterCenter(
@@ -654,6 +771,7 @@ public final class RasterEvidenceCapture {
         for (int y = 0; y < grid.height() - 1; y++) {
             cancellation.checkpoint();
             for (int x = 0; x < grid.width() - 1; x++) {
+                visit(work,GeometryWorkContext.Kind.MAP,1);
                 List<MetricPoint> corners = List.of(
                         grid.pixelCenterToMetric(x, y),
                         grid.pixelCenterToMetric(x + 1, y),
@@ -663,7 +781,7 @@ public final class RasterEvidenceCapture {
                         inputTransform.boundsForMetricCell(grid.coordinateFrame(), corners);
                 interpolationValid[y * (grid.width() - 1) + x] =
                         completeBoundsSupport(bounds, inputWidth, inputHeight,
-                                inputValid, cancellation);
+                                inputValid, cancellation,work);
             }
         }
         return new InverseLookup(sourceX, sourceY, valid, interpolationValid);
@@ -671,7 +789,7 @@ public final class RasterEvidenceCapture {
 
     private static boolean completeBoundsSupport(
             SupportedInputRasterTransform.RasterBounds bounds,
-            int width, int height, boolean[] valid, CancellationProbe cancellation) {
+            int width, int height, boolean[] valid, CancellationProbe cancellation,GeometryWorkContext work) {
         if (bounds.minimumX() < 0.0 || bounds.minimumY() < 0.0
                 || bounds.maximumX() >= width - 1.0 || bounds.maximumY() >= height - 1.0) {
             return false;
@@ -683,6 +801,7 @@ public final class RasterEvidenceCapture {
         for (int y = minimumY; y <= maximumY; y++) {
             cancellation.checkpoint();
             for (int x = minimumX; x <= maximumX; x++) {
+                visit(work,GeometryWorkContext.Kind.MAP,1);
                 if (!valid[y * width + x]) {
                     return false;
                 }
@@ -704,11 +823,12 @@ public final class RasterEvidenceCapture {
     }
 
     private static double[] mapInput(int[] argb, boolean[] valid, int width, int height,
-            IntToDoubleFunction mapping, CancellationProbe cancellation) {
+            IntToDoubleFunction mapping, CancellationProbe cancellation,GeometryWorkContext work) {
         double[] values = new double[argb.length];
         for (int y = 0; y < height; y++) {
             cancellation.checkpoint();
             for (int x = 0; x < width; x++) {
+                visit(work,GeometryWorkContext.Kind.MAP,1);
                 int index = y * width + x;
                 if (!valid[index]) {
                     values[index] = Double.NaN;
@@ -726,11 +846,12 @@ public final class RasterEvidenceCapture {
 
     private static ScalarEvidenceField resample(double[] sourceValues, int sourceWidth,
             MetricRasterGrid grid, InverseLookup lookup, EvidenceFieldLineage lineage,
-            CancellationProbe cancellation) {
+            CancellationProbe cancellation,GeometryWorkContext work) {
         double[] output = new double[lookup.valid().length];
         for (int y = 0; y < grid.height(); y++) {
             cancellation.checkpoint();
             for (int x = 0; x < grid.width(); x++) {
+                visit(work,GeometryWorkContext.Kind.MAP,5);
                 int index = y * grid.width() + x;
                 if (!lookup.valid()[index]) {
                     output[index] = Double.NaN;
@@ -753,22 +874,26 @@ public final class RasterEvidenceCapture {
         }
         return new ScalarEvidenceField(grid.width(), grid.height(), output,
                 lookup.valid(), lookup.interpolationValid(),
-                lineage.filtered("strict-bilinear-metric-resample-v2"));
+                lineage.filtered("strict-bilinear-metric-resample-v2"),work);
     }
 
     private static void validatePostMapping(ScalarEvidenceField result, MetricRasterGrid grid,
-            InverseLookup resampledSupport) {
+            InverseLookup resampledSupport,GeometryWorkContext work) {
         if (result == null || result.width() != grid.width() || result.height() != grid.height()) {
             throw new IllegalArgumentException("Post-mapping scalar operation changed the metric raster frame");
         }
-        boolean[] resultValidity = result.copiedValidity();
+        boolean[] resultValidity;
+        if(work==null)resultValidity=result.copiedValidity();else {resultValidity=new boolean[Math.multiplyExact(result.width(),result.height())];result.copyValidityInto(resultValidity,work);}
         for (int index = 0; index < resultValidity.length; index++) {
+            visit(work,GeometryWorkContext.Kind.MAP,1);
             if (resultValidity[index] && !resampledSupport.valid()[index]) {
                 throw new IllegalArgumentException("Post-mapping scalar operation resurrected invalid support");
             }
         }
-        boolean[] resultInterpolationValidity = result.copiedInterpolationValidity();
+        boolean[] resultInterpolationValidity;
+        if(work==null)resultInterpolationValidity=result.copiedInterpolationValidity();else {resultInterpolationValidity=new boolean[Math.multiplyExact(result.width()-1,result.height()-1)];result.copyInterpolationValidityInto(resultInterpolationValidity,work);}
         for (int index = 0; index < resultInterpolationValidity.length; index++) {
+            visit(work,GeometryWorkContext.Kind.MAP,1);
             if (resultInterpolationValidity[index]
                     && !resampledSupport.interpolationValid()[index]) {
                 throw new IllegalArgumentException(
@@ -780,4 +905,5 @@ public final class RasterEvidenceCapture {
     private record InverseLookup(double[] sourceX, double[] sourceY,
             boolean[] valid, boolean[] interpolationValid) {
     }
+    private static void visit(GeometryWorkContext work,GeometryWorkContext.Kind kind,int count){if(work!=null)work.visit(kind,count);}
 }

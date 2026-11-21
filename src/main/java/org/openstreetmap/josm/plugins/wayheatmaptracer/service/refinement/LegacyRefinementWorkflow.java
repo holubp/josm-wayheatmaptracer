@@ -46,6 +46,12 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     private final Consumer<CenterlineCandidate> rootSelection;
     private final Executor executor;
     private final AlignmentJob.EventDispatcher publicationDispatcher;
+    /** Package-only deterministic test control: reductions and an extra checkpoint, never a replacement probe/context. */
+    record SourcePreparationControl(long visits,long bytes,java.util.function.LongConsumer checkpoint) {
+        SourcePreparationControl {if(visits<0||visits>8_000_000L||bytes<0||bytes>AttemptMemoryLedger.MAX_BYTES)throw new IllegalArgumentException("Source preparation control may only tighten production limits");Objects.requireNonNull(checkpoint);}
+        static SourcePreparationControl production(){return new SourcePreparationControl(8_000_000L,AttemptMemoryLedger.MAX_BYTES,value->{});}
+    }
+    private final SourcePreparationControl sourcePreparationControl;
     private PreviewWorkGate workGate;
     private PreviewWorkGate.Work activeWork;
     /** Installs the actual retained Legacy context lazily; ordinary Legacy review does no export conversion. */
@@ -149,7 +155,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         // The volatile returned flag publishes stable worker facts. Before it, do not read mutable progress.
         return new RefinementAttemptDiagnostics(progress.binding,workerReturned?progress.receipt:Optional.empty(),
             RefinementAttemptDiagnostics.Publication.CANCELLED,RefinementAttemptDiagnostics.Phase.PUBLICATION,
-            RefinementAttemptDiagnostics.Cause.CANCELLED,workerReturned?progress.materializationRefusals:0,workerReturned);
+            RefinementAttemptDiagnostics.Cause.CANCELLED,workerReturned?progress.materializationRefusals:0,workerReturned,workerReturned?progress.sourcePreparation:Optional.empty());
     }
     private void freezeDiagnostics(boolean terminal,boolean appliedNow) {
         if(!isCurrent()||preparingExport)return;preparingExport=true;
@@ -213,7 +219,13 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     private final AttemptMemoryLedger memory=AttemptMemoryLedger.production();
     private final RefinementDiagnosticsMemory diagnosticMemory=new RefinementDiagnosticsMemory(memory);
     private final AttemptMemoryLedger.Owner rootMemory=diagnosticMemory.workflowOwner();
-    private final Map<StageId,AttemptMemoryLedger.Owner> retainedStages=new HashMap<>();
+    private record SelectionMetadata(Stage wrapper,AttemptMemoryLedger.Owner owner) { }
+    private static final class RetainedStage {
+        final AttemptMemoryLedger.Owner owner;final Stage metadata;SelectionMetadata selection;
+        RetainedStage(AttemptMemoryLedger.Owner owner,Stage metadata){this.owner=owner;this.metadata=metadata;}
+        void close(){if(selection!=null)selection.owner().close();owner.close();}
+    }
+    private final Map<StageId,RetainedStage> retainedStages=new HashMap<>();
     private volatile RefinementAttemptDiagnostics latestDiagnostics;
     private RefinementAttemptDiagnostics.Slot diagnosticsSlot;
     private volatile RefinementAttemptDiagnostics.Availability diagnosticsAvailability=RefinementAttemptDiagnostics.Availability.NONE;
@@ -228,8 +240,12 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         int materializationRefusals;
         boolean presentationAttempted;
         Outcome pipelineOutcome;
+        Optional<RefinementAttemptDiagnostics.SourcePreparationWork> sourcePreparation=Optional.empty();
+        RefinementAttemptDiagnostics.Cause sourcePreparationCause=RefinementAttemptDiagnostics.Cause.NONE;
+        Optional<RefinementSourcePlanner.SourceRequest> failedSource=Optional.empty();
+        Optional<RefinementAttemptDiagnostics.NativeWork> nativeWork=Optional.empty();
         AttemptProgress(RefinementAttemptDiagnostics.Binding binding,RefinementAttemptDiagnostics.Slot slot){this.binding=binding;this.slot=slot;}
-        RefinementAttemptDiagnostics snapshot(RefinementAttemptDiagnostics.Publication publication,RefinementAttemptDiagnostics.Cause cause){return new RefinementAttemptDiagnostics(binding,receipt,publication,phase,cause,materializationRefusals);}
+        RefinementAttemptDiagnostics snapshot(RefinementAttemptDiagnostics.Publication publication,RefinementAttemptDiagnostics.Cause cause){return new RefinementAttemptDiagnostics(binding,receipt,publication,phase,cause,materializationRefusals,true,sourcePreparation);}
     }
     record Computed(Optional<Stage> stage,RefinementAttemptDiagnostics.Cause cause,
             Optional<AttemptMemoryLedger.Reservation> publicationAllowance) {
@@ -286,6 +302,12 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     public LegacyRefinementWorkflow(LegacyReviewOwner review,TileFetchCoordinator coordinator,
             Consumer<CenterlineCandidate> rootSelection,Consumer<Display> display,Consumer<String> status,
             Executor executor,AlignmentJob.EventDispatcher publicationDispatcher) {
+        this(review,coordinator,rootSelection,display,status,executor,publicationDispatcher,SourcePreparationControl.production());
+    }
+    LegacyRefinementWorkflow(LegacyReviewOwner review,TileFetchCoordinator coordinator,
+            Consumer<CenterlineCandidate> rootSelection,Consumer<Display> display,Consumer<String> status,
+            Executor executor,AlignmentJob.EventDispatcher publicationDispatcher,SourcePreparationControl sourcePreparationControl) {
+        this.sourcePreparationControl=Objects.requireNonNull(sourcePreparationControl);
         this.review=review;this.coordinator=coordinator;this.presentedRootChoice=review.choiceId(review.selectedCandidate());this.rootSelection=rootSelection;this.display=display;this.status=status;
         this.executor=Objects.requireNonNull(executor);this.publicationDispatcher=Objects.requireNonNull(publicationDispatcher);
         workGate=new PreviewWorkGate(publicationDispatcher);workGate.adopt(this,this::close);
@@ -318,7 +340,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         if(busy||closed||!ownsPublication())return;
         try {review.requireOriginalAttemptCurrent();confirmation=null;
             if(session==null){var candidate=review.candidateForChoice(id);showRoot(candidate,id);}
-            else{session.select(new CandidateId(id));showCurrent();}
+            else{session.select(new CandidateId(id));if(nativeSelected())retainSelectionMetadata(session.current());showCurrent();}
         } catch(RuntimeException failure){message=failure.getMessage();}
         present();
     }
@@ -326,6 +348,16 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         if(busy||session==null||closed||!ownsPublication())return;
         try{review.requireOriginalAttemptCurrent();confirmation=null;if(forward)session.redo();else session.back();showCurrent();}
         catch(RuntimeException failure){message=failure.getMessage();}present();
+    }
+    /** Selection changes only a bounded wrapper; the admitted candidate graph keeps its original identity. */
+    private RetainedStage retainSelectionMetadata(Stage current) {
+        var retained=retainedStages.get(current.id());if(retained==null)throw new IllegalStateException("Published stage metadata is unavailable");
+        if(current==retained.metadata||retained.selection!=null&&retained.selection.wrapper()==current)return retained;
+        var owner=rootMemory.child("selected-stage-wrapper");
+        try {
+            owner.reserve(Math.addExact(256L,Math.multiplyExact(8L,current.candidates().size()))).adopt(current);
+            var previous=retained.selection;retained.selection=new SelectionMetadata(current,owner);if(previous!=null)previous.owner().close();return retained;
+        }catch(RuntimeException|Error failure){owner.close();throw failure;}
     }
     private void showRoot(CenterlineCandidate candidate,String choice) {
         presentedNative=null;presentedRootChoice=null;
@@ -397,14 +429,24 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             var plan=RefinementSourcePlanner.plan(ticket,seed.settings(),parent);
             var sourcePayload=selected().payload();var original=review.originalResult();var credentials=CredentialSnapshot.fromConfig(review.originalConfig().heatmap());
             var operation=rootMemory.child("live-refinement-"+ticket.sequence());
+            // Physical input co-ownership survives branch removal until queued worker/result settlement.
+            if(nativeSelected()) {
+                var current=session.current();var retained=retainSelectionMetadata(current);
+                operation.retainIfAbsent(retained.metadata);
+                if(current!=retained.metadata)operation.retainIfAbsent(current);
+            }
+            sourcePayload.retainSmoothingSources(operation);
+            ArrayList<Map<Object,Long>> baseline;
+            try(var snapshot=operation.reserve(session.admissionInventoryReferenceBytes())){baseline=session.admissionInventories();snapshot.adopt(baseline);}
+            catch(RuntimeException refused){operation.close();throw refused;}
             var publication=rootMemory.child("publication-"+ticket.sequence());
             var entry=new NativeEntry(ticket);activeEntry=entry;
             cancellation=new CancellationToken();var probe=probe(cancellation,entry);busy=true;present();
             var work=workGate.beginWork(this);activeWork=work;
             CompletableFuture<Computed> computation;
-            try {computation=CompletableFuture.supplyAsync(()->compute(ticket,parent,plan,credentials,operation,publication,sourcePayload,original,allowance,probe,entry,progress),executor);}
+            try {computation=CompletableFuture.supplyAsync(()->compute(ticket,parent,plan,credentials,operation,publication,sourcePayload,original,allowance,probe,entry,progress,baseline),executor);}
             catch(RuntimeException rejected){computation=CompletableFuture.failedFuture(rejected);}
-            computation.whenComplete((completed,failure)->{entry.workerReturned=true;dispatchCompletion(()->{
+            computation.whenComplete((completed,failure)->{baseline.clear();entry.workerReturned=true;dispatchCompletion(()->{
                     var publicationOutcome=RefinementAttemptDiagnostics.Publication.FAILED;
                     var diagnosticCause=RefinementAttemptDiagnostics.Cause.FAILED;
                     try {
@@ -424,15 +466,21 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                                 progress.phase=RefinementAttemptDiagnostics.Phase.PUBLICATION;
                                 var child=completed.stage().get();
                                 if(session.publish(ticket,child,()->{
-                                    long bytes=child.candidates().stream().mapToLong(c->c.payload().retainedBytes()).sum();
+                                    var metadata=new IdentityHashMap<Object,Long>();
+                                    for(var candidate:child.candidates()) {
+                                        candidate.payload().retainSmoothingSources(publication);
+                                        candidate.payload().nativeReview().ifPresent(value->value.retainedSources().values().forEach(RetainedSmoothingSource::requireCurrent));
+                                        candidate.payload().publicationCharges().forEach((identity,bytes)->metadata.merge(identity,bytes,Math::max));
+                                    }
+                                    long bytes=0;for(long value:metadata.values())bytes=Math.addExact(bytes,value);
                                     synchronized(memory) {
                                         completed.publicationAllowance().orElseThrow().close();
-                                        publication.reserve(bytes).adopt(child);
+                                        publication.reserve(Math.addExact(bytes,64L)).adopt(child);
                                     }
                                     progress.presentationAttempted=true;showStage(child);
                                     probe.checkpoint();review.requireOriginalAttemptCurrent();
                                 })) {
-                                    retainedStages.put(child.id(),publication);
+                                    retainedStages.put(child.id(),new RetainedStage(publication,child));
                                     var live=session.history().stream().map(Stage::id).collect(java.util.stream.Collectors.toSet());
                                     retainedStages.entrySet().removeIf(item->{if(live.contains(item.getKey()))return false;item.getValue().close();return true;});
                                     publicationOutcome=RefinementAttemptDiagnostics.Publication.PUBLISHED;diagnosticCause=RefinementAttemptDiagnostics.Cause.NONE;
@@ -456,7 +504,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                             presentationFailed?RefinementAttemptDiagnostics.Cause.PRESENTATION_FAILED:limited?RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT:RefinementAttemptDiagnostics.Cause.FAILED;
                         message=cancelled?"Refinement cancelled.":stale?"Refinement source changed.":"Refinement failed.";
                     }
-                    finally{publishDiagnostics(ticket,progress,publicationOutcome,diagnosticCause);operation.close();if(!retainedStages.containsValue(publication))publication.close();session.workerSettled(ticket);active=null;activeProgress=null;busy=false;if(closed)releaseClosed();activeEntry=null;settleWork(work);if(!closed)present();entry.settlement.complete(null);}
+                    finally{publishDiagnostics(ticket,progress,publicationOutcome,diagnosticCause);operation.close();if(retainedStages.values().stream().noneMatch(value->value.owner==publication))publication.close();session.workerSettled(ticket);active=null;activeProgress=null;busy=false;if(closed)releaseClosed();activeEntry=null;settleWork(work);if(!closed)present();entry.settlement.complete(null);}
                 });});
         }catch(RuntimeException refused){
             if(active!=null&&!busy){
@@ -470,51 +518,74 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     }
     private Computed compute(OperationTicket ticket,ParentTraceReference parent,RefinementSourcePlanner.Plan plan,
             CredentialSnapshot credentials,AttemptMemoryLedger.Owner operation,AttemptMemoryLedger.Owner publication,RefinementPayload sourcePayload,
-            AlignmentResult original,long allowance,CancellationProbe probe,NativeEntry entry,AttemptProgress progress) {
+            AlignmentResult original,long allowance,CancellationProbe probe,NativeEntry entry,AttemptProgress progress,List<Map<Object,Long>> baseline) {
         progress.phase=RefinementAttemptDiagnostics.Phase.ACQUISITION;
         var acquired=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,credentials,probe,operation);
-        var sources=RefinementPipeline.managedSources(acquired.value(),coordinator);
+        var budget=RefinementPipeline.OperationBudget.production(parent.root().request().budgets());
+        var workRef=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext[1];
+        CancellationProbe hashProbe=()->{probe.checkpoint();try{sourcePreparationControl.checkpoint().accept(workRef[0].visits());}finally{probe.checkpoint();}return false;};
+        var hashWork=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(sourcePreparationControl.visits(),sourcePreparationControl.bytes(),budget.finalDeadlineNanos(),hashProbe,operation);workRef[0]=hashWork;
+        try {
+        var sources=RefinementPipeline.managedSources(acquired.value(),coordinator,hashWork);
         var evidence=new HashMap<RefinementSourcePlanner.SourceRequest,EvidenceSnapshot>();
         var wrapped=new RefinementPipeline.Sources(){
             public void requireCurrent(){probe.checkpoint();sources.requireCurrent();}
-            public EvidenceSnapshot evidence(RefinementSourcePlanner.SourceRequest source,CancellationProbe cancellation){var actual=sources.evidence(source,cancellation);evidence.put(source,actual);return actual;}
+            public EvidenceSnapshot evidence(RefinementSourcePlanner.SourceRequest source,CancellationProbe cancellation){
+                progress.phase=RefinementAttemptDiagnostics.Phase.SOURCE_PREPARATION;
+                try{var actual=sources.evidence(source,cancellation);evidence.put(source,actual);progress.phase=RefinementAttemptDiagnostics.Phase.PIPELINE;return actual;}
+                catch(RefinementPipeline.SourceUnavailable unavailable){progress.phase=RefinementAttemptDiagnostics.Phase.PIPELINE;throw unavailable;}
+                catch(RuntimeException failure){var outcome=RefinementPipeline.sourcePreparationFailure(failure,sources,probe);progress.sourcePreparationCause=sourcePreparationCause(outcome);progress.failedSource=Optional.of(source);throw new RefinementPipeline.SourcePreparationFailure(outcome,failure);}
+            }
             public Optional<RefinementSourcePlanner.Plan> binding(){return sources.binding();}
             public Optional<ManagedModernPreviewSource.RefinementWorkReceipt> actualSourceWork(){return sources.actualSourceWork();}
+            public Optional<RetainedSmoothingSource> retentionDescriptor(RefinementSourcePlanner.SourceRequest source,EvidenceSnapshot actual){return sources.retentionDescriptor(source,actual);}
         };
         progress.phase=RefinementAttemptDiagnostics.Phase.PIPELINE;
         var outcome=new RefinementPipeline().run(ticket,parent,plan,new RefinementPipeline.Adapters(wrapped,RefinementPipeline.productionRunner(actual->{
                 if(!actual.equals(ticket))throw new IllegalStateException("Native entry ticket changed");
                 if(entry.entered.compareAndSet(false,true))SwingUtilities.invokeLater(()->firstNativeEntry.complete(entry));
             }),operation),
-            RefinementPipeline.OperationBudget.production(parent.root().request().budgets()),probe);
-        progress.pipelineOutcome=outcome.outcome();
+            budget,probe);
+        progress.pipelineOutcome=outcome.outcome();progress.nativeWork=Optional.of(RefinementAttemptDiagnostics.NativeWork.capture(outcome));
         progress.receipt=progress.slot==null?Optional.empty():progress.slot.receipt(progress.binding,parent,outcome);
         actualNativeCalls+=outcome.attempts().stream().flatMap(a->a.run().stream()).mapToInt(RefinementEngineAdapter.Run::nativeCalls).sum();
         computationEvidence="outcome="+outcome.outcome()+" full="+outcome.candidates().size()+" rejected="+outcome.rejected().size()+" attempts="+outcome.attempts().stream().map(a->a.kind()+":"+a.reason()+":"+a.nativeCallAvailability()).toList()
             +" rejectedFindings="+outcome.rejected().stream().map(a->a.quality().findings().stream().map(f->f.code().name()).toList()).toList();
-        var computed=materialize(ticket,parent,outcome,evidence,sourcePayload,original,allowance,probe,progress,publication);
-        computationEvidence+=" plan-refusals="+progress.materializationRefusals;return computed;
+        var computed=materialize(ticket,parent,outcome,evidence,sourcePayload,original,allowance,probe,progress,publication,baseline);
+        computationEvidence+=" plan-refusals="+progress.materializationRefusals+" auxiliary-source-hash-visits="+hashWork.visits()+" auxiliary-source-hash-counts="+hashWork.counters();return computed;
+        } finally {progress.sourcePreparation=Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(progress.sourcePreparationCause,hashWork.visits(),hashWork.counters(),progress.failedSource,progress.nativeWork));}
     }
     /** Claims the unchanged future Stage bound only once actual assessed output needs materialization. */
     static Computed materialize(OperationTicket ticket,ParentTraceReference parent,RefinementPipeline.Result outcome,
             Map<RefinementSourcePlanner.SourceRequest,EvidenceSnapshot> evidence,RefinementPayload sourcePayload,
             AlignmentResult original,long allowance,CancellationProbe probe,AttemptProgress progress,AttemptMemoryLedger.Owner publication) {
-        if(outcome.candidates().isEmpty())return materialize(ticket,parent,outcome,evidence,sourcePayload,original,allowance,probe,progress);
+        return materialize(ticket,parent,outcome,evidence,sourcePayload,original,allowance,probe,progress,publication,List.of(parent.root().charges(),sourcePayload.charges()));
+    }
+    static Computed materialize(OperationTicket ticket,ParentTraceReference parent,RefinementPipeline.Result outcome,
+            Map<RefinementSourcePlanner.SourceRequest,EvidenceSnapshot> evidence,RefinementPayload sourcePayload,
+            AlignmentResult original,long allowance,CancellationProbe probe,AttemptProgress progress,AttemptMemoryLedger.Owner publication,List<Map<Object,Long>> baseline) {
+        if(outcome.candidates().isEmpty())return materialize(ticket,parent,outcome,evidence,sourcePayload,original,allowance,probe,progress,baseline);
         progress.phase=RefinementAttemptDiagnostics.Phase.MATERIALIZATION;
         probe.checkpoint();
         // Input, native result, assembly and assessment owners are independent. This reservation
         // covers the new Stage payload from its first allocation through queued publication.
         var reservation=publication.reserve(allowance);
-        var computed=materialize(ticket,parent,outcome,evidence,sourcePayload,original,allowance,probe,progress);
+        var computed=materialize(ticket,parent,outcome,evidence,sourcePayload,original,allowance,probe,progress,baseline);
         return new Computed(computed.stage(),computed.cause(),Optional.of(reservation));
     }
+    private static RefinementAttemptDiagnostics.Cause sourcePreparationCause(Outcome outcome){return switch(outcome){case RESOURCE_LIMIT->RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT;case CANCELLED->RefinementAttemptDiagnostics.Cause.CANCELLED;case STALE->RefinementAttemptDiagnostics.Cause.STALE;default->RefinementAttemptDiagnostics.Cause.FAILED;};}
     /** Same assessed full-composition materialization used by the live worker, including typed plan refusal. */
     static Computed materialize(OperationTicket ticket,ParentTraceReference parent,RefinementPipeline.Result outcome,
             Map<RefinementSourcePlanner.SourceRequest,EvidenceSnapshot> evidence,RefinementPayload sourcePayload,
             AlignmentResult original,long allowance,CancellationProbe probe,AttemptProgress progress) {
-        var operationReceipt=progress.receipt;
+        return materialize(ticket,parent,outcome,evidence,sourcePayload,original,allowance,probe,progress,List.of(parent.root().charges(),sourcePayload.charges()));
+    }
+    static Computed materialize(OperationTicket ticket,ParentTraceReference parent,RefinementPipeline.Result outcome,
+            Map<RefinementSourcePlanner.SourceRequest,EvidenceSnapshot> evidence,RefinementPayload sourcePayload,
+            AlignmentResult original,long allowance,CancellationProbe probe,AttemptProgress progress,List<Map<Object,Long>> baseline) {
+        var operationReceipt=progress.receipt;var admission=new MarginalPayloadAdmission(baseline,allowance,probe);
         if(!outcome.candidates().isEmpty())progress.phase=RefinementAttemptDiagnostics.Phase.MATERIALIZATION;
-        var candidates=new ArrayList<Candidate>();int index=0;long remaining=allowance;
+        var candidates=new ArrayList<Candidate>();int index=0;
         for(var retained:outcome.candidates()) {
             probe.checkpoint();var assessed=retained.assessed();var source=retained.sources().get(0);
             try {
@@ -525,12 +596,14 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                 String id="refinement-"+ticket.sequence()+"-"+index++;
                 String nativeId=assessed.candidate().id();
                 var candidate=new CenterlineCandidate(nativeId,0,List.of(),List.of(),points,points,assignments,List.of(),0,null,null,null,List.of());
-                var detector=new DetectorAttempt(source.palette(),source.mapping(),ticket.engine(),edit.validation().disposition()==ValidationReport.Disposition.APPLICABLE?DetectorAttemptStatus.APPLICABLE:DetectorAttemptStatus.REVIEW_REQUIRED,List.of(nativeId),"refinement-final","Actual full parent-backed composition");
-                var result=new AlignmentResult(original.selection(),null,List.of(candidate),original.sourcePolyline(),points,List.of(),null,null,List.of(detector),List.of(candidate));
+                var detectors=retained.sources().stream().map(alias->new DetectorAttempt(alias.palette(),alias.mapping(),ticket.engine(),edit.validation().disposition()==ValidationReport.Disposition.APPLICABLE?DetectorAttemptStatus.APPLICABLE:DetectorAttemptStatus.REVIEW_REQUIRED,List.of(nativeId),"refinement-final","Actual full parent-backed composition")).toList();
+                var result=new AlignmentResult(original.selection(),null,List.of(candidate),original.sourcePolyline(),points,List.of(),null,null,detectors,List.of(candidate));
                 var nativeReview=new RefinementPayload.NativeReview(edit,assessed.quality(),operationReceipt,retained.sources(),
-                    OptionalInt.of((int)assessed.candidate().spans().stream().filter(ParentBackedComposer.Span::parentRetained).count()));
-                var payload=RefinementPayload.captureNative(result,sourcePayload,nativeReview,remaining);
-                candidates.add(new Candidate(new CandidateId(id),payload,assessed.candidate().correspondence(),edit.canonicalHash(),nativeId,source.palette()));remaining-=payload.retainedBytes();
+                    OptionalInt.of((int)assessed.candidate().spans().stream().filter(ParentBackedComposer.Span::parentRetained).count()),retained.retainedSources(),retained.sourceSpans(),Optional.of(assessed.candidate().pointIds()));
+                var choiceId=new CandidateId(id);String immutableIdentity=edit.canonicalHash();
+                long header=(candidates.isEmpty()?RefinementSession.stageMetadataBytes(1):8L)+RefinementSession.candidateMetadataBytes(choiceId,immutableIdentity,nativeId,source.palette(),assessed.candidate().correspondence().size());
+                var payload=RefinementPayload.captureNative(result,sourcePayload,nativeReview,admission,header);
+                candidates.add(new Candidate(choiceId,payload,assessed.candidate().correspondence(),immutableIdentity,nativeId,source.palette()));
             }catch(IllegalArgumentException unsupported){progress.materializationRefusals++;}
         }
         probe.checkpoint();
