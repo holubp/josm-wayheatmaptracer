@@ -1,5 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -417,6 +419,7 @@ public final class ImageCostField {
         double[] values = new double[intervals + 1];
         List<LocalScalarProfileExtractor.Sample> samples = new ArrayList<>(intervals + 1);
         for (int index = 0; index <= intervals; index++) {
+            PostprocessingValidationWork.visit();
             if ((index & 1023) == 0) cancellation.checkpoint();
             double offset = -halfWidth + 2.0 * halfWidth * index / intervals;
             offsets[index] = offset;
@@ -426,20 +429,19 @@ public final class ImageCostField {
             values[index] = value.orElse(Double.NaN);
             samples.add(new LocalScalarProfileExtractor.Sample(offset, values[index], value.isPresent()));
         }
-        LocalScalarProfileExtractor.Result extracted = new LocalScalarProfileExtractor().extract(samples,
-                sourcePitchMeters, parameters);
-        List<LocalScalarProfileExtractor.Mode> ordered = extracted.modes().stream()
-                .sorted(Comparator.comparingDouble(mode -> mode.distanceToCenterSet(0.0))).toList();
-        double nearestCensoredBoundary = extracted.censoredModes().stream()
+        LocalScalarProfileExtractor.Result extracted = extractSelectedProfile(samples,parameters,cancellation);
+        List<LocalScalarProfileExtractor.Mode> ordered = extracted.modes().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
+                .sorted(PostprocessingValidationWork.comparator(Comparator.comparingDouble(mode -> mode.distanceToCenterSet(0.0)))).toList();
+        double nearestCensoredBoundary = extracted.censoredModes().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                 .mapToDouble(mode -> Math.abs(mode.boundaryOffsetMeters()))
                 .min().orElse(Double.POSITIVE_INFINITY);
-        boolean censoredExtentMeasured = extracted.censoredModes().stream()
+        boolean censoredExtentMeasured = extracted.censoredModes().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                 .allMatch(LocalScalarProfileExtractor.CensoredMode::inwardExtentMeasured);
-        double nearestCensoredExtent = extracted.censoredModes().stream()
+        double nearestCensoredExtent = extracted.censoredModes().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                 .mapToDouble(mode -> distanceToInterval(0.0, mode.boundaryOffsetMeters(),
                         mode.inwardSupportOffsetMeters()))
                 .min().orElse(Double.POSITIVE_INFINITY);
-        double nearestCompleteCompetitor = ordered.stream().skip(1)
+        double nearestCompleteCompetitor = ordered.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).skip(1)
                 .mapToDouble(mode -> mode.distanceToCenterSet(0.0))
                 .min().orElse(Double.POSITIVE_INFINITY);
         BranchIsolation branchIsolation = censoredExtentMeasured
@@ -515,6 +517,7 @@ public final class ImageCostField {
         }
         int intervals = Math.max(1, (int) requestedIntervals);
         for (int index = 0; index <= intervals; index++) {
+            PostprocessingValidationWork.visit();
             cancellation.checkpoint();
             double fraction = (double) index / intervals;
             MetricPoint point = new MetricPoint(
@@ -586,6 +589,7 @@ public final class ImageCostField {
         int firstX=(int)Math.ceil(minX)-1, lastX=(int)Math.floor(maxX);
         double dx=b.x()-a.x(), dy=b.y()-a.y();
         for (int x=firstX; x<=lastX; x++) {
+            PostprocessingValidationWork.visit();
             cancellation.checkpoint();
             double lo=0, hi=1;
             if (dx != 0) {
@@ -596,6 +600,7 @@ public final class ImageCostField {
             double y0=a.y()+lo*dy, y1=a.y()+hi*dy;
             int low=(int)Math.ceil(Math.min(y0,y1))-1, high=(int)Math.floor(Math.max(y0,y1));
             for(int y=low; y<=high; y++) {
+            PostprocessingValidationWork.visit();
                 cancellation.checkpoint();
                 if (!budget.visit()) return SegmentSupport.RESOURCE_LIMIT;
                 if (x<0 || y<0 || x+1>=width || y+1>=height
@@ -633,6 +638,7 @@ public final class ImageCostField {
         }
         java.util.List<LocalScalarProfileExtractor.Sample> samples = new java.util.ArrayList<>(intervals + 1);
         for (int index = 0; index <= intervals; index++) {
+            PostprocessingValidationWork.visit();
             double offset = -halfWidth + 2.0 * halfWidth * index / intervals;
             MetricPoint location = new MetricPoint(point.xMeters() + normal.xMeters() * offset,
                     point.yMeters() + normal.yMeters() * offset);
@@ -640,8 +646,7 @@ public final class ImageCostField {
             samples.add(new LocalScalarProfileExtractor.Sample(offset,
                     value.orElse(Double.NaN), value.isPresent()));
         }
-        LocalScalarProfileExtractor.Result features = new LocalScalarProfileExtractor().extract(samples,
-                sourcePitchMeters, parameters);
+        LocalScalarProfileExtractor.Result features = extractSelectedProfile(samples,parameters,CancellationProbe.NONE);
         double responseRange = features.maximumIntensity() - features.noiseFloor();
         double presenceResponse = responseRange > 0.0
                 ? clamp((raw.getAsDouble() - features.noiseFloor()) / responseRange) : 0.0;
@@ -653,10 +658,10 @@ public final class ImageCostField {
                     Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, 0.0, 0.0, false,
                     ObservationOwnership.NO_SIGNAL_VALID_RASTER));
         }
-        LocalScalarProfileExtractor.Mode nearestMode = features.modes().stream()
+        LocalScalarProfileExtractor.Mode nearestMode = features.modes().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                 .min(java.util.Comparator.comparingDouble(mode -> mode.distanceToCenterSet(0.0)))
                 .orElse(null);
-        LocalScalarProfileExtractor.CensoredMode nearestCensored = features.censoredModes().stream()
+        LocalScalarProfileExtractor.CensoredMode nearestCensored = features.censoredModes().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                     .min(java.util.Comparator.comparingDouble(mode -> Math.abs(mode.boundaryOffsetMeters())))
                     .orElse(null);
         if (nearestMode == null || nearestCensored != null
@@ -698,6 +703,7 @@ public final class ImageCostField {
         int edge = 0;
         double bestDistance = Double.POSITIVE_INFINITY;
         for (int index = 0; index < samples.size(); index++) {
+            PostprocessingValidationWork.visit();
             double distance = Math.abs(samples.get(index).offsetMeters()
                     - censored.boundaryOffsetMeters());
             if (distance < bestDistance) {
@@ -712,6 +718,7 @@ public final class ImageCostField {
         boolean descending = false;
         for (int index = edge + direction; index >= 0 && index < samples.size();
                 index += direction) {
+            PostprocessingValidationWork.visit();
             double value = samples.get(index).intensity();
             if (!samples.get(index).valid() || !Double.isFinite(value)) {
                 break;
@@ -740,6 +747,7 @@ public final class ImageCostField {
         int samples = Math.max(1, (int) Math.ceil(length / Math.min(2.0, sourcePitchMeters / 2.0)));
         double total = 0.0;
         for (int index = 0; index < samples; index++) {
+            PostprocessingValidationWork.visit();
             Optional<RouteSample> value = sampleRoute(interpolate(start, end,
                     (index + 0.5) / samples), tangent);
             if (value.isEmpty() || !Double.isFinite(value.orElseThrow().imageEnergy())) {
@@ -755,6 +763,7 @@ public final class ImageCostField {
         double weighted = 0.0;
         double length = 0.0;
         for (int index = 1; index < points.size(); index++) {
+            PostprocessingValidationWork.visit();
             double segmentLength = points.get(index - 1).distanceTo(points.get(index));
             if (segmentLength <= 1.0e-12) {
                 continue;
@@ -826,6 +835,7 @@ public final class ImageCostField {
         int samples = Math.max(1, (int) Math.ceil(length / Math.min(2.0, sourcePitchMeters / 2.0)));
         double total = 0.0;
         for (int index = 0; index < samples; index++) {
+            PostprocessingValidationWork.visit();
             double fraction = (index + 0.5) / samples;
             MetricPoint point = interpolate(start, end, fraction);
             Optional<Sample> sample = sample(point);
@@ -842,6 +852,7 @@ public final class ImageCostField {
         double weighted = 0.0;
         double length = 0.0;
         for (int index = 1; index < points.size(); index++) {
+            PostprocessingValidationWork.visit();
             double segmentLength = points.get(index - 1).distanceTo(points.get(index));
             double cost = meanSegmentCost(points.get(index - 1), points.get(index));
             if (!Double.isFinite(cost)) {
@@ -858,7 +869,14 @@ public final class ImageCostField {
     }
 
     private OptionalDouble sampleScalar(MetricPoint point) {
+        PostprocessingValidationWork.visit();
         return StrictScalarSampler.sample(scalarField, transform, decisionRegion, point);
+    }
+    private LocalScalarProfileExtractor.Result extractSelectedProfile(List<LocalScalarProfileExtractor.Sample> samples,
+            EvidenceModelParameters.Localization parameters,CancellationProbe cancellation) {
+        if(PostprocessingValidationWork.current()==null)return new LocalScalarProfileExtractor().extract(samples,sourcePitchMeters,parameters);
+        // The enclosing postprocessing materialization reservation covers profile arrays/results.
+        return new LocalScalarProfileExtractor().extract(samples,sourcePitchMeters,parameters,null,cancellation,PostprocessingValidationWork::charge);
     }
 
     private FrozenProfile unavailable(FrozenSupport support, MetricPoint point, MetricPoint normal,
@@ -889,12 +907,15 @@ public final class ImageCostField {
         }
         backgroundValues[backgroundCount++] = centerValue.getAsDouble();
         for (int heading = 0; heading < headings; heading++) {
+            PostprocessingValidationWork.visit();
             cancellation.checkpoint();
             double angle = Math.PI * heading / headings;
             for (int side = 0; side < 2; side++) {
+            PostprocessingValidationWork.visit();
                 Arrays.fill(rays[heading][side], Double.NaN);
                 double sign = side == 0 ? 1.0 : -1.0;
                 for (int index = 0; index < samples; index++) {
+            PostprocessingValidationWork.visit();
                     if ((index & 1023) == 0) cancellation.checkpoint();
                     double distance = sourcePitchMeters + (rayLength - sourcePitchMeters)
                             * index / (samples - 1.0);
@@ -909,7 +930,10 @@ public final class ImageCostField {
                 }
             }
         }
+        // The existing primitive sort is opaque: charge its bounded nlogn proxy before it.
+        PostprocessingValidationWork.charge((long)backgroundCount*(64L-Long.numberOfLeadingZeros(Math.max(1,backgroundCount))));
         Arrays.sort(backgroundValues, 0, backgroundCount);
+        PostprocessingValidationWork.visit();
         int quantileIndex = Math.min(backgroundCount - 1,
                 (int) Math.floor(parameters.orientationBackgroundQuantile() * (backgroundCount - 1)));
         double background = backgroundValues[quantileIndex];
@@ -924,13 +948,16 @@ public final class ImageCostField {
         double directedMinimum = Double.POSITIVE_INFINITY;
         double directedMaximum = Double.NEGATIVE_INFINITY;
         for (int heading = 0; heading < headings; heading++) {
+            PostprocessingValidationWork.visit();
             double[] means = new double[2];
             double[] fractions = new double[2];
             boolean complete = true;
             for (int side = 0; side < 2; side++) {
+            PostprocessingValidationWork.visit();
                 int validCount = 0;
                 double total = 0.0;
                 for (double value : rays[heading][side]) {
+            PostprocessingValidationWork.visit();
                     if (Double.isFinite(value)) {
                         validCount++;
                         total += Math.max(0.0, value - background);
@@ -968,7 +995,7 @@ public final class ImageCostField {
             return new Orientation(false, 0.0, 0.0, List.of(), directedModes);
         }
         double routeAngle = normalizeBearing(StrictMath.atan2(routeTangent.yMeters(), routeTangent.xMeters()));
-        ImageOrientationSupport.AngularMode selectedMode = support.modes().stream()
+        ImageOrientationSupport.AngularMode selectedMode = support.modes().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                 .min(Comparator.comparingDouble(mode -> mode.distanceTo(routeAngle))).orElseThrow();
         double selected = selectedMode.contains(routeAngle) ? routeAngle
                 : undirectedDistance(routeAngle, selectedMode.startRadians())
@@ -989,6 +1016,7 @@ public final class ImageCostField {
         List<DirectedOrientationMode> modes = new ArrayList<>();
         boolean[] visited = new boolean[count];
         for (int index = 0; index < count; index++) {
+            PostprocessingValidationWork.visit();
             if (visited[index] || !Double.isFinite(response[index])) continue;
             int previous = Math.floorMod(index - 1, count);
             int next = (index + 1) % count;
@@ -1005,10 +1033,12 @@ public final class ImageCostField {
             while (Math.floorMod(start - 1, count) != end
                     && equalOrientationResponse(response,
                             Math.floorMod(start - 1, count), value)) {
+            PostprocessingValidationWork.visit();
                 start = Math.floorMod(start - 1, count);
             }
             while ((end + 1) % count != start
                     && equalOrientationResponse(response, (end + 1) % count, value)) {
+            PostprocessingValidationWork.visit();
                 end = (end + 1) % count;
             }
             int outsideBefore = Math.floorMod(start - 1, count);
@@ -1023,9 +1053,11 @@ public final class ImageCostField {
             }
             int plateauSize = 1;
             for (int cursor = start; cursor != end; cursor = (cursor + 1) % count) {
+            PostprocessingValidationWork.visit();
                 plateauSize++;
             }
             for (int cursor = start;; cursor = (cursor + 1) % count) {
+            PostprocessingValidationWork.visit();
                 visited[cursor] = true;
                 if (cursor == end) break;
             }
@@ -1035,6 +1067,7 @@ public final class ImageCostField {
                     : normalizeDirectedBearing((start + 0.5 * (plateauSize - 1)) * step);
             double minimumFraction = Double.POSITIVE_INFINITY;
             for (int cursor = start;; cursor = (cursor + 1) % count) {
+            PostprocessingValidationWork.visit();
                 minimumFraction = Math.min(minimumFraction, directedFraction(validFraction, cursor));
                 if (cursor == end) break;
             }
@@ -1043,7 +1076,7 @@ public final class ImageCostField {
                 modes.add(new DirectedOrientationMode(peak, value));
             }
         }
-        modes.sort(Comparator.comparingDouble(DirectedOrientationMode::bearingRadians));
+        modes.sort(PostprocessingValidationWork.comparator(Comparator.comparingDouble(DirectedOrientationMode::bearingRadians)));
         return List.copyOf(modes);
     }
 
@@ -1073,6 +1106,7 @@ public final class ImageCostField {
         boolean[] visited = new boolean[count];
         List<ImageOrientationSupport.AngularMode> modes = new ArrayList<>();
         for (int index = 0; index < count; index++) {
+            PostprocessingValidationWork.visit();
             if (visited[index] || !Double.isFinite(response[index])) continue;
             int previous = Math.floorMod(index - 1, count);
             int next = (index + 1) % count;
@@ -1086,10 +1120,12 @@ public final class ImageCostField {
             int end = index;
             while (Math.floorMod(start - 1, count) != end
                     && equalOrientationResponse(response, Math.floorMod(start - 1, count), value)) {
+            PostprocessingValidationWork.visit();
                 start = Math.floorMod(start - 1, count);
             }
             while ((end + 1) % count != start
                     && equalOrientationResponse(response, (end + 1) % count, value)) {
+            PostprocessingValidationWork.visit();
                 end = (end + 1) % count;
             }
             int outsideBefore = Math.floorMod(start - 1, count);
@@ -1104,6 +1140,7 @@ public final class ImageCostField {
             int plateauSize = 1;
             for (int cursor = start; cursor != end; cursor = (cursor + 1) % count) plateauSize++;
             for (int cursor = start;; cursor = (cursor + 1) % count) {
+            PostprocessingValidationWork.visit();
                 visited[cursor] = true;
                 if (cursor == end) break;
             }
@@ -1118,7 +1155,7 @@ public final class ImageCostField {
             return ImageOrientationSupport.unknown(
                     ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT);
         }
-        modes.sort(Comparator.comparingDouble(ImageOrientationSupport.AngularMode::peakBearingRadians));
+        modes.sort(PostprocessingValidationWork.comparator(Comparator.comparingDouble(ImageOrientationSupport.AngularMode::peakBearingRadians)));
         double minimumRayFraction = java.util.stream.IntStream.range(0, count)
                 .filter(index -> Double.isFinite(response[index]))
                 .mapToDouble(index -> validFraction[index]).min().orElse(0.0);

@@ -1,5 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -112,9 +114,11 @@ public record ContextContactAssessment(PrimitiveKey selectedWayKey, PrimitiveKey
         java.util.Set<PrimitiveKey> visited = new java.util.HashSet<>();
         pending.add(context);
         while (!pending.isEmpty()) {
+            PostprocessingValidationWork.visit();
             PrimitiveKey key = pending.removeFirst();
             if (!visited.add(key)) continue;
             for (PrimitiveKey parent : before.incomingReferrerWatches().getOrDefault(key, java.util.Set.of())) {
+            PostprocessingValidationWork.visit();
                 if (parent.type() != PrimitiveKey.Type.RELATION || !before.primitives().containsKey(parent)) continue;
                 if (!before.primitives().get(parent).equals(after.get(parent))) return false;
                 pending.add(parent);
@@ -131,6 +135,7 @@ public record ContextContactAssessment(PrimitiveKey selectedWayKey, PrimitiveKey
         var values = before.primitives();
         var contextChord = chord(values, context, contextIndex, evidence);
         for (int i = range.firstIndex(); i < range.lastIndex(); i++) {
+            PostprocessingValidationWork.visit();
             var old = CertifiedContextSegmentClipper.originalContactEvidence(chord(values, source, i, evidence),
                     source.nodeKeys().get(i), source.nodeKeys().get(i + 1), contextChord,
                     context.nodeKeys().get(contextIndex), context.nodeKeys().get(contextIndex + 1),
@@ -173,6 +178,7 @@ public record ContextContactAssessment(PrimitiveKey selectedWayKey, PrimitiveKey
         }
         List<MetricPoint> locations = new ArrayList<>();
         for (MetricPoint point : List.of(a, b, c, d)) {
+            PostprocessingValidationWork.visit();
             if (onSegment(point, a, b) && onSegment(point, c, d) && !locations.contains(point)) locations.add(point);
         }
         return List.copyOf(locations);

@@ -168,9 +168,16 @@ public final class InheritedNonTransportContacts {
     private record ProofWork(CancellationProbe cancellation, java.util.function.LongConsumer units,
             AttemptMemoryLedger.Owner owner) {
         private static final ProofWork UNBOUNDED = new ProofWork(CancellationProbe.NONE,ignored -> { },null);
-        void checkpoint() { if (owner != null) { cancellation.checkpoint(); units.accept(1); } }
-        void retain(long bytes) { if (owner != null) owner.reserve(bytes); }
-        AttemptMemoryLedger.Reservation temporary(long bytes) { return owner == null ? null : owner.reserve(bytes); }
+        void checkpoint() {
+            if (owner != null) { cancellation.checkpoint(); units.accept(1); }
+            else org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.visit();
+        }
+        void retain(long bytes) { if (owner != null) reserve(bytes); }
+        AttemptMemoryLedger.Reservation temporary(long bytes) { return owner == null ? null : reserve(bytes); }
+        private AttemptMemoryLedger.Reservation reserve(long bytes) {
+            var work=org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.current();
+            return work==null?owner.reserve(bytes):work.reserveOn(owner,"postprocessing-inherited-contact",bytes);
+        }
     }
 
     private static <T> Comparator<T> bounded(Comparator<T> comparator, ProofWork work) {

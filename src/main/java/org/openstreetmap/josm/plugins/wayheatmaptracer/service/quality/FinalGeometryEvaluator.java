@@ -1,5 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork;
+
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -85,6 +87,7 @@ public final class FinalGeometryEvaluator {
             }
             protectedAssignments = Map.copyOf(new LinkedHashMap<>(protectedAssignments));
             for (Map.Entry<Integer, MetricPoint> entry : protectedAssignments.entrySet()) {
+            PostprocessingValidationWork.visit();
                 if (entry.getKey() == null || entry.getValue() == null || entry.getKey() < 0
                         || entry.getKey() >= points.size()) {
                     throw new IllegalArgumentException("Protected final assignments are invalid");
@@ -92,17 +95,20 @@ public final class FinalGeometryEvaluator {
             }
             List<List<MetricPoint>> incidents = new ArrayList<>();
             for (List<MetricPoint> incident : proposedIncidentGeometry) {
+            PostprocessingValidationWork.visit();
                 incidents.add(List.copyOf(incident));
             }
             proposedIncidentGeometry = List.copyOf(incidents);
             Map<Integer, Set<FinalRoutePointId.ExistingWayNodeOccurrence>> contacts = new LinkedHashMap<>();
             for (var entry : sharedContacts.entrySet()) {
+            PostprocessingValidationWork.visit();
                 if (entry.getKey() == null || entry.getKey() < 0 || entry.getKey() >= incidents.size()
                         || entry.getValue() == null || entry.getValue().isEmpty()) {
                     throw new IllegalArgumentException("Shared contact incident identity is invalid");
                 }
                 var identities = Set.copyOf(entry.getValue());
                 for (var identity : identities) {
+            PostprocessingValidationWork.visit();
                     int vertex = pointIds.indexOf(identity);
                     if (vertex < 0 || !incidents.get(entry.getKey()).contains(points.get(vertex))) {
                         throw new IllegalArgumentException("Shared contact lacks its exact retained vertex");
@@ -113,6 +119,7 @@ public final class FinalGeometryEvaluator {
             sharedContacts = Map.copyOf(contacts);
             inheritedProperCrossingIncidents = Set.copyOf(inheritedProperCrossingIncidents);
             for (int index : inheritedProperCrossingIncidents) {
+            PostprocessingValidationWork.visit();
                 if (index < 0 || index >= incidents.size())
                     throw new IllegalArgumentException("Inherited contact incident identity is invalid");
             }
@@ -189,6 +196,7 @@ public final class FinalGeometryEvaluator {
             }
             List<FinalRoutePointId> result = new ArrayList<>(points.size());
             for (int index = 0; index < points.size(); index++) {
+            PostprocessingValidationWork.visit();
                 result.add(new GeneratedCandidatePoint(id, index));
             }
             return List.copyOf(result);
@@ -201,6 +209,7 @@ public final class FinalGeometryEvaluator {
             }
             Map<Integer, MetricPoint> result = new LinkedHashMap<>();
             for (int index : protectedIndices) {
+            PostprocessingValidationWork.visit();
                 if (index < 0 || index >= points.size()) {
                     throw new IllegalArgumentException("Protected final assignment index is invalid");
                 }
@@ -218,7 +227,7 @@ public final class FinalGeometryEvaluator {
         /** Copies findings. */
         public Result {
             findings = List.copyOf(findings);
-            boolean unavailableImageQuality = findings.stream()
+            boolean unavailableImageQuality = findings.stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                     .anyMatch(finding -> finding.code() == FindingCode.UNAVAILABLE_IMAGE_QUALITY);
             if ((!Double.isFinite(meanImageCenterCost)
                     && meanImageCenterCost != Double.POSITIVE_INFINITY)
@@ -230,7 +239,7 @@ public final class FinalGeometryEvaluator {
 
         /** Returns whether a stable finding code is present. */
         public boolean has(FindingCode code) {
-            return findings.stream().anyMatch(finding -> finding.code() == code);
+            return findings.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(finding -> finding.code() == code);
         }
     }
 
@@ -241,8 +250,9 @@ public final class FinalGeometryEvaluator {
         Objects.requireNonNull(contacts, "contacts");
         List<Finding> findings = new ArrayList<>(original.findings());
         for (var contact : contacts) {
+            PostprocessingValidationWork.visit();
             switch (contact.disposition()) {
-                case PRESERVED_CONNECTION -> { }
+                case PRESERVED_CONNECTION -> { PostprocessingValidationWork.visit(); }
                 case REVIEW_REQUIRED -> findings.add(review(FindingCode.INDEPENDENT_CONTEXT_CONTACT,
                         contact.routeSegmentIndex(), contact.routeSegmentIndex() + 1, 0));
                 case HARD_BLOCKED -> findings.add(hard(FindingCode.PREJUNCTION_CROSSING,
@@ -251,7 +261,7 @@ public final class FinalGeometryEvaluator {
         }
         findings = deduplicate(findings);
         Disposition disposition = original.disposition() == Disposition.HARD_BLOCKED
-                || findings.stream().anyMatch(finding -> finding.severity() == Severity.HARD_BLOCK)
+                || findings.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(finding -> finding.severity() == Severity.HARD_BLOCK)
                         ? Disposition.HARD_BLOCKED
                         : original.disposition() == Disposition.REVIEW_REQUIRED || !findings.isEmpty()
                                 ? Disposition.REVIEW_REQUIRED : Disposition.APPLICABLE;
@@ -349,7 +359,7 @@ public final class FinalGeometryEvaluator {
                     request.points().size() - 1, support.worstUnsupportedSpan));
         }
         findings = deduplicate(findings);
-        Disposition disposition = findings.stream().anyMatch(finding -> finding.severity() == Severity.HARD_BLOCK)
+        Disposition disposition = findings.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(finding -> finding.severity() == Severity.HARD_BLOCK)
                 ? Disposition.HARD_BLOCKED
                 : findings.isEmpty() ? Disposition.APPLICABLE : Disposition.REVIEW_REQUIRED;
         long roughnessStarted = System.nanoTime();
@@ -386,7 +396,7 @@ public final class FinalGeometryEvaluator {
     }
 
     private static void inspectProtectedAssignments(Request request, List<Finding> findings) {
-        request.protectedAssignments().forEach((index, expected) -> {
+        request.protectedAssignments().forEach((index, expected) -> { PostprocessingValidationWork.visit();
             if (!expected.equals(request.points().get(index))) {
                 findings.add(hard(FindingCode.PROTECTED_ASSIGNMENT_MISMATCH,
                         index, index, expected.distanceTo(request.points().get(index))));
@@ -398,7 +408,9 @@ public final class FinalGeometryEvaluator {
         List<MetricPoint> points = request.points();
         ZeroLengthAdjacency adjacency = new ZeroLengthAdjacency(points, request.pointIds());
         for (int first = 0; first < points.size() - 1; first++) {
+            PostprocessingValidationWork.visit();
             for (int second = first + 2; second < points.size() - 1; second++) {
+            PostprocessingValidationWork.visit();
                 IntersectionKind kind = intersection(points.get(first), points.get(first + 1),
                         points.get(second), points.get(second + 1));
                 if (kind == IntersectionKind.NONE
@@ -427,6 +439,7 @@ public final class FinalGeometryEvaluator {
             }
             runs = new int[points.size()];
             for (int index = 1; index < points.size(); index++) {
+            PostprocessingValidationWork.visit();
                 boolean connected = points.get(index - 1).equals(points.get(index))
                         && pointIds.get(index - 1) instanceof ExistingWayNodeOccurrence first
                         && pointIds.get(index) instanceof ExistingWayNodeOccurrence second
@@ -443,7 +456,7 @@ public final class FinalGeometryEvaluator {
 
     /** Checks adjacent reversals on exact final geometry without resampling image evidence. */
     public static List<Finding> backtrackFindings(List<MetricPoint> points) {
-        if (points == null || points.size() < 2 || points.stream().anyMatch(java.util.Objects::isNull)) {
+        if (points == null || points.size() < 2 || points.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(java.util.Objects::isNull)) {
             throw new IllegalArgumentException("Final backtrack geometry is incomplete");
         }
         List<Finding> findings = new ArrayList<>();
@@ -453,6 +466,7 @@ public final class FinalGeometryEvaluator {
 
     private static void inspectBacktracks(List<MetricPoint> points, List<Finding> findings) {
         for (int index = 1; index < points.size() - 1; index++) {
+            PostprocessingValidationWork.visit();
             if (points.get(index).equals(points.get(index + 1))) continue;
             int incomingIndex = index - 1;
             while (incomingIndex > 0 && points.get(incomingIndex).equals(points.get(index))) incomingIndex--;
@@ -491,9 +505,11 @@ public final class FinalGeometryEvaluator {
 
         scan:
         for (int centerIndex = 0; centerIndex < samples.uniformCount(); centerIndex++) {
+            PostprocessingValidationWork.visit();
             cancellation.checkpoint();
             double centerChainage = samples.uniformAt(centerIndex).chainageMeters();
             for (double requestedSpan : LOCAL_WINDOW_SPANS_METERS) {
+            PostprocessingValidationWork.visit();
                 double start;
                 double end;
                 boolean wholeShortRoute = samples.totalLengthMeters() + 1.0e-9
@@ -525,6 +541,7 @@ public final class FinalGeometryEvaluator {
                 int firstInterior = PhysicalSampleIndex.lowerBound(chainage, start + 1.0e-9);
                 int afterLastInterior = PhysicalSampleIndex.upperBound(chainage, end - 1.0e-9);
                 for (int index = firstInterior; index < afterLastInterior; index++) {
+            PostprocessingValidationWork.visit();
                     if (localWarningStats.singleApexChordEvaluations
                             >= MAXIMUM_SINGLE_APEX_CHORD_EVALUATIONS) {
                         scanBudgetExceeded = true;
@@ -553,6 +570,7 @@ public final class FinalGeometryEvaluator {
                         .computeIfAbsent(apex, ignored -> new ArrayList<>());
                 int sameSpan = -1;
                 for (int index = 0; index < candidates.size(); index++) {
+            PostprocessingValidationWork.visit();
                     if (Math.abs(candidates.get(index).spanMeters() - span) <= 1.0e-9) {
                         sameSpan = index;
                         break;
@@ -581,13 +599,15 @@ public final class FinalGeometryEvaluator {
         ProfileCache profiles = new ProfileCache(localWarningStats);
         for (List<SingleApexCandidate> candidates : resolutionDistinctCandidateGroups(
                 candidatesByApex.values(), chainage, request.sourcePitchMeters())) {
+            PostprocessingValidationWork.visit();
             cancellation.checkpoint();
             SingleApexCandidate ambiguous = candidates.get(0);
-            double isolationAmplitude = candidates.stream()
+            double isolationAmplitude = candidates.stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                     .mapToDouble(SingleApexCandidate::amplitudeMeters)
                     .max().orElseThrow();
             boolean resolved = false;
             for (SingleApexCandidate candidate : candidates) {
+            PostprocessingValidationWork.visit();
                 localWarningStats.singleApexComparisons++;
                 LocalComparison comparison = compareSingleApex(request, samples, candidate,
                         isolationAmplitude, profiles, onset, cancellation, localWarningStats);
@@ -621,16 +641,18 @@ public final class FinalGeometryEvaluator {
             double sourcePitchMeters) {
         List<List<SingleApexCandidate>> ordered = new ArrayList<>();
         for (List<SingleApexCandidate> candidates : candidateGroups) {
-            candidates.sort((first, second) -> first.betterThan(second) ? -1
-                    : second.betterThan(first) ? 1 : 0);
+            PostprocessingValidationWork.visit();
+            candidates.sort(PostprocessingValidationWork.comparator((first, second) -> first.betterThan(second) ? -1
+                    : second.betterThan(first) ? 1 : 0));
             ordered.add(List.copyOf(candidates));
         }
-        ordered.sort(Comparator.comparingDouble(candidates ->
-                chainage[candidates.get(0).apexVertex()]));
+        ordered.sort(PostprocessingValidationWork.comparator(Comparator.comparingDouble(candidates ->
+                chainage[candidates.get(0).apexVertex()])));
         List<List<SingleApexCandidate>> result = new ArrayList<>();
         List<SingleApexCandidate> best = null;
         double clusterRepresentative = Double.NEGATIVE_INFINITY;
         for (List<SingleApexCandidate> candidates : ordered) {
+            PostprocessingValidationWork.visit();
             SingleApexCandidate candidate = candidates.get(0);
             double apexChainage = chainage[candidate.apexVertex()];
             if (best == null || apexChainage - clusterRepresentative
@@ -643,7 +665,7 @@ public final class FinalGeometryEvaluator {
             }
         }
         if (best != null) result.add(best);
-        result.sort(Comparator.comparingInt(candidates -> candidates.get(0).firstVertex()));
+        result.sort(PostprocessingValidationWork.comparator(Comparator.comparingInt(candidates -> candidates.get(0).firstVertex())));
         return List.copyOf(result);
     }
 
@@ -652,6 +674,7 @@ public final class FinalGeometryEvaluator {
         List<Integer> result = new ArrayList<>();
         double representative = Double.NEGATIVE_INFINITY;
         for (int index = 0; index < chainages.size(); index++) {
+            PostprocessingValidationWork.visit();
             double chainage = chainages.get(index);
             if (result.isEmpty() || chainage - representative > sourcePitchMeters + 1.0e-9) {
                 result.add(index);
@@ -691,6 +714,7 @@ public final class FinalGeometryEvaluator {
         boolean routeFollowsMeasuredCenter = true;
         int apexRow = -1;
         for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+            PostprocessingValidationWork.visit();
             PhysicalSample row = rows.get(rowIndex);
             cancellation.checkpoint();
             rowChainage[rowIndex] = row.chainageMeters();
@@ -757,7 +781,7 @@ public final class FinalGeometryEvaluator {
         }
         if (routeFollowsMeasuredCenter) {
             boolean coherent = directionallyCoherent(
-                    rows.stream().map(PhysicalSample::point).toList(),
+                    rows.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).map(PhysicalSample::point).toList(),
                     centers, measured, rowChainage, apexRow, request.sourcePitchMeters());
             if (coherent) {
                 return LocalComparison.SUPPORTED;
@@ -766,7 +790,7 @@ public final class FinalGeometryEvaluator {
             return LocalComparison.AMBIGUOUS;
         }
 
-        if (measured.stream().anyMatch(Objects::isNull)) {
+        if (measured.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(Objects::isNull)) {
             stats.singleApexProfileAmbiguities++;
             return LocalComparison.AMBIGUOUS;
         }
@@ -789,6 +813,7 @@ public final class FinalGeometryEvaluator {
                 + (firstAlternative.yMeters()
                 - windowStart.yMeters()) * uy;
         for (int index = 1; index < alternative.size(); index++) {
+            PostprocessingValidationWork.visit();
             cancellation.checkpoint();
             MetricPoint first = alternative.get(index - 1);
             MetricPoint second = alternative.get(index);
@@ -831,6 +856,7 @@ public final class FinalGeometryEvaluator {
         }
         int left = -1;
         for (int index = 0; index < apexIndex; index++) {
+            PostprocessingValidationWork.visit();
             if (centers.get(index) != null && profiles.get(index) != null
                     && chainage[apexIndex] - chainage[index] > sourcePitchMeters + 1.0e-9) {
                 left = index;
@@ -839,6 +865,7 @@ public final class FinalGeometryEvaluator {
         }
         int right = -1;
         for (int index = centers.size() - 1; index > apexIndex; index--) {
+            PostprocessingValidationWork.visit();
             if (centers.get(index) != null && profiles.get(index) != null
                     && chainage[index] - chainage[apexIndex] > sourcePitchMeters + 1.0e-9) {
                 right = index;
@@ -878,13 +905,14 @@ public final class FinalGeometryEvaluator {
         boolean hasCoherentRayDirection = false;
         for (int index = Math.min(firstIndex, secondIndex);
                 index <= Math.max(firstIndex, secondIndex); index++) {
+            PostprocessingValidationWork.visit();
             FrozenProfile profile = profiles.get(index);
             if (profile == null || profile.coreOrientationModes().isEmpty()
                     || !(profile.coreOrientationCertainty() > 0.0)) {
                 continue;
             }
             hasMeasuredRayDirection = true;
-            hasCoherentRayDirection |= profile.coreOrientationModes().stream()
+            hasCoherentRayDirection |= profile.coreOrientationModes().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                     .anyMatch(mode -> mode.distanceTo(centerBearing) <= allowance + 1.0e-12);
         }
         return hasMeasuredRayDirection && hasCoherentRayDirection;
@@ -912,7 +940,7 @@ public final class FinalGeometryEvaluator {
         if (!resolutionSignificantCorner) {
             return Double.isFinite(centeredAllowance)
                     && apexProfile.coreOrientationCertainty() > 0.0
-                    && apexProfile.coreOrientationModes().stream().anyMatch(mode ->
+                    && apexProfile.coreOrientationModes().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(mode ->
                             mode.distanceTo(centered) <= centeredAllowance + 1.0e-12);
         }
         if (apexProfile.observedModeStatus() != ObservedModeStatus.OBSERVED_UNIQUE
@@ -928,6 +956,7 @@ public final class FinalGeometryEvaluator {
         int leftMode = -1;
         int rightMode = -1;
         for (int index = 0; index < apexProfile.directedOrientationModes().size(); index++) {
+            PostprocessingValidationWork.visit();
             var mode = apexProfile.directedOrientationModes().get(index);
             if (mode.distanceTo(outwardLeft) <= incomingAllowance + 1.0e-12) leftMode = index;
             if (mode.distanceTo(outgoing) <= outgoingAllowance + 1.0e-12) rightMode = index;
@@ -939,6 +968,7 @@ public final class FinalGeometryEvaluator {
             int first, int last, double sourcePitchMeters) {
         double maximumRowGap = Math.min(1.0, sourcePitchMeters / 2.0);
         for (int index = first + 1; index <= last; index++) {
+            PostprocessingValidationWork.visit();
             if (centers.get(index - 1) == null || centers.get(index) == null) return false;
             double delta = chainage[index] - chainage[index - 1];
             double measured = centers.get(index - 1).distanceTo(centers.get(index));
@@ -970,6 +1000,7 @@ public final class FinalGeometryEvaluator {
         double weighted = 0.0;
         double totalWeight = 0.0;
         for (int index = 0; index < values.length; index++) {
+            PostprocessingValidationWork.visit();
             double previous = index == 0 ? chainage[index] : chainage[index - 1];
             double next = index == values.length - 1 ? chainage[index] : chainage[index + 1];
             double weight = 0.5 * (next - previous);
@@ -1025,10 +1056,12 @@ public final class FinalGeometryEvaluator {
         WindowCandidate ambiguous = null;
         BudgetWindow budgetLimited = null;
         for (double span : LOCAL_WINDOW_SPANS_METERS) {
+            PostprocessingValidationWork.visit();
             if (samples.totalLengthMeters() + 1.0e-9 < span) {
                 continue;
             }
             for (int centerIndex = 0; centerIndex < samples.uniformCount(); centerIndex++) {
+            PostprocessingValidationWork.visit();
                 cancellation.checkpoint();
                 PhysicalSample center = samples.uniformAt(centerIndex);
                 double start = center.chainageMeters() - span / 2.0;
@@ -1089,6 +1122,7 @@ public final class FinalGeometryEvaluator {
         MetricPoint first = points.get(0);
         int distinct = 1;
         while (distinct < points.size() && points.get(distinct).equals(first)) {
+            PostprocessingValidationWork.visit();
             distinct++;
         }
         if (distinct == points.size()) {
@@ -1096,6 +1130,7 @@ public final class FinalGeometryEvaluator {
         }
         MetricPoint second = points.get(distinct);
         for (int index = distinct + 1; index < points.size(); index++) {
+            PostprocessingValidationWork.visit();
             if (orientation(first, second, points.get(index)) != 0.0) {
                 return false;
             }
@@ -1125,6 +1160,7 @@ public final class FinalGeometryEvaluator {
         double center = 0.5 * (start + end);
         List<TrendObservation> observations = new ArrayList<>(fitRows.size());
         for (PhysicalSample row : fitRows) {
+            PostprocessingValidationWork.visit();
             observations.add(new TrendObservation(row.chainageMeters() - center,
                     dot(subtract(row.point(), startPoint), normal)));
         }
@@ -1139,6 +1175,7 @@ public final class FinalGeometryEvaluator {
         }
         List<ResidualPoint> residuals = new ArrayList<>(diagnosticRows.size());
         for (PhysicalSample row : diagnosticRows) {
+            PostprocessingValidationWork.visit();
             double localX = row.chainageMeters() - center;
             double transverse = dot(subtract(row.point(), startPoint), normal);
             residuals.add(new ResidualPoint(row, transverse - trend.value(localX)));
@@ -1147,7 +1184,7 @@ public final class FinalGeometryEvaluator {
         if (lobes.size() < 3) {
             return new WindowMeasurement(null, false);
         }
-        double amplitude = lobes.stream().mapToDouble(lobe -> Math.abs(lobe.residualMeters()))
+        double amplitude = lobes.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).mapToDouble(lobe -> Math.abs(lobe.residualMeters()))
                 .max().orElse(0.0);
         return new WindowMeasurement(new WindowCandidate(start, end, List.copyOf(lobes),
                 lobes.size(), amplitude), false);
@@ -1161,6 +1198,7 @@ public final class FinalGeometryEvaluator {
         List<ResidualPlateau> plateaus = new ArrayList<>();
         int start = 0;
         for (int index = 1; index <= residuals.size(); index++) {
+            PostprocessingValidationWork.visit();
             if (index < residuals.size()
                     && residuals.get(index).residualMeters()
                             == residuals.get(start).residualMeters()) {
@@ -1180,6 +1218,7 @@ public final class FinalGeometryEvaluator {
         extrema.add(plateaus.get(0));
         int previousDirection = 0;
         for (int index = 1; index < plateaus.size(); index++) {
+            PostprocessingValidationWork.visit();
             double movement = plateaus.get(index).point().residualMeters()
                     - plateaus.get(index - 1).point().residualMeters();
             int direction = movement > 0.0 ? 1 : movement < 0.0 ? -1 : 0;
@@ -1193,6 +1232,7 @@ public final class FinalGeometryEvaluator {
         extrema.add(plateaus.get(plateaus.size() - 1));
         List<ResidualPoint> result = new ArrayList<>();
         for (int index = 1; index < extrema.size() - 1; index++) {
+            PostprocessingValidationWork.visit();
             ResidualPlateau previous = extrema.get(index - 1);
             ResidualPlateau current = extrema.get(index);
             ResidualPlateau next = extrema.get(index + 1);
@@ -1212,6 +1252,7 @@ public final class FinalGeometryEvaluator {
             ProfileCache profiles, CancellationProbe cancellation,
             MutableLocalWarningStats stats) {
         for (ResidualPoint lobe : window.lobes()) {
+            PostprocessingValidationWork.visit();
             cancellation.checkpoint();
             if (samples.isProtected(lobe.sample().chainageMeters(), request.protectedIndices())) {
                 return LocalComparison.AMBIGUOUS;
@@ -1246,6 +1287,7 @@ public final class FinalGeometryEvaluator {
         }
         List<MetricPoint> alternatives = new ArrayList<>(rows.size());
         for (int index = 0; index < rows.size(); index++) {
+            PostprocessingValidationWork.visit();
             cancellation.checkpoint();
             PhysicalSample row = rows.get(index);
             MetricPoint tangent = localTangent(rows, index);
@@ -1265,6 +1307,7 @@ public final class FinalGeometryEvaluator {
                     row.point().yMeters() + profile.normal().yMeters() * offset));
         }
         for (int index = 1; index < alternatives.size(); index++) {
+            PostprocessingValidationWork.visit();
             cancellation.checkpoint();
             if (request.image().certifyDirectUniqueSegment(alternatives.get(index - 1),
                     alternatives.get(index), cancellation)
@@ -1296,12 +1339,15 @@ public final class FinalGeometryEvaluator {
             return null;
         }
         for (int iteration = 0; iteration < 3; iteration++) {
+            PostprocessingValidationWork.visit();
             List<Double> residuals = new ArrayList<>(observations.size());
             for (TrendObservation observation : observations) {
+            PostprocessingValidationWork.visit();
                 residuals.add(observation.transverseMeters() - fit.value(observation.xMeters()));
             }
             double scale = Math.max(0.05 * sourcePitchMeters, 1.4826 * medianAbsoluteDeviation(residuals));
             for (int index = 0; index < observations.size(); index++) {
+            PostprocessingValidationWork.visit();
                 double normalized = Math.abs(residuals.get(index)) / (1.5 * scale);
                 weights[index] = normalized <= 1.0 ? 1.0 : 1.0 / normalized;
             }
@@ -1318,12 +1364,15 @@ public final class FinalGeometryEvaluator {
         double[][] matrix = new double[3][3];
         double[] vector = new double[3];
         for (int index = 0; index < observations.size(); index++) {
+            PostprocessingValidationWork.visit();
             TrendObservation observation = observations.get(index);
             double x = observation.xMeters();
             double[] powers = {1.0, x, x * x, x * x * x, x * x * x * x};
             for (int row = 0; row < 3; row++) {
+            PostprocessingValidationWork.visit();
                 vector[row] += weights[index] * powers[row] * observation.transverseMeters();
                 for (int column = 0; column < 3; column++) {
+            PostprocessingValidationWork.visit();
                     matrix[row][column] += weights[index] * powers[row + column];
                 }
             }
@@ -1335,12 +1384,15 @@ public final class FinalGeometryEvaluator {
     private static double[] solveLinearSystem(double[][] matrix, double[] vector) {
         double[][] work = new double[3][4];
         for (int row = 0; row < 3; row++) {
+            PostprocessingValidationWork.visit();
             System.arraycopy(matrix[row], 0, work[row], 0, 3);
             work[row][3] = vector[row];
         }
         for (int column = 0; column < 3; column++) {
+            PostprocessingValidationWork.visit();
             int pivot = column;
             for (int row = column + 1; row < 3; row++) {
+            PostprocessingValidationWork.visit();
                 if (Math.abs(work[row][column]) > Math.abs(work[pivot][column])) {
                     pivot = row;
                 }
@@ -1353,12 +1405,15 @@ public final class FinalGeometryEvaluator {
             work[pivot] = swap;
             double divisor = work[column][column];
             for (int index = column; index < 4; index++) {
+            PostprocessingValidationWork.visit();
                 work[column][index] /= divisor;
             }
             for (int row = 0; row < 3; row++) {
+            PostprocessingValidationWork.visit();
                 if (row == column) continue;
                 double factor = work[row][column];
                 for (int index = column; index < 4; index++) {
+            PostprocessingValidationWork.visit();
                     work[row][index] -= factor * work[column][index];
                 }
             }
@@ -1368,9 +1423,9 @@ public final class FinalGeometryEvaluator {
     }
 
     private static double medianAbsoluteDeviation(List<Double> values) {
-        List<Double> ordered = values.stream().sorted().toList();
+        List<Double> ordered = values.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).sorted(PostprocessingValidationWork.naturalOrder()).toList();
         double center = median(ordered);
-        return median(ordered.stream().map(value -> Math.abs(value - center)).sorted().toList());
+        return median(ordered.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).map(value -> Math.abs(value - center)).sorted(PostprocessingValidationWork.naturalOrder()).toList());
     }
 
     private static double median(List<Double> ordered) {
@@ -1408,9 +1463,12 @@ public final class FinalGeometryEvaluator {
 
     private static void inspectIncidentCrossings(Request request, List<Finding> findings) {
         for (int incidentIndex = 0; incidentIndex < request.proposedIncidentGeometry().size(); incidentIndex++) {
+            PostprocessingValidationWork.visit();
             List<MetricPoint> incident = request.proposedIncidentGeometry().get(incidentIndex);
             for (int candidateSegment = 0; candidateSegment < request.points().size() - 1; candidateSegment++) {
+            PostprocessingValidationWork.visit();
                 for (int incidentSegment = 0; incidentSegment < incident.size() - 1; incidentSegment++) {
+            PostprocessingValidationWork.visit();
                     IntersectionKind kind = intersection(request.points().get(candidateSegment),
                             request.points().get(candidateSegment + 1), incident.get(incidentSegment),
                             incident.get(incidentSegment + 1));
@@ -1433,6 +1491,7 @@ public final class FinalGeometryEvaluator {
         if (kind != IntersectionKind.TOUCH) { return false; }
         var incident = request.proposedIncidentGeometry().get(incidentIndex);
         for (var identity : request.sharedContacts().getOrDefault(incidentIndex, Set.of())) {
+            PostprocessingValidationWork.visit();
             int vertex = request.pointIds().indexOf(identity);
             if (vertex != candidateSegment && vertex != candidateSegment + 1) { continue; }
             MetricPoint point = request.points().get(vertex);
@@ -1506,10 +1565,12 @@ public final class FinalGeometryEvaluator {
         double currentUnsupported = 0.0;
         double worstUnsupported = 0.0;
         for (int segment = 0; segment < points.size() - 1; segment++) {
+            PostprocessingValidationWork.visit();
             cancellation.checkpoint();
             SupportSamples samples = sampling.support(points.get(segment), points.get(segment + 1),
                 image, pitch);
             for (boolean supported : samples.directlyLocalized()) {
+            PostprocessingValidationWork.visit();
                 cancellation.checkpoint();
                 if (retainedSamples != null) retainedSamples.add(new SupportSample(segment, supported, samples.pieceMeters()));
                 total += samples.pieceMeters();
@@ -1541,6 +1602,7 @@ public final class FinalGeometryEvaluator {
             double weighted = 0.0;
             double length = 0.0;
             for (int index = 1; index < points.size(); index++) {
+            PostprocessingValidationWork.visit();
                 MetricPoint start = points.get(index - 1);
                 MetricPoint end = points.get(index);
                 double segmentLength = start.distanceTo(end);
@@ -1587,6 +1649,7 @@ public final class FinalGeometryEvaluator {
             MetricPoint tangent = subtract(end, start);
             boolean[] direct = new boolean[count];
             for (int index = 0; index < count; index++) {
+            PostprocessingValidationWork.visit();
                 MetricPoint point = interpolate(start, end, (index + 0.5) / count);
                 direct[index] = image.sampleRoute(point, tangent)
                     .map(ImageCostField.RouteSample::directlyLocalized).orElse(false);
@@ -1613,6 +1676,7 @@ public final class FinalGeometryEvaluator {
         double total = 0.0;
         double length = 0.0;
         for (int index = 1; index < points.size() - 1; index++) {
+            PostprocessingValidationWork.visit();
             MetricPoint first = subtract(points.get(index), points.get(index - 1));
             MetricPoint second = subtract(points.get(index + 1), points.get(index));
             double denominator = norm(first) * norm(second);
@@ -1633,9 +1697,11 @@ public final class FinalGeometryEvaluator {
         List<MetricPoint> samples = new ArrayList<>(sampleCount);
         int segment = 0;
         for (int index = 0; index < sampleCount; index++) {
+            PostprocessingValidationWork.visit();
             double target = index == sampleCount - 1 ? totalLength
                     : index * totalLength / (sampleCount - 1.0);
             while (segment + 1 < chainage.length - 1 && chainage[segment + 1] < target) {
+            PostprocessingValidationWork.visit();
                 segment++;
             }
             double segmentLength = chainage[segment + 1] - chainage[segment];
@@ -1646,8 +1712,8 @@ public final class FinalGeometryEvaluator {
     }
 
     private static List<Finding> deduplicate(List<Finding> findings) {
-        return findings.stream().sorted(Comparator.comparing(Finding::code)
-                .thenComparingInt(Finding::firstVertex).thenComparingInt(Finding::lastVertex))
+        return findings.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).sorted(PostprocessingValidationWork.comparator(Comparator.comparing(Finding::code)
+                .thenComparingInt(Finding::firstVertex).thenComparingInt(Finding::lastVertex)))
                 .distinct().toList();
     }
 
@@ -1662,6 +1728,7 @@ public final class FinalGeometryEvaluator {
     private static double[] chainage(List<MetricPoint> points) {
         double[] result = new double[points.size()];
         for (int index = 1; index < points.size(); index++) {
+            PostprocessingValidationWork.visit();
             result[index] = result[index - 1] + points.get(index - 1).distanceTo(points.get(index));
         }
         return result;
@@ -1889,6 +1956,7 @@ public final class FinalGeometryEvaluator {
             }
             while (!profiles.isEmpty()
                     && retainedRows + rows > MAXIMUM_CACHED_PROFILE_ROWS) {
+            PostprocessingValidationWork.visit();
                 var iterator = profiles.entrySet().iterator();
                 Map.Entry<ProfileKey, FrozenProfile> eldest = iterator.next();
                 retainedRows -= eldest.getValue().sampleCount();
@@ -1971,6 +2039,7 @@ public final class FinalGeometryEvaluator {
             List<PhysicalSample> rows = new ArrayList<>((int) rowCount);
             rows.add(sampleAt(start));
             for (int index = firstInterior; index <= lastInterior; index++) {
+            PostprocessingValidationWork.visit();
                 PhysicalSample row = uniformAt(index);
                 if (row.chainageMeters() > start + 1.0e-9
                         && row.chainageMeters() < end - 1.0e-9) {
@@ -1995,6 +2064,7 @@ public final class FinalGeometryEvaluator {
             }
             List<PhysicalSample> rows = new ArrayList<>(uniform);
             for (int index = firstVertex; index < lastVertex; index++) {
+            PostprocessingValidationWork.visit();
                 if ((index & 1023) == 0) cancellation.checkpoint();
                 rows.add(new PhysicalSample(points.get(index), vertexChainage[index],
                         Math.max(0, Math.min(points.size() - 2, index)), index));
@@ -2013,6 +2083,7 @@ public final class FinalGeometryEvaluator {
             }
             long protectedRows = 0;
             for (int index : protectedIndices) {
+            PostprocessingValidationWork.visit();
                 if (vertexChainage[index] >= start - 1.0e-9
                         && vertexChainage[index] <= end + 1.0e-9) {
                     protectedRows++;
@@ -2024,6 +2095,7 @@ public final class FinalGeometryEvaluator {
             List<PhysicalSample> rows = new ArrayList<>(uniform);
             int visited = 0;
             for (int index : protectedIndices) {
+            PostprocessingValidationWork.visit();
                 if ((visited++ & 1023) == 0) cancellation.checkpoint();
                 if (vertexChainage[index] >= start - 1.0e-9
                         && vertexChainage[index] <= end + 1.0e-9) {
@@ -2037,10 +2109,11 @@ public final class FinalGeometryEvaluator {
         }
 
         private static List<PhysicalSample> orderedDistinct(List<PhysicalSample> rows) {
-            rows.sort(Comparator.comparingDouble(PhysicalSample::chainageMeters)
-                    .thenComparingInt(row -> row.originalVertex() < 0 ? 1 : 0));
+            rows.sort(PostprocessingValidationWork.comparator(Comparator.comparingDouble(PhysicalSample::chainageMeters)
+                    .thenComparingInt(row -> row.originalVertex() < 0 ? 1 : 0)));
             List<PhysicalSample> distinct = new ArrayList<>(rows.size());
             for (PhysicalSample row : rows) {
+            PostprocessingValidationWork.visit();
                 if (!distinct.isEmpty()
                         && Math.abs(row.chainageMeters()
                                 - distinct.get(distinct.size() - 1).chainageMeters()) <= 1.0e-9) {
@@ -2061,6 +2134,7 @@ public final class FinalGeometryEvaluator {
                     upperBound(vertexChainage, bounded) - 1));
             while (segment + 1 < vertexChainage.length - 1
                     && vertexChainage[segment + 1] - vertexChainage[segment] <= 1.0e-12) {
+            PostprocessingValidationWork.visit();
                 segment++;
             }
             double segmentLength = vertexChainage[segment + 1] - vertexChainage[segment];
@@ -2080,6 +2154,7 @@ public final class FinalGeometryEvaluator {
             int low = 0;
             int high = values.length;
             while (low < high) {
+            PostprocessingValidationWork.visit();
                 int middle = (low + high) >>> 1;
                 if (values[middle] < target) {
                     low = middle + 1;
@@ -2094,6 +2169,7 @@ public final class FinalGeometryEvaluator {
             int low = 0;
             int high = values.length;
             while (low < high) {
+            PostprocessingValidationWork.visit();
                 int middle = (low + high) >>> 1;
                 if (values[middle] <= target) {
                     low = middle + 1;
@@ -2115,6 +2191,7 @@ public final class FinalGeometryEvaluator {
 
         boolean isProtected(double chainageMeters, Set<Integer> protectedIndices) {
             for (int index : protectedIndices) {
+            PostprocessingValidationWork.visit();
                 if (Math.abs(vertexChainage[index] - chainageMeters) <= 1.0e-9) {
                     return true;
                 }

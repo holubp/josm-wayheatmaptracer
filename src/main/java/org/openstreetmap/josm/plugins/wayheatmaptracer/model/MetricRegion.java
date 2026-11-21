@@ -100,11 +100,15 @@ public final class MetricRegion {
 
     /** Returns whether any polygon contains the point, including its boundary. */
     public boolean contains(MetricPoint point) {
+        if(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.current()!=null)
+            return contains(point,CancellationProbe.NONE,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork::charge,null);
         return point != null && polygons.stream().anyMatch(polygon -> contains(polygon, point));
     }
 
     /** Proves a whole segment lies inside the polygon union without discrete-step gaps. */
     public boolean containsSegment(MetricPoint start, MetricPoint end) {
+        if(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.current()!=null)
+            return containsSegment(start,end,CancellationProbe.NONE,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork::charge,null,false,null,true);
         return containsSegment(start, end, CancellationProbe.NONE, ignored -> { }, null, false, null, true);
     }
 
