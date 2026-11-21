@@ -1,5 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -44,6 +46,7 @@ public record AlignmentEditPlan(
 
     /** Copies state and proves identity, authority, geometry, preview, and permission invariants. */
     public AlignmentEditPlan {
+        PostprocessingValidationWork.visit();
         if (selectedWayKey == null || selectedWayKey.type() != PrimitiveKey.Type.WAY || selectedRange == null
             || before == null || after == null || metricFrame == null || permissions == null || validation == null
             || finalPreviewWays == null || !before.datasetIdentity().equals(after.datasetIdentity())
@@ -57,8 +60,9 @@ public record AlignmentEditPlan(
         parameterHash = requireText(parameterHash, "parameterHash");
         routeIdentity = requireText(routeIdentity, "routeIdentity");
         Map<PrimitiveKey, List<GeographicPoint>> previewCopy = new LinkedHashMap<>();
-        finalPreviewWays.forEach((key, points) -> previewCopy.put(key, List.copyOf(points)));
+        finalPreviewWays.forEach((key, points) -> {PostprocessingValidationWork.charge(points.size()+1L);previewCopy.put(key, List.copyOf(points));});
         finalPreviewWays = Map.copyOf(previewCopy);
+        PostprocessingValidationWork.charge(previewCopy.size()+(long)disconnectedOccurrenceReplacements.size());
         disconnectedOccurrenceReplacements = Map.copyOf(disconnectedOccurrenceReplacements);
         DetachedWay selected = requireWay(before, selectedWayKey);
         if (selectedRange.lastIndex() >= selected.nodeKeys().size()) {
@@ -75,7 +79,7 @@ public record AlignmentEditPlan(
         validateCreatedAndRemoved(before, after, writeSet, disconnectedOccurrenceReplacements);
         validateNodeMovementAuthority(before, after, selectedWayKey, selectedRange, permissions,
             metricFrame);
-        Set<PrimitiveKey> changedExisting = writeSet.stream()
+        Set<PrimitiveKey> changedExisting = writeSet.stream().peek(meteredValue -> PostprocessingValidationWork.visit())
             .filter(before.primitives()::containsKey).collect(Collectors.toUnmodifiableSet());
         if (!before.closure().editableExistingKeys().containsAll(changedExisting)) {
             throw new IllegalArgumentException("Structural diff exceeds explicit primitive edit authority");
@@ -121,6 +125,7 @@ public record AlignmentEditPlan(
         }
         Map<ExternalPort, PrimitiveKey> expectedPorts = new LinkedHashMap<>();
         for (var port : before.closure().externalPorts()) {
+            PostprocessingValidationWork.visit();
             if (port.wayKey().equals(selectedKey) && replacements.containsKey(port.boundaryOccurrenceIndex())) {
                 expectedPorts.put(port, replacements.get(port.boundaryOccurrenceIndex()));
             }
@@ -131,13 +136,13 @@ public record AlignmentEditPlan(
         DetachedWay original = requireWay(before, selectedKey);
         DetachedWay proposed = requireWay(after, selectedKey);
         Map<PrimitiveKey, PrimitiveKey> normalized = new LinkedHashMap<>();
-        replacements.forEach((index, replacement) -> {
+        replacements.forEach((index, replacement) -> { PostprocessingValidationWork.visit();
             PrimitiveKey originalKey = original.nodeKeys().get(index);
             if (!Objects.equals(before.primitives().get(originalKey), after.primitives().get(originalKey))
                     || before.primitives().containsKey(replacement)
                     || !(after.primitives().get(replacement) instanceof DetachedNode newNode)
                     || !newNode.tags().isEmpty() || newNode.deleted()
-                    || proposed.nodeKeys().stream().filter(replacement::equals).count() != 1
+                    || proposed.nodeKeys().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).filter(replacement::equals).count() != 1
                     || proposed.nodeKeys().contains(originalKey)
                     || !after.incomingReferrerWatches().getOrDefault(replacement, Set.of()).equals(Set.of(selectedKey))) {
                 throw new IllegalArgumentException("Disconnection replacement is missing or changes its original/referrers");
@@ -148,10 +153,10 @@ public record AlignmentEditPlan(
             }
             normalized.put(replacement, originalKey);
         });
-        before.primitives().forEach((key, primitive) -> {
+        before.primitives().forEach((key, primitive) -> { PostprocessingValidationWork.visit();
             boolean contextual = key.type() != PrimitiveKey.Type.NODE && !key.equals(selectedKey)
                     || key.type() == PrimitiveKey.Type.NODE && before.incomingReferrerWatches().get(key)
-                            .stream().anyMatch(ref -> ref.type() == PrimitiveKey.Type.WAY && !ref.equals(selectedKey));
+                            .stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(ref -> ref.type() == PrimitiveKey.Type.WAY && !ref.equals(selectedKey));
             if (contextual && !Objects.equals(primitive, after.primitives().get(key))) {
                 throw new IllegalArgumentException("Disconnection must preserve every contextual primitive");
             }
@@ -160,7 +165,7 @@ public record AlignmentEditPlan(
             Set<PrimitiveKey> added = new LinkedHashSet<>(after.primitives().keySet());
             added.removeAll(before.primitives().keySet());
             if (!added.equals(Set.copyOf(replacements.values()))
-                    || !original.nodeKeys().equals(proposed.nodeKeys().stream()
+                    || !original.nodeKeys().equals(proposed.nodeKeys().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                             .map(key -> normalized.getOrDefault(key, key)).toList())) {
                 throw new IllegalArgumentException("Move Nodes creates only exact chosen occurrence replacements");
             }
@@ -208,14 +213,14 @@ public record AlignmentEditPlan(
         if (disconnectionSource != null) {
             encoder.field("disconnection-plan-v1").field(disconnectionSource.canonicalHash())
                     .field(disconnectionGeometryMode.name());
-            disconnectedOccurrenceReplacements.entrySet().stream().sorted(Map.Entry.comparingByKey())
+            disconnectedOccurrenceReplacements.entrySet().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).sorted(PostprocessingValidationWork.comparator(Map.Entry.comparingByKey()))
                     .forEach(entry -> NetworkSnapshot.encodeKey(encoder.field(entry.getKey()), entry.getValue()));
         }
         if (before.semanticWitness() != null) {
             encoder.field("semantic-witness").field(before.semanticWitness().canonicalHash());
         }
         validation.findingCodes().forEach(code -> encoder.field("finding").field(code));
-        finalPreviewWays.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {
+        finalPreviewWays.entrySet().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).sorted(PostprocessingValidationWork.comparator(Map.Entry.comparingByKey())).forEach(entry -> { PostprocessingValidationWork.visit();
             NetworkSnapshot.encodeKey(encoder.field("preview-way"), entry.getKey());
             entry.getValue().forEach(point -> encoder.field(Double.toHexString(point.latitudeDegrees()))
                 .field(Double.toHexString(point.longitudeDegrees())));
@@ -225,13 +230,13 @@ public record AlignmentEditPlan(
 
     private static void validateIdentityNamespaces(NetworkSnapshot before, NetworkSnapshot after) {
         if (!before.primitives().keySet().equals(before.closure().primitiveKeys())
-            || before.primitives().keySet().stream()
+            || before.primitives().keySet().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                 .anyMatch(key -> key.identityKind() != PrimitiveKey.IdentityKind.OSM_UNIQUE)) {
             throw new IllegalArgumentException("Before snapshot must materialize the complete existing closure");
         }
         Set<PrimitiveKey> added = new LinkedHashSet<>(after.primitives().keySet());
         added.removeAll(before.primitives().keySet());
-        if (added.stream().anyMatch(key -> key.identityKind() != PrimitiveKey.IdentityKind.PLAN_LOCAL
+        if (added.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(key -> key.identityKind() != PrimitiveKey.IdentityKind.PLAN_LOCAL
             || key.type() != PrimitiveKey.Type.NODE)) {
             throw new IllegalArgumentException("Only plan-local nodes may be created by v0.22 alignment");
         }
@@ -243,6 +248,7 @@ public record AlignmentEditPlan(
         Map<PrimitiveKey, Set<PrimitiveKey>> beforeInternal = before.internalIncomingReferrers();
         Map<PrimitiveKey, Set<PrimitiveKey>> afterInternal = after.internalIncomingReferrers();
         for (PrimitiveKey target : after.primitives().keySet()) {
+            PostprocessingValidationWork.visit();
             Set<PrimitiveKey> refs = new LinkedHashSet<>(afterInternal.get(target));
             if (before.primitives().containsKey(target)) {
                 Set<PrimitiveKey> external = new LinkedHashSet<>(
@@ -255,6 +261,7 @@ public record AlignmentEditPlan(
         Set<PrimitiveKey> removed = new LinkedHashSet<>(before.primitives().keySet());
         removed.removeAll(after.primitives().keySet());
         for (PrimitiveKey target : removed) {
+            PostprocessingValidationWork.visit();
             Set<PrimitiveKey> external = new LinkedHashSet<>(
                 before.incomingReferrerWatches().get(target));
             external.removeAll(beforeInternal.get(target));
@@ -277,6 +284,7 @@ public record AlignmentEditPlan(
             throw new IllegalArgumentException("Closure does not authorize new nodes");
         }
         for (PrimitiveKey key : added) {
+            PostprocessingValidationWork.visit();
             DetachedNode node = (DetachedNode) after.primitives().get(key);
             if (!node.tags().isEmpty()) {
                 throw new IllegalArgumentException("Plan-local alignment shape nodes must be untagged");
@@ -288,6 +296,7 @@ public record AlignmentEditPlan(
             throw new IllegalArgumentException("Removed primitives exceed the explicit safe-removal set");
         }
         for (PrimitiveKey key : removed) {
+            PostprocessingValidationWork.visit();
             DetachedPrimitive primitive = before.primitives().get(key);
             if (!(primitive instanceof DetachedNode node) || !node.tags().isEmpty()) {
                 throw new IllegalArgumentException("Only authorized untagged unreferenced nodes may be removed");
@@ -305,6 +314,7 @@ public record AlignmentEditPlan(
         Set<PrimitiveKey> movable = before.closure().movableExistingNodeKeys();
         Set<PrimitiveKey> protectedNodes = before.closure().protectedExistingNodeKeys();
         for (Map.Entry<PrimitiveKey, DetachedPrimitive> entry : before.primitives().entrySet()) {
+            PostprocessingValidationWork.visit();
             if (!(entry.getValue() instanceof DetachedNode oldNode)
                 || !(after.primitives().get(entry.getKey()) instanceof DetachedNode newNode)
                 || oldNode.coordinate().equals(newNode.coordinate())) {
@@ -315,10 +325,12 @@ public record AlignmentEditPlan(
                 throw new IllegalArgumentException("Moved existing node lacks explicit movement authority");
             }
             for (DetachedPrimitive primitive : before.primitives().values()) {
+            PostprocessingValidationWork.visit();
                 if (!(primitive instanceof DetachedWay way)) {
                     continue;
                 }
                 for (int occurrence = 0; occurrence < way.nodeKeys().size(); occurrence++) {
+            PostprocessingValidationWork.visit();
                     if (!way.nodeKeys().get(occurrence).equals(nodeKey)) {
                         continue;
                     }
@@ -354,20 +366,21 @@ public record AlignmentEditPlan(
 
     private static boolean occurrenceAuthorized(ClosureDescriptor closure, PrimitiveKey wayKey, int occurrence) {
         List<OccurrenceRange> ranges = closure.editableWayOccurrences().get(wayKey);
-        return ranges != null && ranges.stream().anyMatch(range -> occurrence >= range.firstIndex()
+        return ranges != null && ranges.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(range -> occurrence >= range.firstIndex()
             && occurrence <= range.lastIndex());
     }
 
     private static boolean nodeSharedWithSelected(NetworkSnapshot snapshot, PrimitiveKey nodeKey,
         PrimitiveKey selectedWayKey) {
         Set<PrimitiveKey> referrers = snapshot.incomingReferrerWatches().get(nodeKey);
-        return referrers.contains(selectedWayKey) && referrers.stream()
+        return referrers.contains(selectedWayKey) && referrers.stream().peek(meteredValue -> PostprocessingValidationWork.visit())
             .anyMatch(key -> key.type() == PrimitiveKey.Type.WAY && !key.equals(selectedWayKey));
     }
 
     private static void validateSemanticChanges(NetworkSnapshot before, NetworkSnapshot after,
         Set<PrimitiveKey> writes, RecoveryPermissions permissions, PrimitiveKey selectedWayKey) {
         for (PrimitiveKey key : writes) {
+            PostprocessingValidationWork.visit();
             DetachedPrimitive oldValue = before.primitives().get(key);
             DetachedPrimitive newValue = after.primitives().get(key);
             if (oldValue == null || newValue == null) {
@@ -403,6 +416,7 @@ public record AlignmentEditPlan(
         PrimitiveKey oldVia = null;
         PrimitiveKey newVia = null;
         for (int index = 0; index < before.members().size(); index++) {
+            PostprocessingValidationWork.visit();
             DetachedRelationMember left = before.members().get(index);
             DetachedRelationMember right = after.members().get(index);
             if (left.equals(right)) {
@@ -434,6 +448,7 @@ public record AlignmentEditPlan(
     private static PrimitiveKey uniqueWayMember(List<DetachedRelationMember> members, String role) {
         PrimitiveKey result = null;
         for (DetachedRelationMember member : members) {
+            PostprocessingValidationWork.visit();
             if (!role.equals(member.role())) {
                 continue;
             }
@@ -454,6 +469,7 @@ public record AlignmentEditPlan(
         Set<PrimitiveKey> writes, RecoveryPermissions permissions, PrimitiveKey selectedWay,
         Map<Integer, PrimitiveKey> replacements) {
         for (PrimitiveKey key : writes) {
+            PostprocessingValidationWork.visit();
             DetachedPrimitive oldValue = before.primitives().get(key);
             DetachedPrimitive newValue = after.primitives().get(key);
             if (oldValue instanceof DetachedWay oldWay && newValue instanceof DetachedWay newWay
@@ -463,7 +479,7 @@ public record AlignmentEditPlan(
                 if (key.equals(selectedWay) && !replacements.isEmpty()) {
                     Map<PrimitiveKey, PrimitiveKey> originals = new LinkedHashMap<>();
                     replacements.forEach((index, replacement) -> originals.put(replacement, oldWay.nodeKeys().get(index)));
-                    normalized = newWay.nodeKeys().stream().map(node -> originals.getOrDefault(node, node)).toList();
+                    normalized = newWay.nodeKeys().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).map(node -> originals.getOrDefault(node, node)).toList();
                 }
                 if (ranges == null || !sequenceChangesAuthorized(oldWay.nodeKeys(), normalized, ranges,
                     before.closure().protectedExistingNodeKeys(),
@@ -482,15 +498,18 @@ public record AlignmentEditPlan(
         }
         boolean[] editable = new boolean[before.size()];
         for (OccurrenceRange range : ranges) {
+            PostprocessingValidationWork.visit();
             if (range.lastIndex() >= before.size()) {
                 return false;
             }
             for (int index = range.firstIndex(); index <= range.lastIndex(); index++) {
+            PostprocessingValidationWork.visit();
                 editable[index] = !protectedNodes.contains(before.get(index));
             }
         }
         List<Integer> fixedBeforeIndexes = new ArrayList<>();
         for (int index = 0; index < before.size(); index++) {
+            PostprocessingValidationWork.visit();
             if (!editable[index]) {
                 fixedBeforeIndexes.add(index);
             }
@@ -498,6 +517,7 @@ public record AlignmentEditPlan(
         int previousBefore = -1;
         int previousAfter = -1;
         for (int beforeIndex : fixedBeforeIndexes) {
+            PostprocessingValidationWork.visit();
             int afterIndex = after.indexOf(before.get(beforeIndex));
             if (afterIndex <= previousAfter || !authorizedGap(before, editable, ranges,
                 previousBefore + 1, beforeIndex - 1, after.subList(previousAfter + 1, afterIndex),
@@ -518,6 +538,7 @@ public record AlignmentEditPlan(
         JunctionPolicy junctionPolicy) {
         boolean canChange = false;
         for (int index = from; index <= to; index++) {
+            PostprocessingValidationWork.visit();
             canChange |= editable[index];
         }
         if (canChange || afterGap.equals(beforeGap)) {
@@ -525,7 +546,7 @@ public record AlignmentEditPlan(
         }
         if (!beforeGap.isEmpty() || afterGap.isEmpty() || from != to + 1
             || from <= 0 || from >= before.size()
-            || afterGap.stream().anyMatch(key -> key.type() != PrimitiveKey.Type.NODE
+            || afterGap.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(key -> key.type() != PrimitiveKey.Type.NODE
                 || key.identityKind() != PrimitiveKey.IdentityKind.PLAN_LOCAL
                     && (junctionPolicy != JunctionPolicy.REATTACH || !movableNodes.contains(key)
                         || !before.contains(key)))) {
@@ -533,7 +554,7 @@ public record AlignmentEditPlan(
         }
         int leftOccurrence = from - 1;
         int rightOccurrence = from;
-        return ranges.stream().anyMatch(range -> range.firstIndex() <= leftOccurrence
+        return ranges.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(range -> range.firstIndex() <= leftOccurrence
             && range.lastIndex() >= rightOccurrence);
     }
 
@@ -541,6 +562,7 @@ public record AlignmentEditPlan(
         Set<PrimitiveKey> writes, LocalMetricFrame frame) {
         MetricRegion editRegion = before.closure().editRegion();
         for (PrimitiveKey key : writes) {
+            PostprocessingValidationWork.visit();
             DetachedPrimitive oldValue = before.primitives().get(key);
             DetachedPrimitive newValue = after.primitives().get(key);
             if (oldValue instanceof DetachedNode oldNode && newValue instanceof DetachedNode newNode
@@ -560,10 +582,12 @@ public record AlignmentEditPlan(
             }
         }
         for (PrimitiveKey key : affectedWayKeys(before, after, writes)) {
+            PostprocessingValidationWork.visit();
             if (!(after.primitives().get(key) instanceof DetachedWay way)) {
                 continue;
             }
             for (int index = 1; index < way.nodeKeys().size(); index++) {
+            PostprocessingValidationWork.visit();
                 PrimitiveKey leftKey = way.nodeKeys().get(index - 1);
                 PrimitiveKey rightKey = way.nodeKeys().get(index);
                 DetachedNode left = requireNode(after, leftKey);
@@ -591,6 +615,7 @@ public record AlignmentEditPlan(
             return false;
         }
         for (int index = 1; index < way.nodeKeys().size(); index++) {
+            PostprocessingValidationWork.visit();
             if (way.nodeKeys().get(index - 1).equals(leftKey) && way.nodeKeys().get(index).equals(rightKey)) {
                 return requireNode(before, leftKey).coordinate().equals(left)
                     && requireNode(before, rightKey).coordinate().equals(right);
@@ -601,9 +626,9 @@ public record AlignmentEditPlan(
 
     private static void validatePreviewMatchesAfter(NetworkSnapshot after,
         Map<PrimitiveKey, List<GeographicPoint>> previews) {
-        previews.forEach((wayKey, preview) -> {
+        previews.forEach((wayKey, preview) -> { PostprocessingValidationWork.visit();
             DetachedWay way = requireWay(after, wayKey);
-            List<GeographicPoint> applied = way.nodeKeys().stream()
+            List<GeographicPoint> applied = way.nodeKeys().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                 .map(key -> requireNode(after, key).coordinate()).toList();
             if (!applied.equals(preview)) {
                 throw new IllegalArgumentException("Reviewed preview does not equal the proposed after-state");
@@ -619,6 +644,7 @@ public record AlignmentEditPlan(
             wayIncidence(after);
         Set<PrimitiveKey> result = new LinkedHashSet<>();
         for (PrimitiveKey key : before.primitives().keySet()) {
+            PostprocessingValidationWork.visit();
             Map<PrimitiveKey, List<DirectedNeighbors>> oldOccurrences =
                 beforeIncidence.getOrDefault(key, Map.of());
             Map<PrimitiveKey, List<DirectedNeighbors>> newOccurrences =
@@ -639,13 +665,14 @@ public record AlignmentEditPlan(
     private static Map<PrimitiveKey, Map<PrimitiveKey, List<DirectedNeighbors>>> wayIncidence(
         NetworkSnapshot snapshot) {
         Map<PrimitiveKey, Map<PrimitiveKey, List<DirectedNeighbors>>> mutable = new LinkedHashMap<>();
-        snapshot.primitives().values().stream()
+        snapshot.primitives().values().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
             .filter(DetachedWay.class::isInstance)
             .map(DetachedWay.class::cast)
-            .sorted(java.util.Comparator.comparing(DetachedWay::key))
-            .forEach(way -> {
+            .sorted(PostprocessingValidationWork.comparator(java.util.Comparator.comparing(DetachedWay::key)))
+            .forEach(way -> { PostprocessingValidationWork.visit();
                 Map<PrimitiveKey, List<DirectedNeighbors>> occurrencesByNode = new LinkedHashMap<>();
                 for (int index = 0; index < way.nodeKeys().size(); index++) {
+            PostprocessingValidationWork.visit();
                     PrimitiveKey node = way.nodeKeys().get(index);
                     occurrencesByNode.computeIfAbsent(node, ignored -> new ArrayList<>()).add(
                         new DirectedNeighbors(neighbor(way.nodeKeys(), index - 1),
@@ -722,6 +749,7 @@ public record AlignmentEditPlan(
     private static int uniqueOccurrence(List<PrimitiveKey> nodes, PrimitiveKey nodeKey) {
         int occurrence = -1;
         for (int index = 0; index < nodes.size(); index++) {
+            PostprocessingValidationWork.visit();
             if (!nodes.get(index).equals(nodeKey)) {
                 continue;
             }
@@ -739,7 +767,7 @@ public record AlignmentEditPlan(
     private static void validateDecisionReferrerPayload(NetworkSnapshot before,
         NetworkSnapshot after, Set<PrimitiveKey> writes, Set<PrimitiveKey> affectedWays,
         PrimitiveKey selectedWayKey, OccurrenceRange selectedRange) {
-        Set<PrimitiveKey> targets = writes.stream()
+        Set<PrimitiveKey> targets = writes.stream().peek(meteredValue -> PostprocessingValidationWork.visit())
             .filter(before.primitives()::containsKey)
             .collect(Collectors.toCollection(LinkedHashSet::new));
         targets.addAll(affectedWays);
@@ -751,6 +779,7 @@ public record AlignmentEditPlan(
                 "Every affected way requires complete decision payload");
         }
         for (PrimitiveKey target : targets) {
+            PostprocessingValidationWork.visit();
             if (before.primitives().containsKey(target)
                 && !before.primitives().keySet().containsAll(
                     before.incomingReferrerWatches().get(target))) {
@@ -776,12 +805,12 @@ public record AlignmentEditPlan(
 
     private static Set<PrimitiveKey> affectedWayKeys(NetworkSnapshot before, NetworkSnapshot after,
         Set<PrimitiveKey> writes) {
-        Set<PrimitiveKey> result = writes.stream().filter(key -> key.type() == PrimitiveKey.Type.WAY)
+        Set<PrimitiveKey> result = writes.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).filter(key -> key.type() == PrimitiveKey.Type.WAY)
             .collect(Collectors.toCollection(LinkedHashSet::new));
-        writes.stream().filter(key -> key.type() == PrimitiveKey.Type.NODE).forEach(node -> {
-            before.incomingReferrerWatches().getOrDefault(node, Set.of()).stream()
+        writes.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).filter(key -> key.type() == PrimitiveKey.Type.NODE).forEach(node -> { PostprocessingValidationWork.visit();
+            before.incomingReferrerWatches().getOrDefault(node, Set.of()).stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                 .filter(key -> key.type() == PrimitiveKey.Type.WAY).forEach(result::add);
-            after.incomingReferrerWatches().getOrDefault(node, Set.of()).stream()
+            after.incomingReferrerWatches().getOrDefault(node, Set.of()).stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                 .filter(key -> key.type() == PrimitiveKey.Type.WAY).forEach(result::add);
         });
         return Set.copyOf(result);
@@ -806,7 +835,7 @@ public record AlignmentEditPlan(
     private static Map<PrimitiveKey, DetachedPrimitive> difference(Map<PrimitiveKey, DetachedPrimitive> values,
         Set<PrimitiveKey> excluded) {
         Map<PrimitiveKey, DetachedPrimitive> result = new LinkedHashMap<>();
-        values.forEach((key, value) -> {
+        values.forEach((key, value) -> { PostprocessingValidationWork.visit();
             if (!excluded.contains(key)) {
                 result.put(key, value);
             }

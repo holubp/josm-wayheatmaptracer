@@ -1,5 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork;
+
 import java.util.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.ParentArc;
@@ -27,8 +29,9 @@ public final class ParentBackedComposer {
             correspondence=List.copyOf(correspondence);spans=List.copyOf(spans);
             if(id.isBlank()||points.size()<2||points.size()!=pointIds.size()||assignments.size()!=points.size())
                 throw new IllegalArgumentException("Incomplete composed final geometry");
-            for(int i=0;i<points.size();i++)if(!points.get(i).equals(assignments.get(pointIds.get(i))))
+            for(int i=0;i<points.size();i++){PostprocessingValidationWork.visit();if(!points.get(i).equals(assignments.get(pointIds.get(i))))
                 throw new IllegalArgumentException("Composed assignments differ from geometry");
+            }
         }
     }
     public record CopyAssessment(FinalRoutePointId.ExistingWayNodeOccurrence occurrence,PrimitiveKey destinationKey,
@@ -47,6 +50,7 @@ public final class ParentBackedComposer {
         var positions=new TreeMap<Integer,Double>();var spans=new ArrayList<Span>();
         int cursor=parent.originalRange().firstIndex();
         for(var choice:ordered) {
+            PostprocessingValidationWork.visit();
             var reference=choice.reference();var range=reference.originalRange();
             reference.requireRefinementGeometryAuthority();
             if(reference.root()!=parent.root()||!reference.parentStage().equals(parent.parentStage())
@@ -56,7 +60,7 @@ public final class ParentBackedComposer {
                     ||!choice.points().get(0).equals(parent.occurrencePosition(range.firstIndex()))
                     ||!choice.points().get(choice.points().size()-1).equals(parent.occurrencePosition(range.lastIndex())))
                 throw new IllegalArgumentException("Replacement overlaps, expands or moves its exact parent cuts");
-            if(parent.root().network().closure().editableWayOccurrences().getOrDefault(parent.root().request().selectedWayKey(),List.of()).stream()
+            if(parent.root().network().closure().editableWayOccurrences().getOrDefault(parent.root().request().selectedWayKey(),List.of()).stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                     .noneMatch(r->r.firstIndex()<=range.firstIndex()&&r.lastIndex()>=range.lastIndex()))
                 throw new IllegalArgumentException("Replacement exceeds original interval edit authority");
             if(cursor<range.firstIndex())appendParent(parent.slice(new OccurrenceRange(cursor,range.firstIndex())),points,ids,positions,spans);
@@ -67,6 +71,7 @@ public final class ParentBackedComposer {
         else if(cursor<parent.originalRange().lastIndex())appendParent(parent.slice(new OccurrenceRange(cursor,parent.originalRange().lastIndex())),points,ids,positions,spans);
         var arcs=new ArrayList<ParentArc>();
         for(var entry:positions.entrySet()) {
+            PostprocessingValidationWork.visit();
             double value=entry.getValue();int edge=(int)Math.floor(value);double fraction=value-edge;
             if(edge==points.size()-1){edge--;fraction=1;}
             arcs.add(new ParentArc(entry.getKey(),edge,fraction));
@@ -75,6 +80,7 @@ public final class ParentBackedComposer {
         // Legacy assignment map. A cut on a removed occurrence never invents node reuse.
         var root=parent.root();var way=(DetachedWay)root.network().primitives().get(root.request().selectedWayKey());
         for(var arc:arcs) {
+            PostprocessingValidationWork.visit();
             int occurrence=arc.originalOccurrence();var key=way.nodeKeys().get(occurrence);
             boolean required=root.request().geometryMode()==AlignmentMode.MOVE_EXISTING_NODES
                 ||!root.network().closure().removableExistingNodeKeys().contains(key);
@@ -88,11 +94,13 @@ public final class ParentBackedComposer {
             }
         }
         for(int occurrence=parent.originalRange().firstIndex();occurrence<=parent.originalRange().lastIndex();occurrence++) {
+            PostprocessingValidationWork.visit();
             var key=way.nodeKeys().get(occurrence);
             if(!root.network().closure().removableExistingNodeKeys().contains(key)&&!positions.containsKey(occurrence))
                 throw new IllegalArgumentException("Missing permanent original occurrence");
         }
         for(int i=0;i<ids.size();i++) {
+            PostprocessingValidationWork.visit();
             if(ids.get(i) instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing) {
                 int occurrence=existing.originalOccurrenceIndex();
                 if(!existing.wayKey().equals(way.key())||occurrence<parent.originalRange().firstIndex()||occurrence>parent.originalRange().lastIndex()
@@ -117,9 +125,11 @@ public final class ParentBackedComposer {
             String nativeId,String palette,List<MetricPoint> points,List<FinalRoutePointId> ids,Map<Integer,Double> positions,List<Span> spans) {
         int base=points.isEmpty()?0:points.size()-1;
         if(!points.isEmpty()&&!points.get(base).equals(part.get(0)))throw new IllegalArgumentException("Parent interval join differs");
-        for(int i=points.isEmpty()?0:1;i<part.size();i++){points.add(part.get(i));ids.add(partIds.get(i));}
+        for(int i=points.isEmpty()?0:1;i<part.size();i++){
+            PostprocessingValidationWork.visit();points.add(part.get(i));ids.add(partIds.get(i));}
         if(partIds.get(0) instanceof FinalRoutePointId.ExistingWayNodeOccurrence)ids.set(base,partIds.get(0));
         for(var arc:arcs) {
+            PostprocessingValidationWork.visit();
             if(arc.parentEdge()>=part.size()-1)throw new IllegalArgumentException("Interval correspondence exceeds final geometry");
             double value=base+arc.parentEdge()+arc.fraction();var previous=positions.put(arc.originalOccurrence(),value);
             if(previous!=null&&Double.compare(previous,value)!=0)throw new IllegalArgumentException("Join occurrence maps twice");
@@ -130,15 +140,30 @@ public final class ParentBackedComposer {
         cancellation.checkpoint();var root=parent.root();
         if(!evidence.coordinateFrame().equals(root.evidence().coordinateFrame())||!evidence.sourceIdentity().equals(root.sourceIdentity()))
             throw new IllegalArgumentException("Final assessment source differs from root");
-        var image=ImageCostField.fromEvidence(evidence,field);var protectedAssignments=new LinkedHashMap<Integer,MetricPoint>();
+        return assessInternal(parent,candidate,evidence,ImageCostField.fromEvidence(evidence,field),cancellation);
+    }
+    /** Postprocessing reuses the exact admitted selected-source image; no second raster copy. */
+    public Assessed assessPostprocessed(ParentTraceReference parent,Composed candidate,EvidenceSnapshot evidence,
+            ImageCostField image,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,CancellationProbe cancellation) {
+        try(var scope=PostprocessingValidationWork.open(work)) {
+            return assessInternal(parent,candidate,evidence,image,cancellation);
+        }
+    }
+    private Assessed assessInternal(ParentTraceReference parent,Composed candidate,EvidenceSnapshot evidence,ImageCostField image,CancellationProbe cancellation) {
+        cancellation.checkpoint();var root=parent.root();
+        if(!evidence.coordinateFrame().equals(root.evidence().coordinateFrame())||!evidence.sourceIdentity().equals(root.sourceIdentity()))
+            throw new IllegalArgumentException("Final assessment source differs from root");
+        var protectedAssignments=new LinkedHashMap<Integer,MetricPoint>();
         var extra=new ArrayList<FinalGeometryEvaluator.Finding>();
         if(root.frozenGeometryProof().isEmpty())extra.add(new FinalGeometryEvaluator.Finding(FinalGeometryEvaluator.FindingCode.CONTEXT_PROOF_UNAVAILABLE,
             FinalGeometryEvaluator.Severity.HARD_BLOCK,0,candidate.points().size()-1,0));
         else for(var frozen:root.frozenGeometryProof().get().ranges()) {
+            PostprocessingValidationWork.visit();
             int first=Math.max(frozen.firstIndex(),parent.originalRange().firstIndex()),last=Math.min(frozen.lastIndex(),parent.originalRange().lastIndex());
             if(first>last)continue;
             try {
-                var expected=first==last?List.of(parent.occurrencePosition(first)):parent.slice(new OccurrenceRange(first,last)).points();
+                var expected=first==last?List.of(parent.occurrencePosition(first)):
+                    PostprocessingValidationWork.current()!=null?cutGeometry(parent.points(),parent.correspondence(),first,last):parent.slice(new OccurrenceRange(first,last)).points();
                 if(!expected.equals(cutGeometry(candidate.points(),candidate.correspondence(),first,last)))
                     extra.add(new FinalGeometryEvaluator.Finding(FinalGeometryEvaluator.FindingCode.PROTECTED_ASSIGNMENT_MISMATCH,FinalGeometryEvaluator.Severity.HARD_BLOCK,0,candidate.points().size()-1,0));
             }catch(IllegalArgumentException|ParentTraceReference.UnavailableException unavailable) {
@@ -147,12 +172,18 @@ public final class ParentBackedComposer {
         }
         var way=(DetachedWay)root.network().primitives().get(root.request().selectedWayKey());
         var original=new ArrayList<MetricPoint>();
-        for(int i=parent.originalRange().firstIndex();i<=parent.originalRange().lastIndex();i++)
+        for(int i=parent.originalRange().firstIndex();i<=parent.originalRange().lastIndex();i++) {PostprocessingValidationWork.visit();
             original.add(evidence.coordinateFrame().toMetric(((DetachedNode)root.network().primitives().get(way.nodeKeys().get(i))).coordinate()));
+        }
         for(int i=0;i<candidate.points().size();i++) {
+            PostprocessingValidationWork.visit();
             cancellation.checkpoint();var point=candidate.points().get(i);
             boolean outside=!root.network().closure().editRegion().contains(point)||distanceToPolyline(point,original)>root.request().permissions().ordinaryRadiusMeters()+1e-7;
             if(i>0)outside|=!root.network().closure().editRegion().containsSegment(candidate.points().get(i-1),point);
+            if(PostprocessingValidationWork.current()!=null&&(!evidence.evidenceRegion().contains(point)
+                    ||i>0&&!evidence.evidenceRegion().containsSegment(candidate.points().get(i-1),point)))
+                extra.add(new FinalGeometryEvaluator.Finding(FinalGeometryEvaluator.FindingCode.CONTEXT_PROOF_UNAVAILABLE,
+                    FinalGeometryEvaluator.Severity.HARD_BLOCK,i,i,0));
             if(candidate.pointIds().get(i) instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing) {
                 var pinned=parent.frozenAnchors().get(existing.originalOccurrenceIndex());
                 if(pinned!=null)protectedAssignments.put(i,pinned);
@@ -167,6 +198,7 @@ public final class ParentBackedComposer {
         var after=new LinkedHashMap<>(root.network().primitives());var replacement=new ArrayList<PrimitiveKey>();
         var disconnections=SharedNodeDisconnectionPlanner.forRequest(root.request(),root.network());
         for(int i=0;i<candidate.points().size();i++) {
+            PostprocessingValidationWork.visit();
             cancellation.checkpoint();var id=candidate.pointIds().get(i);
             var key=id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing?disconnections.destinationKey(existing):PrimitiveKey.planned(PrimitiveKey.Type.NODE,i+1);
             var old=after.get(key);if(!(id instanceof FinalRoutePointId.ExistingWayNodeOccurrence)&&old!=null)throw new IllegalArgumentException("Generated topology identity collision");
@@ -189,11 +221,11 @@ public final class ParentBackedComposer {
             finding.contains("review-required")?FinalGeometryEvaluator.Severity.REVIEW:FinalGeometryEvaluator.Severity.HARD_BLOCK,0,candidate.points().size()-1,0));
         if(!extra.isEmpty()) {
             var findings=new ArrayList<>(quality.findings());findings.addAll(extra);
-            var disposition=findings.stream().anyMatch(f->f.severity()==FinalGeometryEvaluator.Severity.HARD_BLOCK)?FinalGeometryEvaluator.Disposition.HARD_BLOCKED:FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED;
+            var disposition=findings.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(f->f.severity()==FinalGeometryEvaluator.Severity.HARD_BLOCK)?FinalGeometryEvaluator.Disposition.HARD_BLOCKED:FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED;
             quality=new FinalGeometryEvaluator.Result(quality.id(),disposition,findings,quality.totalLengthMeters(),quality.directlySupportedLengthMeters(),quality.worstUnsupportedSpanMeters(),quality.meanImageCenterCost(),quality.bendPreservingRoughness());
         }
         var copies=new ArrayList<CopyAssessment>();
-        for(int i=0;i<candidate.pointIds().size();i++)if(candidate.pointIds().get(i) instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing
+        for(int i=0;i<candidate.pointIds().size();i++){PostprocessingValidationWork.visit();if(candidate.pointIds().get(i) instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing
                 &&disconnections.replacements().containsKey(existing.originalOccurrenceIndex())) {
             var context=new LinkedHashMap<PrimitiveKey,DetachedWay>();
             for(var ref:root.network().incomingReferrerWatches().getOrDefault(existing.nodeKey(),Set.of()))
@@ -202,11 +234,13 @@ public final class ParentBackedComposer {
             copies.add(new CopyAssessment(existing,replacement.get(i),originalAfter instanceof DetachedNode node?Optional.of(node):Optional.empty(),
                 destinationAfter instanceof DetachedNode node?Optional.of(node):Optional.empty(),context));
         }
+        }
         cancellation.checkpoint();return new Assessed(candidate,quality,topology.findingCodes(),copies);
     }
     private static double distanceToPolyline(MetricPoint point,List<MetricPoint> polyline) {
         double best=Double.POSITIVE_INFINITY;
         for(int i=1;i<polyline.size();i++) {
+            PostprocessingValidationWork.visit();
             var a=polyline.get(i-1);var b=polyline.get(i);double dx=b.xMeters()-a.xMeters(),dy=b.yMeters()-a.yMeters();
             double length=dx*dx+dy*dy;double f=length==0?0:Math.max(0,Math.min(1,((point.xMeters()-a.xMeters())*dx+(point.yMeters()-a.yMeters())*dy)/length));
             best=Math.min(best,point.distanceTo(new MetricPoint(a.xMeters()+f*dx,a.yMeters()+f*dy)));
@@ -214,15 +248,15 @@ public final class ParentBackedComposer {
         return best;
     }
     private static List<MetricPoint> cutGeometry(List<MetricPoint> points,List<ParentArc> correspondence,int first,int last) {
-        var starts=correspondence.stream().filter(a->a.originalOccurrence()==first).toList();
-        var ends=correspondence.stream().filter(a->a.originalOccurrence()==last).toList();
+        var starts=correspondence.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).filter(a->a.originalOccurrence()==first).toList();
+        var ends=correspondence.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).filter(a->a.originalOccurrence()==last).toList();
         if(starts.size()!=1||ends.size()!=1)throw new IllegalArgumentException("Frozen geometry cut lineage unavailable");
         var a=starts.get(0);var b=ends.get(0);
         if(a.parentEdge()>=points.size()-1||b.parentEdge()>=points.size()-1||a.parentEdge()+a.fraction()>b.parentEdge()+b.fraction())
             throw new IllegalArgumentException("Frozen geometry cuts are out of order or bounds");
         var result=new ArrayList<MetricPoint>();result.add(ParentTraceReference.interpolate(points.get(a.parentEdge()),points.get(a.parentEdge()+1),a.fraction()));
         if(first==last)return List.copyOf(result);
-        for(int i=a.parentEdge()+1;i<points.size();i++)if(i>a.parentEdge()+a.fraction()&&i<b.parentEdge()+b.fraction())result.add(points.get(i));
+        for(int i=a.parentEdge()+1;i<points.size();i++){PostprocessingValidationWork.visit();if(i>a.parentEdge()+a.fraction()&&i<b.parentEdge()+b.fraction())result.add(points.get(i));}
         result.add(ParentTraceReference.interpolate(points.get(b.parentEdge()),points.get(b.parentEdge()+1),b.fraction()));return List.copyOf(result);
     }
 }

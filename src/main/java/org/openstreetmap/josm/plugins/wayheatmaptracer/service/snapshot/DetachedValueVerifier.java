@@ -32,6 +32,7 @@ public final class DetachedValueVerifier {
     }
 
     private static void inspect(Object value, IdentityHashMap<Object, Boolean> visited) {
+        org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.visit();
         if (value == null || scalar(value.getClass()) || visited.put(value, Boolean.TRUE) != null) {
             return;
         }
@@ -72,6 +73,11 @@ public final class DetachedValueVerifier {
             try {
                 field.setAccessible(true);
                 inspect(field.get(value), visited);
+            } catch (org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached
+                    |java.util.concurrent.CancellationException
+                    |org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.ResourceLimitException refusal) {
+                if(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.current()!=null)throw refusal;
+                throw new IllegalArgumentException("Cannot prove detached snapshot object graph",refusal);
             } catch (ReflectiveOperationException | RuntimeException error) {
                 throw new IllegalArgumentException("Cannot prove detached snapshot object graph", error);
             }

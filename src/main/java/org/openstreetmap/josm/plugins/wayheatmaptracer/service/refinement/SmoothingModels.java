@@ -42,11 +42,26 @@ public final class SmoothingModels {
         return new VerifiedOriginalAffine(RasterMetricTransform.metricGrid(origin,a.rasterYPerNorthMeter()/determinant,
             -a.rasterYPerEastMeter()/determinant,-a.rasterXPerNorthMeter()/determinant,a.rasterXPerEastMeter()/determinant),a.parameterIdentity());
     }
+    /** Factual accepted Gaussian units; distinct from the raw original-input frame. */
+    public record BaselineReference(String protocol,String evidenceHash,String fieldName,String mappingIdentity,
+            RasterMetricTransform transform,int width,int height) {
+        public BaselineReference {
+            if(!"captured-scalar-reference-v1".equals(protocol)||evidenceHash==null||!evidenceHash.matches("[0-9a-f]{64}")
+                    ||fieldName==null||fieldName.isBlank()||mappingIdentity==null||mappingIdentity.isBlank()||transform==null||width<2||height<2)
+                throw new IllegalArgumentException("Factual scalar reference required");
+        }
+        public String units(){return "baseline-capture-reference-units";}
+    }
     public record Parent(OperationTicket ticket,ParentTraceReference reference,Frame frame,Optional<FinalControlBasis> nativeBasis,
-            FinalControlBasis smoothingBasis,String representationIdentity,List<FinalRoutePointId> pointIds,ImageCostField image,EvidenceSnapshot evidence,NativeFacts nativeFacts) {
+            FinalControlBasis smoothingBasis,String representationIdentity,List<FinalRoutePointId> pointIds,ImageCostField image,EvidenceSnapshot evidence,NativeFacts nativeFacts,BaselineReference baselineReference) {
         public Parent {
             Objects.requireNonNull(ticket);Objects.requireNonNull(reference);Objects.requireNonNull(frame);Objects.requireNonNull(nativeBasis);
             Objects.requireNonNull(smoothingBasis);Objects.requireNonNull(image);Objects.requireNonNull(evidence);Objects.requireNonNull(nativeFacts);pointIds=List.copyOf(pointIds);
+            Objects.requireNonNull(baselineReference);
+            var scalar=evidence.fields().get(nativeFacts.source().fieldName());
+            if(!baselineReference.transform().equals(evidence.transform())||!baselineReference.fieldName().equals(nativeFacts.source().fieldName())
+                    ||baselineReference.width()!=scalar.width()||baselineReference.height()!=scalar.height()||!baselineReference.mappingIdentity().equals(frame.mappingIdentity()))
+                throw new IllegalArgumentException("Baseline reference differs from selected scalar evidence");
             if(representationIdentity==null||representationIdentity.isBlank()||pointIds.size()!=reference.points().size()
                     ||!smoothingBasis.initialCoordinates().equals(reference.points())||smoothingBasis.size()!=pointIds.size()
                     ||new HashSet<>(pointIds).size()!=pointIds.size())throw new IllegalArgumentException("Smoothing final-slot representation differs from exact parent");

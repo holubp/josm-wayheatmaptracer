@@ -1,5 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork;
+
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -719,7 +721,20 @@ public final class ModernSingleWayEditPlanAdapter {
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference parent,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.Assessed assessed,
             EvidenceSnapshot evidence) {
-        parent.requireRefinementGeometryAuthority();
+        return adaptRefinementInternal(parent,assessed,evidence,false);
+    }
+    /** Same immutable plan contract for an already assessed whole-output postprocessing result. */
+    public AlignmentEditPlan adaptPostprocessed(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference parent,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.Assessed assessed,
+            EvidenceSnapshot evidence,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
+        try(var scope=PostprocessingValidationWork.open(work)) {return adaptRefinementInternal(parent,assessed,evidence,true);}
+    }
+    private AlignmentEditPlan adaptRefinementInternal(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference parent,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.Assessed assessed,
+            EvidenceSnapshot evidence,boolean postprocessing) {
+        if(postprocessing)parent.requireComplete();else parent.requireRefinementGeometryAuthority();
         var root=parent.root();var request=root.request();var before=root.network();
         if(!evidence.coordinateFrame().equals(root.evidence().coordinateFrame())
                 ||assessed.quality().disposition()==FinalGeometryEvaluator.Disposition.HARD_BLOCKED
@@ -730,8 +745,11 @@ public final class ModernSingleWayEditPlanAdapter {
         var authority=SharedNodeDisconnectionPlanner.forRequest(request,before);
         var replacement=replacementNodes(ids,assignments,composed.id(),request,evidence,before,selected,true,authority);
         var afterValues=new LinkedHashMap<PrimitiveKey,DetachedPrimitive>(before.primitives());
-        for(var removable:before.closure().removableExistingNodeKeys())if(!replacement.contains(removable))afterValues.remove(removable);
+        for(var removable:before.closure().removableExistingNodeKeys()) {
+            PostprocessingValidationWork.visit();if(!refinementReplacementContains(replacement,removable))afterValues.remove(removable);
+        }
         for(var id:ids) {
+            PostprocessingValidationWork.visit();
             var metric=assignments.get(id);var geographic=evidence.coordinateFrame().toGeographic(metric);
             if(id instanceof GeneratedCandidatePoint generated)afterValues.put(plannedKey(generated),new DetachedNode(plannedKey(generated),geographic,Map.of(),false,true));
             else if(id instanceof ExistingWayNodeOccurrence existing&&before.closure().movableExistingNodeKeys().contains(existing.nodeKey())) {
@@ -743,13 +761,13 @@ public final class ModernSingleWayEditPlanAdapter {
         afterValues.put(selected.key(),new DetachedWay(selected.key(),replacement,selected.tags(),false,selected.modified()||!selected.nodeKeys().equals(replacement)));
         var topology=assessFinalTopology(before,afterValues,selected.key(),request.selectedRange(),evidence,request.permissions().ordinaryRadiusMeters(),Map.of(),Map.of());
         if(!topology.findingCodes().isEmpty())throw new IllegalArgumentException("Refinement final topology is blocked");
-        var findings=assessed.quality().findings().stream().map(f->"refinement-final:"+f.code().name()).collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        var findings=assessed.quality().findings().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).map(f->"refinement-final:"+f.code().name()).collect(java.util.stream.Collectors.toCollection(ArrayList::new));
         var disposition=assessed.quality().disposition()==FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED
             ?ValidationReport.Disposition.REVIEW_REQUIRED:ValidationReport.Disposition.APPLICABLE;
         if(request.permissions().junctionPolicy()!=JunctionPolicy.FIXED){disposition=ValidationReport.Disposition.REVIEW_REQUIRED;findings.add("network-review-required");}
         var after=new NetworkSnapshot(before.snapshotId()+":refinement:"+composed.id(),SnapshotRole.PROPOSED_AFTER,before.datasetIdentity(),before.sourceGeneration(),
             before.closure(),afterValues,proposedWatches(before,afterValues),null);
-        return new AlignmentEditPlan(selected.key(),request.selectedRange(),before,after,evidence.coordinateFrame(),request.permissions(),request.settingsHash(),evidence.canonicalHash(),
+        return new AlignmentEditPlan(selected.key(),request.selectedRange(),before,after,evidence.coordinateFrame(),request.permissions(),request.settingsHash(),postprocessingEvidenceHash(evidence),
             request.parameterHash(),composed.id(),finalPreviewWays(before,afterValues),new ValidationReport(disposition,findings));
     }
 
@@ -1335,6 +1353,11 @@ public final class ModernSingleWayEditPlanAdapter {
         return true;
     }
 
+    private static boolean refinementReplacementContains(List<PrimitiveKey> replacement,PrimitiveKey key) {
+        if(PostprocessingValidationWork.current()==null)return replacement.contains(key);
+        for(var candidate:replacement){PostprocessingValidationWork.visit();if(candidate.equals(key))return true;}
+        return false;
+    }
     private static List<PrimitiveKey> replacementNodes(ModernTracePipeline.Route route,
             TraceRequest request, EvidenceSnapshot evidence, NetworkSnapshot before,
             DetachedWay selected) {
@@ -1358,6 +1381,7 @@ public final class ModernSingleWayEditPlanAdapter {
         int expectedOccurrence = request.selectedRange().firstIndex();
         Set<PrimitiveKey> planned = new LinkedHashSet<>();
         for (FinalRoutePointId id : ids) {
+            PostprocessingValidationWork.visit();
             if (id instanceof ExistingWayNodeOccurrence existing) {
                 int occurrence = existing.originalOccurrenceIndex();
                 if (!existing.wayKey().equals(request.selectedWayKey())
@@ -1368,6 +1392,7 @@ public final class ModernSingleWayEditPlanAdapter {
                             "Final route existing occurrences are missing, duplicated, or reordered");
                 }
                 for (int skipped = expectedOccurrence; skipped < occurrence; skipped++) {
+                    PostprocessingValidationWork.visit();
                     if (!before.closure().removableExistingNodeKeys()
                             .contains(selected.nodeKeys().get(skipped))) {
                         throw new IllegalArgumentException(
@@ -2147,7 +2172,7 @@ public final class ModernSingleWayEditPlanAdapter {
     private static Map<PrimitiveKey, List<GeographicPoint>> finalPreviewWays(
             NetworkSnapshot before, Map<PrimitiveKey, DetachedPrimitive> after) {
         Set<PrimitiveKey> movedNodes = new LinkedHashSet<>();
-        after.forEach((key, value) -> {
+        after.forEach((key, value) -> { PostprocessingValidationWork.visit();
             if (value instanceof DetachedNode node
                     && before.primitives().get(key) instanceof DetachedNode old
                     && !old.coordinate().equals(node.coordinate())) {
@@ -2155,15 +2180,15 @@ public final class ModernSingleWayEditPlanAdapter {
             }
         });
         Map<PrimitiveKey, List<GeographicPoint>> result = new LinkedHashMap<>();
-        after.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {
+        after.entrySet().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).sorted(Map.Entry.comparingByKey()).forEach(entry -> { PostprocessingValidationWork.visit();
             if (!(entry.getValue() instanceof DetachedWay way)) {
                 return;
             }
             DetachedPrimitive oldValue = before.primitives().get(entry.getKey());
             boolean changedSequence = !(oldValue instanceof DetachedWay old)
                     || !old.nodeKeys().equals(way.nodeKeys());
-            if (changedSequence || way.nodeKeys().stream().anyMatch(movedNodes::contains)) {
-                result.put(entry.getKey(), way.nodeKeys().stream()
+            if (changedSequence || way.nodeKeys().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(movedNodes::contains)) {
+                result.put(entry.getKey(), way.nodeKeys().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                         .map(key -> ((DetachedNode) after.get(key)).coordinate()).toList());
             }
         });
@@ -2180,6 +2205,7 @@ public final class ModernSingleWayEditPlanAdapter {
         Map<PrimitiveKey, Set<PrimitiveKey>> afterInternal = internalWatches(after);
         Map<PrimitiveKey, Set<PrimitiveKey>> result = new LinkedHashMap<>();
         for (PrimitiveKey target : after.keySet()) {
+            PostprocessingValidationWork.visit();
             Set<PrimitiveKey> referrers = new LinkedHashSet<>(afterInternal.get(target));
             if (before.primitives().containsKey(target)) {
                 Set<PrimitiveKey> external = new LinkedHashSet<>(
@@ -2192,11 +2218,12 @@ public final class ModernSingleWayEditPlanAdapter {
         return Map.copyOf(result);
     }
 
-    private static Map<PrimitiveKey, Set<PrimitiveKey>> internalWatches(
+    static Map<PrimitiveKey, Set<PrimitiveKey>> internalWatches(
             Map<PrimitiveKey, DetachedPrimitive> values) {
         Map<PrimitiveKey, Set<PrimitiveKey>> result = new LinkedHashMap<>();
         values.keySet().forEach(key -> result.put(key, new LinkedHashSet<>()));
         for (DetachedPrimitive primitive : values.values()) {
+            PostprocessingValidationWork.visit();
             if (primitive instanceof DetachedWay way) {
                 way.nodeKeys().forEach(node -> result.get(node).add(way.key()));
             } else if (primitive instanceof DetachedRelation relation) {
@@ -2257,7 +2284,7 @@ public final class ModernSingleWayEditPlanAdapter {
                 || !request.networkSnapshotId().equals(before.snapshotId())
                 || !request.networkContentHash().equals(before.canonicalHash())
                 || !request.evidenceSnapshotId().equals(authorityEvidence.snapshotId())
-                || !request.evidenceContentHash().equals(authorityEvidence.canonicalHash())
+                || !request.evidenceContentHash().equals(postprocessingEvidenceHash(authorityEvidence))
                 || !request.evidenceResolution().equals(authorityEvidence.resolution())
                 || !authorityEvidence.coordinateFrame().equals(evidence.coordinateFrame())
                 || !authorityEvidence.sourceIdentity().equals(evidence.sourceIdentity())) {
@@ -2316,14 +2343,16 @@ public final class ModernSingleWayEditPlanAdapter {
                 beforeSelected.nodeKeys().get(selectedRange.lastIndex()));
         List<Segment> segments = new ArrayList<>();
         boolean[] clippedOrExcludedContext = {false};
-        after.values().stream().filter(DetachedWay.class::isInstance)
+        after.values().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).filter(DetachedWay.class::isInstance)
                 .map(DetachedWay.class::cast).sorted(java.util.Comparator.comparing(DetachedWay::key))
-                .forEach(way -> {
+                .forEach(way -> { PostprocessingValidationWork.visit();
+                    if(way.key().equals(selectedWay))PostprocessingValidationWork.charge(2L*way.nodeKeys().size());
                     int selectedFirstIndex = way.key().equals(selectedWay)
                             ? way.nodeKeys().indexOf(selectedFirst) : -1;
                     int selectedLastIndex = way.key().equals(selectedWay)
                             ? way.nodeKeys().indexOf(selectedLast) : -1;
                     for (int index = 1; index < way.nodeKeys().size(); index++) {
+            PostprocessingValidationWork.visit();
                         PrimitiveKey firstKey = way.nodeKeys().get(index - 1);
                         PrimitiveKey secondKey = way.nodeKeys().get(index);
                         GeographicPoint geographicFirst = geographic(after, firstKey);
@@ -2372,6 +2401,7 @@ public final class ModernSingleWayEditPlanAdapter {
                 });
         if (clippedOrExcludedContext[0]) {
             for (Segment segment : segments) {
+            PostprocessingValidationWork.visit();
                 if (segment.changed()) {
                     CertifiedContextSegmentClipper.requireChangedInside(
                             segment.first(), segment.second(), evidence.coordinateFrame());
@@ -2380,13 +2410,18 @@ public final class ModernSingleWayEditPlanAdapter {
         }
         Set<String> findings = new LinkedHashSet<>();
         List<ContextContactAssessment> contacts = new ArrayList<>();
-        Set<PrimitiveKey> inherited = InheritedNonTransportContacts.prove(before, after,
-                selectedWay, selectedRange, evidence, searchHalfWidthMeters);
+        var sharedWork=PostprocessingValidationWork.current();
+        Set<PrimitiveKey> inherited = sharedWork==null?InheritedNonTransportContacts.prove(before, after,
+                selectedWay, selectedRange, evidence, searchHalfWidthMeters):
+                InheritedNonTransportContacts.prove(before,after,selectedWay,selectedRange,evidence,searchHalfWidthMeters,
+                    ()->{ PostprocessingValidationWork.visit();PostprocessingValidationWork.visit();return false;},PostprocessingValidationWork::charge,sharedWork.owner());
         var contactFrame = CertifiedContextSegmentClipper.prepareOriginalContactFrame(evidence.coordinateFrame());
         var inheritedConnectorRuns = inheritedConnectorRuns(before.primitives(), after);
         for (int firstIndex = 0; firstIndex < segments.size(); firstIndex++) {
+            PostprocessingValidationWork.visit();
             Segment first = segments.get(firstIndex);
             for (int secondIndex = firstIndex + 1; secondIndex < segments.size(); secondIndex++) {
+            PostprocessingValidationWork.visit();
                 Segment second = segments.get(secondIndex);
                 if (!first.changed() && !second.changed()) {
                     continue;
@@ -2462,6 +2497,9 @@ public final class ModernSingleWayEditPlanAdapter {
         return evidence.coordinateFrame().toMetric(geographic(values, nodeKey));
     }
 
+    private static String postprocessingEvidenceHash(EvidenceSnapshot evidence) {
+        var work=PostprocessingValidationWork.current();return work==null?evidence.canonicalHash():evidence.canonicalHash(work);
+    }
     private static GeographicPoint geographic(Map<PrimitiveKey, DetachedPrimitive> values,
             PrimitiveKey nodeKey) {
         DetachedPrimitive primitive = values.get(nodeKey);
@@ -2480,6 +2518,7 @@ public final class ModernSingleWayEditPlanAdapter {
         }
         boolean sameEdge = false;
         for (int index = 1; index < beforeWay.nodeKeys().size(); index++) {
+            PostprocessingValidationWork.visit();
             if (beforeWay.nodeKeys().get(index - 1).equals(firstKey)
                     && beforeWay.nodeKeys().get(index).equals(secondKey)) {
                 sameEdge = true;
@@ -2498,16 +2537,19 @@ public final class ModernSingleWayEditPlanAdapter {
             Map<PrimitiveKey, DetachedPrimitive> after) {
         var result = new HashMap<PrimitiveKey, int[]>();
         for (var primitive : after.values()) {
+            PostprocessingValidationWork.visit();
             if (!(primitive instanceof DetachedWay way)
                     || !(before.get(way.key()) instanceof DetachedWay original)) continue;
             var indexes = new HashMap<PrimitiveKey, Integer>();
             var repeated = new HashSet<PrimitiveKey>();
             for (int index = 0; index < original.nodeKeys().size(); index++) {
+            PostprocessingValidationWork.visit();
                 var key = original.nodeKeys().get(index);
                 if (indexes.put(key, index) != null) repeated.add(key);
             }
             int[] runs = new int[way.nodeKeys().size()];
             for (int index = 1; index < runs.length; index++) {
+            PostprocessingValidationWork.visit();
                 var left = way.nodeKeys().get(index - 1);
                 var right = way.nodeKeys().get(index);
                 Integer leftIndex = indexes.get(left), rightIndex = indexes.get(right);
