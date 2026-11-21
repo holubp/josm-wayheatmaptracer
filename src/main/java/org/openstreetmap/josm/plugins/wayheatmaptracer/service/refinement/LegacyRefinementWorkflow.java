@@ -248,6 +248,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         RefinementAttemptDiagnostics.Cause sourcePreparationCause=RefinementAttemptDiagnostics.Cause.NONE;
         Optional<RefinementSourcePlanner.SourceRequest> failedSource=Optional.empty();
         Optional<RefinementAttemptDiagnostics.NativeWork> nativeWork=Optional.empty();
+        Optional<RefinementAttemptDiagnostics.SourceFacts> sourceFacts=Optional.empty();
         AttemptProgress(RefinementAttemptDiagnostics.Binding binding,RefinementAttemptDiagnostics.Slot slot){this.binding=binding;this.slot=slot;}
         RefinementAttemptDiagnostics snapshot(RefinementAttemptDiagnostics.Publication publication,RefinementAttemptDiagnostics.Cause cause){return new RefinementAttemptDiagnostics(binding,receipt,publication,phase,cause,materializationRefusals,true,sourcePreparation);}
     }
@@ -552,7 +553,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         CancellationProbe hashProbe=()->{probe.checkpoint();try{sourcePreparationControl.checkpoint().accept(workRef[0].visits());}finally{probe.checkpoint();}return false;};
         var hashWork=inheritedWork!=null?inheritedWork:new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(sourcePreparationControl.visits(),sourcePreparationControl.bytes(),budget.finalDeadlineNanos(),hashProbe,operation);workRef[0]=hashWork;
         try {
-        var sources=acquired!=null?RefinementPipeline.managedSources(acquired.value(),coordinator,hashWork):visibleSources(plan,publishedParent,hashWork,operation,probe);
+        var sources=acquired!=null?RefinementPipeline.managedSources(acquired.value(),coordinator,hashWork):visibleSources(plan,publishedParent,hashWork,operation,probe,progress);
         var evidence=new HashMap<RefinementSourcePlanner.SourceRequest,EvidenceSnapshot>();
         var wrapped=new RefinementPipeline.Sources(){
             public void requireCurrent(){probe.checkpoint();sources.requireCurrent();}
@@ -579,7 +580,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             +" rejectedFindings="+outcome.rejected().stream().map(a->a.quality().findings().stream().map(f->f.code().name()).toList()).toList();
         var computed=materialize(ticket,parent,outcome,evidence,sourcePayload,original,allowance,probe,progress,publication,baseline);
         computationEvidence+=" plan-refusals="+progress.materializationRefusals+" auxiliary-source-hash-visits="+hashWork.visits()+" auxiliary-source-hash-counts="+hashWork.counters();return computed;
-        } finally {progress.sourcePreparation=Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(progress.sourcePreparationCause,hashWork.visits(),hashWork.counters(),progress.failedSource,progress.nativeWork));}
+        } finally {progress.sourcePreparation=Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(progress.sourcePreparationCause,hashWork.visits(),hashWork.counters(),progress.failedSource,progress.nativeWork,progress.sourceFacts));}
     }
     /** Claims the unchanged future Stage bound only once actual assessed output needs materialization. */
     static Computed materialize(OperationTicket ticket,ParentTraceReference parent,RefinementPipeline.Result outcome,
@@ -710,7 +711,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             &&review.originalResult().capturedHeatmap()!=null&&(intensity==null||intensity.usesColorMapping())&&!review.originalConfig().heatmap().aggregateAllColorSchemes();
     }
     private RefinementPipeline.Sources visibleSources(RefinementSourcePlanner.Plan plan,Stage publishedParent,
-            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,AttemptMemoryLedger.Owner operation,CancellationProbe probe){
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,AttemptMemoryLedger.Owner operation,CancellationProbe probe,AttemptProgress progress){
         var metadata=((LegacyRefinementBootstrap.VisibleOriginalSource)seed.originalSource()).metadata();
         var evidencePlan=VisibleEvidencePlan.create(plan,metadata,work);
         var painted=metadata.paintedFrame().orElseThrow();var image=seed.original().capturedHeatmap();
@@ -724,12 +725,19 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         }
         var mappings=new LinkedHashMap<String,RefinementAcquisition.VisibleCapture>();
         var support=RefinementAcquisition.visibleSupport(evidencePlan,raster);
-        VisibleRefinementCapture.CaptureOperation capture=null;Accounted<VisibleRefinementCapture.Frame> frame=null;
+        var planHash=sourceFactHash(evidencePlan.canonicalIdentity(),work);var frameHash=sourceFactHash(painted.toString(),work);
+        var sourceHash=sourceFactHash(root.authority().sourceIdentity(),work);
+        var coverage=switch(support){case COVERED->RefinementAttemptDiagnostics.Coverage.COVERED;case NEEDS_CAPTURE->RefinementAttemptDiagnostics.Coverage.NEEDS_CAPTURE;case UNSUPPORTED->RefinementAttemptDiagnostics.Coverage.UNSUPPORTED;};
+        progress.sourceFacts=Optional.of(new RefinementAttemptDiagnostics.SourceFacts(plan.ticket(),sourceHash,RefinementAttemptDiagnostics.SourceKind.VISIBLE,coverage,planHash,frameHash,root.originalConversion().inputByteHash(),RefinementAttemptDiagnostics.InputFrameRole.ORIGINAL_INPUT,raster.width(),raster.height(),evidencePlan.grid().width(),evidencePlan.grid().height(),metadata.sourceReceipt().revision(),OptionalLong.empty()));
+        VisibleRefinementCapture.CaptureOperation capture=null;Accounted<VisibleRefinementCapture.Frame> frame=null;long captureStart=-1;
         try {
             if(support==VisibleEvidencePlan.Support.NEEDS_CAPTURE){
+                captureStart=work.visits();
+                progress.sourceFacts=Optional.of(new RefinementAttemptDiagnostics.SourceFacts(plan.ticket(),sourceHash,RefinementAttemptDiagnostics.SourceKind.VISIBLE,RefinementAttemptDiagnostics.Coverage.CAPTURE_REQUESTED,planHash,frameHash,root.originalConversion().inputByteHash(),RefinementAttemptDiagnostics.InputFrameRole.ORIGINAL_INPUT,raster.width(),raster.height(),evidencePlan.grid().width(),evidencePlan.grid().height(),metadata.sourceReceipt().revision(),OptionalLong.empty()));
                 capture=visibleCapture.capture(new VisibleRefinementCapture.Request(evidencePlan,publishedParent,List.of(seed.original())),work);
                 var activeCapture=capture;
                 try(var cancellation=probe.onCancellation(activeCapture::cancel)){frame=capture.result().toCompletableFuture().join();}
+                var actual=frame.value();progress.sourceFacts=Optional.of(new RefinementAttemptDiagnostics.SourceFacts(plan.ticket(),sourceHash,RefinementAttemptDiagnostics.SourceKind.VISIBLE,RefinementAttemptDiagnostics.Coverage.RECAPTURED,planHash,sourceFactHash(actual.actualBounds().toString()+actual.chunks(),work),actual.inputHash(),RefinementAttemptDiagnostics.InputFrameRole.CAPTURED_INPUT,actual.width(),actual.height(),evidencePlan.grid().width(),evidencePlan.grid().height(),metadata.sourceReceipt().revision(),OptionalLong.of(work.visits()-captureStart)));
             }else if(support!=VisibleEvidencePlan.Support.COVERED)throw new UnsupportedOperationException("visible-original-frame-unavailable");
             for(var request:plan.requests())if(request.unavailableReason().isEmpty()&&!request.aggregate()&&request.palette().equals(plan.settings().selectedPalette())){
                 probe.checkpoint();var converted=frame==null?RefinementAcquisition.captureVisible(plan,evidencePlan,raster,request.mapping(),work):RefinementAcquisition.captureVisible(plan,evidencePlan,frame.value(),request.mapping(),work);
@@ -737,6 +745,13 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             }
             return RefinementPipeline.visibleSources(mappings);
         } finally {if(capture!=null)capture.settled().toCompletableFuture().join();if(frame!=null)frame.owner().close();}
+    }
+    private static String sourceFactHash(String text,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work){
+        try(var admitted=work.reserve("source-fact-hash",Math.addExact(4096L,Math.multiplyExact(3L,text.length())))){
+            byte[] bytes=text.getBytes(java.nio.charset.StandardCharsets.UTF_8);var hash=java.security.MessageDigest.getInstance("SHA-256");
+            for(int start=0;start<bytes.length;start+=256){int length=Math.min(256,bytes.length-start);work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.HASH,length);hash.update(bytes,start,length);}
+            return java.util.HexFormat.of().formatHex(hash.digest());
+        }catch(java.security.NoSuchAlgorithmException unavailable){throw new IllegalStateException("SHA-256 unavailable",unavailable);}
     }
     private void releaseClosed(){latestDiagnostics=null;diagnosticsSlot=null;diagnosticsAvailability=RefinementAttemptDiagnostics.Availability.NONE;diagnosticMemory.closeWorkflow();legacyDiagnosticContext=null;legacyContextSupplier=null;ratingSupplier=null;pendingLegacyReview=null;pendingLegacyReviewMemory=null;retainedStages.clear();seed=null;root=null;session=null;confirmation=null;}
     @Override public void close(){if(closed)return;if(isCurrent()&&!diagnosticSealed){if(!diagnosticState.equals("apply-failed"))diagnosticsChanged("cancelled");freezeDiagnostics(true,false);}closed=true;workGate.release(this);if(cancellation!=null)cancellation.cancel();if(session!=null)session.close();if(!busy)releaseClosed();}

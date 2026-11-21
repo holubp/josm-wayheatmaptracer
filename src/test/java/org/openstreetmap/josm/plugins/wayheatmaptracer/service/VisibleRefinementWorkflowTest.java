@@ -89,11 +89,21 @@ class VisibleRefinementWorkflowTest {
                 SwingUtilities.invokeAndWait(()->{
                     assertNotEquals(secondStage.id(),workflow[0].currentStage().id(),"Successful branch replaces forward stage");assertFalse(((JButton)find(workflow[0].controls(),"redo")).isEnabled());
                     assertApplicableAfterRequiredConfirmation(workflow[0]);var nodes=owner[0].originalResult().selection().way().getNodes();var coordinates=nodes.stream().map(Node::getCoor).toList();
-                    int calls=workflow[0].actualNativeCalls();var command=workflow[0].command();workflow[0].close();
+                    int calls=workflow[0].actualNativeCalls();var command=workflow[0].command();assertStoredGuardHasNoOriginalRaster(command);workflow[0].close();
                     assertTrue(command.executeCommand());command.undoCommand();assertEquals(coordinates,nodes.stream().map(Node::getCoor).toList());assertFalse(owner[0].dataSet().isModified());assertTrue(command.executeCommand());command.undoCommand();assertEquals(calls,workflow[0].actualNativeCalls());assertFalse(owner[0].dataSet().isModified());
                 });
             } finally {SwingUtilities.invokeAndWait(()->{if(workflow[0]!=null)workflow[0].close();});if(workflow[0]!=null)drain(work,publications,workflow[0]);SwingUtilities.invokeAndWait(()->{if(owner[0]!=null)owner[0].close();});}
         }
+    }
+    static void assertStoredGuardHasNoOriginalRaster(org.openstreetmap.josm.command.Command command){
+        try {
+            var validatorField=command.getClass().getDeclaredField("lockedValidator");validatorField.setAccessible(true);var validator=validatorField.get(command);
+            var guardField=validator.getClass().getDeclaredField("liveSourceGeneration");guardField.setAccessible(true);var guard=guardField.get(validator);
+            for(var field:guard.getClass().getDeclaredFields()){
+                field.setAccessible(true);var captured=field.get(guard);
+                assertFalse(captured instanceof LegacyRefinementBootstrap.OriginalSource||captured instanceof AlignmentResult||captured instanceof BufferedImage,"Stored source guard must retain only source receipt facts, not the released original raster graph");
+            }
+        }catch(ReflectiveOperationException failure){throw new AssertionError(failure);}
     }
     static void assertVisibleExport(LegacyRefinementWorkflow workflow,Path file){
         try {
@@ -108,6 +118,19 @@ class VisibleRefinementWorkflowTest {
             assertTrue(json.contains("\"coverage\":\"COVERED\""),"Covered reuse has a factual typed coverage record");
             assertTrue(json.contains("\"frameWidth\":200"));assertTrue(json.contains("\"frameHeight\":200"));
             assertFalse(json.contains("managedRequests"),"Absent managed work must remain unavailable");
+            var preparation=actual.sourcePreparation().orElseThrow();var facts=preparation.sourceFacts().orElseThrow();
+            assertEquals(actual.binding().ticket(),facts.ticket());assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.InputFrameRole.ORIGINAL_INPUT,facts.frameRole());
+            assertTrue(facts.captureAuxiliaryVisits().isEmpty(),"Reuse must not fabricate a capture work measurement");assertNotEquals(facts.frameWidth(),facts.outputGridWidth(),"Input raster and scalar grid roles remain distinct");
+            var olderPreparation=new RefinementAttemptDiagnostics.SourcePreparationWork(preparation.cause(),preparation.visits(),preparation.counters(),preparation.failedSource(),preparation.nativeWork());
+            var older=new RefinementAttemptDiagnostics(actual.binding(),actual.pipeline(),actual.publication(),actual.phase(),actual.cause(),actual.materializationRefusals(),actual.materializationComplete(),Optional.of(olderPreparation));
+            var oldPublication=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.LatestPublication(older,decoded.latestPublication().orElseThrow().resultingSelection());
+            var oldDocument=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.Document(decoded.binding(),decoded.originalOsm(),decoded.stages(),decoded.latestAttempt(),Optional.of(oldPublication));
+            var oldDecoded=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.read(org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.artifact(oldDocument));
+            assertTrue(oldDecoded.latestPublication().orElseThrow().diagnostic().sourcePreparation().orElseThrow().sourceFacts().isEmpty(),"Older missing fields stay unavailable");
+            var unknown=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Artifact.text("refinement-lineage.json",json.replace("\"sourceKind\":\"VISIBLE\"","\"sourceKind\":\"FUTURE\""));
+            assertTrue(org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.read(unknown).latestPublication().orElseThrow().diagnostic().sourcePreparation().orElseThrow().sourceFacts().isEmpty());
+            var mismatch=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Artifact.text("refinement-lineage.json",json.replace("\"sourceIdentityHash\":\""+facts.sourceIdentityHash()+"\"","\"sourceIdentityHash\":\""+"f".repeat(64)+"\""));
+            assertThrows(IllegalArgumentException.class,()->org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.read(mismatch));
         } catch(Exception failure){throw new AssertionError(failure);}
     }
     static org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Stage stage(LegacyRefinementWorkflow workflow) throws Exception {

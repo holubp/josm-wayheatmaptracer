@@ -23,13 +23,33 @@ public record RefinementAttemptDiagnostics(Binding binding, Optional<RefinementO
     /** Fixed-size observed auxiliary work. NONE means no source-preparation failure was observed, not that every source ran. */
     public record SourcePreparationWork(Cause cause,long visits,
             Map<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind,Long> counters,
-            Optional<RefinementSourcePlanner.SourceRequest> failedSource,Optional<NativeWork> nativeWork) {
+            Optional<RefinementSourcePlanner.SourceRequest> failedSource,Optional<NativeWork> nativeWork,Optional<SourceFacts> sourceFacts) {
+        public SourcePreparationWork(Cause cause,long visits,Map<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind,Long> counters,
+                Optional<RefinementSourcePlanner.SourceRequest> failedSource,Optional<NativeWork> nativeWork){this(cause,visits,counters,failedSource,nativeWork,Optional.empty());}
         public SourcePreparationWork {
-            Objects.requireNonNull(cause);Objects.requireNonNull(failedSource);Objects.requireNonNull(nativeWork);counters=Map.copyOf(counters);
+            Objects.requireNonNull(cause);Objects.requireNonNull(failedSource);Objects.requireNonNull(nativeWork);Objects.requireNonNull(sourceFacts);counters=Map.copyOf(counters);
             if(!Set.of(Cause.NONE,Cause.RESOURCE_LIMIT,Cause.CANCELLED,Cause.STALE,Cause.FAILED).contains(cause)||visits<0||visits>8_000_000L
                     ||counters.size()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values().length
                     ||(cause==Cause.NONE)!=failedSource.isEmpty())throw new IllegalArgumentException("Invalid auxiliary source work");
             long sum=0;for(var kind:org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values()) {var count=counters.get(kind);if(count==null||count<0)throw new IllegalArgumentException("Invalid auxiliary counter");sum=Math.addExact(sum,count);}if(sum!=visits)throw new IllegalArgumentException("Auxiliary counter sum differs");
+        }
+    }
+    public enum SourceKind { VISIBLE, MANAGED }
+    public enum Coverage { COVERED, NEEDS_CAPTURE, CAPTURE_REQUESTED, RECAPTURED, UNSUPPORTED }
+    public enum InputFrameRole { ORIGINAL_INPUT, CAPTURED_INPUT }
+    /** Coordinate-free witness of the actual input frame and distinct scalar output grid for this ticket.
+     * Capture auxiliary visits are unavailable for original reuse; they never measure opaque paint work.
+     */
+    public record SourceFacts(OperationTicket ticket,String sourceIdentityHash,SourceKind sourceKind,Coverage coverage,
+            String planHash,String frameHash,String inputHash,InputFrameRole frameRole,int frameWidth,int frameHeight,
+            int outputGridWidth,int outputGridHeight,long sourceRevision,OptionalLong captureAuxiliaryVisits) {
+        public SourceFacts {
+            Objects.requireNonNull(ticket);Objects.requireNonNull(sourceKind);Objects.requireNonNull(coverage);Objects.requireNonNull(frameRole);Objects.requireNonNull(captureAuxiliaryVisits);
+            for(String value:List.of(sourceIdentityHash,planHash,frameHash,inputHash))if(!value.matches("[a-f0-9]{64}"))throw new IllegalArgumentException("Checksummed source facts required");
+            if(frameWidth<1||frameHeight<1||outputGridWidth<1||outputGridHeight<1||sourceRevision<0||captureAuxiliaryVisits.orElse(0)<0||captureAuxiliaryVisits.orElse(0)>8_000_000L)
+                throw new IllegalArgumentException("Invalid source frame/work facts");
+            if(frameRole==InputFrameRole.CAPTURED_INPUT&&coverage!=Coverage.RECAPTURED)throw new IllegalArgumentException("Captured input requires proven recapture coverage");
+            if(coverage==Coverage.COVERED&&captureAuxiliaryVisits.isPresent())throw new IllegalArgumentException("Original reuse has no capture work receipt");
         }
     }
     public record NativeWork(Outcome outcome,Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage> actualWork,OptionalInt nativeCalls) {
@@ -47,6 +67,10 @@ public record RefinementAttemptDiagnostics(Binding binding, Optional<RefinementO
     public RefinementAttemptDiagnostics {
         Objects.requireNonNull(binding);Objects.requireNonNull(pipeline);Objects.requireNonNull(publication);Objects.requireNonNull(phase);Objects.requireNonNull(cause);Objects.requireNonNull(sourcePreparation);
         if(materializationRefusals<0)throw new IllegalArgumentException("Negative observed refusal count");
+        sourcePreparation.flatMap(SourcePreparationWork::sourceFacts).ifPresent(facts->{
+            if(!facts.ticket().equals(binding.ticket())||!facts.sourceIdentityHash().equals(org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Safety.sha256(binding.rootSourceIdentity())))
+                throw new IllegalArgumentException("Source facts belong to another attempt");
+        });
         pipeline.ifPresent(receipt->{if(!receipt.ticket().equals(binding.ticket())||!receipt.parentIdentity().equals(binding.parentIdentity())
             ||!receipt.originalNetworkHash().equals(binding.originalNetworkHash()))throw new IllegalArgumentException("Attempt receipt binding differs");});
     }
