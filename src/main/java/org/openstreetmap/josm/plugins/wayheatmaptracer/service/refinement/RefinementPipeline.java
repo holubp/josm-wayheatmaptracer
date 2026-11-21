@@ -122,8 +122,11 @@ public final class RefinementPipeline {
                 throw new IllegalStateException("Native receipt exceeded the one remaining operation budget");
         }
     }
-    public static NativeRunner productionRunner() {return (ticket,parent,evidence,remaining,cancellation,owner)->
-        new RefinementEngineAdapter(ticket.engine(),"native").run(ticket,parent,evidence,remaining,cancellation,owner).value();}
+    public static NativeRunner productionRunner() {return productionRunner(ticket->{});}
+    public static NativeRunner productionRunner(java.util.function.Consumer<OperationTicket> nativeEntry) {
+        Objects.requireNonNull(nativeEntry);return (ticket,parent,evidence,remaining,cancellation,owner)->
+        new RefinementEngineAdapter(ticket.engine(),"native",()->nativeEntry.accept(ticket)).run(ticket,parent,evidence,remaining,cancellation,owner).value();
+    }
     public Result run(OperationTicket ticket,ParentTraceReference parent,RefinementSourcePlanner.Plan sourcePlan,
             Adapters adapters,OperationBudget budget,CancellationProbe cancellation) {
         Objects.requireNonNull(ticket);Objects.requireNonNull(parent);Objects.requireNonNull(sourcePlan);Objects.requireNonNull(adapters);Objects.requireNonNull(budget);Objects.requireNonNull(cancellation);

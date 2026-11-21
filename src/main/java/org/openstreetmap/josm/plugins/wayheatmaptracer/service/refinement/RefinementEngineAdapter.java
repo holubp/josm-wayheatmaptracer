@@ -45,10 +45,13 @@ public final class RefinementEngineAdapter {
     }
     private final TrackerMode engine;
     private final String field;
-    public RefinementEngineAdapter(TrackerMode engine,String field) {
+    private final Runnable nativeEntry;
+    public RefinementEngineAdapter(TrackerMode engine,String field) {this(engine,field,()->{});}
+    /** Bounded notification at the native invocation boundary; it must not block or reenter. */
+    public RefinementEngineAdapter(TrackerMode engine,String field,Runnable nativeEntry) {
         if(engine!=TrackerMode.CORRIDOR_AWARE&&engine!=TrackerMode.PROBABILISTIC||field==null||field.isBlank())
             throw new IllegalArgumentException("A/B engine and actual scalar field required");
-        this.engine=engine;this.field=field;
+        this.engine=engine;this.field=field;this.nativeEntry=Objects.requireNonNull(nativeEntry);
     }
     public TrackerMode engine(){return engine;}
     /** Convenience for detached consumers; live callers bind their deterministic session operation ticket. */
@@ -92,6 +95,7 @@ public final class RefinementEngineAdapter {
             finalization=invocation.reserve(bytes);
             Accounted<TraceEngineRun> nativeAccount;
             nativeEntered=true;
+            nativeEntry.run();
             if(engine==TrackerMode.CORRIDOR_AWARE) {
                 nativeAccount=new CorridorEngineAdapter(field).traceRefinedWithUsage(parent,request,evidence,parent.root().network(),cancellation,invocation,bindingWorkspace);
             } else nativeAccount=new ProbabilisticTraceEngine(field,EvidenceModelParameters.defaults(),

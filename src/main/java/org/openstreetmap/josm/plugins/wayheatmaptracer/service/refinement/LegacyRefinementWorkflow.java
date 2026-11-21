@@ -18,6 +18,24 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPl
 
 /** Actual modeless Legacy -> Task4 -> cached history connection. All session/UI operations stay on EDT. */
 public final class LegacyRefinementWorkflow implements AutoCloseable {
+    /** Exact native lifecycle without retaining imagery/history. Notification is delivered on EDT. */
+    public static final class NativeEntry {
+        private final OperationTicket ticket;
+        private final java.util.concurrent.atomic.AtomicBoolean entered=new java.util.concurrent.atomic.AtomicBoolean();
+        private final CompletableFuture<Void> settlement=new CompletableFuture<>();
+        private volatile boolean cancellationRequested,cancellationObserved,workerReturned;
+        private NativeEntry(OperationTicket ticket){this.ticket=ticket;}
+        public OperationTicket ticket(){return ticket;}
+        public boolean entered(){return entered.get();}
+        public boolean cancellationRequested(){return cancellationRequested;}
+        public boolean cancellationObserved(){return cancellationObserved;}
+        public boolean workerReturned(){return workerReturned;}
+        public CompletionStage<Void> settlement(){return settlement.minimalCompletionStage();}
+    }
+    private final CompletableFuture<NativeEntry> firstNativeEntry=new CompletableFuture<>();
+    private NativeEntry activeEntry;
+    public CompletionStage<NativeEntry> firstNativeEntry(){return firstNativeEntry.minimalCompletionStage();}
+    public boolean ownsNativeEntry(NativeEntry entry){return busy&&ownsPublication()&&activeEntry==entry&&Objects.equals(active,entry.ticket());}
     public record Display(AlignmentResult result,CenterlineCandidate candidate,Optional<RefinementPayload.NativeReview> nativeReview) { }
     private final LegacyReviewOwner review;
     private final TileFetchCoordinator coordinator;
@@ -147,10 +165,11 @@ public final class LegacyRefinementWorkflow implements AutoCloseable {
             var operation=rootMemory.child("live-refinement-"+ticket.sequence());
             var publication=rootMemory.child("publication-"+ticket.sequence());
             var publicationAllowance=publication.reserve(allowance);
-            cancellation=new CancellationToken();var probe=probe(cancellation);busy=true;present();
+            var entry=new NativeEntry(ticket);activeEntry=entry;
+            cancellation=new CancellationToken();var probe=probe(cancellation,entry);busy=true;present();
             var work=workGate.beginWork(this);activeWork=work;
-            CompletableFuture.supplyAsync(()->compute(ticket,parent,plan,credentials,operation,sourcePayload,original,allowance,probe),executor)
-                .whenComplete((completed,failure)->dispatchCompletion(()->{
+            CompletableFuture.supplyAsync(()->compute(ticket,parent,plan,credentials,operation,sourcePayload,original,allowance,probe,entry),executor)
+                .whenComplete((completed,failure)->{entry.workerReturned=true;dispatchCompletion(()->{
                     try {
                         if(!closed&&ownsPublication()) {
                             if(failure!=null)throw unwrap(failure);
@@ -161,13 +180,13 @@ public final class LegacyRefinementWorkflow implements AutoCloseable {
                                 long bytes=completed.candidates().stream().mapToLong(c->c.payload().retainedBytes()).sum();
                                 publication.reserve(bytes).adopt(completed);retainedStages.put(completed.id(),publication);
                                 var live=session.history().stream().map(Stage::id).collect(java.util.stream.Collectors.toSet());
-                                retainedStages.entrySet().removeIf(entry->{if(live.contains(entry.getKey()))return false;entry.getValue().close();return true;});
+                                retainedStages.entrySet().removeIf(item->{if(live.contains(item.getKey()))return false;item.getValue().close();return true;});
                                 message="";showCurrent();
                             }
                         }
                     }catch(RuntimeException refused){if(!closed)session.fail(ticket,probe.cancelled()?Outcome.CANCELLED:Outcome.FAILED);message=refused.getMessage();}
-                    finally{operation.close();if(!retainedStages.containsValue(publication))publication.close();session.workerSettled(ticket);active=null;busy=false;if(closed)releaseClosed();settleWork(work);if(!closed)present();}
-                }));
+                    finally{operation.close();if(!retainedStages.containsValue(publication))publication.close();session.workerSettled(ticket);active=null;busy=false;if(closed)releaseClosed();activeEntry=null;settleWork(work);if(!closed)present();entry.settlement.complete(null);}
+                });});
         }catch(RuntimeException refused){
             if(active!=null&&!busy){session.fail(active,Outcome.FAILED);session.workerSettled(active);active=null;}
             message=refused.getMessage();busy=false;present();
@@ -175,7 +194,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable {
     }
     private Stage compute(OperationTicket ticket,ParentTraceReference parent,RefinementSourcePlanner.Plan plan,
             CredentialSnapshot credentials,AttemptMemoryLedger.Owner operation,RefinementPayload sourcePayload,
-            AlignmentResult original,long allowance,CancellationProbe probe) {
+            AlignmentResult original,long allowance,CancellationProbe probe,NativeEntry entry) {
         var acquired=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,credentials,probe,operation);
         var sources=RefinementPipeline.managedSources(acquired.value(),coordinator);
         var evidence=new HashMap<RefinementSourcePlanner.SourceRequest,EvidenceSnapshot>();
@@ -185,7 +204,10 @@ public final class LegacyRefinementWorkflow implements AutoCloseable {
             public Optional<RefinementSourcePlanner.Plan> binding(){return sources.binding();}
             public Optional<ManagedModernPreviewSource.RefinementWorkReceipt> actualSourceWork(){return sources.actualSourceWork();}
         };
-        var outcome=new RefinementPipeline().run(ticket,parent,plan,new RefinementPipeline.Adapters(wrapped,RefinementPipeline.productionRunner(),operation),
+        var outcome=new RefinementPipeline().run(ticket,parent,plan,new RefinementPipeline.Adapters(wrapped,RefinementPipeline.productionRunner(actual->{
+                if(!actual.equals(ticket))throw new IllegalStateException("Native entry ticket changed");
+                if(entry.entered.compareAndSet(false,true))SwingUtilities.invokeLater(()->firstNativeEntry.complete(entry));
+            }),operation),
             RefinementPipeline.OperationBudget.production(parent.root().request().budgets()),probe);
         var operationReceipt=RefinementOperationReceipt.capture(ticket,parent,outcome);
         actualNativeCalls+=outcome.attempts().stream().flatMap(a->a.run().stream()).mapToInt(RefinementEngineAdapter.Run::nativeCalls).sum();
@@ -212,11 +234,13 @@ public final class LegacyRefinementWorkflow implements AutoCloseable {
         }
         probe.checkpoint();return candidates.isEmpty()?null:Stage.child(ticket,candidates,candidates.get(0).id());
     }
-    private CancellationProbe probe(CancellationToken token){
+    private CancellationProbe probe(CancellationToken token){return probe(token,null);}
+    private CancellationProbe probe(CancellationToken token,NativeEntry entry){
         var originalSource=seed==null?null:seed.receipt().generationGuard();
         return new CancellationProbe(){
         public boolean cancelled(){
-            if(token.isCancelled()||review.invalidated()||!ownsPublication())return true;
+            if(token.isCancelled()){if(entry!=null)entry.cancellationObserved=true;return true;}
+            if(review.invalidated()||!ownsPublication())return true;
             try{if(originalSource!=null)originalSource.getAsLong();return false;}
             catch(IllegalStateException stale){return true;}
         }
@@ -241,7 +265,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable {
         if(!session.terminalizeForApply())throw new IllegalStateException("The refinement session is no longer idle");
         return command;
     }
-    private void cancelOperation(){if(cancellation!=null)cancellation.cancel();if(active!=null)session.cancel(active);message="Refinement cancelled; waiting for its worker to settle.";present();}
+    private void cancelOperation(){if(activeEntry!=null)activeEntry.cancellationRequested=true;if(cancellation!=null)cancellation.cancel();if(active!=null)session.cancel(active);message="Refinement cancelled; waiting for its worker to settle.";present();}
     private void present() {
         if(closed||!ownsPublication())return;
         var yes=new RefinementControls.Availability(!busy,"");

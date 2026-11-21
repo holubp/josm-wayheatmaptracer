@@ -191,11 +191,18 @@ tasks.register<JavaExec>("v022PublicGuiSmoke") {
         "--add-exports=java.desktop/com.sun.imageio.spi=ALL-UNNAMED",
     )
     val engine = providers.gradleProperty("publicGuiEngine").getOrElse("PROBABILISTIC")
-    require(engine in listOf("PROBABILISTIC", "LEGACY_THEN_B", "CORRIDOR_AWARE")) { "Unsupported public GUI engine" }
+    require(engine in listOf("PROBABILISTIC", "LEGACY_THEN_B", "CORRIDOR_AWARE", "LEGACY_V02")) { "Unsupported public GUI engine" }
     systemProperty("wayheatmaptracer.guiSmoke.engine", engine)
+    val guiMode=providers.gradleProperty("publicGuiAlignmentMode").getOrElse("PRECISE_SHAPE")
+    val guiOrder=providers.gradleProperty("publicGuiRefinementOrder").getOrElse("A_B")
+    require(guiMode in listOf("PRECISE_SHAPE","MOVE_EXISTING_NODES")) { "Unsupported public GUI alignment mode" }
+    require(guiOrder in listOf("A_B","B_A")) { "Unsupported public GUI refinement order" }
+    systemProperty("wayheatmaptracer.guiSmoke.alignmentMode",guiMode)
+    systemProperty("wayheatmaptracer.guiSmoke.refinementOrder",guiOrder)
     val root = layout.buildDirectory.dir(when (engine) {
         "PROBABILISTIC" -> "reports/public-gui-smoke"
         "LEGACY_THEN_B" -> "reports/public-gui-smoke-hybrid"
+        "LEGACY_V02" -> "reports/public-gui-smoke-stepwise-${if(guiMode=="PRECISE_SHAPE") "precise" else "move"}-${if(guiOrder=="A_B") "a-b" else "b-a"}"
         else -> "reports/public-gui-smoke-corridor-aware"
     })
     doFirst {

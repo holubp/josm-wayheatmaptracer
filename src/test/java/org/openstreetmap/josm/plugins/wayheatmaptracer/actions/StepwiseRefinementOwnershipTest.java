@@ -62,6 +62,36 @@ class StepwiseRefinementOwnershipTest {
             });
         }
     }
+    @Test void actualNativeEntryCancelWaitsForPhysicalAndQueuedResultSettlement() throws Exception {
+        var decoder=new TileDecoderClassifier();
+        try(var coordinator=new TileFetchCoordinator((request,credentials)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",ridge(request.address()),null,Duration.ZERO,""),
+                new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults());
+            var session=new PreviewSessionController<LiveBPreviewService.Computed>(SwingUtilities::invokeLater)) {
+            var work=new LinkedBlockingQueue<Runnable>();var publications=new LinkedBlockingQueue<Runnable>();var state=new Fixture[1];var displays=new AtomicInteger();
+            var cancelled=new CompletableFuture<LegacyRefinementWorkflow.NativeEntry>();
+            try {
+                SwingUtilities.invokeAndWait(()->{
+                    state[0]=fixture(coordinator,session,work,publications,displays);var workflow=state[0].workflow;
+                    workflow.firstNativeEntry().whenComplete((entry,failure)->{
+                        try {
+                            assertNull(failure);assertTrue(SwingUtilities.isEventDispatchThread());assertTrue(entry.entered());assertTrue(workflow.ownsNativeEntry(entry));
+                            assertEquals(AlignmentMode.PRECISE_SHAPE,entry.ticket().mode());assertTrue(workflow.ownedBytes()>0);assertFalse(entry.settlement().toCompletableFuture().isDone());
+                            var cancel=(JButton)find(workflow.controls(),"cancel");assertTrue(cancel.isEnabled());cancel.doClick();assertTrue(entry.cancellationRequested());cancelled.complete(entry);
+                        }catch(Throwable failed){cancelled.completeExceptionally(failed);}
+                    });
+                    ((JButton)find(workflow.controls(),"refineA")).doClick();
+                });
+                work.remove().run();SwingUtilities.invokeAndWait(publications.remove());
+                work.remove().run(); // real production native call; entry queues the real Cancel on EDT
+                var entry=cancelled.get(5,TimeUnit.SECONDS);
+                assertTrue(entry.workerReturned());assertFalse(entry.settlement().toCompletableFuture().isDone());
+                assertFalse(session.workGate().settlement().toCompletableFuture().isDone());assertTrue(state[0].workflow.ownedBytes()>0);assertEquals(0,displays.get());
+                SwingUtilities.invokeAndWait(publications.remove());
+                assertTrue(entry.cancellationObserved());assertTrue(entry.settlement().toCompletableFuture().isDone());assertTrue(session.workGate().settlement().toCompletableFuture().isDone());
+                SwingUtilities.invokeAndWait(()->{assertFalse(state[0].workflow.busy());assertFalse(state[0].workflow.nativeSelected());assertEquals(entry.ticket().parent(),state[0].workflow.currentStage().id());assertFalse(state[0].data.isModified());assertEquals(0,displays.get());});
+            } finally {SwingUtilities.invokeAndWait(()->{if(state[0]!=null){state[0].workflow.close();state[0].review.close();}session.closeAll();});}
+        }
+    }
     private void exercise(boolean holdWorker) throws Exception {
         var decoder=new TileDecoderClassifier();
         try(var coordinator=new TileFetchCoordinator((request,credentials)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",ridge(request.address()),null,Duration.ZERO,""),

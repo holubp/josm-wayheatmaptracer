@@ -60,6 +60,17 @@ class RefinementEngineAdapterTest {
    assertTrue(route.quality().findings().stream().anyMatch(f->f.code()==org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.FindingCode.PRECISE_SHAPE_REQUIRED));
   }
  }
+ @Test void nativeEntryNotificationRequiresTheActualInvocationBoundary(){
+  var root=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);var parent=new ParentReferenceBinder().bind(root,new StageId(UUID.randomUUID()),RefinementParentFixtures.parent(root,"blue"));
+  var entries=new java.util.concurrent.atomic.AtomicInteger();
+  try(var owner=AttemptMemoryLedger.production().rootOwner()) {
+   var adapter=new RefinementEngineAdapter(TrackerMode.PROBABILISTIC,"native",entries::incrementAndGet);
+   var refused=adapter.run(parent,root.evidence(),TraceBudgets.defaults(),()->{throw new java.util.concurrent.CancellationException();},owner).value();
+   assertEquals(0,refused.nativeCalls());assertEquals(0,entries.get());
+   var actual=adapter.run(parent,root.evidence(),new TraceBudgets(root.request().budgets().maximumStatesPerProfile(),1,1,1,1),CancellationProbe.NONE,owner).value();
+   assertEquals(1,actual.nativeCalls());assertEquals(1,entries.get());assertTrue(actual.nativeRun().isPresent());
+  }
+ }
  @Test void preCancelledOperationRecordsZeroCallsWithoutInventingNativeFailure(){
   var root=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);var parent=new ParentReferenceBinder().bind(root,new StageId(UUID.randomUUID()),RefinementParentFixtures.parent(root,"blue"));
   try(var owner=AttemptMemoryLedger.production().rootOwner()) {

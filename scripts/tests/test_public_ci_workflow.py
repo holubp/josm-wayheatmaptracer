@@ -74,9 +74,13 @@ def test_public_gui_smoke_is_xvfb_gated_and_failure_remains_a_job_failure() -> N
     assert smoke["strategy"] == {
         "fail-fast": "false",
         "matrix": {"include": [
-            {"engine": "PROBABILISTIC", "report": "public-gui-smoke"},
-            {"engine": "LEGACY_THEN_B", "report": "public-gui-smoke-hybrid"},
-            {"engine": "CORRIDOR_AWARE", "report": "public-gui-smoke-corridor-aware"},
+            {"engine": "PROBABILISTIC", "report": "public-gui-smoke", "mode": "PRECISE_SHAPE", "order": "A_B"},
+            {"engine": "LEGACY_THEN_B", "report": "public-gui-smoke-hybrid", "mode": "PRECISE_SHAPE", "order": "A_B"},
+            {"engine": "CORRIDOR_AWARE", "report": "public-gui-smoke-corridor-aware", "mode": "PRECISE_SHAPE", "order": "A_B"},
+            {"engine": "LEGACY_V02", "report": "public-gui-smoke-stepwise-precise-a-b", "mode": "PRECISE_SHAPE", "order": "A_B"},
+            {"engine": "LEGACY_V02", "report": "public-gui-smoke-stepwise-precise-b-a", "mode": "PRECISE_SHAPE", "order": "B_A"},
+            {"engine": "LEGACY_V02", "report": "public-gui-smoke-stepwise-move-a-b", "mode": "MOVE_EXISTING_NODES", "order": "A_B"},
+            {"engine": "LEGACY_V02", "report": "public-gui-smoke-stepwise-move-b-a", "mode": "MOVE_EXISTING_NODES", "order": "B_A"},
         ]},
     }
     steps = smoke["steps"]
@@ -86,7 +90,7 @@ def test_public_gui_smoke_is_xvfb_gated_and_failure_remains_a_job_failure() -> N
     smoke_run = next(step for step in steps if "v022PublicGuiSmoke" in step.get("run", ""))
     assert smoke_run["run"] == (
         "timeout 600s xvfb-run -a -s '-screen 0 1920x1080x24' "
-        "sh gradlew v022PublicGuiSmoke -PpublicGuiEngine=${{ matrix.engine }} --console=plain"
+        "sh gradlew v022PublicGuiSmoke -PpublicGuiEngine=${{ matrix.engine }} -PpublicGuiAlignmentMode=${{ matrix.mode }} -PpublicGuiRefinementOrder=${{ matrix.order }} --console=plain"
     )
     require_summary = next(step for step in steps if step.get("name") == "Require public GUI smoke summary after a passing run")
     assert require_summary["if"] == "success()"

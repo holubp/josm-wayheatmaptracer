@@ -64,8 +64,72 @@ class PublicGuiSmokeContractTest {
         assertEquals(TrackerMode.PROBABILISTIC, PublicGuiSmokeMain.guiEngine("PROBABILISTIC"));
         assertEquals(TrackerMode.CORRIDOR_AWARE, PublicGuiSmokeMain.guiEngine("CORRIDOR_AWARE"));
         assertEquals(TrackerMode.LEGACY_THEN_B, PublicGuiSmokeMain.guiEngine("LEGACY_THEN_B"));
-        for (String other : List.of("LEGACY_V02", "HYBRID", "DIRECTIONAL_IMAGE", "unknown"))
+        assertEquals(TrackerMode.LEGACY_V02, PublicGuiSmokeMain.guiEngine("LEGACY_V02"));
+        for (String other : List.of("HYBRID", "DIRECTIONAL_IMAGE", "unknown"))
             assertThrows(IllegalArgumentException.class, () -> PublicGuiSmokeMain.guiEngine(other));
+    }
+    @Test void stepwiseControlLookupIsExactAndRejectsAmbiguity() {
+        var panel=new JPanel();var apply=new javax.swing.JButton("Apply");apply.setName("legacy-apply");panel.add(apply);
+        assertEquals(apply,PublicGuiSmokeMain.requiredNamed(panel,"legacy-apply",javax.swing.JButton.class));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requiredNamed(panel,"missing",javax.swing.JButton.class));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requiredNamed(panel,"legacy-apply",JComboBox.class));
+        var duplicate=new javax.swing.JButton("Other");duplicate.setName("legacy-apply");panel.add(duplicate);
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requiredNamed(panel,"legacy-apply",javax.swing.JButton.class));
+    }
+    @Test void stepwisePublicFixtureHasEveryNativePaletteAtBothZooms() throws Exception {
+        Path root=temporary.resolve("stepwise-cache");
+        var fixture=PublicGuiSmokeFixture.create(temporary.resolve("stepwise-input"));
+        var cache=new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileCache(root,new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileDecoderClassifier());
+        assertEquals(90,fixture.seedRefinementTiles(cache));
+        for(String palette:List.of("hot","blue","bluered","purple","gray"))for(int zoom:List.of(14,15)) {
+            Path directory=root.resolve("cache-0/all/"+palette+"/"+zoom);
+            try(var files=Files.walk(directory)){assertEquals(9,files.filter(Files::isRegularFile).count());}
+            int x=(int)Math.floor((PublicGuiSmokeOracle.BASE_LONGITUDE+180)/360*(1<<zoom));
+            double lat=Math.toRadians(PublicGuiSmokeOracle.BASE_LATITUDE);
+            int y=(int)Math.floor((1-Math.log(Math.tan(lat)+1/Math.cos(lat))/Math.PI)/2*(1<<zoom));
+            var address=new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileAddress("all",palette,zoom,x,y);
+            assertTrue(new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileDecoderClassifier().decodeAndClassify(address,"image/png",Files.readAllBytes(cache.path(new ManagedTileGeneration(0),address))).usable(),palette+" z"+zoom);
+        }
+    }
+    @Test void cancellationCannotPassDisabledOrRefusedNativeWork() {
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireNativeCancellation(false,false,false,true,false,true,0));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireNativeCancellation(true,true,true,true,false,false,1024));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireNativeCancellation(true,true,true,false,true,false,1024));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireNativeCancellation(true,true,true,true,true,true,1024));
+        PublicGuiSmokeMain.requireNativeCancellation(true,true,true,true,true,false,1024);
+    }
+    @Test void requestedModeCannotBeRelabelledFromObservedMode() {
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.checkedMode(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.MOVE_EXISTING_NODES,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.PRECISE_SHAPE));
+    }
+    @Test void moveCannotReplaceOriginalOccurrencesAtIdenticalCoordinates() {
+        var a=new org.openstreetmap.josm.data.osm.Node(new LatLon(0,0));var b=new org.openstreetmap.josm.data.osm.Node(new LatLon(0,.001));
+        var originals=List.of(a,b);var replacements=List.of(new org.openstreetmap.josm.data.osm.Node(a.getCoor()),new org.openstreetmap.josm.data.osm.Node(b.getCoor()));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.checkedAppliedGeometry(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.MOVE_EXISTING_NODES,originals,replacements));
+    }
+    @Test void noninitialParentOracleCannotSkipMissingOrUnchangedChoice() {
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.checkedNoninitialChoice("legacy-choice-0","legacy-choice-0",1));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.checkedNoninitialChoice("legacy-choice-0","legacy-choice-0",2));
+        assertEquals("legacy-choice-1",PublicGuiSmokeMain.checkedNoninitialChoice("legacy-choice-0","legacy-choice-1",2));
+    }
+    @Test void generatedStepwiseFixtureProvidesActualNoninitialLegacyChoice() throws Exception {
+        var fixture=PublicGuiSmokeFixture.create(temporary.resolve("legacy-choice-input"));
+        var decoder=new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileDecoderClassifier();
+        var cache=new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileCache(temporary.resolve("legacy-choice-cache"),decoder);
+        fixture.seedRefinementTiles(cache);
+        try(var coordinator=new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator((request,credentials)->{throw new IllegalStateException("Public offline fixture cache miss");},cache,decoder,org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileReliabilityPolicy.defaults())) {
+            var actual=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult[1];
+            SwingUtilities.invokeAndWait(()->{
+                ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));fixture.dataSet().setSelected(fixture.selectedWay());
+                var selected=SelectionResolver.resolve(fixture.dataSet(),false);
+                actual[0]=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService(new org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler(coordinator))
+                    .align(selected,null,null,AlignmentConfig.withoutCleanup(PublicGuiSmokeMain.stepwiseConfig(org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.PRECISE_SHAPE)));
+            });
+            assertTrue(actual[0].candidates().size()>1,"Real Legacy engine must supply noninitial choices for this GUI gate");
+            assertTrue(actual[0].candidates().stream().map(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate::id).distinct().count()>1);
+        }
     }
     @TempDir Path temporary;
     private static final List<String> JOSM_STARTUP_EXPORTS = List.of(

@@ -56,6 +56,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionCon
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.data.UndoRedoHandler;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyRefinementWorkflow;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageKind;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedImageryService;
 
 /** Runs a public analytic fixture through the registered ordinary JOSM GUI action. */
 public final class PublicGuiSmokeMain {
@@ -80,19 +84,22 @@ public final class PublicGuiSmokeMain {
                     report.getParent().resolve("public-input"));
             if (!fixture.tilesUsable()) throw new IllegalStateException("Public Hot tile is unusable");
             ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
-            PluginPreferences.save(config().withTrackerMode(engine));
+            AlignmentMode requestedMode=AlignmentMode.valueOf(System.getProperty("wayheatmaptracer.guiSmoke.alignmentMode","PRECISE_SHAPE"));
+            PluginPreferences.save(engine==TrackerMode.LEGACY_V02?stepwiseConfig(requestedMode):config().withTrackerMode(engine).withAlignmentMode(requestedMode));
             PluginPreferences.saveTracingSettings(new TracingSettings(
                     TracingSettings.CURRENT_SCHEMA_VERSION, engine,
                     RecoverySettings.defaults(7.01), false, AlignmentSourceMode.MANAGED_TILES));
             PluginPreferences.saveGeometryCleanup(GeometryCleanupConfig.disabled());
             Config.getPref().putLong("wayheatmaptracer.cacheBuster", 0L);
             fixture.seedTiles();
+            if(engine==TrackerMode.LEGACY_V02)fixture.seedRefinementTiles();
             WayHeatmapTracerPlugin plugin = onEventThread(() -> {
                 WayHeatmapTracerPlugin loaded = new WayHeatmapTracerPlugin(
                         new PluginInformation(jar.toFile()));
                 OsmDataLayer layer = new OsmDataLayer(fixture.dataSet(),
                         "public-analytic-osm", null);
                 MainApplication.getLayerManager().addLayer(layer);
+                if(engine==TrackerMode.LEGACY_V02)ManagedImageryService.applyOrUpdateManagedLayer();
                 MainApplication.getLayerManager().setActiveLayer(layer);
                 fixture.dataSet().setSelected(fixture.selectedWay());
                 return loaded;
@@ -101,6 +108,9 @@ public final class PublicGuiSmokeMain {
             PreviewSessionController<?> session = productionSession(plugin);
             List<String> original = wayState(fixture);
             int originalUndo = UndoRedoHandler.getInstance().getUndoCommands().size();
+            if(engine==TrackerMode.LEGACY_V02){
+                stage="stepwise-controls";runStepwiseGui(report,fixture,action,session,original,originalUndo,requestedMode);System.exit(0);return;
+            }
             stage = "preview";
             String selectedId = null;
             int selectedRouteIndex = -1;
@@ -233,6 +243,218 @@ public final class PublicGuiSmokeMain {
         }
     }
 
+    /** Drives the actual Legacy modeless dialog and its existing refinement controls. */
+    private static void runStepwiseGui(Path report,PublicGuiSmokeFixture fixture,AlignWayAction action,
+            PreviewSessionController<?> session,List<String> original,int originalUndo,AlignmentMode requestedMode) throws Exception {
+        var opened=new CompletableFuture<JDialog>();
+        AWTEventListener openedListener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED
+            &&e.getWindow() instanceof JDialog dialog&&"legacy-review".equals(dialog.getName()))opened.complete(dialog);};
+        Toolkit.getDefaultToolkit().addAWTEventListener(openedListener,AWTEvent.WINDOW_EVENT_MASK);
+        JDialog preview;
+        try{onEventThread(()->{action.actionPerformed(null);return null;});preview=opened.get(180,TimeUnit.SECONDS);}
+        finally{Toolkit.getDefaultToolkit().removeAWTEventListener(openedListener);}
+        var owner=onEventThread(()->{
+            if(preview.isModal()||!preview.isVisible())throw new IllegalStateException("Legacy review is not modeless");
+            Object value=preview.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner");
+            if(!(value instanceof LegacyRefinementWorkflow workflow))throw new IllegalStateException("Actual refinement owner missing");
+            if(workflow.actualNativeCalls()!=0)throw new IllegalStateException("Legacy root performed hidden native work");
+            return workflow;
+        });
+        List<Node> originalNodes=onEventThread(()->List.copyOf(fixture.selectedWay().getNodes()));
+        var rootReview=onEventThread(()->originalReview(owner));
+        onEventThread(()->{checkedMode(requestedMode,rootReview.originalConfig().heatmap().alignmentMode());return null;});
+        String initialChoice=onEventThread(owner::selectedChoiceIdentity);
+        String rootChoice=onEventThread(()->{
+            var choices=requiredNamed(preview.getContentPane(),"candidate",JComboBox.class);
+            if(choices.getItemCount()<2)throw new IllegalStateException("Public fixture supplied no alternative Legacy parent");
+            int chosen=(choices.getSelectedIndex()+1)%choices.getItemCount();choices.setSelectedIndex(chosen);
+            return checkedNoninitialChoice(initialChoice,owner.selectedChoiceIdentity(),choices.getItemCount());
+        });
+        var rootCandidate=onEventThread(rootReview::selectedCandidate);
+        var rootFindings=onEventThread(()->displayedFindings(preview));
+        var rootGeometry=onEventThread(owner::selectedGeometry);
+        requireUnchanged(fixture,original,originalUndo);
+        boolean bFirst="B_A".equals(System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder","A_B"));
+        var first=bFirst?StageKind.REFINE_B:StageKind.REFINE_A;
+        var second=bFirst?StageKind.REFINE_A:StageKind.REFINE_B;
+        clickAndAwaitStage(preview,owner,bFirst?"refineB":"refineA",first);
+        onEventThread(()->{
+            checkedMode(requestedMode,owner.currentNative().orElseThrow().operation().orElseThrow().ticket().mode());
+            requireExactLegacyParent(owner,rootReview,rootChoice,rootCandidate,rootGeometry);
+            var choices=requiredNamed(preview.getContentPane(),"candidate",JComboBox.class);
+            if(choices.getItemCount()>1)choices.setSelectedIndex(choices.getItemCount()-1);
+            return null;
+        });
+        var firstGeometry=onEventThread(owner::selectedGeometry);
+        String firstChoice=onEventThread(owner::selectedChoiceIdentity);
+        var firstFindings=onEventThread(()->displayedFindings(preview));
+        String firstOutcome=onEventThread(()->owner.currentNative().orElseThrow().operation().orElseThrow().outcome().name());
+        int firstCalls=owner.actualNativeCalls();var firstSource=ManagedTileRuntime.initializedCoordinator().stats();
+        onEventThread(()->{
+            if(firstCalls<=0)throw new IllegalStateException("No actual native calls in first refinement");
+            var map=MainApplication.getMap().mapView;var center=map.getCenter();double scale=map.getScale();
+            map.zoomTo(center.add(4*scale,-3*scale),scale*.9);
+            requireOverlayGeometry(action,firstGeometry);
+            requiredNamed(preview.getContentPane(),"undo",javax.swing.JButton.class).doClick();
+            if(!owner.selectedChoiceIdentity().equals(rootChoice)||!owner.selectedGeometry().equals(rootGeometry)||!displayedFindings(preview).equals(rootFindings))throw new IllegalStateException("Undo did not restore exact Legacy selection/geometry");
+            requiredNamed(preview.getContentPane(),"redo",javax.swing.JButton.class).doClick();
+            if(!owner.selectedChoiceIdentity().equals(firstChoice)||!owner.selectedGeometry().equals(firstGeometry)
+                ||!displayedFindings(preview).equals(firstFindings))throw new IllegalStateException("Redo did not restore exact candidate/findings");
+            requireOverlayGeometry(action,firstGeometry);
+            return null;
+        });
+        if(owner.actualNativeCalls()!=firstCalls||!ManagedTileRuntime.initializedCoordinator().stats().equals(firstSource))throw new IllegalStateException("Cached navigation performed extra native/source work");
+        var firstStage=onEventThread(owner::currentStage);
+        requireUnchanged(fixture,original,originalUndo);
+        clickAndAwaitStage(preview,owner,bFirst?"refineA":"refineB",second);
+        var plan=onEventThread(()->{
+            var stage=owner.currentStage();
+            checkedMode(requestedMode,owner.currentNative().orElseThrow().operation().orElseThrow().ticket().mode());
+            if(!stage.parent().orElseThrow().equals(firstStage.id())||!stage.parentChoice().orElseThrow().value().equals(firstChoice))throw new IllegalStateException("Chained refinement did not pin selected parent");
+            if(owner.actualNativeCalls()<=firstCalls)throw new IllegalStateException("Opposite engine was not executed");
+            var actual=owner.currentNative().orElseThrow();
+            if(actual.operation().orElseThrow().outcome()==org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Outcome.RESOURCE_LIMIT
+                &&!requiredNamed(preview.getContentPane(),"quality",javax.swing.JTextArea.class).getText().contains("Resource limit reached"))throw new IllegalStateException("Resource status missing from live review");
+            requireOverlayGeometry(action,owner.selectedGeometry());return actual.plan();
+        });
+        String secondOutcome=onEventThread(()->owner.currentNative().orElseThrow().operation().orElseThrow().outcome().name());
+        String appliedMode=onEventThread(()->checkedMode(requestedMode,owner.currentNative().orElseThrow().operation().orElseThrow().ticket().mode()).name());
+        var finalFindings=onEventThread(()->displayedFindings(preview));
+        var finalGeometry=onEventThread(owner::selectedGeometry);String finalChoice=onEventThread(owner::selectedChoiceIdentity);
+        int finalCalls=owner.actualNativeCalls();var finalSource=ManagedTileRuntime.initializedCoordinator().stats();
+        onEventThread(()->{
+            requiredNamed(preview.getContentPane(),"undo",javax.swing.JButton.class).doClick();
+            if(!owner.selectedChoiceIdentity().equals(firstChoice)||!owner.selectedGeometry().equals(firstGeometry)||!displayedFindings(preview).equals(firstFindings))throw new IllegalStateException("Chained Undo lost selected parent/findings");
+            requiredNamed(preview.getContentPane(),"redo",javax.swing.JButton.class).doClick();
+            if(!owner.selectedChoiceIdentity().equals(finalChoice)||!owner.selectedGeometry().equals(finalGeometry)||!displayedFindings(preview).equals(finalFindings))throw new IllegalStateException("Chained Redo lost selected child/findings");
+            requireOverlayGeometry(action,finalGeometry);return null;
+        });
+        if(finalCalls!=owner.actualNativeCalls()||!finalSource.equals(ManagedTileRuntime.initializedCoordinator().stats()))throw new IllegalStateException("Chained cached navigation performed work");
+        PublicGuiSmokeOracle.verifyFinalGeometry(plan.finalPreviewWays().get(plan.selectedWayKey()));
+        requireUnchanged(fixture,original,originalUndo);
+        if(onEventThread(()->requiredNamed(preview.getContentPane(),"legacy-confirm",javax.swing.JButton.class).isVisible()))confirmStepwise(preview);
+        onEventThread(()->{
+            var apply=requiredNamed(preview.getContentPane(),"legacy-apply",javax.swing.JButton.class);
+            if(!apply.isEnabled())throw new IllegalStateException("Actual final Apply remains disabled");apply.doClick();return null;
+        });
+        onEventThread(()->{
+            if(preview.isDisplayable())throw new IllegalStateException("Applied review window remained open");
+            if(UndoRedoHandler.getInstance().getUndoCommands().size()!=originalUndo+1)throw new IllegalStateException("Final Apply did not add exactly one command");
+            var applied=checkedAppliedGeometry(requestedMode,originalNodes,fixture.selectedWay().getNodes());
+            if(!applied.equals(plan.finalPreviewWays().get(plan.selectedWayKey())))throw new IllegalStateException("Applied geometry differs from stored final preview");
+            UndoRedoHandler.getInstance().undo();requireUnchanged(fixture,original,originalUndo);
+            UndoRedoHandler.getInstance().redo();
+            var redo=checkedAppliedGeometry(requestedMode,originalNodes,fixture.selectedWay().getNodes());
+            if(!redo.equals(applied))throw new IllegalStateException("Command Redo changed stored final coordinates");
+            UndoRedoHandler.getInstance().undo();requireUnchanged(fixture,original,originalUndo);return null;
+        });
+        // A second real window proves Cancel/Close leave no late result or mutation.
+        var cancelledWindow=new CompletableFuture<JDialog>();
+        AWTEventListener cancelListener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED
+            &&e.getWindow() instanceof JDialog dialog&&"legacy-review".equals(dialog.getName()))cancelledWindow.complete(dialog);};
+        Toolkit.getDefaultToolkit().addAWTEventListener(cancelListener,AWTEvent.WINDOW_EVENT_MASK);
+        try {
+            onEventThread(()->{fixture.dataSet().setSelected(fixture.selectedWay());action.actionPerformed(null);return null;});
+            var cancelled=cancelledWindow.get(180,TimeUnit.SECONDS);
+            var cancelOwner=onEventThread(()->{
+                Object value=cancelled.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner");
+                if(!(value instanceof LegacyRefinementWorkflow actual))throw new IllegalStateException("Cancellation owner missing");
+                checkedMode(requestedMode,originalReview(actual).originalConfig().heatmap().alignmentMode());return actual;
+            });
+            var cancelledEntry=new CompletableFuture<LegacyRefinementWorkflow.NativeEntry>();
+            cancelOwner.firstNativeEntry().whenComplete((entry,failure)->{
+                try {
+                    if(failure!=null)throw new IllegalStateException("Native entry failed",failure);
+                    if(!SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Native entry notification left EDT");
+                    var cancel=requiredNamed(cancelled.getContentPane(),"cancel",javax.swing.JButton.class);
+                    requireNativeCancellation(true,cancel.isEnabled(),cancelOwner.busy(),cancelOwner.ownsNativeEntry(entry),entry.entered(),entry.settlement().toCompletableFuture().isDone(),cancelOwner.ownedBytes());
+                    checkedMode(requestedMode,entry.ticket().mode());cancel.doClick();
+                    if(!entry.cancellationRequested())throw new IllegalStateException("Actual Cancel did not target native ticket");
+                    cancelledEntry.complete(entry);
+                }catch(Throwable refused){cancelledEntry.completeExceptionally(refused);}
+            });
+            onEventThread(()->{
+                var refine=requiredNamed(cancelled.getContentPane(),"refineA",javax.swing.JButton.class);
+                if(!refine.isEnabled())throw new IllegalStateException("Cancellation Refine A is disabled");refine.doClick();return null;
+            });
+            var entry=cancelledEntry.get(180,TimeUnit.SECONDS);
+            entry.settlement().toCompletableFuture().get(90,TimeUnit.SECONDS);
+            session.workGate().settlement().toCompletableFuture().get(90,TimeUnit.SECONDS);
+            onEventThread(()->{
+                if(!entry.workerReturned()||!entry.cancellationObserved()||cancelOwner.busy()||cancelOwner.nativeSelected())throw new IllegalStateException("Native cancellation failed to settle/discard its result");
+                if(!cancelOwner.currentStage().id().equals(entry.ticket().parent()))throw new IllegalStateException("Cancelled native result published a child");
+                requireOverlayGeometry(action,cancelOwner.selectedGeometry());requireUnchanged(fixture,original,originalUndo);
+                cancelled.dispatchEvent(new WindowEvent(cancelled,WindowEvent.WINDOW_CLOSING));
+                if(cancelOwner.ownedBytes()!=0||cancelled.isDisplayable()||hasVisiblePreview())throw new IllegalStateException("Cancelled review retained work/window");return null;
+            });
+        } finally{Toolkit.getDefaultToolkit().removeAWTEventListener(cancelListener);}
+        writeSummary(report,"{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\",\"status\":\"PASS\",\"engine\":\"LEGACY_V02\",\"stepwise\":true,\"order\":\""+(bFirst?"B_A":"A_B")+"\",\"mode\":\""+appliedMode+"\",\"firstOutcome\":\""+firstOutcome+"\",\"secondOutcome\":\""+secondOutcome+"\",\"actualNativeCalls\":"+owner.actualNativeCalls()+",\"modeless\":true,\"cachedUndoRedo\":true,\"panZoomOverlay\":true,\"oneCommandApply\":true,\"commandUndoRedo\":true,\"cancelSettled\":true,\"nativeCancellationEntered\":true,\"nativeCancellationObserved\":true,\"nativePhysicalReturned\":true,\"noninitialLegacyParent\":true,\"allStageFindingsRestored\":true}\n");
+    }
+
+    private static org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyReviewOwner originalReview(LegacyRefinementWorkflow owner) throws Exception {
+        Field field=LegacyRefinementWorkflow.class.getDeclaredField("review");field.setAccessible(true);
+        return (org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyReviewOwner)field.get(owner);
+    }
+    private static List<String> displayedFindings(JDialog dialog) {
+        return List.of(requiredNamed(dialog.getContentPane(),"quality",javax.swing.JTextArea.class).getText(),
+            requiredNamed(dialog.getContentPane(),"legacy-coverage",javax.swing.JLabel.class).getText(),
+            requiredNamed(dialog.getContentPane(),"legacy-cleanup",javax.swing.JLabel.class).getText(),
+            requiredNamed(dialog.getContentPane(),"legacy-detail",javax.swing.JLabel.class).getText());
+    }
+    private static void requireExactLegacyParent(LegacyRefinementWorkflow owner,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyReviewOwner review,String choice,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate actual,List<org.openstreetmap.josm.data.coor.EastNorth> geometry) throws Exception {
+        Field field=LegacyRefinementWorkflow.class.getDeclaredField("session");field.setAccessible(true);
+        var history=(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementSession)field.get(owner);
+        var root=history.history().get(0);var pinned=root.candidates().stream().filter(c->c.id().value().equals(choice)).findFirst().orElseThrow();
+        var palette=review.originalResult().detectorAttempts().stream().filter(a->a.candidateIds().contains(actual.id())).map(a->a.sourcePalette()).distinct().toList();
+        var stored=pinned.payload().nativeGeometry().stream().filter(c->c.id().equals(actual.id())).findFirst().orElseThrow();
+        var expected=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentReferenceBinder().bind(history.authority(),root.id(),pinned);
+        var receipt=owner.currentNative().orElseThrow().operation().orElseThrow();
+        if(!root.selected().value().equals(choice)||!receipt.ticket().choice().value().equals(choice)||!owner.currentStage().parentChoice().orElseThrow().value().equals(choice)
+            ||!stored.finalPreviewPoints().equals(geometry)||!pinned.nativeCandidateId().equals(actual.id())||palette.size()!=1||!pinned.sourcePalette().equals(palette.get(0))
+            ||!receipt.parentIdentity().equals(expected.canonicalIdentity()))throw new IllegalStateException("Refinement did not bind exact selected Legacy geometry/palette/identity");
+    }
+
+    private static void clickAndAwaitStage(JDialog dialog,LegacyRefinementWorkflow owner,String button,StageKind expected) throws Exception {
+        var ready=new CompletableFuture<Void>();
+        Runnable check=()->{
+            if(owner.busy())return;
+            if(owner.nativeSelected()&&owner.currentStage().kind()==expected)ready.complete(null);
+            else ready.completeExceptionally(new IllegalStateException("Requested live refinement did not publish a child"));
+        };
+        java.beans.PropertyChangeListener listener=event->SwingUtilities.invokeLater(check);
+        onEventThread(()->{
+            requiredNamed(dialog.getContentPane(),"stage",javax.swing.JLabel.class).addPropertyChangeListener(listener);
+            requiredNamed(dialog.getContentPane(),"refineA",javax.swing.JButton.class).addPropertyChangeListener(listener);
+            var target=requiredNamed(dialog.getContentPane(),button,javax.swing.JButton.class);
+            if(!target.isEnabled())throw new IllegalStateException("Requested refinement button is disabled");target.doClick();SwingUtilities.invokeLater(check);return null;
+        });
+        try{ready.get(180,TimeUnit.SECONDS);}finally{onEventThread(()->{requiredNamed(dialog.getContentPane(),"stage",javax.swing.JLabel.class).removePropertyChangeListener(listener);requiredNamed(dialog.getContentPane(),"refineA",javax.swing.JButton.class).removePropertyChangeListener(listener);return null;});}
+    }
+    private static void confirmStepwise(JDialog dialog) throws Exception {
+        var accepted=new AtomicBoolean();
+        AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog modal&&modal.isModal()){
+            var panes=new ArrayList<javax.swing.JOptionPane>();collectOptionPanes(modal.getContentPane(),panes);
+            if(panes.size()==1&&panes.get(0).getOptionType()==javax.swing.JOptionPane.YES_NO_OPTION){accepted.set(true);SwingUtilities.invokeLater(()->panes.get(0).setValue(javax.swing.JOptionPane.YES_OPTION));}
+        }};
+        Toolkit.getDefaultToolkit().addAWTEventListener(listener,AWTEvent.WINDOW_EVENT_MASK);
+        try{onEventThread(()->{requiredNamed(dialog.getContentPane(),"legacy-confirm",javax.swing.JButton.class).doClick();return null;});if(!accepted.get())throw new IllegalStateException("Real review confirmation dialog was not accepted");}
+        finally{Toolkit.getDefaultToolkit().removeAWTEventListener(listener);}
+    }
+    private static void collectOptionPanes(Container root,List<javax.swing.JOptionPane> found){for(Component child:root.getComponents()){if(child instanceof javax.swing.JOptionPane pane)found.add(pane);else if(child instanceof Container nested)collectOptionPanes(nested,found);}}
+    static <T extends Component> T requiredNamed(Container root,String name,Class<T> type) {
+        var found=new ArrayList<T>();collectNamed(root,name,type,found);
+        if(found.size()!=1)throw new IllegalStateException("Expected one named "+name+" control");return found.get(0);
+    }
+    private static <T extends Component> void collectNamed(Container root,String name,Class<T> type,List<T> found){for(Component child:root.getComponents()){if(name.equals(child.getName())){if(!type.isInstance(child))throw new IllegalStateException("Named control has wrong type");found.add(type.cast(child));}if(child instanceof Container nested)collectNamed(nested,name,type,found);}}
+    private static void requireOverlayGeometry(AlignWayAction action,List<org.openstreetmap.josm.data.coor.EastNorth> expected) throws Exception {
+        Field overlayField=AlignWayAction.class.getDeclaredField("overlay");overlayField.setAccessible(true);Object overlay=overlayField.get(action);
+        Field resultField=overlay.getClass().getDeclaredField("result");resultField.setAccessible(true);
+        var result=(org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult)resultField.get(overlay);
+        if(result==null||!result.previewPolyline().equals(expected))throw new IllegalStateException("Actual overlay differs from stored selected geometry");
+    }
+
     static void requireDisplay(boolean headless) {
         if (headless) throw new IllegalStateException("Real JOSM GUI display is unavailable");
     }
@@ -325,20 +547,42 @@ public final class PublicGuiSmokeMain {
     }
 
     private static ManagedHeatmapConfig config(boolean authenticated) {
+        return config(authenticated,false);
+    }
+    private static ManagedHeatmapConfig config(boolean authenticated,boolean aggregate) {
         return new ManagedHeatmapConfig(authenticated ? "public-key" : "", authenticated ? "public-policy" : "",
                 authenticated ? "public-signature" : "", authenticated ? "public-session" : "",
                 "all", "hot", "", ".*", AlignmentMode.PRECISE_SHAPE,
-                TrackerMode.PROBABILISTIC, false, false, false, false, false,
+                TrackerMode.PROBABILISTIC, false, false, false, aggregate, false,
                 false, false, false, false, false, 7, 4, 3.0,
                 InferenceMode.RAW_HIGH_RESOLUTION, 15, 14, 7.01, 1.56,
                 IntensitySamplingMode.COLOR_MAPPING, 0L);
     }
 
+    static void requireNativeCancellation(boolean refineEnabled,boolean cancelEnabled,boolean busy,boolean owns,boolean nativeEntered,boolean settled,long ownedBytes) {
+        if(!refineEnabled||!cancelEnabled||!busy||!owns||!nativeEntered||settled||ownedBytes<=0)throw new IllegalStateException("Cancellation requires factual owned nonterminal native work");
+    }
+
+    static AlignmentMode checkedMode(AlignmentMode requested,AlignmentMode actual){
+        if(requested!=actual)throw new IllegalStateException("Requested alignment mode differs from actual root/stage");return actual;
+    }
+    static List<GeographicPoint> checkedAppliedGeometry(AlignmentMode mode,List<Node> original,List<Node> actual) {
+        if(mode==AlignmentMode.MOVE_EXISTING_NODES) {
+            if(original.size()!=actual.size())throw new IllegalStateException("Move changed node occurrence count");
+            for(int i=0;i<original.size();i++)if(original.get(i)!=actual.get(i))throw new IllegalStateException("Move replaced/reordered original node occurrence");
+        }
+        return actual.stream().map(n->new GeographicPoint(n.lat(),n.lon())).toList();
+    }
+    static String checkedNoninitialChoice(String initial,String selected,int available){
+        if(available<2||initial.equals(selected))throw new IllegalStateException("A distinct noninitial Legacy choice is required");return selected;
+    }
+    static ManagedHeatmapConfig stepwiseConfig(AlignmentMode mode){return config(true,true).withTrackerMode(TrackerMode.LEGACY_V02).withAlignmentMode(mode);}
+
     static TrackerMode guiEngine(String name) {
         TrackerMode engine = TrackerMode.valueOf(name);
         if (engine != TrackerMode.PROBABILISTIC && engine != TrackerMode.LEGACY_THEN_B
-                && engine != TrackerMode.CORRIDOR_AWARE) {
-            throw new IllegalArgumentException("GUI smoke requires Corridor A, independent B, or sequential Hybrid");
+                && engine != TrackerMode.CORRIDOR_AWARE && engine != TrackerMode.LEGACY_V02) {
+            throw new IllegalArgumentException("GUI smoke requires Legacy stepwise, Corridor A, independent B, or sequential Hybrid");
         }
         return engine;
     }
@@ -434,7 +678,7 @@ public final class PublicGuiSmokeMain {
     }
 
     private static boolean isPreview(JDialog dialog) {
-        return dialog.getTitle().endsWith("Alignment Preview") && dialog.isVisible();
+        return (dialog.getTitle().endsWith("Alignment Preview")||"legacy-review".equals(dialog.getName())) && dialog.isVisible();
     }
 
     private static boolean hasVisiblePreview() throws Exception {

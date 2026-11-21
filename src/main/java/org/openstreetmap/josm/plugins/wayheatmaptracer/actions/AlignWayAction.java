@@ -3544,6 +3544,9 @@ public class AlignWayAction extends JosmAction {
             initial, currentSearchHalfWidth, initialAssessment, false));
         JLabel selectedCleanupStatus = new JLabel(cleanupStatus(initial));
         JLabel selectedCandidateDetail = new JLabel(cleanupDetail(initial));
+        selectedCoverageStatus.setName("legacy-coverage");
+        selectedCleanupStatus.setName("legacy-cleanup");
+        selectedCandidateDetail.setName("legacy-detail");
         Supplier<String> currentQuality = () -> selectedCoverageStatus.getText() + "\n"
             + selectedCleanupStatus.getText() + "\n" + selectedCandidateDetail.getText();
         LegacyRefinementWorkflow[] workflow = {null};

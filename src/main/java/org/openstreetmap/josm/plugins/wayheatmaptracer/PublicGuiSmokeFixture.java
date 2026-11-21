@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.List;
 
 import javax.imageio.ImageIO;
 
@@ -108,6 +109,39 @@ final class PublicGuiSmokeFixture {
             Files.createDirectories(destination.getParent());
             Files.copy(tile.path(), destination, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         }
+    }
+
+    /** Public synthetic palette/halo tiles for explicit stepwise acquisition only. */
+    int seedRefinementTiles() throws Exception {
+        return seedRefinementTiles(new ManagedTileCache(PluginDirectories.ensurePluginDataDirectory().toPath().resolve("managed-source-tile-cache"),new TileDecoderClassifier()));
+    }
+    int seedRefinementTiles(ManagedTileCache cache) throws Exception {
+        int count=0;
+        for(int zoom:ZOOMS) {
+            double centerX=worldPixelX(zoom,PublicGuiSmokeOracle.BASE_LONGITUDE);
+            int centerTileX=(int)Math.floor(centerX/TILE_SIZE),centerTileY=(int)Math.floor(worldPixelY(zoom,PublicGuiSmokeOracle.BASE_LATITUDE)/TILE_SIZE);
+            for(String palette:List.of("hot","blue","bluered","purple","gray"))for(int dx=-1;dx<=1;dx++)for(int dy=-1;dy<=1;dy++) {
+                int tileX=centerTileX+dx,tileY=centerTileY+dy;
+                int center=switch(palette){case "blue"->0xff4ca9ff;case "bluered"->0xffff24b2;case "purple"->0xffbd9cff;case "gray"->0xffe84bea;default->0xfffdfdfd;};
+                var image=new BufferedImage(TILE_SIZE,TILE_SIZE,BufferedImage.TYPE_INT_ARGB);
+                double pitch=2*Math.PI*PublicGuiSmokeOracle.EARTH_RADIUS_METERS/(TILE_SIZE*(1<<zoom));
+                for(int row=0;row<TILE_SIZE;row++)for(int column=0;column<TILE_SIZE;column++) {
+                    double east=(tileX*TILE_SIZE+column+.5-centerX)*pitch;
+                    double bend=4*Math.max(0,Math.cos(Math.PI*east/64));
+                    double ridge=worldPixelY(zoom,PublicGuiSmokeOracle.point(0,bend).latitudeDegrees());
+                    double distance=tileY*TILE_SIZE+row+.5-ridge,strength=Math.exp(-.5*distance*distance/1.44);
+                    int background=3+(column*7+row*3)%29;
+                    int red=(int)Math.round(background+strength*(((center>>>16)&255)-background));
+                    int green=(int)Math.round(background+strength*(((center>>>8)&255)-background));
+                    int blue=(int)Math.round(background+strength*((center&255)-background));
+                    image.setRGB(column,row,0xff000000|red<<16|green<<8|blue);
+                }
+                var address=new ManagedTileAddress("all",palette,zoom,tileX,tileY);
+                Path destination=cache.path(new ManagedTileGeneration(0),address);Files.createDirectories(destination.getParent());
+                if(!ImageIO.write(image,"png",destination.toFile()))throw new IllegalStateException("PNG writer unavailable");count++;
+            }
+        }
+        return count;
     }
 
     double measuredRidgeOffsetMeters() throws Exception {
