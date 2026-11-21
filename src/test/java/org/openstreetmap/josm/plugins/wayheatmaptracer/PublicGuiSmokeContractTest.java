@@ -147,6 +147,40 @@ class PublicGuiSmokeContractTest {
         assertEquals(PublicGuiSmokeMain.FirstChildState.CHILD, PublicGuiSmokeMain.firstChildState(true, false, true, true));
         assertEquals(PublicGuiSmokeMain.FirstChildState.LOST_OWNER, PublicGuiSmokeMain.firstChildState(true, false, false, false));
     }
+    @Test void pipelineAdmissionSummaryBindsExactTicketAndKeepsAbsentCountersNull() {
+        var ticket=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.OperationTicket(
+            new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.SessionId(java.util.UUID.randomUUID()),1,
+            new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageId(java.util.UUID.randomUUID()),
+            new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.CandidateId("private-candidate"),
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.PROBABILISTIC,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.PRECISE_SHAPE);
+        var observed=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.PipelineAdmissionObserver.Rejection(ticket,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.PipelineAdmissionObserver.Gate.ASSEMBLED_RETENTION,
+            java.util.OptionalLong.of(2048),java.util.OptionalLong.of(0),java.util.OptionalLong.of(1024),
+            java.util.OptionalLong.empty(),java.util.OptionalLong.empty(),11,11,1,java.util.OptionalLong.of(95),java.util.OptionalLong.of(53),
+            1.56,53,41,9,java.util.Optional.empty());
+        String json=PublicGuiSmokeMain.diagnosticAdmission(java.util.Optional.of(observed),ticket);
+        assertTrue(json.startsWith("{"));assertTrue(json.endsWith("}"));
+        assertTrue(json.contains("\"gate\":\"ASSEMBLED_RETENTION\""));assertTrue(json.contains("\"requestedBytes\":2048"));
+        assertTrue(json.contains("\"currentBytes\":0"));assertTrue(json.contains("\"limitBytes\":1024"));
+        assertTrue(json.contains("\"elapsedNanos\":null"));assertTrue(json.contains("\"deadlineNanos\":null"));
+        assertTrue(json.contains("\"rootProfileRows\":53"));assertTrue(json.contains("\"rowBound\":53"));
+        assertTrue(json.contains("\"rootRasterWidth\":41"));assertTrue(json.contains("\"currentEvidence\":null"));
+        assertFalse(json.contains("private"));assertFalse(json.contains(ticket.session().value().toString()));
+        var foreign=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.OperationTicket(
+            ticket.session(),2,ticket.parent(),ticket.choice(),ticket.engine(),ticket.mode());
+        assertEquals("null",PublicGuiSmokeMain.diagnosticAdmission(java.util.Optional.of(observed),foreign));
+        assertEquals("null",PublicGuiSmokeMain.diagnosticAdmission(java.util.Optional.empty(),ticket));
+        var withEvidence=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.PipelineAdmissionObserver.Rejection(ticket,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH,
+            observed.requestedBytes(),observed.currentBytes(),observed.limitBytes(),observed.elapsedNanos(),observed.deadlineNanos(),
+            observed.parentPoints(),observed.selectedOccurrences(),observed.intervals(),observed.assembledVertexBound(),observed.rowBound(),
+            observed.rootConfiguredStepMeters(),observed.rootProfileRows(),observed.rootRasterWidth(),observed.rootRasterHeight(),
+            java.util.Optional.of(new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.PipelineAdmissionObserver.GridCounts(512,512,13,11,1)));
+        String grids=PublicGuiSmokeMain.diagnosticAdmission(java.util.Optional.of(withEvidence),ticket);
+        assertTrue(grids.contains("\"rootRasterWidth\":41"));
+        assertTrue(grids.contains("\"currentEvidence\":{\"inputWidth\":512,\"inputHeight\":512,\"outputWidth\":13,\"outputHeight\":11,\"fields\":1}"));
+    }
     @Test void attemptRowsPreserveUnknownAndZeroWithoutExposingUnsafeValues() {
         var range = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(0, 1);
         var aborted = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementOperationReceipt.Attempt(

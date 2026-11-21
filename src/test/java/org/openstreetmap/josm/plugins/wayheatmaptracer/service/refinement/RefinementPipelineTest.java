@@ -111,6 +111,92 @@ class RefinementPipelineTest {
             assertEquals(TraceWorkUsage.none(),result.actualWork().orElseThrow());
         }
     }
+    @Test void admissionObserverAttributesActualAssembledReservationWithoutInventingCurrentEvidence() {
+        var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
+        try(var scope=PipelineAdmissionObserver.openForTesting(value->{});var owner=new AttemptMemoryLedger(1024).rootOwner()) {
+            var result=admissionRefusal(parent,ticket,owner,sources(parent),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()));
+            assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());
+            var observed=scope.latest(ticket).orElseThrow();
+            assertEquals(PipelineAdmissionObserver.Gate.ASSEMBLED_RETENTION,observed.gate());
+            assertEquals(0,observed.currentBytes().orElseThrow());assertEquals(1024,observed.limitBytes().orElseThrow());
+            assertTrue(observed.requestedBytes().orElseThrow()>1024);
+            assertEquals(parent.points().size(),observed.parentPoints());assertEquals(parent.originalRange().size(),observed.selectedOccurrences());
+            assertEquals(parent.root().request().configuredSampleStepMeters(),observed.rootConfiguredStepMeters());
+            assertEquals(parent.root().request().profileChainage().cumulativeGroundMeters().size(),observed.rootProfileRows());
+            assertEquals(parent.root().evidence().resampling().outputWidth(),observed.rootRasterWidth());
+            assertTrue(observed.rowBound().orElseThrow()>0);assertTrue(observed.assembledVertexBound().orElseThrow()>observed.rowBound().orElseThrow());
+            assertTrue(observed.currentEvidence().isEmpty());assertTrue(observed.elapsedNanos().isEmpty());
+            assertTrue(result.attempts().stream().allMatch(a->a.kind()==RefinementPipeline.AttemptKind.UNATTEMPTED));
+        }
+    }
+    @Test void admissionObserverDistinguishesScalarPreparationFromAssessmentScratch() {
+        var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
+        for(boolean scalar:List.of(true,false))try(var scope=PipelineAdmissionObserver.openForTesting(value->{});
+                var owner=new AttemptMemoryLedger(32L*1024*1024).rootOwner()) {
+            var source=new RefinementPipeline.Sources(){
+                public void requireCurrent() { }
+                public EvidenceSnapshot evidence(RefinementSourcePlanner.SourceRequest source,CancellationProbe cancel){
+                    if(scalar)owner.reserve(AttemptMemoryLedger.MAX_BYTES);return parent.root().evidence();
+                }
+            };
+            var result=admissionRefusal(parent,ticket,owner,source,RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()));
+            assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());var observed=scope.latest(ticket).orElseThrow();
+            assertEquals(scalar?PipelineAdmissionObserver.Gate.SCALAR_PREPARATION:PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH,observed.gate());
+            assertTrue(observed.currentBytes().orElseThrow()>0);assertEquals(32L*1024*1024,observed.limitBytes().orElseThrow());
+            assertTrue(observed.requestedBytes().orElseThrow()>observed.limitBytes().orElseThrow()-observed.currentBytes().orElseThrow());
+            assertEquals(!scalar,observed.currentEvidence().isPresent());
+            if(!scalar)assertEquals(parent.root().evidence().resampling().outputWidth(),observed.currentEvidence().orElseThrow().outputWidth());
+            assertTrue(result.attempts().stream().allMatch(a->a.nativeCallAvailability().orElse(-1)==0));
+        }
+    }
+    @Test void admissionObserverUsesActualInjectedDeadlineElapsedAndPreservesUnknownMemory() {
+        var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
+        for(long elapsed:List.of(81L,101L))try(var scope=PipelineAdmissionObserver.openForTesting(value->{});var owner=AttemptMemoryLedger.production().rootOwner()) {
+            var clock=new AtomicLong();var budget=new RefinementPipeline.OperationBudget(TraceBudgets.defaults(),clock::get,100,20);clock.set(elapsed);
+            var result=admissionRefusal(parent,ticket,owner,sources(parent),budget);assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());
+            var observed=scope.latest(ticket).orElseThrow();
+            assertEquals(elapsed==81?PipelineAdmissionObserver.Gate.INFERENCE_DEADLINE:PipelineAdmissionObserver.Gate.FINAL_DEADLINE,observed.gate());
+            assertEquals(elapsed,observed.elapsedNanos().orElseThrow());assertEquals(elapsed==81?80:100,observed.deadlineNanos().orElseThrow());
+            assertTrue(observed.requestedBytes().isEmpty());assertTrue(observed.currentBytes().isEmpty());assertTrue(observed.limitBytes().isEmpty());
+        }
+    }
+    @Test void admissionObserverKeepsFirstDeadlineWhenFinalProbeAlsoExpires() {
+        var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
+        var reads=new java.util.concurrent.atomic.AtomicInteger();long[] times={0,0,81,101};
+        var budget=new RefinementPipeline.OperationBudget(TraceBudgets.defaults(),()->times[reads.getAndIncrement()],100,20);
+        try(var scope=PipelineAdmissionObserver.openForTesting(value->{});var owner=AttemptMemoryLedger.production().rootOwner()) {
+            assertEquals(Outcome.RESOURCE_LIMIT,admissionRefusal(parent,ticket,owner,sources(parent),budget).outcome());
+            var observed=scope.latest(ticket).orElseThrow();
+            assertEquals(PipelineAdmissionObserver.Gate.INFERENCE_DEADLINE,observed.gate());
+            assertEquals(81,observed.elapsedNanos().orElseThrow());assertEquals(80,observed.deadlineNanos().orElseThrow());
+            assertEquals(4,reads.get(),"diagnostics must not read the clock again");
+        }
+    }
+    @Test void admissionObserverScopeCloseCannotEraseNewerRegistrationOrExposeForeignTicket() {
+        var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
+        var old=PipelineAdmissionObserver.openForTesting(value->{fail("obsolete observer invoked");});
+        try(var current=PipelineAdmissionObserver.openForTesting(value->{});var owner=new AttemptMemoryLedger(1024).rootOwner()) {
+            old.close();admissionRefusal(parent,ticket,owner,sources(parent),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()));
+            assertTrue(current.latest(ticket).isPresent());assertTrue(old.latest(ticket).isEmpty());
+            assertTrue(current.latest(ticket(parent,TrackerMode.PROBABILISTIC)).isEmpty());
+        }finally{old.close();}
+        try(var owner=new AttemptMemoryLedger(1024).rootOwner()) {
+            assertEquals(Outcome.RESOURCE_LIMIT,admissionRefusal(parent,ticket,owner,sources(parent),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults())).outcome());
+        }
+    }
+    @Test void admissionObserverFailureCannotChangeResourceOutcomeOrInventNativeWork() {
+        var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
+        try(var scope=PipelineAdmissionObserver.openForTesting(value->{throw new AssertionError("observer failure");});var owner=new AttemptMemoryLedger(1024).rootOwner()) {
+            var result=admissionRefusal(parent,ticket,owner,sources(parent),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()));
+            assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());assertTrue(scope.latest(ticket).isPresent());
+            assertEquals(TraceWorkUsage.none(),result.actualWork().orElseThrow());assertTrue(result.candidates().isEmpty());
+        }
+    }
+    private static RefinementPipeline.Result admissionRefusal(ParentTraceReference parent,OperationTicket ticket,
+            AttemptMemoryLedger.Owner owner,RefinementPipeline.Sources sources,RefinementPipeline.OperationBudget budget) {
+        return new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),new RefinementPipeline.Adapters(sources,
+            (t,p,e,b,c,o)->{fail("no native entry is admitted");return null;},owner),budget,CancellationProbe.NONE);
+    }
     @Test void inspectableReviewPreservesItsActualReasonAndNeverStartsFallback() {
         var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
         var production=RefinementPipeline.productionRunner();

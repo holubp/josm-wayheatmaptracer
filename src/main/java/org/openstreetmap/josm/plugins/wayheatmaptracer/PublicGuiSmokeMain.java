@@ -57,6 +57,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSin
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.data.UndoRedoHandler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyRefinementWorkflow;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.PipelineAdmissionObserver;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.OperationTicket;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageKind;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedImageryService;
@@ -514,6 +516,12 @@ public final class PublicGuiSmokeMain {
     }
     private static void keyboardAndAwaitStage(Path report, JDialog dialog, LegacyRefinementWorkflow owner,
             String button, StageKind expected) throws Exception {
+        try(var admissions=PipelineAdmissionObserver.openForTesting(value->{})) {
+            keyboardAndAwaitObservedStage(report,dialog,owner,button,expected,admissions);
+        }
+    }
+    private static void keyboardAndAwaitObservedStage(Path report,JDialog dialog,LegacyRefinementWorkflow owner,
+            String button,StageKind expected,PipelineAdmissionObserver.Scope admissions) throws Exception {
         var focused = new CompletableFuture<Void>();
         var keyDelivered = new CompletableFuture<Void>();
         var actionObserved = new AtomicBoolean();
@@ -577,7 +585,7 @@ public final class PublicGuiSmokeMain {
             });
         } catch (Exception failure) {
             try {
-                String evidence = onEventThread(() -> firstChildEvidence(owner, expected, actionObserved.get(), keyDelivered.isDone(), entry.get()));
+                String evidence = onEventThread(() -> firstChildEvidence(owner, expected, actionObserved.get(), keyDelivered.isDone(), entry.get(),admissions));
                 firstRefinementFailureEvidence = evidence;
                 System.err.println("First refinement diagnostics: " + evidence);
                 writeSummary(report.resolveSibling("first-refinement-diagnostics.json"), evidence + "\n");
@@ -590,6 +598,21 @@ public final class PublicGuiSmokeMain {
                 requiredNamed(dialog.getContentPane(), "refineA", javax.swing.JButton.class).removePropertyChangeListener(listener); return null; });
         }
     }
+    static String diagnosticAdmission(java.util.Optional<PipelineAdmissionObserver.Rejection> observation,OperationTicket ticket) {
+        var matching=observation.filter(value->value.ticket().equals(ticket));
+        if(matching.isEmpty())return "null";
+        var value=matching.get();
+        String current=value.currentEvidence().map(grid->"{\"inputWidth\":"+grid.inputWidth()+",\"inputHeight\":"+grid.inputHeight()
+            +",\"outputWidth\":"+grid.outputWidth()+",\"outputHeight\":"+grid.outputHeight()+",\"fields\":"+grid.fields()+"}").orElse("null");
+        return "{\"gate\":\""+value.gate().name()+"\",\"requestedBytes\":"+diagnosticNumber(value.requestedBytes())
+            +",\"currentBytes\":"+diagnosticNumber(value.currentBytes())+",\"limitBytes\":"+diagnosticNumber(value.limitBytes())
+            +",\"elapsedNanos\":"+diagnosticNumber(value.elapsedNanos())+",\"deadlineNanos\":"+diagnosticNumber(value.deadlineNanos())
+            +",\"parentPoints\":"+value.parentPoints()+",\"selectedOccurrences\":"+value.selectedOccurrences()+",\"intervals\":"+value.intervals()
+            +",\"assembledVertexBound\":"+diagnosticNumber(value.assembledVertexBound())+",\"rowBound\":"+diagnosticNumber(value.rowBound())
+            +",\"rootConfiguredStepMeters\":"+value.rootConfiguredStepMeters()+",\"rootProfileRows\":"+value.rootProfileRows()
+            +",\"rootRasterWidth\":"+value.rootRasterWidth()+",\"rootRasterHeight\":"+value.rootRasterHeight()+",\"currentEvidence\":"+current+"}";
+    }
+    private static String diagnosticNumber(java.util.OptionalLong value){return value.isPresent()?Long.toString(value.getAsLong()):"null";}
     private static final int MAX_DIAGNOSTIC_ATTEMPT_ROWS = 64;
     private static final java.util.Set<String> DIAGNOSTIC_PALETTES = java.util.Set.of("hot", "blue", "bluered", "purple", "gray");
     private static final java.util.Set<String> DIAGNOSTIC_MAPPINGS = java.util.Set.of(
@@ -625,7 +648,7 @@ public final class PublicGuiSmokeMain {
         return "[" + String.join(",", rows) + "]";
     }
     private static String firstChildEvidence(LegacyRefinementWorkflow owner, StageKind expected,
-            boolean action, boolean key, LegacyRefinementWorkflow.NativeEntry entry) {
+            boolean action, boolean key, LegacyRefinementWorkflow.NativeEntry entry,PipelineAdmissionObserver.Scope admissions) {
         var diagnostics = owner.latestAttemptDiagnostics();
         var pipeline = diagnostics.flatMap(d -> d.pipeline());
         String phase = diagnostics.map(d -> d.phase().name()).orElse("UNAVAILABLE");
@@ -646,6 +669,7 @@ public final class PublicGuiSmokeMain {
             + "\",\"publication\":\"" + publication + "\",\"pipelineOutcome\":\"" + outcome
             + "\",\"pipelineAttempts\":" + pipeline.map(p -> Integer.toString(p.attempts().size())).orElse("null")
             + ",\"attemptRows\":" + pipeline.map(p -> diagnosticAttemptRows(p.attempts())).orElse("null")
+            + ",\"pipelineAdmission\":" + diagnostics.map(d -> diagnosticAdmission(admissions.latest(d.binding().ticket()),d.binding().ticket())).orElse("null")
             + ",\"attemptRowsTruncated\":" + pipeline.map(p -> Boolean.toString(p.attempts().size() > MAX_DIAGNOSTIC_ATTEMPT_ROWS)).orElse("null") + "}";
     }
     private static void checkDialogLayout(JDialog dialog) throws Exception {

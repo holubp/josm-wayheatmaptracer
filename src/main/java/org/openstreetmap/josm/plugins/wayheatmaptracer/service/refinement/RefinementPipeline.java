@@ -86,6 +86,8 @@ public final class RefinementPipeline {
     public static final class OperationBudget {
         private final TraceBudgets maximum;private final LongSupplier clock;private final long started,duration,reserve;
         private TraceWorkUsage used=TraceWorkUsage.none();private boolean claimed,unknown;
+        private PipelineAdmissionObserver.Gate expiredGate;
+        private long expiredElapsed,expiredLimit;
         public OperationBudget(TraceBudgets maximum,LongSupplier clock,long durationNanos,long finalReserveNanos) {
             this.maximum=Objects.requireNonNull(maximum);this.clock=Objects.requireNonNull(clock);
             if(durationNanos<=0||finalReserveNanos<=0||finalReserveNanos>=durationNanos)throw new IllegalArgumentException("Positive inference/finalization deadline shares required");
@@ -98,8 +100,15 @@ public final class RefinementPipeline {
                 ||maximum.maximumDistinctAlternatives()>root.maximumDistinctAlternatives())throw new IllegalArgumentException("Operation budget reused or exceeds original native policy");
             claimed=true;
         }
-        private boolean inferenceExpired(){return clock.getAsLong()-started>=duration-reserve;}
-        private boolean finalExpired(){return clock.getAsLong()-started>=duration;}
+        private boolean inferenceExpired(){return expired(duration-reserve,PipelineAdmissionObserver.Gate.INFERENCE_DEADLINE);}
+        private boolean finalExpired(){return expired(duration,PipelineAdmissionObserver.Gate.FINAL_DEADLINE);}
+        private boolean expired(long limit,PipelineAdmissionObserver.Gate gate) {
+            long elapsed=clock.getAsLong()-started;
+            if(elapsed<limit)return false;
+            // Preserve the first refusal even if a later shutdown checkpoint crosses the other deadline.
+            if(expiredGate==null){expiredGate=gate;expiredElapsed=elapsed;expiredLimit=limit;}
+            return true;
+        }
         private boolean exhausted(){return unknown||used.pairVisits()>=maximum.maximumPairVisits()||used.transitions()>=maximum.maximumTransitions()
             ||used.rawAlternatives()>=maximum.maximumRawAlternatives()||used.distinctAlternatives()>=maximum.maximumDistinctAlternatives();}
         private TraceBudgets remaining(long potentialCalls){
@@ -151,13 +160,16 @@ public final class RefinementPipeline {
         long fallbackCalls=intervals.stream().filter(i->i.eligible()&&!i.range().equals(parent.originalRange())).count();
         var owner=adapters.owner().child("refinement-operation");AttemptMemoryLedger.Reservation retained=null;
         Outcome outcome=Outcome.COMPLETE;boolean stopped=false,partial=false;int sourceIndex=0;
+        var admissionObserver=PipelineAdmissionObserver.active();
+        var admissionGate=PipelineAdmissionObserver.Gate.ASSEMBLED_RETENTION;
+        long vertices=-1;EvidenceSnapshot observedEvidence=null;
         CancellationProbe finalProbe=()->{cancellation.checkpoint();requireCurrent(adapters.sources());if(budget.finalExpired())throw new DeadlineReached();return false;};
         CancellationProbe nativeProbe=()->{finalProbe.checkpoint();if(budget.inferenceExpired())throw new DeadlineReached();return false;};
         try {
             finalProbe.checkpoint();
             // Reserve every possible retained assembled alternative before any engine entry. Native
             // receipts keep their own same-ledger owners; no source/interval receives a fresh pool.
-            long vertices=maximumAssembledVertices(parent,intervals.size());
+            vertices=maximumAssembledVertices(parent,intervals.size());
             retained=owner.reserve(Math.addExact(1_048_576L,Math.multiplyExact(32L,Math.multiplyExact(vertices,2048L))));
             for(;sourceIndex<sourcePlan.requests().size();sourceIndex++) {
                 var source=sourcePlan.requests().get(sourceIndex);
@@ -166,13 +178,17 @@ public final class RefinementPipeline {
                     stopped=true;outcome=Outcome.RESOURCE_LIMIT;attempts.add(unattempted(source,parent.originalRange(),"operation-budget-stopped"));continue;
                 }
                 finalProbe.checkpoint();EvidenceSnapshot evidence;
+                admissionGate=PipelineAdmissionObserver.Gate.SCALAR_PREPARATION;observedEvidence=null;
                 try{evidence=adapters.sources().evidence(source,finalProbe);}
                 catch(SourceUnavailable unavailable){attempts.add(new Attempt(source,AttemptKind.UNAVAILABLE,parent.originalRange(),Optional.empty(),"source-unavailable"));partial=true;continue;}
+                observedEvidence=evidence;
                 finalProbe.checkpoint();
                 // One reusable assessment/export scratch reservation. 65,536 cached scalar rows
                 // and local-window rows, 2,048 directed supports (bounded by edit-region diameter),
                 // scalar cloning, detached graph/topology inventories and geometry containers.
+                admissionGate=PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH;
                 try(var scratch=owner.reserve(assessmentScratchBytes(parent,evidence,vertices))) {
+                    admissionGate=null; // Later native/assessment failures are outside this pre-invocation observer.
                     long futureSources=sourcePlan.requests().subList(sourceIndex+1,sourcePlan.requests().size()).stream().filter(r->r.unavailableReason().isEmpty()).count();
                     var sourceAssessments=new ArrayList<ParentBackedComposer.Assessed>();assessedBySource.put(source,sourceAssessments);
                     var whole=invoke(ticket,parent,evidence,source,AttemptKind.WHOLE,adapters,budget,nativeProbe,owner,attempts,(1+futureSources)*(1+fallbackCalls));
@@ -227,9 +243,14 @@ public final class RefinementPipeline {
         } catch(DeadlineReached limited) {outcome=Outcome.RESOURCE_LIMIT;stopped=true;}
         catch(SourceInvalid stale){outcome=Outcome.STALE;stopped=true;}
         catch(CancellationException cancelled){outcome=Outcome.CANCELLED;stopped=true;}
-        catch(AttemptMemoryLedger.ResourceLimitException limited){outcome=Outcome.RESOURCE_LIMIT;stopped=true;}
+        catch(AttemptMemoryLedger.ResourceLimitException limited){
+            if(admissionObserver!=null&&admissionGate!=null)admissionObserver.memory(ticket,admissionGate,parent,intervals.size(),vertices,observedEvidence,limited);
+            outcome=Outcome.RESOURCE_LIMIT;stopped=true;
+        }
         catch(UnknownWork unavailable){outcome=Outcome.FAILED;stopped=true;}
         catch(RuntimeException invalid){outcome=Outcome.FAILED;stopped=true;}
+        if(outcome==Outcome.RESOURCE_LIMIT&&admissionObserver!=null&&budget.expiredGate!=null)
+            admissionObserver.deadline(ticket,budget.expiredGate,parent,intervals.size(),vertices,observedEvidence,budget.expiredElapsed,budget.expiredLimit);
         for(;sourceIndex<sourcePlan.requests().size();sourceIndex++) {
             var source=sourcePlan.requests().get(sourceIndex);
             boolean already=attempts.stream().anyMatch(a->a.source().equals(source));
