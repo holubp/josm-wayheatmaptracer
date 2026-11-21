@@ -590,6 +590,40 @@ public final class PublicGuiSmokeMain {
                 requiredNamed(dialog.getContentPane(), "refineA", javax.swing.JButton.class).removePropertyChangeListener(listener); return null; });
         }
     }
+    private static final int MAX_DIAGNOSTIC_ATTEMPT_ROWS = 64;
+    private static final java.util.Set<String> DIAGNOSTIC_PALETTES = java.util.Set.of("hot", "blue", "bluered", "purple", "gray");
+    private static final java.util.Set<String> DIAGNOSTIC_MAPPINGS = java.util.Set.of(
+        "hot", "blue", "blue-corridor", "bluered", "purple", "purple-corridor", "gray", "gray-magenta", "gray-corridor",
+        "dual", "hot-corridor", "hot-strict", "bluered-cool", "bluered-corridor", "dual-corridor", "gray-strict",
+        "purple-strict", "bluered-combined", "gray-combined", "multi-combined", "all-colors-combined");
+    private static final java.util.Set<String> DIAGNOSTIC_REASONS = java.util.Set.of(
+        "operation-aborted", "operation-budget-stopped", "operation-cancelled", "source-unavailable", "native-receipt-unavailable",
+        "existing-parent-evidence-required", "visible-direct-intensity-unsupported", "visible-palette-unavailable",
+        "direct-mapping-variant-unavailable", "direct-aggregate-unavailable", "visible-aggregate-unavailable",
+        "COMPLETE", "PARTIAL", "NO_USABLE_RESULT", "CANCELLED", "STALE", "RESOURCE_LIMIT", "FAILED",
+        "ELIGIBLE", "TOO_FEW_ORIGINAL_OCCURRENCES", "MAPPING_UNAVAILABLE", "MAPPING_AMBIGUOUS", "DEGENERATE_REFERENCE",
+        "OUTSIDE_EDIT_AUTHORITY", "REPEATED_OCCURRENCE", "UNKNOWN_TOPOLOGY", "FROZEN_GEOMETRY_PROOF_UNAVAILABLE",
+        "FROZEN_GEOMETRY_SPAN", "FROZEN_INTERIOR", "EVIDENCE_COVERAGE", "SPATIAL_RESOLUTION_UNAVAILABLE");
+    private static String diagnosticToken(String value, java.util.Set<String> allowed) {
+        return value != null && allowed.contains(value) ? value : "UNAVAILABLE";
+    }
+    static String diagnosticAttemptRows(java.util.List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementOperationReceipt.Attempt> attempts) {
+        var rows = new ArrayList<String>();
+        for (var attempt : attempts.subList(0, Math.min(attempts.size(), MAX_DIAGNOSTIC_ATTEMPT_ROWS))) {
+            String outcome = attempt.outcome().map(value -> "\"" + value.name() + "\"").orElse("null");
+            String nativeStatus = attempt.nativeStatus().map(value -> "\"" + value.name() + "\"").orElse("null");
+            String calls = attempt.nativeCalls().isPresent() ? Integer.toString(attempt.nativeCalls().getAsInt()) : "null";
+            rows.add("{\"palette\":\"" + diagnosticToken(attempt.palette(), DIAGNOSTIC_PALETTES)
+                + "\",\"mapping\":\"" + diagnosticToken(attempt.mapping(), DIAGNOSTIC_MAPPINGS)
+                + "\",\"kind\":\"" + attempt.kind().name()
+                + "\",\"reason\":\"" + diagnosticToken(attempt.reason(), DIAGNOSTIC_REASONS)
+                + "\",\"outcome\":" + outcome + ",\"nativeCalls\":" + calls + ",\"nativeStatus\":" + nativeStatus
+                + ",\"requestPresent\":" + attempt.samplerId().isPresent()
+                + ",\"evidencePresent\":" + attempt.evidenceHash().isPresent()
+                + ",\"parameterPresent\":" + attempt.parameterHash().isPresent() + "}");
+        }
+        return "[" + String.join(",", rows) + "]";
+    }
     private static String firstChildEvidence(LegacyRefinementWorkflow owner, StageKind expected,
             boolean action, boolean key, LegacyRefinementWorkflow.NativeEntry entry) {
         var diagnostics = owner.latestAttemptDiagnostics();
@@ -610,7 +644,9 @@ public final class PublicGuiSmokeMain {
             + ",\"diagnosticsAvailability\":\"" + owner.attemptDiagnosticsAvailability().name()
             + "\",\"operationKind\":\"" + operationKind + "\",\"phase\":\"" + phase + "\",\"cause\":\"" + cause
             + "\",\"publication\":\"" + publication + "\",\"pipelineOutcome\":\"" + outcome
-            + "\",\"pipelineAttempts\":" + pipeline.map(p -> Integer.toString(p.attempts().size())).orElse("null") + "}";
+            + "\",\"pipelineAttempts\":" + pipeline.map(p -> Integer.toString(p.attempts().size())).orElse("null")
+            + ",\"attemptRows\":" + pipeline.map(p -> diagnosticAttemptRows(p.attempts())).orElse("null")
+            + ",\"attemptRowsTruncated\":" + pipeline.map(p -> Boolean.toString(p.attempts().size() > MAX_DIAGNOSTIC_ATTEMPT_ROWS)).orElse("null") + "}";
     }
     private static void checkDialogLayout(JDialog dialog) throws Exception {
         onEventThread(() -> {

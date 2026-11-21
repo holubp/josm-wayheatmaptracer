@@ -147,6 +147,36 @@ class PublicGuiSmokeContractTest {
         assertEquals(PublicGuiSmokeMain.FirstChildState.CHILD, PublicGuiSmokeMain.firstChildState(true, false, true, true));
         assertEquals(PublicGuiSmokeMain.FirstChildState.LOST_OWNER, PublicGuiSmokeMain.firstChildState(true, false, false, false));
     }
+    @Test void attemptRowsPreserveUnknownAndZeroWithoutExposingUnsafeValues() {
+        var range = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(0, 1);
+        var aborted = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementOperationReceipt.Attempt(
+            "hot", "hot", org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementPipeline.AttemptKind.UNATTEMPTED,
+            range, "operation-aborted", java.util.Optional.empty(), java.util.OptionalInt.empty(), java.util.Optional.empty(),
+            java.util.Optional.empty(), java.util.Optional.empty(), java.util.Optional.empty(), java.util.Optional.empty(), List.of());
+        var refused = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementOperationReceipt.Attempt(
+            "blue", "blue", org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementPipeline.AttemptKind.WHOLE,
+            range, "RESOURCE_LIMIT", java.util.Optional.of(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Outcome.RESOURCE_LIMIT),
+            java.util.OptionalInt.of(0), java.util.Optional.empty(), java.util.Optional.of("private-evidence"),
+            java.util.Optional.of("private-parameter"), java.util.Optional.of("private-sampler"), java.util.Optional.empty(), List.of());
+        String json = PublicGuiSmokeMain.diagnosticAttemptRows(List.of(aborted, refused));
+        assertTrue(json.contains("\"kind\":\"UNATTEMPTED\",\"reason\":\"operation-aborted\""));
+        assertTrue(json.contains("\"nativeCalls\":null"));
+        assertTrue(json.contains("\"nativeCalls\":0"));
+        assertTrue(json.contains("\"outcome\":null,\"nativeCalls\":null,\"nativeStatus\":null,\"requestPresent\":false,\"evidencePresent\":false,\"parameterPresent\":false"));
+        assertTrue(json.contains("\"outcome\":\"RESOURCE_LIMIT\",\"nativeCalls\":0,\"nativeStatus\":null"));
+        assertTrue(json.contains("\"requestPresent\":true,\"evidencePresent\":true,\"parameterPresent\":true"));
+        assertFalse(json.contains("private-"));
+        var unsafe = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementOperationReceipt.Attempt(
+            "https://secret", "secret\"value", org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementPipeline.AttemptKind.UNAVAILABLE,
+            range, "private-reason", java.util.Optional.empty(), java.util.OptionalInt.empty(), java.util.Optional.empty(),
+            java.util.Optional.empty(), java.util.Optional.empty(), java.util.Optional.empty(), java.util.Optional.empty(), List.of());
+        String redacted = PublicGuiSmokeMain.diagnosticAttemptRows(List.of(unsafe));
+        assertFalse(redacted.contains("secret")); assertFalse(redacted.contains("private"));
+        assertTrue(redacted.contains("\"palette\":\"UNAVAILABLE\""));
+        assertTrue(redacted.contains("\"reason\":\"UNAVAILABLE\""));
+        assertEquals(PublicGuiSmokeMain.diagnosticAttemptRows(java.util.Collections.nCopies(64, aborted)),
+            PublicGuiSmokeMain.diagnosticAttemptRows(java.util.Collections.nCopies(65, aborted)));
+    }
     @Test void stepwisePublicFixtureHasEveryNativePaletteAtBothZooms() throws Exception {
         Path root=temporary.resolve("stepwise-cache");
         var fixture=PublicGuiSmokeFixture.create(temporary.resolve("stepwise-input"));
