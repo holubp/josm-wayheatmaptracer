@@ -65,8 +65,7 @@ public final class LiveNetworkSnapshotValidator implements LockedApplyValidator 
             throw new IllegalStateException(
                 "Alignment plan, dataset, or source generation is stale");
         }
-        NetworkSnapshot current = NetworkSnapshotCapture.capture(
-            dataSet, captured.specification());
+        NetworkSnapshot current = captured.recapture(dataSet);
         if (!current.canonicalHash().equals(expectedBefore.canonicalHash())
                 || !org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness
                         .sameKnownFacts(expectedBefore.semanticWitness(), current.semanticWitness())) {

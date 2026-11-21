@@ -209,12 +209,20 @@ public final class NetworkSnapshotCapture {
         private final DataSet dataSet;
         private final Specification specification;
         private final NetworkSnapshot snapshot;
+        private final Set<PrimitiveKey> originalLegacyMovable;
 
         private CapturedSnapshot(DataSet dataSet, Specification specification,
-                NetworkSnapshot snapshot) {
+                NetworkSnapshot snapshot) { this(dataSet,specification,snapshot,Set.of()); }
+        private CapturedSnapshot(DataSet dataSet, Specification specification,
+                NetworkSnapshot snapshot, Set<PrimitiveKey> originalLegacyMovable) {
             this.dataSet = dataSet;
             this.specification = specification;
             this.snapshot = snapshot;
+            this.originalLegacyMovable = Set.copyOf(originalLegacyMovable);
+        }
+        NetworkSnapshot recapture(DataSet actual) {
+            if(actual!=dataSet)throw new IllegalStateException("Original capture dataset changed");
+            return capture(actual,specification,DEFAULT_LIMITS,originalLegacyMovable);
         }
 
         /** Returns the exact immutable capture specification. */
@@ -243,6 +251,27 @@ public final class NetworkSnapshotCapture {
     public static CapturedSnapshot captureBound(DataSet dataSet, Specification specification) {
         NetworkSnapshot snapshot = capture(dataSet, specification, DEFAULT_LIMITS);
         return new CapturedSnapshot(dataSet, specification, snapshot);
+    }
+
+    /**
+     * Separate original Legacy opt-in authority. Generic modern bounded-move capture remains endpoint-only.
+     * The sealed receipt retains these original selected identities through final locked recapture.
+     */
+    public static CapturedSnapshot captureOriginalLegacyBound(DataSet dataSet, Specification specification,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext selection,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig config) {
+        if(!SwingUtilities.isEventDispatchThread() || config.heatmap().trackerMode()!=org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.LEGACY_V02
+                || selection.way().getDataSet()!=dataSet || !PrimitiveKey.existing(PrimitiveKey.Type.WAY,selection.way().getUniqueId()).equals(specification.selectedWayKey())
+                || selection.startIndex()!=specification.selectedRange().firstIndex() || selection.endIndex()!=specification.selectedRange().lastIndex()
+                || config.heatmap().adjustJunctionNodes() != (specification.permissions().junctionPolicy()==JunctionPolicy.LEGACY_BOUNDED_MOVE))
+            throw new IllegalArgumentException("Original Legacy selection and movement intent differ from capture");
+        var permitted=new LinkedHashSet<PrimitiveKey>();
+        for(var node:selection.segmentNodes())if(!selection.fixedNodes().contains(node)&&!node.hasKeys()
+                &&node.getReferrers().stream().noneMatch(ref->ref instanceof Relation))permitted.add(key(node));
+        if(!permitted.containsAll(specification.movableExistingNodeKeys()))
+            throw new IllegalArgumentException("Original Legacy capture cannot grant protected or foreign movement");
+        var snapshot=capture(dataSet,specification,DEFAULT_LIMITS,permitted);
+        return new CapturedSnapshot(dataSet,specification,snapshot,permitted);
     }
 
     /**
@@ -282,6 +311,10 @@ public final class NetworkSnapshotCapture {
     }
 
     static NetworkSnapshot capture(DataSet dataSet, Specification specification, Limits limits) {
+        return capture(dataSet,specification,limits,Set.of());
+    }
+    private static NetworkSnapshot capture(DataSet dataSet, Specification specification, Limits limits,
+            Set<PrimitiveKey> originalLegacyMovable) {
         if (!SwingUtilities.isEventDispatchThread()) {
             throw new IllegalStateException("Network snapshot capture must execute on the EDT");
         }
@@ -291,16 +324,16 @@ public final class NetworkSnapshotCapture {
         Lock readLock = dataSet.getReadLock();
         readLock.lock();
         try {
-            return captureLocked(dataSet, specification, limits);
+            return captureLocked(dataSet, specification, limits, originalLegacyMovable);
         } finally {
             readLock.unlock();
         }
     }
 
     private static NetworkSnapshot captureLocked(DataSet dataSet, Specification specification,
-        Limits limits) {
+        Limits limits, Set<PrimitiveKey> originalLegacyMovable) {
         Inventory inventory = Inventory.scan(dataSet, limits);
-        validateAuthority(dataSet, specification, inventory);
+        validateAuthority(dataSet, specification, inventory, originalLegacyMovable);
         CollisionEnvelopeQuery.Result query = CollisionEnvelopeQuery.execute(
             dataSet, specification.metricFrame(), specification.collisionEnvelope());
         Materializer materializer = new Materializer(dataSet, inventory, limits);
@@ -423,7 +456,7 @@ public final class NetworkSnapshotCapture {
     }
 
     private static void validateAuthority(DataSet dataSet, Specification specification,
-        Inventory inventory) {
+        Inventory inventory, Set<PrimitiveKey> originalLegacyMovable) {
         if (specification.selectedWayKey().type() != PrimitiveKey.Type.WAY
             || specification.selectedWayKey().identityKind() != PrimitiveKey.IdentityKind.OSM_UNIQUE) {
             throw new IllegalStateException("Selected way identity is invalid");
@@ -473,7 +506,7 @@ public final class NetworkSnapshotCapture {
                 && specification.permissions().junctionPolicy() == JunctionPolicy.FIXED
             || incidentOccurrenceAuthority
                 && specification.permissions().junctionPolicy() == JunctionPolicy.LEGACY_BOUNDED_MOVE
-                && !legacyIncidentMoveAuthority(specification, inventory, selected)
+                && !legacyIncidentMoveAuthority(specification, inventory, selected, originalLegacyMovable)
             || specification.permissions().junctionPolicy() == JunctionPolicy.REATTACH
                 && !boundedReattachmentAuthority(specification, inventory, selected)) {
             throw new IllegalStateException("Capture authority exceeds accepted recovery permissions");
@@ -489,7 +522,7 @@ public final class NetworkSnapshotCapture {
     }
 
     private static boolean legacyIncidentMoveAuthority(Specification specification,
-            Inventory inventory, Way selected) {
+            Inventory inventory, Way selected, Set<PrimitiveKey> originalLegacyMovable) {
         Set<PrimitiveKey> selectedBoundaries = Set.of(
             key(selected.getNode(specification.selectedRange().firstIndex())),
             key(selected.getNode(specification.selectedRange().lastIndex())));
@@ -504,7 +537,7 @@ public final class NetworkSnapshotCapture {
                     return false;
                 }
                 PrimitiveKey node = key(incident.getNode(range.firstIndex()));
-                if (!selectedBoundaries.contains(node)
+                if ((!selectedBoundaries.contains(node) && !originalLegacyMovable.contains(node))
                         || !specification.movableExistingNodeKeys().contains(node)) {
                     return false;
                 }

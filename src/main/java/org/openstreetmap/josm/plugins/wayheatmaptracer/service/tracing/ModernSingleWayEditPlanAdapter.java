@@ -714,6 +714,45 @@ public final class ModernSingleWayEditPlanAdapter {
         }
     }
 
+    /** Builds one plan from Task4's actual assessed complete parent-backed composition. */
+    public AlignmentEditPlan adaptRefinement(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference parent,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.Assessed assessed,
+            EvidenceSnapshot evidence) {
+        parent.requireRefinementGeometryAuthority();
+        var root=parent.root();var request=root.request();var before=root.network();
+        if(!evidence.coordinateFrame().equals(root.evidence().coordinateFrame())
+                ||assessed.quality().disposition()==FinalGeometryEvaluator.Disposition.HARD_BLOCKED
+                ||!assessed.topologyFindings().isEmpty())throw new IllegalArgumentException("Refinement final geometry is blocked");
+        if(!assessed.copies().isEmpty())throw new IllegalArgumentException("Refinement copy destinations need a qualified plan adapter");
+        var composed=assessed.candidate();var ids=composed.pointIds();var assignments=composed.assignments();
+        var selected=(DetachedWay)before.primitives().get(request.selectedWayKey());
+        var authority=SharedNodeDisconnectionPlanner.forRequest(request,before);
+        var replacement=replacementNodes(ids,assignments,composed.id(),request,evidence,before,selected,true,authority);
+        var afterValues=new LinkedHashMap<PrimitiveKey,DetachedPrimitive>(before.primitives());
+        for(var removable:before.closure().removableExistingNodeKeys())if(!replacement.contains(removable))afterValues.remove(removable);
+        for(var id:ids) {
+            var metric=assignments.get(id);var geographic=evidence.coordinateFrame().toGeographic(metric);
+            if(id instanceof GeneratedCandidatePoint generated)afterValues.put(plannedKey(generated),new DetachedNode(plannedKey(generated),geographic,Map.of(),false,true));
+            else if(id instanceof ExistingWayNodeOccurrence existing&&before.closure().movableExistingNodeKeys().contains(existing.nodeKey())) {
+                var old=(DetachedNode)before.primitives().get(existing.nodeKey());
+                if(metric.equals(evidence.coordinateFrame().toMetric(old.coordinate())))geographic=old.coordinate();
+                afterValues.put(existing.nodeKey(),new DetachedNode(existing.nodeKey(),geographic,old.tags(),old.deleted(),old.modified()||!old.coordinate().equals(geographic)));
+            }
+        }
+        afterValues.put(selected.key(),new DetachedWay(selected.key(),replacement,selected.tags(),false,selected.modified()||!selected.nodeKeys().equals(replacement)));
+        var topology=assessFinalTopology(before,afterValues,selected.key(),request.selectedRange(),evidence,request.permissions().ordinaryRadiusMeters(),Map.of(),Map.of());
+        if(!topology.findingCodes().isEmpty())throw new IllegalArgumentException("Refinement final topology is blocked");
+        var findings=assessed.quality().findings().stream().map(f->"refinement-final:"+f.code().name()).collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        var disposition=assessed.quality().disposition()==FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED
+            ?ValidationReport.Disposition.REVIEW_REQUIRED:ValidationReport.Disposition.APPLICABLE;
+        if(request.permissions().junctionPolicy()!=JunctionPolicy.FIXED){disposition=ValidationReport.Disposition.REVIEW_REQUIRED;findings.add("network-review-required");}
+        var after=new NetworkSnapshot(before.snapshotId()+":refinement:"+composed.id(),SnapshotRole.PROPOSED_AFTER,before.datasetIdentity(),before.sourceGeneration(),
+            before.closure(),afterValues,proposedWatches(before,afterValues),null);
+        return new AlignmentEditPlan(selected.key(),request.selectedRange(),before,after,evidence.coordinateFrame(),request.permissions(),request.settingsHash(),evidence.canonicalHash(),
+            request.parameterHash(),composed.id(),finalPreviewWays(before,afterValues),new ValidationReport(disposition,findings));
+    }
+
     /** Builds one exact plan from ordered, candidate-owned interval geometry. */
     AlignmentEditPlan adaptComposite(IntervalTraceBatch batch, List<FinalRoutePointId> ids,
             Map<FinalRoutePointId, MetricPoint> assignments, String identity,

@@ -20,6 +20,14 @@ public final class PreviewSessionController<R> implements AutoCloseable {
     }
 
     private final AlignmentJob<R> job;
+    private final PreviewWorkGate workGate;
+    public PreviewWorkGate workGate(){return workGate;}
+    public boolean hasUnsettledWork(){return !workGate.settlement().toCompletableFuture().isDone()||!job.settlement().toCompletableFuture().isDone();}
+    /** Pins callers' exact captured intent while prior physical work/results settle. */
+    public boolean requestInvocation(Object key,Runnable resume,Runnable abandon) {
+        revokeCancellationDiagnostics();
+        return workGate.requestInvocation(key,resume,abandon,job::settlement);
+    }
     private long sequence;
     private Owner currentOwner;
     private Runnable currentWindowClose;
@@ -79,11 +87,13 @@ public final class PreviewSessionController<R> implements AutoCloseable {
     /** Creates a plugin session with the normal bounded alignment worker. */
     public PreviewSessionController(AlignmentJob.EventDispatcher dispatcher) {
         this.job = new AlignmentJob<>(dispatcher);
+        this.workGate = new PreviewWorkGate(dispatcher);
     }
 
     /** Creates a session with a controlled executor for deterministic lifecycle tests. */
     PreviewSessionController(AlignmentJob.EventDispatcher dispatcher, ExecutorService executor) {
         this.job = new AlignmentJob<>(dispatcher, executor);
+        this.workGate = new PreviewWorkGate(dispatcher);
     }
 
     /**
@@ -94,12 +104,14 @@ public final class PreviewSessionController<R> implements AutoCloseable {
      */
     public synchronized Owner open(Runnable closeWindow) {
         Objects.requireNonNull(closeWindow, "closeWindow");
-        Runnable supersededWindow = currentWindowClose;
+        Runnable detachedWindow=workGate.detachOwner();
+        Runnable supersededWindow = currentWindowClose==null?detachedWindow:currentWindowClose;
         cancellationDiagnosticOwner = null;
         job.cancel();
         Owner owner = new Owner(++sequence);
         currentOwner = owner;
         currentWindowClose = closeWindow;
+        workGate.adopt(owner,()->{close(owner);closeWindow.run();});
         if (supersededWindow != null) {
             supersededWindow.run();
         }
@@ -110,6 +122,8 @@ public final class PreviewSessionController<R> implements AutoCloseable {
     public synchronized void replaceWindow(Owner owner, Runnable closeWindow) {
         requireCurrent(owner);
         currentWindowClose = Objects.requireNonNull(closeWindow, "closeWindow");
+        workGate.release(owner);
+        workGate.adopt(owner,()->{close(owner);closeWindow.run();});
     }
 
     /** Starts a snapshot-based worker only for the current plugin-wide owner. */
@@ -166,6 +180,7 @@ public final class PreviewSessionController<R> implements AutoCloseable {
         if (!isCurrent(owner)) {
             return false;
         }
+        workGate.release(owner);
         currentOwner = null;
         currentWindowClose = null;
         job.cancel();
@@ -194,6 +209,7 @@ public final class PreviewSessionController<R> implements AutoCloseable {
     @Override
     public synchronized void close() {
         closeAll();
+        workGate.close();
         job.close();
     }
 

@@ -21,6 +21,12 @@ import java.util.function.Supplier;
 import java.util.function.Consumer;
 import java.util.function.BiFunction;
 import java.util.function.LongSupplier;
+import java.util.function.Function;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyReviewOwner;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyRefinementWorkflow;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.InvocationSourceWatch;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyVisibleSource;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls;
 
 import javax.swing.JButton;
 import javax.swing.JComponent;
@@ -664,9 +670,74 @@ public class AlignWayAction extends JosmAction {
                     ? (forcedManagedPreview ? null : HeatmapLayerResolver.resolve())
                     : ordinaryRouting.visibleSource();
             MapView mapView = MainApplication.getMap().mapView;
+            RecoveryPermissions recovery = ordinaryRoute == null ? null : ordinaryRoute.invocation().recovery().toPermissions();
+            final ManagedHeatmapConfig invocationConfig=config;
+            final String invocationLineage=diagnosticSourceLineage;
+            java.util.function.Consumer<LegacyReviewOwner> execute=originalReview->runPreparedInvocation(dataSet,selection,imageryLayer,mapView,
+                slideConfig,requestedSlideConfig,persistedSlideConfig,tracing,recovery,ordinaryRouting,sourceMode,modern,
+                invocationConfig,diagnosticAttemptIdentity,originalReview);
+            Object intentKey=new Object();
+            if(!livePreviewSession.hasUnsettledWork()) {
+                if(!requestPreparedInvocation(intentKey,()->execute.accept(null),()->{}))
+                    throw new IllegalStateException("Alignment work began while preparing an idle invocation");
+                execute.accept(null);
+            } else {
+                InvocationSourceWatch watch=InvocationSourceWatch.capture(dataSet,selection,config.alignmentMode());
+                JDialog[] waiting={null};
+                Runnable closeWaiting=()->{
+                    if(waiting[0]!=null){waiting[0].dispose();if(activePreviewDialog==waiting[0])activePreviewDialog=null;}
+                };
+                Runnable abandon=()->{watch.close();closeWaiting.run();};
+                Runnable resume=()->{
+                    closeWaiting.run();LegacyReviewOwner originalReview=null;
+                    try {
+                        DataSet active=MainApplication.getLayerManager().getEditDataSet();
+                        if(active!=dataSet||MainApplication.getMap()==null||MainApplication.getMap().mapView!=mapView)
+                            throw new IllegalStateException("The requested edit layer or map changed while waiting");
+                        if(imageryLayer!=null&&!MainApplication.getLayerManager().getLayers().contains(imageryLayer))
+                            throw new IllegalStateException("The requested source layer changed while waiting");
+                        SelectionContext current=SelectionResolver.resolve(active,legacySelection&&invocationConfig.adjustJunctionNodes());
+                        watch.requireCurrent(active,current,effectiveConfig(PluginPreferences.load()).alignmentMode());
+                        if(!modern){
+                            originalReview=LegacyReviewOwner.begin(dataSet,selection,slideConfig);
+                            watch.requireCurrent(active,current,invocationConfig.alignmentMode());
+                        }
+                        execute.accept(originalReview);
+                        if(modern)watch.requireCurrent(active,current,invocationConfig.alignmentMode());
+                    }catch(Exception failed){
+                        if(originalReview!=null)originalReview.close();
+                        livePreviewSession.close(activeLivePreviewOwner);
+                        handleInvocationFailure(failed,invocationConfig,invocationLineage,diagnosticAttemptIdentity);
+                    }finally{watch.close();}
+                };
+                if(requestPreparedInvocation(intentKey,resume,abandon))resume.run();
+                else {
+                    waiting[0]=new JDialog(MainApplication.getMainFrame(),tr("Waiting for alignment work"),false);
+                    JButton cancelPending=new JButton(tr("Cancel"));
+                    JPanel pendingPanel=new JPanel(new BorderLayout(4,4));
+                    pendingPanel.add(new JLabel(tr("Waiting for previous alignment work to stop...")),BorderLayout.CENTER);
+                    pendingPanel.add(cancelPending,BorderLayout.SOUTH);waiting[0].setContentPane(pendingPanel);
+                    waiting[0].setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+                    cancelPending.addActionListener(event->livePreviewSession.workGate().cancelPending(intentKey));
+                    waiting[0].addWindowListener(new WindowAdapter(){@Override public void windowClosing(WindowEvent event){livePreviewSession.workGate().cancelPending(intentKey);}});
+                    waiting[0].pack();waiting[0].setLocationRelativeTo(MainApplication.getMainFrame());
+                    activePreviewDialog=waiting[0];waiting[0].setVisible(true);
+                }
+            }
+        } catch (Exception ex) {
+            handleInvocationFailure(ex,config,diagnosticSourceLineage,diagnosticAttemptIdentity);
+        }
+    }
+
+    boolean requestPreparedInvocation(Object intentKey,Runnable resume,Runnable abandon) {
+        return livePreviewSession.requestInvocation(intentKey,resume,abandon);
+    }
+
+    private void runPreparedInvocation(DataSet dataSet,SelectionContext selection,ImageryLayer imageryLayer,MapView mapView,
+            AlignmentConfig slideConfig,AlignmentConfig requestedSlideConfig,AlignmentConfig persistedSlideConfig,TracingSettings tracing,
+            RecoveryPermissions recovery,OrdinaryActionRouting<ImageryLayer> ordinaryRouting,AlignmentSourceMode sourceMode,boolean modern,
+            ManagedHeatmapConfig config,String diagnosticAttemptIdentity,LegacyReviewOwner originalReview) {
             if (modern) {
-                RecoveryPermissions recovery = ordinaryRoute == null ? null
-                        : ordinaryRoute.invocation().recovery().toPermissions();
                 startLiveBPreview(dataSet, selection, imageryLayer, mapView, slideConfig,
                         requestedSlideConfig,
                         persistedSlideConfig, tracing, recovery, ordinaryRouting,
@@ -675,33 +746,48 @@ public class AlignWayAction extends JosmAction {
                         diagnosticAttemptIdentity);
                 return;
             }
-            AlignmentResult result = alignmentService.align(selection, imageryLayer, mapView, slideConfig);
-            updateAggregateIntensityLayer(result, config);
-            DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
-                result, initialCandidate(result), initialCandidate(result), "preview-open", PluginLog.currentSlideLog(), Map.of()));
+            PreviewSessionController.Owner rootOwner=livePreviewSession.open(()->{});
+            activeLivePreviewOwner=rootOwner;
+            LegacyReviewOwner legacyReview = originalReview==null?LegacyReviewOwner.begin(dataSet,selection,slideConfig):originalReview;
+            try {
+                completeLegacyReview(legacyReview,
+                    capture -> alignmentService.alignLegacyReviewed(selection, imageryLayer, mapView, slideConfig, capture));
+            } catch(RuntimeException|Error failed){livePreviewSession.close(rootOwner);throw failed;}
+            try {
+                AlignmentResult result = legacyReview.originalResult();
+                updateAggregateIntensityLayer(result, config);
+                DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
+                    result, initialCandidate(result), initialCandidate(result), "preview-open", PluginLog.currentSlideLog(), Map.of()));
+                showCandidatePreview(dataSet, selection, result, slideConfig, imageryLayer, mapView,
+                    new LinkedHashMap<>(), legacyReview,rootOwner);
+            } catch (RuntimeException | Error failure) {
+                legacyReview.close();livePreviewSession.close(rootOwner);
+                throw failure;
+            }
+    }
 
-            showCandidatePreview(dataSet, selection, result, slideConfig, imageryLayer, mapView, new LinkedHashMap<>());
-        } catch (AlignmentService.AlignmentFailureException ex) {
+    private void handleInvocationFailure(Exception ex,ManagedHeatmapConfig config,String diagnosticSourceLineage,String diagnosticAttemptIdentity) {
+        if(ex instanceof AlignmentService.AlignmentFailureException failure) {
             overlay.hide();
             if (config != null) {
-                updateAggregateIntensityLayer(ex.partialResult(), config);
+                updateAggregateIntensityLayer(failure.partialResult(), config);
             }
-            Logging.warn("WayHeatmapTracer alignment failed without applying geometry: " + ex.getMessage());
-            PluginLog.verbose("Alignment failed without applying geometry: %s", ex.toString());
+            Logging.warn("WayHeatmapTracer alignment failed without applying geometry: " + failure.getMessage());
+            PluginLog.verbose("Alignment failed without applying geometry: %s", failure.toString());
             if (config != null && config.trackerMode().capabilities().requiresEvidenceSnapshot()) {
                 recordModernUnavailable("failed", diagnosticSourceLineage,
                         diagnosticAttemptIdentity);
             } else {
                 DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
-                    ex.partialResult(),
-                    ex.partialResult().candidates().isEmpty() ? null : ex.partialResult().candidates().get(0),
+                    failure.partialResult(),
+                    failure.partialResult().candidates().isEmpty() ? null : failure.partialResult().candidates().get(0),
                     "failed",
                     PluginLog.currentSlideLog()
                 ));
             }
             PluginLog.endSlideSession();
-            showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
-        } catch (Exception ex) {
+            showError(tr("WayHeatmapTracer failed: {0}", failure.getMessage()));
+        } else {
             recordCaptureFailure(ex, diagnosticSourceLineage, diagnosticAttemptIdentity);
             overlay.hide();
             Logging.error(ex);
@@ -3292,6 +3378,105 @@ public class AlignWayAction extends JosmAction {
         setEnabled(MainApplication.getLayerManager().getEditDataSet() != null);
     }
 
+    /** Starts ownership before the original Legacy computation; native bootstrap remains explicit. */
+    static LegacyReviewOwner captureLegacyReview(DataSet dataSet, SelectionContext selection,
+            AlignmentConfig config, Function<AlignmentService.LegacyCaptureObserver, AlignmentResult> alignment) {
+        return completeLegacyReview(LegacyReviewOwner.begin(dataSet, selection, config),alignment);
+    }
+    private static LegacyReviewOwner completeLegacyReview(LegacyReviewOwner owner,
+            Function<AlignmentService.LegacyCaptureObserver,AlignmentResult> alignment) {
+        LegacyVisibleSource[] source = {null};
+        TileHeatmapSampler.AcquisitionReceipt[] managed = {null};
+        try {
+            AlignmentResult result = alignment.apply(new AlignmentService.LegacyCaptureObserver() {
+                @Override public void visible(LegacyVisibleSource frame) { source[0] = frame; }
+                @Override public void managed(TileHeatmapSampler.AcquisitionReceipt receipt) { managed[0] = receipt; }
+            });
+            owner.captured(result, source[0], managed[0]);
+            return owner;
+        } catch (RuntimeException | Error failure) {
+            owner.close();
+            throw failure;
+        }
+    }
+
+    record ReviewButtonContext(CandidateAssessment.Disposition disposition,boolean matchingConfirmation,
+            boolean busy,boolean nativeSelection,boolean nativeCanApply,boolean currentOwner) { }
+    /** The live workflow status callback; no acquisition or computation belongs here. */
+    static Runnable createReviewButtonRefresh(LegacyReviewOwner owner,JButton apply,JButton confirm,
+            Supplier<ReviewButtonContext> current) {
+        return ()->{var state=current.get();boolean authority=state.currentOwner();
+            try{owner.requireLegacyAuthorityCurrent();}catch(IllegalStateException stale){authority=false;}
+            boolean review=state.disposition()==CandidateAssessment.Disposition.REVIEW_REQUIRED;
+            boolean applicable=state.nativeSelection()?state.nativeCanApply():state.disposition()==CandidateAssessment.Disposition.APPLICABLE||review&&state.matchingConfirmation();
+            apply.setEnabled(authority&&!state.busy()&&applicable);
+            confirm.setVisible(review);confirm.setEnabled(authority&&!state.busy()&&review&&!state.matchingConfirmation());
+            confirm.setText(authority&&review&&state.matchingConfirmation()?tr("Review confirmed"):tr("Confirm reviewed candidate"));
+            String unavailable=!authority?tr("The original alignment source or settings changed; run alignment again.")
+                :state.busy()?tr("Wait for refinement to stop."):null;
+            apply.setToolTipText(unavailable);confirm.setToolTipText(unavailable);
+        };
+    }
+    static CandidateReviewConfirmation confirmLegacyReview(LegacyReviewOwner owner,AlignmentService service,
+            DataSet dataSet,SelectionContext selection,AlignmentResult result,CenterlineCandidate candidate,ManagedHeatmapConfig config) {
+        owner.requireLegacyAuthorityCurrent();
+        if(owner.selectedCandidate()!=candidate)throw new IllegalStateException("The selected Legacy candidate changed");
+        if(!canConfirmCandidate(AlignmentService.assessCandidate(candidate)))throw new IllegalStateException("This candidate cannot be enabled by review");
+        requirePreviewSourceAndTopologySafe(service,dataSet,selection,result,candidate,config);
+        if(!config.allowUndownloadedAlignment())requirePreviewWithinDownloadedArea(result.previewPolyline(),dataSet);
+        return CandidateReviewConfirmation.capture(candidate,result.previewPolyline());
+    }
+    static org.openstreetmap.josm.command.Command createLegacyReviewCommand(LegacyReviewOwner owner,AlignmentService service,
+            DataSet dataSet,SelectionContext selection,AlignmentResult result,CenterlineCandidate candidate,ManagedHeatmapConfig config,
+            CandidateReviewConfirmation confirmation) {
+        owner.requireLegacyAuthorityCurrent();
+        if(owner.selectedCandidate()!=candidate)throw new IllegalStateException("The selected Legacy candidate changed");
+        return createPreviewCommand(service,dataSet,selection,result,candidate,config,confirmation);
+    }
+
+    /** Root-only presentation while native child assembly and qualified smoothing remain unavailable. */
+    static RefinementControls createLegacyRefinementControls(LegacyReviewOwner owner,
+            Consumer<CenterlineCandidate> select, Supplier<String> quality) {
+        RefinementControls[] controls = {null};
+        controls[0] = new RefinementControls(new RefinementControls.Listener() {
+            private void unavailable(String reason) {
+                presentLegacyRefinementControls(controls[0], owner, reason);
+            }
+            public void selected(String id) {
+                CenterlineCandidate candidate = owner.candidateForChoice(id);
+                select.accept(candidate);
+                presentLegacyRefinementControls(controls[0], owner, quality.get());
+            }
+            public void strengthSelected(RefinementControls.Strength strength) {
+                unavailable(tr("Smoothing is not available in this build."));
+            }
+            public void undo() { unavailable(tr("This is the first preview stage.")); }
+            public void redo() { unavailable(tr("There is no later preview stage.")); }
+            public void refineA() { unavailable(tr("Refinement is not available in this build.")); }
+            public void refineB() { unavailable(tr("Refinement is not available in this build.")); }
+            public void smooth(RefinementControls.Strength strength) {
+                unavailable(tr("Smoothing is not available in this build."));
+            }
+            public void cancel() { unavailable(tr("No refinement is running.")); }
+        });
+        presentLegacyRefinementControls(controls[0], owner, quality.get());
+        return controls[0];
+    }
+
+    private static void presentLegacyRefinementControls(RefinementControls controls,
+            LegacyReviewOwner owner, String quality) {
+        var choices = owner.choices().stream().map(choice ->
+            new RefinementControls.Choice(choice.id(), tr("Legacy / {0}", choice.candidate().displayName()))).toList();
+        var noRefinement = new RefinementControls.Availability(false, tr("Refinement is not available in this build."));
+        var noSmoothing = new RefinementControls.Availability(false, tr("Smoothing is not available in this build."));
+        controls.present(new RefinementControls.ViewState(tr("Legacy — stage 1"), choices,
+            owner.choiceId(owner.selectedCandidate()), quality, RefinementControls.Strength.MEDIUM, false,
+            new RefinementControls.Availability(true, ""),
+            new RefinementControls.Availability(false, tr("This is the first preview stage.")),
+            new RefinementControls.Availability(false, tr("There is no later preview stage.")),
+            noRefinement, noRefinement, noSmoothing));
+    }
+
     private void showCandidatePreview(
         DataSet dataSet,
         SelectionContext selection,
@@ -3299,14 +3484,22 @@ public class AlignWayAction extends JosmAction {
         AlignmentConfig slideConfig,
         ImageryLayer imageryLayer,
         MapView mapView,
-        Map<String, CandidateRating> candidateRatings
+        Map<String, CandidateRating> candidateRatings,
+        LegacyReviewOwner legacyReview
     ) {
+        PreviewSessionController.Owner rootOwner=livePreviewSession.open(()->{});activeLivePreviewOwner=rootOwner;
+        showCandidatePreview(dataSet,selection,result,slideConfig,imageryLayer,mapView,candidateRatings,legacyReview,rootOwner);
+    }
+    private void showCandidatePreview(DataSet dataSet,SelectionContext selection,AlignmentResult result,AlignmentConfig slideConfig,
+            ImageryLayer imageryLayer,MapView mapView,Map<String,CandidateRating> candidateRatings,
+            LegacyReviewOwner legacyReview,PreviewSessionController.Owner rootOwner) {
         ManagedHeatmapConfig config = slideConfig.heatmap();
         GeometryCleanupConfig cleanupConfig = slideConfig.cleanup();
         if (result.candidates().isEmpty()) {
             throw new IllegalStateException(tr("No centerline candidate could be extracted from the heatmap."));
         }
         CenterlineCandidate initial = initialCandidate(result);
+        legacyReview.select(initial);
         boolean ratingMode = config.candidateRatingEnabled();
         boolean[] loadingRating = {false};
         CandidateReviewConfirmation[] reviewConfirmation = {null};
@@ -3337,32 +3530,59 @@ public class AlignWayAction extends JosmAction {
         JCheckBox unnecessaryKinks = new JCheckBox(tr("unnecessary kinks"));
         JCheckBox badJunctionShapes = new JCheckBox(tr("bad junction shapes"));
         JButton apply = new JButton(tr("Apply"));
+        apply.setName("legacy-apply");
         apply.setEnabled(initialAssessment.automaticallyApplicable());
         JButton confirm = new JButton(tr("Confirm reviewed candidate"));
+        confirm.setName("legacy-confirm");
         confirm.setVisible(canConfirmCandidate(initialAssessment));
         confirm.setEnabled(canConfirmCandidate(initialAssessment));
         JButton retry = new JButton(tr("Retry with wider search..."));
         configureRetryButton(retry, initial, slideConfig, result);
 
-        JPanel panel = buildSummaryPanel(
-            current[0].result(),
-            initial,
-            config,
-            cleanupConfig,
-            result.candidates().size() > 1 ? comboBox : null,
-            ratingMode ? ratingBox : null,
-            offTheLine,
-            jumping,
-            unnecessaryKinks,
-            badJunctionShapes
-        );
         double currentSearchHalfWidth = retrySearchBounds(slideConfig, result).currentMeters();
         JLabel selectedCoverageStatus = new JLabel(coverageStatus(
             initial, currentSearchHalfWidth, initialAssessment, false));
-        panel.add(selectedCoverageStatus, GBC.eol());
         JLabel selectedCleanupStatus = new JLabel(cleanupStatus(initial));
-        panel.add(selectedCleanupStatus, GBC.eol());
         JLabel selectedCandidateDetail = new JLabel(cleanupDetail(initial));
+        Supplier<String> currentQuality = () -> selectedCoverageStatus.getText() + "\n"
+            + selectedCleanupStatus.getText() + "\n" + selectedCandidateDetail.getText();
+        LegacyRefinementWorkflow[] workflow = {null};
+        Runnable refreshButtons=createReviewButtonRefresh(legacyReview,apply,confirm,()->{
+            boolean nativeChoice=workflow[0]!=null&&workflow[0].nativeSelected();
+            boolean busy=workflow[0]!=null&&workflow[0].busy();
+            var disposition=nativeChoice?CandidateAssessment.Disposition.valueOf(workflow[0].currentNative().orElseThrow().plan().validation().disposition().name())
+                :AlignmentService.assessCandidate(current[0].candidate()).disposition();
+            boolean confirmed=nativeChoice?workflow[0].canApplyNative():confirmationMatches(reviewConfirmation[0],current[0].candidate(),current[0]);
+            return new ReviewButtonContext(disposition,confirmed,busy,nativeChoice,nativeChoice&&workflow[0].canApplyNative(),livePreviewSession.isCurrent(rootOwner));
+        });
+        workflow[0] = new LegacyRefinementWorkflow(legacyReview,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime.coordinator(),
+            candidate -> { comboBox.setSelectedItem(null); comboBox.setSelectedItem(candidate); },
+            displayed -> {
+                current[0] = new PreviewSelection(initial, displayed.candidate(), displayed.result());
+                reviewConfirmation[0] = null;
+                var disposition = displayed.nativeReview().orElseThrow().plan().validation().disposition();
+                overlay.show(selection, displayed.result(), displayed.candidate(),
+                    CandidateAssessment.Disposition.valueOf(disposition.name()), false, PluginPreferences.isDebugEnabled());
+                selectedCleanupStatus.setText(""); selectedCandidateDetail.setText("");
+                refreshButtons.run();
+                retry.setEnabled(false);
+            },
+            message -> {
+                if(workflow[0] != null) {
+                    boolean busy = workflow[0].busy();
+                    retry.setEnabled(!busy && !workflow[0].nativeSelected());
+                    refreshButtons.run();
+                }
+                if(!message.isEmpty()) selectedCoverageStatus.setText(message);
+            });
+        refreshButtons.run();
+        RefinementControls refinementControls = workflow[0].controls();
+        JPanel panel = buildSummaryPanel(
+            current[0].result(), initial, config, cleanupConfig, refinementControls,
+            ratingMode ? ratingBox : null, offTheLine, jumping, unnecessaryKinks, badJunctionShapes);
+        panel.add(selectedCoverageStatus, GBC.eol());
+        panel.add(selectedCleanupStatus, GBC.eol());
         panel.add(selectedCandidateDetail, GBC.eol());
         comboBox.addActionListener(event -> {
             CenterlineCandidate selected = (CenterlineCandidate) comboBox.getSelectedItem();
@@ -3372,16 +3592,14 @@ public class AlignWayAction extends JosmAction {
             try {
                 reviewConfirmation[0] = null;
                 current[0] = buildPreviewSelection(dataSet, result, current[0].initialCandidate(), selected, config);
+                legacyReview.select(selected);
                 CandidateAssessment assessment = AlignmentService.assessCandidate(selected);
                 overlay.show(selection, current[0].result(), selected, assessment.disposition(), false,
                     PluginPreferences.isDebugEnabled());
                 selectedCoverageStatus.setText(coverageStatus(
                     selected, currentSearchHalfWidth, assessment, false));
                 selectedCleanupStatus.setText(cleanupStatus(selected));
-                apply.setEnabled(assessment.automaticallyApplicable());
-                confirm.setVisible(canConfirmCandidate(assessment));
-                confirm.setEnabled(canConfirmCandidate(assessment));
-                confirm.setText(tr("Confirm reviewed candidate"));
+                refreshButtons.run();
                 java.awt.Window previewWindow = SwingUtilities.getWindowAncestor(confirm);
                 if (previewWindow != null) {
                     previewWindow.pack();
@@ -3392,6 +3610,7 @@ public class AlignWayAction extends JosmAction {
                 loadingRating[0] = true;
                 loadCandidateRating(candidateRatings.get(selected.id()), ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes);
                 loadingRating[0] = false;
+                refreshButtons.run();
                 updatePreviewBundle(current[0], candidateRatings, "preview-open");
             } catch (Exception ex) {
                 Logging.warn("WayHeatmapTracer rejected preview candidate: " + ex.getMessage());
@@ -3415,16 +3634,45 @@ public class AlignWayAction extends JosmAction {
         buttons.add(apply);
         buttons.add(retry);
         buttons.add(cancel);
-        panel.add(buttons, GBC.eol());
+        JPanel contents = new JPanel(new BorderLayout(4, 4));
+        JScrollPane reviewScroll = new JScrollPane(panel);
+        reviewScroll.setName("legacy-review-scroll");
+        java.awt.Rectangle screen = MainApplication.getMainFrame() == null
+            ? new java.awt.Rectangle(0, 0, 1000, 800)
+            : MainApplication.getMainFrame().getGraphicsConfiguration().getBounds();
+        Dimension preferred = panel.getPreferredSize();
+        reviewScroll.setPreferredSize(new Dimension(Math.max(300, Math.min(preferred.width + 24, screen.width - 80)),
+            Math.max(220, Math.min(preferred.height + 12, screen.height - 180))));
+        contents.add(reviewScroll, BorderLayout.CENTER);
+        contents.add(buttons, BorderLayout.SOUTH);
 
         JDialog dialog = new JDialog(MainApplication.getMainFrame(), tr("Preview Heatmap Alignment"), false);
+        dialog.setName("legacy-review");
+        dialog.getRootPane().putClientProperty("wayheatmaptracer.refinementOwner",workflow[0]);
         activePreviewDialog = dialog;
-        dialog.setContentPane(panel);
+        dialog.setContentPane(contents);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
         dialog.pack();
         dialog.setLocationRelativeTo(MainApplication.getMainFrame());
+        livePreviewSession.replaceWindow(rootOwner,()->{workflow[0].close();dialog.dispose();overlay.hide();});
+        workflow[0].attachOwnership(livePreviewSession.workGate(),rootOwner,()->{
+            livePreviewSession.close(rootOwner);dialog.dispose();overlay.hide();
+        });
         confirm.addActionListener(event -> {
             try {
+                if(!livePreviewSession.isCurrent(rootOwner))throw new IllegalStateException("The preview owner was superseded");
+                if(workflow[0].busy())throw new IllegalStateException("Refinement is still running");
+                legacyReview.requireLegacyAuthorityCurrent();
+                if (workflow[0].nativeSelected()) {
+                    int answer = JOptionPane.showConfirmDialog(dialog,
+                        tr("Confirm that you reviewed the complete displayed refinement geometry."),
+                        tr("Confirm reviewed candidate"), JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+                    if(answer == JOptionPane.YES_OPTION) {
+                        if(!config.allowUndownloadedAlignment()) requirePreviewWithinDownloadedArea(current[0].result().previewPolyline(), dataSet);
+                        workflow[0].confirm();refreshButtons.run();
+                    }
+                    return;
+                }
                 CandidateAssessment assessment = AlignmentService.assessCandidate(current[0].candidate());
                 if (!canConfirmCandidate(assessment)) {
                     throw new IllegalStateException(tr("This candidate cannot be enabled by review."));
@@ -3440,25 +3688,21 @@ public class AlignWayAction extends JosmAction {
                 if (answer != JOptionPane.YES_OPTION) {
                     return;
                 }
-                requirePreviewSourceAndTopologySafe(alignmentService, dataSet, selection,
-                    current[0].result(), current[0].candidate(), config);
-                if (!config.allowUndownloadedAlignment()) {
-                    requirePreviewWithinDownloadedArea(current[0].result().previewPolyline(), dataSet);
-                }
-                reviewConfirmation[0] = CandidateReviewConfirmation.capture(
-                    current[0].candidate(), current[0].result().previewPolyline());
-                apply.setEnabled(true);
-                confirm.setEnabled(false);
-                confirm.setText(tr("Review confirmed"));
+                reviewConfirmation[0] = confirmLegacyReview(legacyReview,alignmentService,dataSet,selection,
+                    current[0].result(),current[0].candidate(),config);
+                refreshButtons.run();
                 selectedCoverageStatus.setText(coverageStatus(current[0].candidate(),
                     currentSearchHalfWidth, assessment, true));
                 overlay.show(selection, current[0].result(), current[0].candidate(),
                     assessment.disposition(), true, PluginPreferences.isDebugEnabled());
                 comboBox.repaint();
+                workflow[0].refresh();
                 PluginLog.verbose("Candidate review confirmed: candidate=%s previewPoints=%d.",
                     current[0].candidate().id(), current[0].result().previewPolyline().size());
                 updatePreviewBundle(current[0], candidateRatings, "review-confirmed");
             } catch (Exception ex) {
+                if(!livePreviewSession.isCurrent(rootOwner))return;
+                refreshButtons.run();
                 PluginLog.verbose("Candidate review confirmation failed: %s", ex.toString());
                 updatePreviewBundle(current[0], candidateRatings, "review-confirmation-failed");
                 showError(tr("WayHeatmapTracer review confirmation failed: {0}", ex.getMessage()));
@@ -3470,7 +3714,10 @@ public class AlignWayAction extends JosmAction {
         dialog.addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosed(WindowEvent e) {
-                activePreviewDialog = null;
+                workflow[0].close();
+                livePreviewSession.close(rootOwner);
+                legacyReview.close();
+                if (activePreviewDialog == dialog) activePreviewDialog = null;
             }
 
             @Override
@@ -3480,8 +3727,14 @@ public class AlignWayAction extends JosmAction {
         });
         apply.addActionListener(event -> {
             try {
-                applyPreview(dataSet, selection, current[0], config, candidateRatings,
-                    reviewConfirmation[0]);
+                if(!livePreviewSession.isCurrent(rootOwner))throw new IllegalStateException("The preview owner was superseded");
+                if(workflow[0].nativeSelected()) {
+                    if(!config.allowUndownloadedAlignment()) requirePreviewWithinDownloadedArea(current[0].result().previewPolyline(), dataSet);
+                    UndoRedoHandler.getInstance().add(workflow[0].command());
+                } else {
+                    if(workflow[0].busy())throw new IllegalStateException(tr("Refinement is still running."));
+                    applyPreview(dataSet, selection, current[0], config, candidateRatings, reviewConfirmation[0],legacyReview);
+                }
                 dialog.dispose();
                 overlay.hide();
                 PluginLog.endSlideSession();
@@ -3757,15 +4010,22 @@ public class AlignWayAction extends JosmAction {
             PluginLog.verbose("Wider-search retry requested: priorHalfWidth=%.3f m, newHalfWidth=%.3f m, "
                 + "candidate=%s, coverageReason=%s.", bounds.currentMeters(), requested,
                 current.candidate().id(), current.candidate().evidence().corridorCoverage().reason());
-            AlignmentResult retried = alignmentService.align(selection, imageryLayer, mapView, retryConfig);
-            updateAggregateIntensityLayer(retried, retryConfig.effectiveHeatmap());
-            CenterlineCandidate retryInitial = initialCandidate(retried);
-            DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
-                retried, retryInitial, retryInitial, "preview-open", PluginLog.currentSlideLog(), candidateRatings));
-            overlay.hide();
-            activePreviewDialog = null;
-            dialog.dispose();
-            showCandidatePreview(dataSet, selection, retried, retryConfig, imageryLayer, mapView, candidateRatings);
+            LegacyReviewOwner retryReview = captureLegacyReview(dataSet, selection, retryConfig,
+                capture -> alignmentService.alignLegacyReviewed(selection, imageryLayer, mapView, retryConfig, capture));
+            try {
+                AlignmentResult retried = retryReview.originalResult();
+                updateAggregateIntensityLayer(retried, retryConfig.effectiveHeatmap());
+                CenterlineCandidate retryInitial = initialCandidate(retried);
+                DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
+                    retried, retryInitial, retryInitial, "preview-open", PluginLog.currentSlideLog(), candidateRatings));
+                overlay.hide();
+                activePreviewDialog = null;
+                dialog.dispose();
+                showCandidatePreview(dataSet, selection, retried, retryConfig, imageryLayer, mapView, candidateRatings, retryReview);
+            } catch (RuntimeException | Error failure) {
+                retryReview.close();
+                throw failure;
+            }
         } catch (AlignmentService.AlignmentFailureException exception) {
             AlignmentResult failed = exception.partialResult();
             CenterlineCandidate failedCandidate = failed.candidates().isEmpty()
@@ -3991,26 +4251,26 @@ public class AlignWayAction extends JosmAction {
         PluginLog.endSlideSession();
     }
 
-    private void applyPreview(
-        DataSet dataSet,
-        SelectionContext selection,
-        PreviewSelection preview,
-        ManagedHeatmapConfig config,
-        Map<String, CandidateRating> candidateRatings,
-        CandidateReviewConfirmation reviewConfirmation
-    ) {
-        CenterlineCandidate chosen = preview.candidate();
-        AlignmentResult chosenResult = preview.result();
+    /** Builds the guarded stored-geometry command without acquisition or engine work. */
+    static org.openstreetmap.josm.command.Command createPreviewCommand(AlignmentService service,
+            DataSet dataSet, SelectionContext selection, AlignmentResult chosenResult,
+            CenterlineCandidate chosen, ManagedHeatmapConfig config) {
+        return createPreviewCommand(service, dataSet, selection, chosenResult, chosen, config, null);
+    }
+
+    static org.openstreetmap.josm.command.Command createPreviewCommand(AlignmentService service,
+            DataSet dataSet, SelectionContext selection, AlignmentResult chosenResult,
+            CenterlineCandidate chosen, ManagedHeatmapConfig config, CandidateReviewConfirmation confirmation) {
         CandidateAssessment assessment = AlignmentService.assessCandidate(chosen);
         if (assessment.disposition() == CandidateAssessment.Disposition.HARD_BLOCKED) {
             throw new IllegalStateException(tr("This candidate is blocked by a structural or signal-safety finding."));
         }
         if (assessment.reviewRequired()
-            && !confirmationMatches(reviewConfirmation, chosen, preview)) {
+            && (confirmation == null || !confirmation.matches(chosen, chosenResult.previewPolyline()))) {
             throw new IllegalStateException(tr("Review and confirm this exact candidate preview before applying it."));
         }
 
-        requirePreviewSourceAndTopologySafe(alignmentService, dataSet, selection, chosenResult, chosen, config);
+        requirePreviewSourceAndTopologySafe(service, dataSet, selection, chosenResult, chosen, config);
         if (!config.allowUndownloadedAlignment()) {
             requirePreviewWithinDownloadedArea(chosenResult.previewPolyline(), dataSet);
         }
@@ -4023,11 +4283,11 @@ public class AlignWayAction extends JosmAction {
 
         if (effectiveMode == AlignmentMode.MOVE_EXISTING_NODES) {
             PluginLog.verbose("Applying move-existing-nodes alignment for candidate %s with %d node moves.", chosen.id(), chosenResult.nodeMoves().size());
-            UndoRedoHandler.getInstance().add(new MoveNodesCommand(
+            return new MoveNodesCommand(
                 dataSet,
                 chosenResult.nodeMoves(),
                 tr("Align way to heatmap")
-            ));
+            );
         } else {
             PluginLog.verbose("Applying precise-shape alignment for candidate %s with %d preview points.", chosen.id(), chosenResult.previewPolyline().size());
             Map<Long, EastNorth> proposedNodePositions = config.trackerMode() == TrackerMode.CORRIDOR_AWARE
@@ -4036,15 +4296,30 @@ public class AlignWayAction extends JosmAction {
                 throw new IllegalStateException(
                     "The corridor-aware preview has no existing-node assignment plan. Run the slide again.");
             }
-            UndoRedoHandler.getInstance().add(new ReplaceWaySegmentCommand(
+            return new ReplaceWaySegmentCommand(
                 dataSet,
                 selection.way(),
                 selection,
                 chosenResult.previewPolyline(),
                 proposedNodePositions,
                 tr("Align way to heatmap precisely")
-            ));
+            );
         }
+    }
+
+    private void applyPreview(
+        DataSet dataSet,
+        SelectionContext selection,
+        PreviewSelection preview,
+        ManagedHeatmapConfig config,
+        Map<String, CandidateRating> candidateRatings,
+        CandidateReviewConfirmation reviewConfirmation,
+        LegacyReviewOwner legacyReview
+    ) {
+        CenterlineCandidate chosen = preview.candidate();
+        AlignmentResult chosenResult = preview.result();
+        UndoRedoHandler.getInstance().add(createLegacyReviewCommand(legacyReview,alignmentService,
+            dataSet, selection, chosenResult, chosen, config, reviewConfirmation));
         DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
             chosenResult, chosen, preview.initialCandidate(),
             reviewConfirmation == null ? "applied" : "applied-after-review",
@@ -4056,7 +4331,7 @@ public class AlignWayAction extends JosmAction {
         CenterlineCandidate chosen,
         ManagedHeatmapConfig config,
         GeometryCleanupConfig cleanupConfig,
-        JComboBox<CenterlineCandidate> candidates,
+        JComponent candidates,
         JComboBox<String> ratingBox,
         JCheckBox offTheLine,
         JCheckBox jumping,
@@ -4235,7 +4510,7 @@ public class AlignWayAction extends JosmAction {
         }
     }
 
-    private void requirePreviewWithinDownloadedArea(List<EastNorth> preview, DataSet dataSet) {
+    private static void requirePreviewWithinDownloadedArea(List<EastNorth> preview, DataSet dataSet) {
         List<Bounds> bounds = dataSet.getDataSourceBounds();
         if (bounds == null || bounds.isEmpty()) {
             return;
@@ -4248,7 +4523,7 @@ public class AlignWayAction extends JosmAction {
         }
     }
 
-    private boolean isWithinDownloadedBounds(LatLon point, List<Bounds> bounds) {
+    private static boolean isWithinDownloadedBounds(LatLon point, List<Bounds> bounds) {
         for (Bounds bound : bounds) {
             if (bound.contains(point)) {
                 return true;

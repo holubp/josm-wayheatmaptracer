@@ -50,6 +50,7 @@ public final class TileFetchCoordinator implements AutoCloseable {
     private final AtomicLong joins = new AtomicLong();
     private final AtomicLong retrySuppressed = new AtomicLong();
     private volatile long activeGeneration = -1L;
+    private long generationRevision;
 
     /** Conservative encoded-body allowance for a tile including its one bounded retry. */
     public long maximumTransportBodyAllowancePerTile() {
@@ -215,6 +216,7 @@ public final class TileFetchCoordinator implements AutoCloseable {
         synchronized (publicationFence) {
             if (closed.get() || activeGeneration == next) return;
             activeGeneration = next;
+            generationRevision = Math.incrementExact(generationRevision);
             negatives.keySet().removeIf(key -> key.generation().value() != next);
             authBlocked.keySet().removeIf(value -> value != next);
             rateLimited.keySet().removeIf(value -> value != next);
@@ -229,6 +231,27 @@ public final class TileFetchCoordinator implements AutoCloseable {
      */
     public boolean isActiveGeneration(ManagedTileGeneration generation) {
         return !closed.get() && generation != null && generation.value() == activeGeneration;
+    }
+
+    /** Opaque observation of one continuous generation lifetime; no transport/cache ownership changes. */
+    public static final class GenerationStamp {
+        private final TileFetchCoordinator owner;
+        private final long generation, revision;
+        private GenerationStamp(TileFetchCoordinator owner, long generation, long revision) {
+            this.owner = owner; this.generation = generation; this.revision = revision;
+        }
+    }
+    public GenerationStamp captureGenerationStamp(ManagedTileGeneration generation) {
+        synchronized (publicationFence) {
+            if (!isActiveGeneration(generation)) throw new IllegalStateException("Managed source generation is unavailable");
+            return new GenerationStamp(this, activeGeneration, generationRevision);
+        }
+    }
+    public boolean isCurrent(GenerationStamp stamp) {
+        synchronized (publicationFence) {
+            return stamp != null && stamp.owner == this && !closed.get()
+                && stamp.generation == activeGeneration && stamp.revision == generationRevision;
+        }
     }
 
     /** Returns the factual currently active generation without starting tile work. */
@@ -350,6 +373,7 @@ public final class TileFetchCoordinator implements AutoCloseable {
         java.util.List<Flight> abandoned;
         synchronized (publicationFence) {
             if (!closed.compareAndSet(false, true)) return;
+            generationRevision = Math.incrementExact(generationRevision);
             abandoned = java.util.List.copyOf(flights.values());
             abandoned.forEach(flight -> flight.accepting = false);
         }

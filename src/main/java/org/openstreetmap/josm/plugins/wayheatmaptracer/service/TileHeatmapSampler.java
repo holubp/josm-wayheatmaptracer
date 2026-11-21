@@ -165,6 +165,40 @@ public final class TileHeatmapSampler {
             inferenceZoom, validationZoom, TILE_SIZE, mosaics, inference, validation);
     }
 
+    /** Exact original Legacy acquisition; no extra fetch, decoding or pixel copying. */
+    public Prepared prepareWithReceipt(ManagedHeatmapConfig config, List<EastNorth> sourcePolyline,
+            List<String> tileColors, boolean sketchLikeSelection) {
+        if (tileCoordinator == null) throw new IllegalStateException("Detached sampling cannot acquire source authority");
+        var generation = new ManagedTileGeneration(Math.max(0L, config.cacheBuster()));
+        tileCoordinator.updateActiveGeneration(generation);
+        var stamp = tileCoordinator.captureGenerationStamp(generation);
+        TileMosaicSet actual = prepare(config, sourcePolyline, tileColors, sketchLikeSelection);
+        return new Prepared(actual, new AcquisitionReceipt(tileCoordinator, generation, stamp, actual));
+    }
+    public record Prepared(TileMosaicSet mosaics, AcquisitionReceipt receipt) { }
+    /** Opaque proof minted only around the sampler's actual original acquisition. */
+    public static final class AcquisitionReceipt {
+        private final TileFetchCoordinator owner;
+        private final ManagedTileGeneration generation;
+        private final TileMosaicSet mosaics;
+        private final TileFetchCoordinator.GenerationStamp stamp;
+        private AcquisitionReceipt(TileFetchCoordinator owner, ManagedTileGeneration generation,
+                TileFetchCoordinator.GenerationStamp stamp, TileMosaicSet mosaics) {
+            this.owner = owner; this.generation = generation; this.stamp = stamp; this.mosaics = mosaics;
+        }
+        /** Independent command receipt: retains no imagery or dialog owner. */
+        public java.util.function.LongSupplier generationGuard() {
+            final var actualOwner=owner; final var originalStamp=stamp; final long value=generation.value();
+            return () -> {if(!actualOwner.isCurrent(originalStamp))throw new IllegalStateException("Original managed source changed");return value;};
+        }
+        public ManagedTileGeneration generation() { return generation; }
+        public TileMosaicSet mosaics() { return mosaics; }
+        public void requireCurrent(TileFetchCoordinator actual, TileMosaicSet expected) {
+            if (owner != actual || expected != mosaics || !owner.isCurrent(stamp))
+                throw new IllegalStateException("Original managed heatmap acquisition changed");
+        }
+    }
+
     /**
      * Samples cross-section profiles from a prepared source-tile mosaic.
      *

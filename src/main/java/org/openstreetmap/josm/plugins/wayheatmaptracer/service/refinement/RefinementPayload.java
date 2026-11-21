@@ -18,15 +18,31 @@ public final class RefinementPayload {
             List<Long> selectedNodeIds) {
         public SourceSelection {fullWayNodes=List.copyOf(fullWayNodes);selectedNodeIds=List.copyOf(selectedNodeIds);}
     }
+    public record NativeReview(AlignmentEditPlan plan,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality,
+            Optional<RefinementOperationReceipt> operation,List<RefinementSourcePlanner.SourceRequest> sources,
+            OptionalInt retainedParentSections) {
+        public NativeReview {sources=List.copyOf(sources);}
+        public NativeReview(AlignmentEditPlan plan,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality) {
+            this(plan,quality,Optional.empty(),List.of(),OptionalInt.empty());
+        }
+    }
+    private final Optional<NativeReview> nativeReview;
+    public Optional<NativeReview> nativeReview() { return nativeReview; }
     private final AlignmentResult result;
     private final Optional<SourceSelection> sourceSelection;
     private final List<SourceNode> sourceNodes;
     private final IdentityHashMap<Object, Long> charges;
     private RefinementPayload(AlignmentResult result, List<SourceNode> nodes, Optional<SourceSelection> selection) {
+        this(result,nodes,selection,Optional.empty());
+    }
+    private RefinementPayload(AlignmentResult result,List<SourceNode> nodes,Optional<SourceSelection> selection,Optional<NativeReview> nativeReview) {
+        this.nativeReview=nativeReview;
         sourceSelection=selection;
         this.result = result;
         sourceNodes = List.copyOf(nodes);
         charges = measure(result);
+        nativeReview.ifPresent(review->charges.putAll(RefinementRootAuthority.detachedCharges(review)));
         charges.put(this,96L);
         charges.put(selection.<Object>map(value->value).orElse(sourceNodes),sourceCharge(nodes.size(),selection.map(v->v.selectedNodeIds().size()).orElse(0)));
     }
@@ -55,6 +71,13 @@ public final class RefinementPayload {
         }
         return new RefinementPayload(copy(result), nodes,provenance);
     }
+    /** Copies only retained attempt values on the worker, using original detached source facts. */
+    public static RefinementPayload captureOriginal(AlignmentResult result, SourceSelection original, long maximumBytes) {
+        Objects.requireNonNull(result); Objects.requireNonNull(original);
+        long estimate=add(add(sum(measure(result)),96L),sourceCharge(original.fullWayNodes().size(),original.selectedNodeIds().size()));
+        if(maximumBytes<1||estimate>maximumBytes)throw new RefinementSession.Refused(RefusalReason.PAYLOAD_LIMIT);
+        return new RefinementPayload(copy(result),original.fullWayNodes(),Optional.of(original));
+    }
     /** Conservative byte estimate for obtaining an EDT reservation before a worker snapshots history. */
     public static long estimateBytes(AlignmentResult result) {
         Objects.requireNonNull(result);
@@ -72,6 +95,17 @@ public final class RefinementPayload {
         long estimate=add(add(sum(measure(result)),96L),sourceCharge(parent.sourceNodes.size(),parent.sourceSelection.map(v->v.selectedNodeIds().size()).orElse(0)));
         if(estimate>maximumBytes)throw new RefinementSession.Refused(RefusalReason.PAYLOAD_LIMIT);
         return new RefinementPayload(copy(result),parent.sourceNodes,parent.sourceSelection);
+    }
+    /** Keeps the actual full-composition plan and measured quality with the cached candidate. */
+    public static RefinementPayload captureNative(AlignmentResult result,RefinementPayload original,
+            AlignmentEditPlan plan,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality,long maximumBytes) {
+        return captureNative(result,original,new NativeReview(plan,quality),maximumBytes);
+    }
+    public static RefinementPayload captureNative(AlignmentResult result,RefinementPayload original,NativeReview review,long maximumBytes) {
+        long bytes=add(add(sum(measure(result)),sum(RefinementRootAuthority.detachedCharges(review))),
+            sourceCharge(original.sourceNodes.size(),original.sourceSelection.map(v->v.selectedNodeIds().size()).orElse(0))+96L);
+        if(maximumBytes<1||bytes>maximumBytes)throw new RefinementSession.Refused(RefusalReason.PAYLOAD_LIMIT);
+        return new RefinementPayload(copy(result),original.sourceNodes,original.sourceSelection,Optional.of(review));
     }
     public Optional<SourceSelection> sourceSelection(){return sourceSelection;}
     /** Returns a detached mutable-raster/point view; mutation cannot change retained history. */

@@ -717,6 +717,11 @@ public final class LiveBPreviewService {
             List<Node> candidates;
             if (permissions.junctionPolicy() == JunctionPolicy.REATTACH) {
                 candidates = selection.segmentNodes();
+            } else if (permissions.junctionPolicy() == JunctionPolicy.LEGACY_BOUNDED_MOVE
+                    && config.heatmap().trackerMode() == TrackerMode.LEGACY_V02) {
+                // Original Legacy opt-in owns interior shared nodes too. This branch is used only
+                // by the separate explicit-refinement capture, never a modern A/B capture.
+                candidates = selection.segmentNodes().stream().filter(node -> !selection.fixedNodes().contains(node)).toList();
             } else if (permissions.junctionPolicy() == JunctionPolicy.LEGACY_BOUNDED_MOVE) {
                 List<Node> legacyCandidates = new ArrayList<>(2);
                 Node first = selection.segmentNodes().get(0);
@@ -906,6 +911,15 @@ public final class LiveBPreviewService {
                         collisionPolygons.addAll(localRegion.polygons());
                     }
                 }
+            }
+        }
+        if (config.heatmap().trackerMode() == TrackerMode.LEGACY_V02
+                && config.heatmap().alignmentMode() == AlignmentMode.PRECISE_SHAPE) {
+            for (int index=1;index<selection.segmentNodes().size()-1;index++) {
+                Node node=selection.segmentNodes().get(index);var key=key(node);
+                if (!selection.fixedNodes().contains(node) && !node.hasKeys()
+                        && node.getReferrers().stream().allMatch(ref -> ref == selection.way())
+                        && movable.remove(key)) removable.add(key);
             }
         }
         return new CaptureAuthority(Map.copyOf(occurrences), Set.copyOf(editable),
@@ -1140,6 +1154,56 @@ public final class LiveBPreviewService {
                 throw new IllegalStateException("Junction source changed during capture");
             }
         }
+    }
+
+    /** Original Legacy edit authority plus a separate captured refinement partition; no engine execution. */
+    public record LegacyRootSeed(NetworkSnapshotCapture.Specification specification, NetworkSnapshot network,
+            NetworkSnapshotCapture.CapturedSnapshot receipt, SelectedWayIntervalPartitioner.Partition partition, LocalMetricFrame frame,
+            List<GeographicPoint> sourceGeographic, List<MetricPoint> sourceMetric,
+            double decisionRadiusMeters, double sampleStepMeters, String sourceIdentity,
+            String projectionCode, String settingsHash) {
+        public LegacyRootSeed { sourceGeographic=List.copyOf(sourceGeographic); sourceMetric=List.copyOf(sourceMetric); }
+    }
+
+    /** Explicit-refinement-only capture. Never freezes original Legacy rights through a modern partition. */
+    public Accounted<LegacyRootSeed> captureLegacyRootSeed(DataSet dataSet, SelectionContext selection,
+            AlignmentConfig config, double decisionRadiusMeters, double sampleStepMeters,
+            String sourceIdentity, AttemptMemoryLedger.Owner owner) {
+        if (!SwingUtilities.isEventDispatchThread()) throw new IllegalStateException("Legacy root facts require the event thread");
+        if (config.heatmap().trackerMode()!=TrackerMode.LEGACY_V02 || !"EPSG:3857".equals(ProjectionRegistry.getProjection().toCode())
+                || !Double.isFinite(decisionRadiusMeters) || decisionRadiusMeters<=0 || !Double.isFinite(sampleStepMeters) || sampleStepMeters<=0)
+            throw new IllegalArgumentException("Legacy refinement source frame is unsupported");
+        var memory=owner.child("original-legacy-network-capture");
+        try {
+            // Admit inventory/metadata before any detached capture allocation. No imagery or engine work here.
+            var scratch=memory.reserve(16L*1024*1024);
+            long count=(long)dataSet.getNodes().size()+dataSet.getWays().size()+dataSet.getRelations().size();
+            long references=0;for(var way:dataSet.getWays())references=Math.addExact(references,way.getNodesCount());
+            for(var relation:dataSet.getRelations())references=Math.addExact(references,relation.getMembersCount());
+            var retained=memory.reserve(Math.addExact(1048576L,Math.addExact(Math.multiplyExact(count,1024L),Math.multiplyExact(references,128L))));
+            var source=selection.segmentNodes().stream().map(LiveBPreviewService::geographic).toList();
+            var frame=ManagedModernPreviewSource.managedFrame(source,config.heatmap().inferenceZoom(),decisionRadiusMeters);
+            var metric=source.stream().map(frame::toMetric).toList();
+            var permissions=config.heatmap().adjustJunctionNodes()
+                ? new RecoveryPermissions(false,decisionRadiusMeters,decisionRadiusMeters,JunctionPolicy.LEGACY_BOUNDED_MOVE,false)
+                : RecoveryPermissions.disabled(decisionRadiusMeters);
+            var way=PrimitiveKey.existing(PrimitiveKey.Type.WAY,selection.way().getUniqueId());
+            var range=new OccurrenceRange(selection.startIndex(),selection.endIndex());
+            var decision=MetricCorridorRegion.aroundPolyline(metric,decisionRadiusMeters);
+            var authority=captureAuthority(dataSet,selection,way,range,frame,decision,permissions,config);
+            String settings=hash(config.heatmap().toRedactedJson(),config.cleanup().toRedactedJson(),permissions.canonicalIdentity());
+            var specification=new NetworkSnapshotCapture.Specification("legacy-original-"+java.util.UUID.randomUUID(),
+                "josm-dataset-"+Integer.toUnsignedString(System.identityHashCode(dataSet)),Math.max(0L,config.heatmap().cacheBuster()),
+                way,range,frame,authority.collisionEnvelope(),decision,authority.editableWayOccurrences(),
+                authority.editableExistingKeys(),authority.movableNodes(),authority.removableNodes(),authority.protectedNodes(),
+                config.heatmap().alignmentMode()==AlignmentMode.PRECISE_SHAPE,permissions).withFixedReceiverGeometry();
+            var receipt=NetworkSnapshotCapture.captureOriginalLegacyBound(dataSet,specification,selection,config);
+            var network=receipt.snapshot();
+            var partition=SelectedWayIntervalPartitioner.partition(network,specification);
+            var result=new LegacyRootSeed(specification,network,receipt,partition,frame,source,metric,decisionRadiusMeters,sampleStepMeters,
+                sourceIdentity,ProjectionRegistry.getProjection().toCode(),settings);
+            retained.adopt(result);scratch.close();return new Accounted<>(result,memory);
+        } catch(RuntimeException|Error failure) { memory.close();throw failure; }
     }
 
     /** Captures the detached managed source/network seed on the EDT before background acquisition. */

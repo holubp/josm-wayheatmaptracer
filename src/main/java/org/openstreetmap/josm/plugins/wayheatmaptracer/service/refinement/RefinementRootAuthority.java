@@ -178,6 +178,10 @@ public final class RefinementRootAuthority {
     Map<Object,Long> charges(){return charges;}
 
     /** Detached records only. No pixel getters, source buffers, mutable OSM graphs or cache ownership assumptions. */
+    static Map<Object,Long> detachedCharges(Object... values) {
+        var inventory=new Inventory();for(Object value:values)inventory.visit(value);
+        return inventory.owned;
+    }
     private static final class Inventory {
         private final IdentityHashMap<Object,Long> owned=new IdentityHashMap<>();
         private final Map<Class<?>,RecordComponent[]> records=new HashMap<>();
@@ -190,6 +194,7 @@ public final class RefinementRootAuthority {
         }
         void visit(Object value) {
             if(value==null||value instanceof Enum<?>||owned.containsKey(value))return;
+            if(value instanceof UUID){put(value,64);return;}
             if(value instanceof String text){put(value,96L+2L*text.length());return;}
             if(value instanceof Number||value instanceof Boolean||value instanceof Character){put(value,64);return;}
             if(value instanceof Optional<?> optional){put(value,64);optional.ifPresent(this::visit);return;}

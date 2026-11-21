@@ -15,6 +15,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalDouble;
 import java.util.Set;
+import java.util.function.Consumer;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyVisibleSource;
 
 import org.openstreetmap.josm.data.Bounds;
 import org.openstreetmap.josm.data.ProjectionBounds;
@@ -100,7 +104,7 @@ public final class AlignmentService {
     private static final double MIN_APPLY_SUPPORT_RATIO = 0.03;
 
     private final RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
-    private final TileHeatmapSampler tileSampler = new TileHeatmapSampler();
+    private final TileHeatmapSampler tileSampler;
     private final RidgeTracker ridgeTracker = new RidgeTracker();
     private final CorridorAwareTracker corridorAwareTracker = new CorridorAwareTracker();
     private final ParallelWayContextResolver parallelWayContextResolver = new ParallelWayContextResolver();
@@ -110,7 +114,11 @@ public final class AlignmentService {
 
     /** Creates an alignment service with the standard sampling and tracking stages. */
     public AlignmentService() {
-        // Stage services are initialized in field declarations.
+        this(new TileHeatmapSampler());
+    }
+    /** Uses an explicit plugin-owned coordinator through its existing sampler. */
+    public AlignmentService(TileHeatmapSampler tileSampler) {
+        this.tileSampler = java.util.Objects.requireNonNull(tileSampler);
     }
 
     @FunctionalInterface
@@ -332,6 +340,31 @@ public final class AlignmentService {
         MapView mapView,
         AlignmentConfig slideConfig
     ) {
+        return align(selection, imageryLayer, mapView, slideConfig, null);
+    }
+
+    /**
+     * Performs the unchanged alignment and exposes metadata from that exact original visible capture.
+     * No raster copy or scalar conversion is performed for this receipt. Managed-tile results retain
+     * their existing mosaics; no visible metadata is fabricated for them.
+     */
+    public AlignmentResult align(SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
+            AlignmentConfig slideConfig, Consumer<LegacyVisibleSource> originalVisibleCapture) {
+        return alignLegacyReviewed(selection, imageryLayer, mapView, slideConfig, originalVisibleCapture == null ? null : new LegacyCaptureObserver() {
+            @Override public void visible(LegacyVisibleSource source) {
+                if (originalVisibleCapture != null) originalVisibleCapture.accept(source);
+            }
+        });
+    }
+
+    /** Exact original acquisition metadata; no additional requests or pixel conversion. */
+    public interface LegacyCaptureObserver {
+        default void visible(LegacyVisibleSource source) { }
+        default void managed(TileHeatmapSampler.AcquisitionReceipt receipt) { }
+    }
+
+    public AlignmentResult alignLegacyReviewed(SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
+            AlignmentConfig slideConfig, LegacyCaptureObserver originalCapture) {
         ManagedHeatmapConfig config = slideConfig.effectiveHeatmap();
         GeometryCleanupConfig cleanupConfig = slideConfig.cleanup();
         GeometryCleanupConfig trackingCleanupConfig = effectiveTrackingCleanupConfig(
@@ -343,7 +376,7 @@ public final class AlignmentService {
         }
         if (useManagedTileAlignment(config)) {
             return alignFromManagedTiles(selection, imageryLayer, mapView, config,
-                cleanupConfig, trackingCleanupConfig);
+                cleanupConfig, trackingCleanupConfig, originalCapture);
         }
         if (imageryLayer == null) {
             throw new IllegalStateException("No visible heatmap imagery layer was resolved.");
@@ -365,12 +398,31 @@ public final class AlignmentService {
 
         long t0 = System.nanoTime();
         int visibleHalfWidthPx = visibleSearchHalfWidthPixels(slideConfig, sourcePolyline);
+        VisibleSourceEpoch sourceEpoch = originalCapture != null && imageryLayer instanceof ManagedHeatmapLayer managed
+                ? managed.sourceEpoch() : null;
+        VisibleSourceEpoch.Receipt originalReceipt = null;
+        if (sourceEpoch != null) {
+            try { originalReceipt = sourceEpoch.captureStable(); }
+            catch (IllegalStateException unavailable) { /* Ordinary Legacy remains available. */ }
+        }
         RenderedCapture capture = captureVisibleHeatmap(imageryLayer, mapView, sourcePolyline, visibleHalfWidthPx);
+        if (originalReceipt != null) {
+            try { sourceEpoch.requireCurrent(originalReceipt); }
+            catch (IllegalStateException changed) { originalReceipt = null; }
+        }
         BufferedImage raster = capture.raster();
         long t1 = System.nanoTime();
 
         List<String> colorModes = detectionColorModes(config);
         EffectiveSampling effectiveSampling = effectiveSampling(config, capture, sourcePolyline, visibleHalfWidthPx);
+        if (originalCapture != null) {
+            ProjectionBounds bounds = capture.bounds();
+            originalCapture.visible(new LegacyVisibleSource(bounds.minEast, bounds.minNorth,
+                    bounds.maxEast, bounds.maxNorth, capture.projectionUnitsPerViewPixel(),
+                    effectiveSampling.samplingScale().groundMetersPerViewPixel(),
+                    capture.sourceResolution().metersPerPixel(), ProjectionRegistry.getProjection().toCode(),
+                    originalReceipt));
+        }
         PluginLog.verbose(
             "Effective visible-layer sampling: configured halfWidth=%d px step=%d px; measured halfWidth=%.2f m "
                 + "step=%.2f m; projectionScale=%.3f units/view-px groundScale=%.3f m/view-px "
@@ -461,7 +513,8 @@ public final class AlignmentService {
         MapView mapView,
         ManagedHeatmapConfig config,
         GeometryCleanupConfig cleanupConfig,
-        GeometryCleanupConfig trackingCleanupConfig
+        GeometryCleanupConfig trackingCleanupConfig,
+        LegacyCaptureObserver originalCapture
     ) {
         List<EastNorth> sourcePolyline = toEastNorth(selection.segmentNodes());
         List<String> colorModes = detectionColorModes(config);
@@ -479,7 +532,14 @@ public final class AlignmentService {
         PluginLog.verbose("Redacted geometry cleanup settings: %s", cleanupConfig.toRedactedJson());
 
         long t0 = System.nanoTime();
-        TileHeatmapSampler.TileMosaicSet mosaics = tileSampler.prepare(config, sourcePolyline, sourceTileColors(config), isSketchLikeSelection(selection));
+        TileHeatmapSampler.TileMosaicSet mosaics;
+        if (originalCapture == null) {
+            mosaics = tileSampler.prepare(config, sourcePolyline, sourceTileColors(config), isSketchLikeSelection(selection));
+        } else {
+            var prepared = tileSampler.prepareWithReceipt(config, sourcePolyline, sourceTileColors(config), isSketchLikeSelection(selection));
+            mosaics = prepared.mosaics();
+            originalCapture.managed(prepared.receipt());
+        }
         TileHeatmapSampler.TileMosaic mosaic = mosaics.require(sourceColor);
         long t1 = System.nanoTime();
         EffectiveSampling effectiveSampling = fixedTileEffectiveSampling(mosaic);

@@ -198,6 +198,49 @@ public final class AlignmentJob<R> implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private final ConcurrentHashMap<Long, JobContext> contexts = new ConcurrentHashMap<>();
 
+    private final java.util.Set<WorkerSettlement> unsettled=java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    private final ThreadLocal<WorkerSettlement> runningSettlement=new ThreadLocal<>();
+    private final class WorkerSettlement {
+        final java.util.concurrent.CompletableFuture<Void> future=new java.util.concurrent.CompletableFuture<>();
+        private int publications;private boolean physical;
+        synchronized void publicationStarted(){publications++;}
+        void publicationFinished(){synchronized(this){publications--;}finish();}
+        void physicalFinished(){synchronized(this){physical=true;}finish();}
+        private void finish(){
+            synchronized(this){if(!physical||publications!=0)return;}
+            if(future.complete(null))synchronized(unsettled){unsettled.remove(this);}
+        }
+    }
+    private static final class OwnedWork extends java.util.concurrent.FutureTask<Void> {
+        private final Runnable physicalDone;
+        OwnedWork(Runnable work,Runnable physicalDone){super(work,null);this.physicalDone=physicalDone;}
+        @Override protected void done(){
+            try{if(!isCancelled())get();}
+            catch(java.util.concurrent.ExecutionException failed){if(failed.getCause() instanceof Error error)throw error;}
+            catch(InterruptedException interrupted){Thread.currentThread().interrupt();}
+            finally{physicalDone.run();}
+        }
+        // ExecutorService.shutdownNow proves these returned tasks never commenced.
+        void abandonNeverStarted(){super.cancel(false);}
+    }
+    private void submitWorker(Runnable work) {
+        var settlement=new WorkerSettlement();synchronized(unsettled){unsettled.add(settlement);}
+        var task=new OwnedWork(()->{runningSettlement.set(settlement);try{work.run();}finally{runningSettlement.remove();}},settlement::physicalFinished);
+        try{executor.execute(task);}catch(java.util.concurrent.RejectedExecutionException rejected){settlement.physicalFinished();throw rejected;}
+    }
+    private void dispatchOwned(Runnable publication) {
+        var settlement=Objects.requireNonNull(runningSettlement.get(),"Owned worker settlement");
+        settlement.publicationStarted();
+        var finished=new AtomicBoolean();
+        Runnable finish=()->{if(finished.compareAndSet(false,true))settlement.publicationFinished();};
+        try{dispatcher.dispatch(()->{try{publication.run();}finally{finish.run();}});}
+        catch(RuntimeException|Error failure){finish.run();throw failure;}
+    }
+    /** Completes only after actual worker return and every queued result/diagnostic callback. */
+    public java.util.concurrent.CompletionStage<Void> settlement() {
+        synchronized(unsettled){return java.util.concurrent.CompletableFuture.allOf(unsettled.stream().map(w->w.future).toArray(java.util.concurrent.CompletableFuture[]::new));}
+    }
+
     /** Creates one daemon worker with capacity for one pending attempt; overload fails explicitly. */
     public AlignmentJob(EventDispatcher dispatcher) {
         this(dispatcher, new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
@@ -250,7 +293,7 @@ public final class AlignmentJob<R> implements AutoCloseable {
             return new StartResult<>(abandoned, true, false);
         }
         try {
-            executor.execute(() -> runWorker(acquiring, worker, publisher));
+            submitWorker(() -> runWorker(acquiring, worker, publisher));
         } catch (java.util.concurrent.RejectedExecutionException exception) {
             transitionIfCurrent(next, State.FAILED, null, safeFailure(exception));
             throw exception;
@@ -301,7 +344,7 @@ public final class AlignmentJob<R> implements AutoCloseable {
             return new StartResult<>(abandoned, true, false);
         }
         try {
-            executor.execute(() -> runDetachedWorker(acquiring, captured.input(), worker, publisher, diagnostics));
+            submitWorker(() -> runDetachedWorker(acquiring, captured.input(), worker, publisher, diagnostics));
         } catch (java.util.concurrent.RejectedExecutionException exception) {
             transitionIfCurrent(next, State.FAILED, null, safeFailure(exception));
             throw exception;
@@ -327,7 +370,7 @@ public final class AlignmentJob<R> implements AutoCloseable {
     public void close() {
         if (closed.compareAndSet(false, true)) {
             cancel();
-            executor.shutdownNow();
+            for(Runnable abandoned:executor.shutdownNow())if(abandoned instanceof OwnedWork task)task.abandonNeverStarted();
         }
     }
 
@@ -347,7 +390,7 @@ public final class AlignmentJob<R> implements AutoCloseable {
                 throw new IllegalStateException("Alignment worker returned no preview");
             }
             context.transition(State.VALIDATING);
-            dispatcher.dispatch(() -> publishIfCurrent(started.sequence(), result, publisher));
+            dispatchOwned(() -> publishIfCurrent(started.sequence(), result, publisher));
         } catch (CancellationException exception) {
             cancelAttempt(started, "cancelled");
         } catch (InterruptedException exception) {
@@ -385,7 +428,7 @@ public final class AlignmentJob<R> implements AutoCloseable {
                 throw new IllegalStateException("Alignment worker returned no preview");
             }
             context.transition(State.VALIDATING);
-            dispatcher.dispatch(() -> publishIfCurrent(started.sequence(), result, publisher));
+            dispatchOwned(() -> publishIfCurrent(started.sequence(), result, publisher));
         } catch (CancellationException exception) {
             cancelAttempt(started, "cancelled");
             if (exception instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorFinalizationCancelledException cancelled
@@ -394,7 +437,7 @@ public final class AlignmentJob<R> implements AutoCloseable {
                 if (summary.matchesSource(started.snapshot().attemptId(), started.snapshot().settingsHash(),
                         started.snapshot().contentHash())) {
                     var event = new CancellationDiagnosticEvent(started.sequence(), started.snapshot(), summary);
-                    dispatcher.dispatch(() -> {
+                    dispatchOwned(() -> {
                         if (cancellationDiagnosticCurrent(event.sequence(), event.snapshot())) {
                             diagnostics.accept(event);
                         }
