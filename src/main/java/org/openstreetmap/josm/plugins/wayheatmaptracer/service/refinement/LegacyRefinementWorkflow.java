@@ -41,6 +41,10 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     public record Display(AlignmentResult result,CenterlineCandidate candidate,Optional<RefinementPayload.NativeReview> nativeReview) { }
     private final LegacyReviewOwner review;
     private final TileFetchCoordinator coordinator;
+    private final VisibleRefinementCapture.Port visibleCapture;
+    private org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext initialVisibleWork;
+    private RefinementPipeline.OperationBudget initialVisibleBudget;
+    private static VisibleRefinementCapture.Port unavailableVisiblePort(){return (request,work)->{throw new UnsupportedOperationException("visible-recapture-port-unavailable");};}
     private final Consumer<Display> display;
     private final Consumer<String> status;
     private final Consumer<CenterlineCandidate> rootSelection;
@@ -283,7 +287,10 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     }
     private boolean originalSourceCurrent(){
         if(originalSourceStale)return false;
-        if(seed!=null)try{seed.receipt().generationGuard().getAsLong();}
+        try{
+            if(seed!=null)seed.originalSource().requireCurrent(coordinator);
+            else {var metadata=review.originalVisibleSource();if(metadata!=null&&metadata.sourceReceipt()!=null)metadata.sourceReceipt().owner().requireCurrent(metadata.sourceReceipt());}
+        }
         catch(IllegalStateException stale){originalSourceStale=true;return false;}
         return true;
     }
@@ -307,6 +314,16 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     LegacyRefinementWorkflow(LegacyReviewOwner review,TileFetchCoordinator coordinator,
             Consumer<CenterlineCandidate> rootSelection,Consumer<Display> display,Consumer<String> status,
             Executor executor,AlignmentJob.EventDispatcher publicationDispatcher,SourcePreparationControl sourcePreparationControl) {
+        this(review,coordinator,rootSelection,display,status,executor,publicationDispatcher,sourcePreparationControl,unavailableVisiblePort());
+    }
+    public LegacyRefinementWorkflow(LegacyReviewOwner review,TileFetchCoordinator coordinator,
+            Consumer<CenterlineCandidate> rootSelection,Consumer<Display> display,Consumer<String> status,VisibleRefinementCapture.Port visibleCapture) {
+        this(review,coordinator,rootSelection,display,status,ForkJoinPool.commonPool(),SwingUtilities::invokeLater,SourcePreparationControl.production(),visibleCapture);
+    }
+    private LegacyRefinementWorkflow(LegacyReviewOwner review,TileFetchCoordinator coordinator,
+            Consumer<CenterlineCandidate> rootSelection,Consumer<Display> display,Consumer<String> status,
+            Executor executor,AlignmentJob.EventDispatcher publicationDispatcher,SourcePreparationControl sourcePreparationControl,VisibleRefinementCapture.Port visibleCapture) {
+        this.visibleCapture=Objects.requireNonNull(visibleCapture);
         this.sourcePreparationControl=Objects.requireNonNull(sourcePreparationControl);
         this.review=review;this.coordinator=coordinator;this.presentedRootChoice=review.choiceId(review.selectedCandidate());this.rootSelection=rootSelection;this.display=display;this.status=status;
         this.executor=Objects.requireNonNull(executor);this.publicationDispatcher=Objects.requireNonNull(publicationDispatcher);
@@ -392,12 +409,18 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             review.requireOriginalAttemptCurrent();confirmation=null;message="";
             if(session==null) {
                 var bootstrapMemory=rootMemory.child("lazy-original-root");
-                try {seed=new LegacyRefinementBootstrap().capture(review,coordinator,bootstrapMemory);}
+                try {
+                    if(review.managedReceipt()==null) {
+                        cancellation=new CancellationToken();initialVisibleBudget=RefinementPipeline.OperationBudget.production(TraceBudgets.defaults());
+                        initialVisibleWork=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(sourcePreparationControl.visits(),sourcePreparationControl.bytes(),initialVisibleBudget.finalDeadlineNanos(),probe(cancellation),bootstrapMemory);
+                        seed=new LegacyRefinementBootstrap().capture(review,coordinator,initialVisibleWork);
+                    } else seed=new LegacyRefinementBootstrap().capture(review,coordinator,bootstrapMemory);
+                }
                 catch(RuntimeException refused){bootstrapMemory.close();throw refused;}
-                busy=true;cancellation=new CancellationToken();present();
+                busy=true;if(initialVisibleWork==null)cancellation=new CancellationToken();present();
                 var work=workGate.beginWork(this);activeWork=work;
                 var captured=seed;var probe=probe(cancellation);
-                CompletableFuture.supplyAsync(()->new LegacyRefinementBootstrap().complete(captured,coordinator,probe),executor)
+                CompletableFuture.supplyAsync(()->captured.context()==null?new LegacyRefinementBootstrap().complete(captured,coordinator,probe):new LegacyRefinementBootstrap().complete(captured,coordinator,captured.context()),executor)
                     .whenComplete((completed,failure)->dispatchCompletion(()->{
                         boolean continueRefinement=false;
                         try {
@@ -415,7 +438,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                     }));
                 return;
             }
-            seed.receipt().requireCurrent(coordinator,seed.original().tileMosaics());
+            seed.originalSource().requireCurrent(coordinator);
             var parent=new ParentReferenceBinder().bind(session.authority(),session.current().id(),selected());
             var ticket=session.begin(engine);active=ticket;
             clearDiagnostics();
@@ -440,11 +463,13 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             try(var snapshot=operation.reserve(session.admissionInventoryReferenceBytes())){baseline=session.admissionInventories();snapshot.adopt(baseline);}
             catch(RuntimeException refused){operation.close();throw refused;}
             var publication=rootMemory.child("publication-"+ticket.sequence());
+            var publishedParent=nativeSelected()?retainedStages.get(session.current().id()).metadata:root.stage();
+            var inheritedWork=initialVisibleWork;var inheritedBudget=initialVisibleBudget;initialVisibleWork=null;initialVisibleBudget=null;
             var entry=new NativeEntry(ticket);activeEntry=entry;
-            cancellation=new CancellationToken();var probe=probe(cancellation,entry);busy=true;present();
+            if(inheritedWork==null)cancellation=new CancellationToken();var probe=probe(cancellation,entry);busy=true;present();
             var work=workGate.beginWork(this);activeWork=work;
             CompletableFuture<Computed> computation;
-            try {computation=CompletableFuture.supplyAsync(()->compute(ticket,parent,plan,credentials,operation,publication,sourcePayload,original,allowance,probe,entry,progress,baseline),executor);}
+            try {computation=CompletableFuture.supplyAsync(()->compute(ticket,parent,plan,credentials,operation,publication,sourcePayload,original,allowance,probe,entry,progress,baseline,publishedParent,inheritedWork,inheritedBudget),executor);}
             catch(RuntimeException rejected){computation=CompletableFuture.failedFuture(rejected);}
             computation.whenComplete((completed,failure)->{baseline.clear();entry.workerReturned=true;dispatchCompletion(()->{
                     var publicationOutcome=RefinementAttemptDiagnostics.Publication.FAILED;
@@ -518,15 +543,16 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     }
     private Computed compute(OperationTicket ticket,ParentTraceReference parent,RefinementSourcePlanner.Plan plan,
             CredentialSnapshot credentials,AttemptMemoryLedger.Owner operation,AttemptMemoryLedger.Owner publication,RefinementPayload sourcePayload,
-            AlignmentResult original,long allowance,CancellationProbe probe,NativeEntry entry,AttemptProgress progress,List<Map<Object,Long>> baseline) {
+            AlignmentResult original,long allowance,CancellationProbe probe,NativeEntry entry,AttemptProgress progress,List<Map<Object,Long>> baseline,Stage publishedParent,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext inheritedWork,RefinementPipeline.OperationBudget inheritedBudget) {
         progress.phase=RefinementAttemptDiagnostics.Phase.ACQUISITION;
-        var acquired=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,credentials,probe,operation);
-        var budget=RefinementPipeline.OperationBudget.production(parent.root().request().budgets());
+        var acquired=seed.originalSource().managed()?new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,credentials,probe,operation):null;
+        var budget=inheritedBudget!=null?inheritedBudget:RefinementPipeline.OperationBudget.production(parent.root().request().budgets());
         var workRef=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext[1];
         CancellationProbe hashProbe=()->{probe.checkpoint();try{sourcePreparationControl.checkpoint().accept(workRef[0].visits());}finally{probe.checkpoint();}return false;};
-        var hashWork=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(sourcePreparationControl.visits(),sourcePreparationControl.bytes(),budget.finalDeadlineNanos(),hashProbe,operation);workRef[0]=hashWork;
+        var hashWork=inheritedWork!=null?inheritedWork:new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(sourcePreparationControl.visits(),sourcePreparationControl.bytes(),budget.finalDeadlineNanos(),hashProbe,operation);workRef[0]=hashWork;
         try {
-        var sources=RefinementPipeline.managedSources(acquired.value(),coordinator,hashWork);
+        var sources=acquired!=null?RefinementPipeline.managedSources(acquired.value(),coordinator,hashWork):visibleSources(plan,publishedParent,hashWork,operation,probe);
         var evidence=new HashMap<RefinementSourcePlanner.SourceRequest,EvidenceSnapshot>();
         var wrapped=new RefinementPipeline.Sources(){
             public void requireCurrent(){probe.checkpoint();sources.requireCurrent();}
@@ -616,11 +642,11 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     }
     private CancellationProbe probe(CancellationToken token){return probe(token,null);}
     private CancellationProbe probe(CancellationToken token,NativeEntry entry){
-        var originalSource=seed==null?null:seed.receipt().generationGuard();
+        var originalSource=seed==null?null:seed.originalSource();
         return new CancellationProbe(){
         public boolean cancelled(){
             boolean stale=originalSourceStale;
-            try{if(originalSource!=null)originalSource.getAsLong();}
+            try{if(originalSource!=null)originalSource.requireCurrent(coordinator);}
             catch(IllegalStateException invalid){originalSourceStale=true;stale=true;}
             boolean cancelled=token.isCancelled();if(cancelled&&entry!=null)entry.cancellationObserved=true;
             return stale||cancelled||review.invalidated()||!ownsPublication();
@@ -643,7 +669,9 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         review.requireOriginalAttemptCurrent();
         if(!canApplyNative())throw new IllegalStateException("Refinement candidate requires review or is busy");
         var plan=currentNative().orElseThrow().plan();
-        var validator=new LiveNetworkSnapshotValidator(root.receipt(),plan,seed.receipt().generationGuard());
+        var originalSource=seed.originalSource();var originalCoordinator=coordinator;long originalGeneration=root.receipt().snapshot().sourceGeneration();
+        java.util.function.LongSupplier sourceGuard=()->{originalSource.requireCurrent(originalCoordinator);return originalGeneration;};
+        var validator=new LiveNetworkSnapshotValidator(root.receipt(),plan,sourceGuard);
         var command=new ApplyAlignmentEditPlanCommand(review.dataSet(),plan,validator,"Apply heatmap refinement");
         if(!session.terminalizeForApply())throw new IllegalStateException("The refinement session is no longer idle");
         return command;
@@ -668,9 +696,47 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         if(diagnosticsAvailability==RefinementAttemptDiagnostics.Availability.UNAVAILABLE_BUDGET)quality="Operation diagnostics unavailable: memory budget reached.\n"+quality;
         if(exportUnavailable!=ExportUnavailable.NONE)quality=exportUnavailableMessage()+".\n"+quality;
         if(busy)quality="Refinement is running…";status.accept(quality);
-        var refine=new RefinementControls.Availability(!busy&&review.managedReceipt()!=null,"Original managed acquisition is required.");
+        boolean capable=review.managedReceipt()!=null||visibleCapable();
+        var refine=new RefinementControls.Availability(!busy&&capable&&originalSourceCurrent(),"Original visible Color Mapping and factual source frame are required.");
         controls.present(new RefinementControls.ViewState(stage,choices,selected,quality,RefinementControls.Strength.MEDIUM,busy,yes,
             new RefinementControls.Availability(!busy&&undo,"First preview stage"),new RefinementControls.Availability(!busy&&redo,"No later preview stage"),refine,refine,no));
+    }
+    /** Metadata-only capability; refreshing controls never copies or hashes pixels. */
+    private boolean visibleCapable(){
+        var metadata=review.originalVisibleSource();var intensity=review.originalConfig().heatmap().intensitySamplingMode();
+        return metadata!=null&&metadata.sourceReceipt()!=null&&"EPSG:3857".equals(metadata.projectionCode())
+            &&metadata.decisionRadiusMeters().isPresent()&&metadata.sampleStepMeters().isPresent()
+            &&metadata.paintedFrame().filter(LegacyVisibleSource.PaintedFrame::commonResolution).isPresent()
+            &&review.originalResult().capturedHeatmap()!=null&&(intensity==null||intensity.usesColorMapping())&&!review.originalConfig().heatmap().aggregateAllColorSchemes();
+    }
+    private RefinementPipeline.Sources visibleSources(RefinementSourcePlanner.Plan plan,Stage publishedParent,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,AttemptMemoryLedger.Owner operation,CancellationProbe probe){
+        var metadata=((LegacyRefinementBootstrap.VisibleOriginalSource)seed.originalSource()).metadata();
+        var evidencePlan=VisibleEvidencePlan.create(plan,metadata,work);
+        var painted=metadata.paintedFrame().orElseThrow();var image=seed.original().capturedHeatmap();
+        long count=Math.multiplyExact((long)image.getWidth(),image.getHeight());
+        LiveBPreviewService.VisibleRaster raster;
+        try(var admission=work.reserveOn(operation,"visible-original-raster-copy",Math.addExact(4096L,Math.multiplyExact(count,8)))) {
+            var pixels=new int[Math.toIntExact(count)];
+            for(int y=0;y<image.getHeight();y++)for(int x=0;x<image.getWidth();x+=256){int length=Math.min(256,image.getWidth()-x);work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.COPY,length);image.getRGB(x,y,length,1,pixels,y*image.getWidth()+x,image.getWidth());}
+            for(long start=0;start<count;start+=256)work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.COPY,Math.min(256,count-start));
+            raster=new LiveBPreviewService.VisibleRaster(image.getWidth(),image.getHeight(),pixels,painted.minimumEast(),painted.minimumNorth(),painted.maximumEast(),painted.maximumNorth(),painted.projectionUnitsPerViewPixel(),painted.groundMetersPerViewPixel(),painted.nativePitchMeters(),root.authority().sourceIdentity(),painted.projectionCode(),metadata.sourceReceipt());admission.adopt(raster);
+        }
+        var mappings=new LinkedHashMap<String,RefinementAcquisition.VisibleCapture>();
+        var support=RefinementAcquisition.visibleSupport(evidencePlan,raster);
+        VisibleRefinementCapture.CaptureOperation capture=null;Accounted<VisibleRefinementCapture.Frame> frame=null;
+        try {
+            if(support==VisibleEvidencePlan.Support.NEEDS_CAPTURE){
+                capture=visibleCapture.capture(new VisibleRefinementCapture.Request(evidencePlan,publishedParent,List.of(seed.original())),work);
+                var activeCapture=capture;
+                try(var cancellation=probe.onCancellation(activeCapture::cancel)){frame=capture.result().toCompletableFuture().join();}
+            }else if(support!=VisibleEvidencePlan.Support.COVERED)throw new UnsupportedOperationException("visible-original-frame-unavailable");
+            for(var request:plan.requests())if(request.unavailableReason().isEmpty()&&!request.aggregate()&&request.palette().equals(plan.settings().selectedPalette())){
+                probe.checkpoint();var converted=frame==null?RefinementAcquisition.captureVisible(plan,evidencePlan,raster,request.mapping(),work):RefinementAcquisition.captureVisible(plan,evidencePlan,frame.value(),request.mapping(),work);
+                converted.owner().transferTo(operation);mappings.put(request.mapping(),converted.value());
+            }
+            return RefinementPipeline.visibleSources(mappings);
+        } finally {if(capture!=null)capture.settled().toCompletableFuture().join();if(frame!=null)frame.owner().close();}
     }
     private void releaseClosed(){latestDiagnostics=null;diagnosticsSlot=null;diagnosticsAvailability=RefinementAttemptDiagnostics.Availability.NONE;diagnosticMemory.closeWorkflow();legacyDiagnosticContext=null;legacyContextSupplier=null;ratingSupplier=null;pendingLegacyReview=null;pendingLegacyReviewMemory=null;retainedStages.clear();seed=null;root=null;session=null;confirmation=null;}
     @Override public void close(){if(closed)return;if(isCurrent()&&!diagnosticSealed){if(!diagnosticState.equals("apply-failed"))diagnosticsChanged("cancelled");freezeDiagnostics(true,false);}closed=true;workGate.release(this);if(cancellation!=null)cancellation.cancel();if(session!=null)session.close();if(!busy)releaseClosed();}

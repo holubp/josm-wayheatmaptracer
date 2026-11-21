@@ -3606,7 +3606,9 @@ public class AlignWayAction extends JosmAction {
                     refreshButtons.run();
                 }
                 if(!message.isEmpty()) selectedCoverageStatus.setText(message);
-            });
+            }, new org.openstreetmap.josm.plugins.wayheatmaptracer.service.VisibleRefinementCapture(
+                alignmentService.visibleRefinementRenderer(imageryLayer,mapView,legacyReview::requireLegacyAuthorityCurrent),
+                SwingUtilities::invokeLater,java.util.concurrent.ForkJoinPool.commonPool(),320,320).port());
         var originalLegacyDebug=DiagnosticsRegistry.getLastBundle();
         workflow[0].enableRuntimeDiagnostics(()->originalLegacyDebug,()->candidateRatings);
         refreshButtons.run();
