@@ -1178,7 +1178,7 @@ public final class LiveBPreviewService {
         java.util.Objects.requireNonNull(work);
         return captureLegacyRootSeed(dataSet,selection,config,decisionRadiusMeters,sampleStepMeters,sourceIdentity,work.owner(),work);
     }
-    private Accounted<LegacyRootSeed> captureLegacyRootSeed(DataSet dataSet,SelectionContext selection,
+    public Accounted<LegacyRootSeed> captureLegacyRootSeed(DataSet dataSet,SelectionContext selection,
             AlignmentConfig config,double decisionRadiusMeters,double sampleStepMeters,String sourceIdentity,AttemptMemoryLedger.Owner owner,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
         if (!SwingUtilities.isEventDispatchThread()) throw new IllegalStateException("Legacy root facts require the event thread");

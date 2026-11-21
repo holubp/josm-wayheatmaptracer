@@ -13,12 +13,44 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryW
 
 /** Lazy, admitted conversion of an actual retained original Legacy acquisition. Never runs Legacy again. */
 public final class LegacyRefinementBootstrap {
+    public sealed interface OriginalSource permits ManagedOriginalSource, VisibleOriginalSource {
+        boolean managed();
+        void requireCurrent(TileFetchCoordinator coordinator);
+    }
+    public record ManagedOriginalSource(TileHeatmapSampler.AcquisitionReceipt receipt, AlignmentResult original) implements OriginalSource {
+        public ManagedOriginalSource { Objects.requireNonNull(receipt); Objects.requireNonNull(original); }
+        public boolean managed() { return true; }
+        public void requireCurrent(TileFetchCoordinator coordinator) { receipt.requireCurrent(coordinator,original.tileMosaics()); }
+    }
+    public record VisibleOriginalSource(LegacyVisibleSource metadata, AlignmentResult original) implements OriginalSource {
+        public VisibleOriginalSource { Objects.requireNonNull(metadata); Objects.requireNonNull(original); }
+        public boolean managed() { return false; }
+        public void requireCurrent(TileFetchCoordinator coordinator) { metadata.sourceReceipt().owner().requireCurrent(metadata.sourceReceipt()); }
+    }
     public record Seed(LiveBPreviewService.LegacyRootSeed facts, AlignmentResult original,
-            AlignmentConfig config, TileHeatmapSampler.AcquisitionReceipt receipt,
+            AlignmentConfig config, OriginalSource originalSource,
             RefinementSourcePlanner.Settings settings, String selectedChoice,
-            AttemptMemoryLedger.Owner memory, long payloadLimit) { }
+            AttemptMemoryLedger.Owner memory, long payloadLimit, SmoothingSeed factualSeed,
+            GeometryWorkContext context, LegacyReviewOwner review, AttemptMemoryLedger.Owner preparation) implements AutoCloseable {
+        public Seed(LiveBPreviewService.LegacyRootSeed facts, AlignmentResult original, AlignmentConfig config,
+                TileHeatmapSampler.AcquisitionReceipt receipt, RefinementSourcePlanner.Settings settings,
+                String selectedChoice, AttemptMemoryLedger.Owner memory, long payloadLimit) {
+            this(facts,original,config,new ManagedOriginalSource(receipt,original),settings,selectedChoice,memory,payloadLimit,null,null,null,null);
+        }
+        @Override public void close() { if (preparation!=null && !preparation.isClosed()) preparation.close(); }
+        public TileHeatmapSampler.AcquisitionReceipt receipt() {
+            if (originalSource instanceof ManagedOriginalSource managed) return managed.receipt();
+            throw new IllegalStateException("The original source is visible, not managed");
+        }
+    }
     public record Root(RefinementRootAuthority authority, Stage stage,
-            org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture.CapturedSnapshot receipt) { }
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture.CapturedSnapshot receipt,
+            RetainedSmoothingSource originalConversion) {
+        public Root(RefinementRootAuthority authority, Stage stage,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture.CapturedSnapshot receipt) {
+            this(authority,stage,receipt,null);
+        }
+    }
     public sealed interface SmoothingSeed permits ManagedSeed,VisibleSeed {
         LiveBPreviewService.LegacyRootSeed facts();AlignmentResult original();AlignmentConfig config();
         String selectedChoice();RefinementSourcePlanner.SourceRequest selectedSource();AttemptMemoryLedger.Owner memory();long payloadLimit();
@@ -44,6 +76,9 @@ public final class LegacyRefinementBootstrap {
     }
     /** Reuses already-frozen original facts for a later selection; never mints a new authority. */
     public SmoothingSeed captureForSmoothing(LegacyReviewOwner review,TileFetchCoordinator coordinator,GeometryWorkContext work,SmoothingSeed previous) {
+        return captureForSmoothing(review,coordinator,work,previous,work.owner());
+    }
+    private SmoothingSeed captureForSmoothing(LegacyReviewOwner review,TileFetchCoordinator coordinator,GeometryWorkContext work,SmoothingSeed previous,AttemptMemoryLedger.Owner owner) {
         if(!SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Original smoothing facts require EDT");
         work.visit(GeometryWorkContext.Kind.BIND,1);review.requireOriginalAttemptCurrent();
         var original=review.originalResult();var config=review.originalConfig();var selected=review.selectedCandidate();
@@ -71,12 +106,12 @@ public final class LegacyRefinementBootstrap {
             if(source.aggregate())throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
             radius=visible.decisionRadiusMeters().getAsDouble();step=visible.sampleStepMeters().getAsDouble();
         }
-        var facts=previous==null?new LiveBPreviewService().captureLegacyRootSeed(review.dataSet(),original.selection(),config,radius,step,review.sourceIdentity(),work).value():previous.facts();
+        var facts=previous==null?new LiveBPreviewService().captureLegacyRootSeed(review.dataSet(),original.selection(),config,radius,step,review.sourceIdentity(),owner,work).value():previous.facts();
         if(facts.decisionRadiusMeters()!=radius||facts.sampleStepMeters()!=step)throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
         // Alias an existing original group on Back/Redo rather than registering it twice.
-        try{work.owner().retainIfAbsent(original);}catch(IllegalArgumentException absent){
+        try{owner.retainIfAbsent(original);}catch(IllegalArgumentException absent){
             long estimate=RefinementPayload.estimateBytes(original);if(estimate>maximum)throw new RefinementSession.Refused(RefusalReason.PAYLOAD_LIMIT);
-            work.reserve("original-legacy-source",estimate).adopt(original);
+            work.reserveOn(owner,"original-legacy-source",estimate).adopt(original);
         }
         review.requireOriginalAttemptCurrent();
         return receipt!=null?new ManagedSeed(facts,original,config,review.choiceId(selected),source,work.owner(),maximum,receipt):
@@ -89,6 +124,9 @@ public final class LegacyRefinementBootstrap {
     }
     /** A later binding preserves the already-published original root verbatim. */
     public SmoothingRoot completeForSmoothing(SmoothingSeed seed,TileFetchCoordinator coordinator,GeometryWorkContext work,Root existing) {
+        return completeForSmoothing(seed,coordinator,work,existing,work.owner());
+    }
+    private SmoothingRoot completeForSmoothing(SmoothingSeed seed,TileFetchCoordinator coordinator,GeometryWorkContext work,Root existing,AttemptMemoryLedger.Owner owner) {
         if(SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Original smoothing pixels require worker thread");
         if(seed.memory()!=work.owner())throw new IllegalArgumentException("Smoothing preparation must use its original operation owner");
         work.visit(GeometryWorkContext.Kind.BIND,1);
@@ -125,7 +163,7 @@ public final class LegacyRefinementBootstrap {
                     }
                     if(!images.keySet().containsAll(RefinementSourcePlanner.BASE_PALETTES)||images.size()!=5)throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
                     var originals=images.entrySet().stream().map(entry->new RasterEvidenceCapture.NamedOriginalRaster(entry.getKey(),entry.getValue(),transform)).toList();
-                    inputHash=RasterEvidenceCapture.hashOriginalArgbSet(originals,work);currentness.run();
+                    inputHash=RasterEvidenceCapture.hashOriginalArgbSet(originals,work,owner);currentness.run();
                     try(var scalarMemory=work.reserve("original-aggregate-scalar",AttemptMemoryLedger.arrayBytes(count,8))) {
                         var scalar=new double[Math.toIntExact(count)];
                         for(int y=0;y<height;y++)for(int x=0;x<width;x++) {
@@ -133,19 +171,19 @@ public final class LegacyRefinementBootstrap {
                             work.visit(GeometryWorkContext.Kind.MAP,20);scalar[y*width+x]=RenderedHeatmapSampler.aggregatedSourceIntensityAt(images,x,y);
                         }
                         admitted=capture.captureWithMetricScalarSource(facts.network().snapshotId()+"/smoothing-source/"+selected.mapping(),mosaic.image(),valid,scalar,facts.sourceGeographic(),facts.sourceMetric(),transform,grid,
-                            EvidenceResolution.nativeSource(mosaic.parameters().metersPerPixel(),grid.pitchMeters()),facts.decisionRadiusMeters(),facts.sourceIdentity(),lineage.acquisitionKind(),"native",lineage,CancellationProbe.NONE,work);
+                            EvidenceResolution.nativeSource(mosaic.parameters().metersPerPixel(),grid.pitchMeters()),facts.decisionRadiusMeters(),facts.sourceIdentity(),lineage.acquisitionKind(),"native",lineage,CancellationProbe.NONE,work,owner);
                     }
                 } else {
-                    inputHash=RasterEvidenceCapture.hashOriginalArgb(mosaic.image(),work);currentness.run();
+                    inputHash=RasterEvidenceCapture.hashOriginalArgb(mosaic.image(),work,owner);currentness.run();
                     var field=RasterEvidenceCapture.FieldSpec.direct("native",argb->ManagedModernPreviewSource.scalarIntensity(argb,selected.mapping(),mode),lineage);
                     admitted=capture.captureWithMetricSource(facts.network().snapshotId()+"/smoothing-source/"+selected.mapping(),mosaic.image(),valid,facts.sourceGeographic(),facts.sourceMetric(),transform,grid,
-                        EvidenceResolution.nativeSource(mosaic.parameters().metersPerPixel(),grid.pitchMeters()),facts.decisionRadiusMeters(),facts.sourceIdentity(),lineage.acquisitionKind(),List.of(field),CancellationProbe.NONE,work);
+                        EvidenceResolution.nativeSource(mosaic.parameters().metersPerPixel(),grid.pitchMeters()),facts.decisionRadiusMeters(),facts.sourceIdentity(),lineage.acquisitionKind(),List.of(field),CancellationProbe.NONE,work,owner);
                 }
             }
             currentness.run();
         } else {
-            var visible=(VisibleSeed)seed;var metadata=visible.metadata();var frozen=metadata.freeze(seed.original().capturedHeatmap(),facts.sourceIdentity(),work);
-            var image=frozen.copyImage(work);width=frozen.width();height=frozen.height();inputHash=frozen.inputByteHash();
+            var visible=(VisibleSeed)seed;var metadata=visible.metadata();var frozen=metadata.freeze(seed.original().capturedHeatmap(),facts.sourceIdentity(),work,owner);
+            var image=frozen.copyImage(work,owner);width=frozen.width();height=frozen.height();inputHash=frozen.inputByteHash();
             transform=SupportedInputRasterTransform.visibleWebMercator(metadata.minimumEast(),metadata.maximumNorth(),metadata.projectionUnitsPerViewPixel(),RenderedHeatmapSampler.RASTER_SCALE);
             double pitch=metadata.groundMetersPerViewPixel()/RenderedHeatmapSampler.RASTER_SCALE;
             var grid=visibleSmoothingGrid(facts,pitch,work);requireCovered(transform,grid,width,height);
@@ -159,7 +197,7 @@ public final class LegacyRefinementBootstrap {
                 var field=RasterEvidenceCapture.FieldSpec.direct("native",argb->ManagedModernPreviewSource.scalarIntensity(argb,selected.mapping(),mode),lineage);
                 admitted=capture.captureWithMetricSource(facts.network().snapshotId()+"/smoothing-source/"+selected.mapping(),image,valid,facts.sourceGeographic(),facts.sourceMetric(),transform,grid,
                     metadata.nativePitchMeters().isPresent()?EvidenceResolution.nativeSource(metadata.nativePitchMeters().getAsDouble(),pitch):EvidenceResolution.renderedOnly(pitch),
-                    facts.decisionRadiusMeters(),facts.sourceIdentity(),lineage.acquisitionKind(),List.of(field),CancellationProbe.NONE,work);
+                    facts.decisionRadiusMeters(),facts.sourceIdentity(),lineage.acquisitionKind(),List.of(field),CancellationProbe.NONE,work,owner);
             }
             currentness.run();
         }
@@ -169,13 +207,13 @@ public final class LegacyRefinementBootstrap {
         var disposition=new RetainedSmoothingSource.LegacyDisposition(originalSelected.id(),seed.original().applicableCandidates().contains(originalSelected));
         var source=RetainedSmoothingSource.fromOriginalConversion(selected,mode,"native",admitted.evidence(),transform,width,height,admitted.retainedBytes(),currentness,imageIdentity,inputHash,
             seed instanceof ManagedSeed managed?OptionalLong.of(managed.receipt().generation().value()):OptionalLong.empty(),
-            seed instanceof VisibleSeed visible?Optional.of(visible.metadata().sourceReceipt()):Optional.empty(),Optional.of(disposition),inputHashProtocol,work);
+            seed instanceof VisibleSeed visible?Optional.of(visible.metadata().sourceReceipt()):Optional.empty(),Optional.of(disposition),inputHashProtocol,work,owner);
         Root root;
         if(existing!=null) {
             if(existing.authority().network()!=facts.network()||!existing.authority().sourceIdentity().equals(facts.sourceIdentity())||!existing.authority().effectiveConfig().equals(seed.config()))
                 throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
             root=existing;
-        } else root=materializeSmoothingRoot(seed,source,work);
+        } else root=materializeSmoothingRoot(seed,source,work,owner);
         var candidate=root.stage().candidates().stream().filter(c->c.id().value().equals(seed.selectedChoice())).findFirst().orElseThrow();
         source.requireCurrent();return new SmoothingRoot(root,candidate,source);
         }
@@ -196,18 +234,18 @@ public final class LegacyRefinementBootstrap {
         return new MetricRasterGrid(facts.frame(),new MetricPoint(minX+.5*pitch,maxY-.5*pitch),1,0,0,-1,pitch,Math.max(2,(int)width),Math.max(2,(int)height));
     }
 
-    private Root materializeSmoothingRoot(SmoothingSeed seed,RetainedSmoothingSource source,GeometryWorkContext work) {
+    private Root materializeSmoothingRoot(SmoothingSeed seed,RetainedSmoothingSource source,GeometryWorkContext work,AttemptMemoryLedger.Owner owner) {
         var facts=seed.facts();var evidence=source.evidence();var config=seed.config();
         var chainage=new ProbabilisticProfileFactory().profileChainage(facts.sourceMetric(),facts.sampleStepMeters());
         var request=new TraceRequest(facts.specification().selectedWayKey(),facts.specification().selectedRange(),TrackerMode.LEGACY_V02,config.heatmap().alignmentMode(),facts.specification().permissions(),TraceBudgets.defaults(),
             evidence.snapshotId(),evidence.canonicalHash(work),facts.network().snapshotId(),facts.network().canonicalHash(),facts.settingsHash(),"original-legacy-authority-v1","original-legacy-reference-window-v1",facts.sampleStepMeters(),chainage,evidence.resolution());
-        var authority=new RefinementRootAuthority(facts.network(),request,evidence,config,facts.projectionCode(),facts.sourceIdentity(),facts.partition(),source,work);
+        var authority=new RefinementRootAuthority(facts.network(),request,evidence,config,facts.projectionCode(),facts.sourceIdentity(),facts.partition(),source,work,owner);
         var way=(DetachedWay)facts.network().primitives().get(request.selectedWayKey());var sourceNodes=new ArrayList<RefinementPayload.SourceNode>();
         for(var key:way.nodeKeys()){work.visit(GeometryWorkContext.Kind.BIND,1);var node=(DetachedNode)facts.network().primitives().get(key);sourceNodes.add(new RefinementPayload.SourceNode(key.id(),node.coordinate().latitudeDegrees(),node.coordinate().longitudeDegrees()));}
         var provenance=new RefinementPayload.SourceSelection(way.key().id(),request.selectedRange().firstIndex(),request.selectedRange().lastIndex(),sourceNodes,
             way.nodeKeys().subList(request.selectedRange().firstIndex(),request.selectedRange().lastIndex()+1).stream().map(PrimitiveKey::id).toList());
         long metadataBytes=Math.addExact(16384L,Math.multiplyExact(8192L,(long)way.nodeKeys().size()+seed.original().candidates().stream().mapToLong(c->c.finalPreviewPoints().size()).sum()));
-        try(var materialization=work.reserve("legacy-smoothing-root-choices",metadataBytes)) {
+        try(var materialization=work.reserveOn(owner,"legacy-smoothing-root-choices",metadataBytes)) {
             var choices=new ArrayList<Candidate>();int index=0;
             for(var original:seed.original().candidates()) {
                 work.visit(GeometryWorkContext.Kind.BIND,1);
@@ -223,7 +261,53 @@ public final class LegacyRefinementBootstrap {
                 if(palettes.size()!=1)throw new SmoothingUnavailable(SmoothingUnavailableReason.SOURCE_MAPPING_UNAVAILABLE);
                 choices.add(new Candidate(id,payload,arcs,facts.sourceIdentity()+"/"+id.value(),original.id(),palettes.get(0)));
             }
-            var stage=Stage.root(choices,new CandidateId(seed.selectedChoice()));materialization.adopt(stage);return new Root(authority,stage,facts.receipt());
+            var stage=Stage.root(choices,new CandidateId(seed.selectedChoice()));materialization.adopt(stage);return new Root(authority,stage,facts.receipt(),source);
+        }
+    }
+
+    /** Bind the original source and authority to the caller's existing operation context. */
+    public Seed capture(LegacyReviewOwner review, TileFetchCoordinator coordinator, GeometryWorkContext work) {
+        if (!SwingUtilities.isEventDispatchThread()) throw new IllegalStateException("Original facts require EDT");
+        work.visit(GeometryWorkContext.Kind.BIND,1);
+        review.requireLegacyAuthorityCurrent();
+        var config=review.originalConfig();
+        var mode=config.heatmap().intensitySamplingMode();
+        if (review.managedReceipt()==null && mode!=null && !mode.usesColorMapping())
+            throw new SmoothingUnavailable(SmoothingUnavailableReason.SOURCE_MAPPING_UNAVAILABLE);
+        var preparation=work.owner().child("original-refinement-preparation");
+        try {
+        var facts=captureForSmoothing(review,coordinator,work,null,preparation);
+        OriginalSource binding=facts instanceof ManagedSeed managed
+            ? new ManagedOriginalSource(managed.receipt(),facts.original())
+            : new VisibleOriginalSource(((VisibleSeed)facts).metadata(),facts.original());
+        var settings=RefinementSourcePlanner.Settings.capture(binding.managed(),config.heatmap(),AlignmentService.alternativeDetectorMappings());
+        binding.requireCurrent(coordinator); review.requireLegacyAuthorityCurrent();
+        return new Seed(facts.facts(),facts.original(),config,binding,settings,facts.selectedChoice(),work.owner(),facts.payloadLimit(),facts,work,review,preparation);
+        } catch (RuntimeException | Error failure) { preparation.close(); throw failure; }
+    }
+
+    /** Complete factual conversion under the exact same operation allowance and source authority. */
+    public Root complete(Seed seed, TileFetchCoordinator coordinator, GeometryWorkContext work) {
+        if (seed.context()!=work || seed.factualSeed()==null) throw new IllegalArgumentException("Original preparation requires the same work context");
+        try {
+            work.visit(GeometryWorkContext.Kind.BIND,1);
+            requireReviewCurrentOnEdt(seed.review()); seed.originalSource().requireCurrent(coordinator);
+            var result=completeForSmoothing(seed.factualSeed(),coordinator,work,null,seed.preparation());
+            requireReviewCurrentOnEdt(seed.review()); seed.originalSource().requireCurrent(coordinator);
+            work.visit(GeometryWorkContext.Kind.BIND,1);
+            seed.preparation().transferTo(work.owner()); seed.preparation().close();
+            return result.root();
+        } catch (RuntimeException | Error failure) { seed.preparation().close(); throw failure; }
+    }
+
+    private static void requireReviewCurrentOnEdt(LegacyReviewOwner review) {
+        if (SwingUtilities.isEventDispatchThread()) { review.requireLegacyAuthorityCurrent(); return; }
+        try { SwingUtilities.invokeAndWait(review::requireLegacyAuthorityCurrent); }
+        catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new IllegalStateException("Interrupted while validating original review",interrupted); }
+        catch (java.lang.reflect.InvocationTargetException failure) {
+            if (failure.getCause() instanceof RuntimeException runtime) throw runtime;
+            if (failure.getCause() instanceof Error error) throw error;
+            throw new IllegalStateException(failure.getCause());
         }
     }
 

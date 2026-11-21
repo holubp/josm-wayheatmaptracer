@@ -32,16 +32,22 @@ public final class RasterEvidenceCapture {
     }
     /** SHA-256 of decoded original pixels, row-major A/R/G/B bytes; not a PNG checksum. */
     public static String hashOriginalArgb(BufferedImage original,GeometryWorkContext work) {
+        return hashOriginalArgb(original,work,work.owner());
+    }
+    public static String hashOriginalArgb(BufferedImage original,GeometryWorkContext work,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner) {
         java.util.Objects.requireNonNull(original);java.util.Objects.requireNonNull(work);
-        try(var retained=work.reserve("original-argb-digest",256);var scratch=work.reserve("original-argb-hash-scratch",4096)) {
+        try(var retained=work.reserveOn(owner,"original-argb-digest",256);var scratch=work.reserve("original-argb-hash-scratch",4096)) {
             var digest=sha256Digest();var pixels=new int[256];hashPixels(original,digest,pixels,work);
             var result=java.util.HexFormat.of().formatHex(digest.digest());retained.adopt(result);return result;
         }
     }
     /** Versioned actual complete input set, never selected-image-only or output scalar bytes. */
     public static String hashOriginalArgbSet(List<NamedOriginalRaster> actualInputs,GeometryWorkContext work) {
+        return hashOriginalArgbSet(actualInputs,work,work.owner());
+    }
+    public static String hashOriginalArgbSet(List<NamedOriginalRaster> actualInputs,GeometryWorkContext work,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner) {
         java.util.Objects.requireNonNull(actualInputs);java.util.Objects.requireNonNull(work);
-        try(var retained=work.reserve("original-argb-set-digest",256);var scratch=work.reserve("original-argb-set-hash-scratch",8192)) {
+        try(var retained=work.reserveOn(owner,"original-argb-set-digest",256);var scratch=work.reserve("original-argb-set-hash-scratch",8192)) {
             if(actualInputs.size()!=5)throw new IllegalArgumentException("Complete original five-raster input required");
             var inputs=new LinkedHashMap<String,NamedOriginalRaster>();
             for(var input:actualInputs){work.visit(GeometryWorkContext.Kind.HASH,1);if(!ORIGINAL_PALETTES.contains(input.palette())||inputs.put(input.palette(),input)!=null)throw new IllegalArgumentException("Original aggregate palette set differs");}
@@ -252,13 +258,25 @@ public final class RasterEvidenceCapture {
             List<GeographicPoint> sourcePolyline,List<MetricPoint> metricSource,SupportedInputRasterTransform inputTransform,
             MetricRasterGrid outputGrid,EvidenceResolution resolution,double radius,String sourceIdentity,
             EvidenceFieldLineage.AcquisitionKind acquisitionKind,List<FieldSpec> fields,CancellationProbe cancellation,GeometryWorkContext work) {
-        return captureAdmitted(snapshotId,inputRaster,acquisitionValidity,sourcePolyline,metricSource,inputTransform,outputGrid,resolution,radius,sourceIdentity,acquisitionKind,fields,cancellation,work,null);
+        return captureWithMetricSource(snapshotId,inputRaster,acquisitionValidity,sourcePolyline,metricSource,inputTransform,outputGrid,resolution,radius,sourceIdentity,acquisitionKind,fields,cancellation,work,work.owner());
+    }
+    public AdmittedEvidence captureWithMetricSource(String snapshotId,BufferedImage inputRaster,boolean[] acquisitionValidity,
+            List<GeographicPoint> sourcePolyline,List<MetricPoint> metricSource,SupportedInputRasterTransform inputTransform,
+            MetricRasterGrid outputGrid,EvidenceResolution resolution,double radius,String sourceIdentity,
+            EvidenceFieldLineage.AcquisitionKind acquisitionKind,List<FieldSpec> fields,CancellationProbe cancellation,GeometryWorkContext work,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner) {
+        return captureAdmitted(snapshotId,inputRaster,acquisitionValidity,sourcePolyline,metricSource,inputTransform,outputGrid,resolution,radius,sourceIdentity,acquisitionKind,fields,cancellation,work,null,owner);
     }
     /** Exact precomputed scalar source; no display-image quantization or palette remapping. */
     public AdmittedEvidence captureWithMetricScalarSource(String snapshotId,BufferedImage inputRaster,boolean[] acquisitionValidity,double[] scalarSource,
             List<GeographicPoint> sourcePolyline,List<MetricPoint> metricSource,SupportedInputRasterTransform inputTransform,
             MetricRasterGrid outputGrid,EvidenceResolution resolution,double radius,String sourceIdentity,
             EvidenceFieldLineage.AcquisitionKind acquisitionKind,String fieldName,EvidenceFieldLineage lineage,CancellationProbe cancellation,GeometryWorkContext work) {
+        return captureWithMetricScalarSource(snapshotId,inputRaster,acquisitionValidity,scalarSource,sourcePolyline,metricSource,inputTransform,outputGrid,resolution,radius,sourceIdentity,acquisitionKind,fieldName,lineage,cancellation,work,work.owner());
+    }
+    public AdmittedEvidence captureWithMetricScalarSource(String snapshotId,BufferedImage inputRaster,boolean[] acquisitionValidity,double[] scalarSource,
+            List<GeographicPoint> sourcePolyline,List<MetricPoint> metricSource,SupportedInputRasterTransform inputTransform,
+            MetricRasterGrid outputGrid,EvidenceResolution resolution,double radius,String sourceIdentity,
+            EvidenceFieldLineage.AcquisitionKind acquisitionKind,String fieldName,EvidenceFieldLineage lineage,CancellationProbe cancellation,GeometryWorkContext work,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner) {
         java.util.Objects.requireNonNull(work);
         try(var header=work.reserve("precomputed-source-header",4096L)) {
         work.visit(GeometryWorkContext.Kind.MAP,1);
@@ -266,13 +284,13 @@ public final class RasterEvidenceCapture {
             throw new IllegalArgumentException("Precomputed scalar source dimensions differ");
         for(int i=0;i<scalarSource.length;i++){work.visit(GeometryWorkContext.Kind.MAP,1);if(acquisitionValidity[i]&&(!Double.isFinite(scalarSource[i])||scalarSource[i]<0||scalarSource[i]>1))throw new IllegalArgumentException("Valid scalar source must be normalized");}
         var field=FieldSpec.direct(fieldName,ignored->{throw new IllegalStateException("Precomputed scalar mapping was bypassed");},lineage);
-        return captureAdmitted(snapshotId,inputRaster,acquisitionValidity,sourcePolyline,metricSource,inputTransform,outputGrid,resolution,radius,sourceIdentity,acquisitionKind,List.of(field),cancellation,work,scalarSource);
+        return captureAdmitted(snapshotId,inputRaster,acquisitionValidity,sourcePolyline,metricSource,inputTransform,outputGrid,resolution,radius,sourceIdentity,acquisitionKind,List.of(field),cancellation,work,scalarSource,owner);
         }
     }
     private AdmittedEvidence captureAdmitted(String snapshotId,BufferedImage inputRaster,boolean[] acquisitionValidity,
             List<GeographicPoint> sourcePolyline,List<MetricPoint> metricSource,SupportedInputRasterTransform inputTransform,
             MetricRasterGrid outputGrid,EvidenceResolution resolution,double radius,String sourceIdentity,
-            EvidenceFieldLineage.AcquisitionKind acquisitionKind,List<FieldSpec> fields,CancellationProbe cancellation,GeometryWorkContext work,double[] scalarOverride) {
+            EvidenceFieldLineage.AcquisitionKind acquisitionKind,List<FieldSpec> fields,CancellationProbe cancellation,GeometryWorkContext work,double[] scalarOverride,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner) {
         java.util.Objects.requireNonNull(work);
         try(var header=work.reserve("source-capture-header",4096L)) {
         work.visit(GeometryWorkContext.Kind.MAP,1);
@@ -281,7 +299,7 @@ public final class RasterEvidenceCapture {
         long input=Math.multiplyExact((long)inputRaster.getWidth(),inputRaster.getHeight()),output=Math.multiplyExact((long)outputGrid.width(),outputGrid.height());
         long retainedBytes=Math.addExact(4096L,estimatedRetainedEvidenceBytes(outputGrid.width(),outputGrid.height(),sourcePolyline,resolution,snapshotId,sourceIdentity,inputTransform,fields));
         long scratchBytes=Math.addExact(estimatedPeakWorkingBytes(input,output,fields),Math.addExact(retainedBytes,Math.multiplyExact(2048L,sourcePolyline.size())));
-        try(var retained=work.reserve("optional-source-evidence",retainedBytes);var scratch=work.reserve("optional-source-conversion",scratchBytes)) {
+        try(var retained=work.reserveOn(owner,"optional-source-evidence",retainedBytes);var scratch=work.reserve("optional-source-conversion",scratchBytes)) {
             var result=captureInternal(snapshotId,inputRaster,acquisitionValidity,sourcePolyline,metricSource,inputTransform,outputGrid,resolution,radius,
                 sourceIdentity,acquisitionKind,fields,cancellation,scalarOverride,work);
             retained.adopt(result);return new AdmittedEvidence(result,retainedBytes);

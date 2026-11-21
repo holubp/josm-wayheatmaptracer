@@ -43,17 +43,24 @@ public final class RefinementRootAuthority {
             AlignmentConfig effectiveConfig,String projectionCode,String sourceIdentity,
             SelectedWayIntervalPartitioner.Partition capturedPartition,RetainedSmoothingSource source,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
+        this(network,request,evidence,effectiveConfig,projectionCode,sourceIdentity,capturedPartition,source,work,work==null?null:work.owner());
+    }
+    public RefinementRootAuthority(NetworkSnapshot network,TraceRequest request,EvidenceSnapshot evidence,
+            AlignmentConfig effectiveConfig,String projectionCode,String sourceIdentity,
+            SelectedWayIntervalPartitioner.Partition capturedPartition,RetainedSmoothingSource source,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner) {
         Objects.requireNonNull(network); Objects.requireNonNull(request); Objects.requireNonNull(evidence);
         Objects.requireNonNull(effectiveConfig);
         org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Reservation metadata=null;
         if(source!=null||work!=null) {
             if(source==null||work==null||source.evidence()!=evidence)throw new IllegalArgumentException("Root evidence group is foreign");
             work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.BIND,1);
-            source.requireCurrent();source.retainInto(work.owner());
+            source.requireCurrent();source.retainInto(owner);
             long objects=Math.addExact(network.primitives().size(),Math.addExact(request.selectedRange().size(),
                 Math.addExact(evidence.decisionRegion().polygons().size(),evidence.evidenceRegion().polygons().size())));
             long chars=(long)sourceIdentity.length()+projectionCode.length()+request.settingsHash().length()+request.parameterHash().length();
-            metadata=work.reserve("original-root-metadata",Math.addExact(16384L,Math.addExact(Math.multiplyExact(8192L,objects),Math.multiplyExact(16L,chars))));
+            metadata=work.reserveOn(owner,"original-root-metadata",Math.addExact(16384L,Math.addExact(Math.multiplyExact(8192L,objects),Math.multiplyExact(16L,chars))));
         }
         try {
         var inventory=new Inventory();

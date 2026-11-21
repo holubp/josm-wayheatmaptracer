@@ -56,12 +56,15 @@ public record LegacyVisibleSource(double minimumEast, double minimumNorth,
      * The old VisibleRaster constructor/accessor cloning contract remains untouched.
      */
     public SmoothingRaster freeze(BufferedImage raster,String sourceIdentity,GeometryWorkContext work) {
+        return freeze(raster,sourceIdentity,work,work.owner());
+    }
+    public SmoothingRaster freeze(BufferedImage raster,String sourceIdentity,GeometryWorkContext work,AttemptMemoryLedger.Owner owner) {
         if(sourceReceipt==null)throw new IllegalStateException("Original visible source has no unchanged-pixel receipt");
         sourceReceipt.owner().requireCurrent(sourceReceipt);
         if(raster==null||sourceIdentity==null||sourceIdentity.isBlank())throw new IllegalStateException("Original visible raster is unavailable");
         int width=raster.getWidth(),height=raster.getHeight(),count=Math.multiplyExact(width,height);
         long bytes=Math.addExact(4096L,AttemptMemoryLedger.arrayBytes(count,4));
-        try(var admitted=work.reserve("original-visible-pixels",bytes)) {
+        try(var admitted=work.reserveOn(owner,"original-visible-pixels",bytes)) {
             var pixels=new int[count];var hash=java.security.MessageDigest.getInstance("SHA-256");
             for(int y=0;y<height;y++)for(int x=0;x<width;x+=256) {
                 int length=Math.min(256,width-x);work.visit(GeometryWorkContext.Kind.COPY,length);
@@ -94,8 +97,11 @@ public record LegacyVisibleSource(double minimumEast, double minimumNorth,
             if(x<0||y<0||x>=width||y>=height)throw new IndexOutOfBoundsException();work.visit(GeometryWorkContext.Kind.COPY,1);return pixels[y*width+x];
         }
         public BufferedImage copyImage(GeometryWorkContext work) {
+            return copyImage(work,work.owner());
+        }
+        public BufferedImage copyImage(GeometryWorkContext work,AttemptMemoryLedger.Owner owner) {
             requireCurrent();long bytes=Math.addExact(4096L,AttemptMemoryLedger.arrayBytes(pixels.length,4));
-            try(var admitted=work.reserve("visible-mapping-image",bytes)) {
+            try(var admitted=work.reserveOn(owner,"visible-mapping-image",bytes)) {
                 var image=new BufferedImage(width,height,BufferedImage.TYPE_INT_ARGB);
                 for(int y=0;y<height;y++)for(int x=0;x<width;x+=256) {
                     int length=Math.min(256,width-x);work.visit(GeometryWorkContext.Kind.COPY,length);image.setRGB(x,y,length,1,pixels,y*width+x,width);

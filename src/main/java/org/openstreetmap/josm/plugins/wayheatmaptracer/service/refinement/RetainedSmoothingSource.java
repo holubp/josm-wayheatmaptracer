@@ -143,10 +143,16 @@ public final class RetainedSmoothingSource {
             Runnable currentness,String imageIdentity,String inputByteHash,OptionalLong generation,Optional<VisibleSourceEpoch.Receipt> visibleReceipt,
             Optional<LegacyDisposition> legacyDisposition,String inputHashProtocol,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
-        var owner=work.owner();
+        return fromOriginalConversion(source,intensity,field,evidence,transform,width,height,backingBytes,currentness,imageIdentity,inputByteHash,generation,visibleReceipt,legacyDisposition,inputHashProtocol,work,work.owner());
+    }
+    public static RetainedSmoothingSource fromOriginalConversion(RefinementSourcePlanner.SourceRequest source,IntensitySamplingMode intensity,
+            String field,EvidenceSnapshot evidence,SupportedInputRasterTransform transform,int width,int height,long backingBytes,
+            Runnable currentness,String imageIdentity,String inputByteHash,OptionalLong generation,Optional<VisibleSourceEpoch.Receipt> visibleReceipt,
+            Optional<LegacyDisposition> legacyDisposition,String inputHashProtocol,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,AttemptMemoryLedger.Owner owner) {
         if(owner.retainIfAbsent(evidence).bytes()!=backingBytes)throw new IllegalArgumentException("Original evidence bound differs from producer admission");
         long chars=(long)transform.parameterIdentity().length()+source.palette().length()+source.mapping().length()+field.length()+imageIdentity.length()+inputByteHash.length()+inputHashProtocol.length()+legacyDisposition.map(d->d.nativeCandidateId().length()).orElse(0);
-        try(var admitted=work.reserve("original-source-descriptor",Math.addExact(4096L,Math.multiplyExact(chars,8L)))) {
+        try(var admitted=work.reserveOn(owner,"original-source-descriptor",Math.addExact(4096L,Math.multiplyExact(chars,8L)))) {
             var result=new RetainedSmoothingSource(source,intensity,field,evidence,transform,width,height,backingBytes,currentness,imageIdentity,inputByteHash,generation,visibleReceipt,legacyDisposition,inputHashProtocol);
             admitted.adopt(result);return result;
         }
