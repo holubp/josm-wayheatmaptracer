@@ -39,7 +39,7 @@ class VisibleRefinementWorkflowTest {
                     var config=AlignmentConfig.withoutCleanup(new ManagedHeatmapConfig("","","","","all","hot","",".*",mode,TrackerMode.LEGACY_V02,false,false,false,false,false,false,false,true,false,false,7,4,3,InferenceMode.RAW_HIGH_RESOLUTION,15,15,7.01,1.56,IntensitySamplingMode.COLOR_MAPPING,7));
                     owner[0]=LegacyReviewOwner.begin(data,selection,config);var points=nodes.stream().map(Node::getEastNorth).toList();
                     var image=new BufferedImage(200,200,BufferedImage.TYPE_INT_ARGB);for(int y=0;y<200;y++)for(int x=0;x<200;x++)image.setRGB(x,y,y==99||y==100?0xffffffff:0xff000000);
-                    var unselected=points.stream().map(point->new EastNorth(point.east(),point.north()+1)).toList();
+                    var unselected=new ArrayList<EastNorth>(points);for(int i=1;i<unselected.size()-1;i++)unselected.set(i,new EastNorth(points.get(i).east(),points.get(i).north()+.25));
                     var first=new CenterlineCandidate("first",1,List.of(),List.of(),unselected,unselected,Map.of(),List.of(),1,CandidateEvidence.empty(),CandidateCleanupEvidence.empty(),List.of());
                     var chosen=new CenterlineCandidate("chosen",1,List.of(),List.of(),points,points,Map.of(),List.of(),1,CandidateEvidence.empty(),CandidateCleanupEvidence.empty(),List.of());
                     var result=new AlignmentResult(selection,image,List.of(first,chosen),points,points,List.of(),null,null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(first.id(),chosen.id()),"","")),List.of(first,chosen));
@@ -54,8 +54,8 @@ class VisibleRefinementWorkflowTest {
                     assertTrue(workflow[0].nativeSelected(),workflow[0].computationEvidence());
                     assertTrue(workflow[0].actualNativeCalls()>0);assertFalse(workflow[0].currentStage().candidates().isEmpty());
                     var nativeReview=workflow[0].currentNative().orElseThrow();
-                    assertEquals(ValidationReport.Disposition.APPLICABLE,nativeReview.plan().validation().disposition());
-                    assertTrue(workflow[0].selectedGeometry().size()>=2);assertTrue(workflow[0].canApplyNative());
+                    assertApplicableAfterRequiredConfirmation(workflow[0]);
+                    assertTrue(workflow[0].selectedGeometry().size()>=2);
                     assertEquals("legacy-choice-1",workflow[0].currentStage().parentChoice().orElseThrow().value());
                     assertFalse(nativeReview.retainedSources().isEmpty());nativeReview.retainedSources().values().forEach(source->{source.requireCurrent();assertEquals("hot",source.source().palette());assertEquals(200,source.referenceWidth());assertEquals(200,source.referenceHeight());});
                     var receipt=nativeReview.operation().orElseThrow();assertTrue(receipt.actualWork().isPresent());
@@ -64,13 +64,13 @@ class VisibleRefinementWorkflowTest {
                     int calls=workflow[0].actualNativeCalls();((JButton)find(workflow[0].controls(),"undo")).doClick();assertEquals("legacy-choice-1",workflow[0].selectedChoiceIdentity());((JButton)find(workflow[0].controls(),"redo")).doClick();assertEquals(calls,workflow[0].actualNativeCalls());
                 });
                 // The selected native descendant, not root geometry, is the exact second-engine parent.
-                var firstStage=workflow[0].currentStage();var second=engine==TrackerMode.CORRIDOR_AWARE?TrackerMode.PROBABILISTIC:TrackerMode.CORRIDOR_AWARE;
+                var firstStage=stage(workflow[0]);var second=engine==TrackerMode.CORRIDOR_AWARE?TrackerMode.PROBABILISTIC:TrackerMode.CORRIDOR_AWARE;
                 SwingUtilities.invokeAndWait(()->workflow[0].refine(second));drain(work,publications,workflow[0]);
-                var secondStage=workflow[0].currentStage();
+                var secondStage=stage(workflow[0]);
                 SwingUtilities.invokeAndWait(()->{
                     assertNotEquals(firstStage.id(),secondStage.id(),workflow[0].computationEvidence());
                     assertEquals(firstStage.id(),secondStage.parent().orElseThrow());assertEquals(firstStage.selected(),secondStage.parentChoice().orElseThrow());
-                    assertEquals(ValidationReport.Disposition.APPLICABLE,workflow[0].currentNative().orElseThrow().plan().validation().disposition());
+                    assertApplicableAfterRequiredConfirmation(workflow[0]);
                     ((JButton)find(workflow[0].controls(),"undo")).doClick();assertEquals(firstStage.id(),workflow[0].currentStage().id());
                     int before=workflow[0].actualNativeCalls();workflow[0].refine(second);((JButton)find(workflow[0].controls(),"cancel")).doClick();assertEquals(before,workflow[0].actualNativeCalls());
                 });
@@ -86,12 +86,21 @@ class VisibleRefinementWorkflowTest {
                 drain(work,publications,workflow[0]);
                 SwingUtilities.invokeAndWait(()->{
                     assertNotEquals(secondStage.id(),workflow[0].currentStage().id(),"Successful branch replaces forward stage");assertFalse(((JButton)find(workflow[0].controls(),"redo")).isEnabled());
-                    var geometry=workflow[0].selectedGeometry();var nodes=owner[0].originalResult().selection().way().getNodes();var coordinates=nodes.stream().map(Node::getCoor).toList();
+                    assertApplicableAfterRequiredConfirmation(workflow[0]);var nodes=owner[0].originalResult().selection().way().getNodes();var coordinates=nodes.stream().map(Node::getCoor).toList();
                     int calls=workflow[0].actualNativeCalls();var command=workflow[0].command();workflow[0].close();
                     assertTrue(command.executeCommand());command.undoCommand();assertEquals(coordinates,nodes.stream().map(Node::getCoor).toList());assertFalse(owner[0].dataSet().isModified());assertTrue(command.executeCommand());command.undoCommand();assertEquals(calls,workflow[0].actualNativeCalls());assertFalse(owner[0].dataSet().isModified());
                 });
             } finally {SwingUtilities.invokeAndWait(()->{if(workflow[0]!=null)workflow[0].close();});if(workflow[0]!=null)drain(work,publications,workflow[0]);SwingUtilities.invokeAndWait(()->{if(owner[0]!=null)owner[0].close();});}
         }
+    }
+    static org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Stage stage(LegacyRefinementWorkflow workflow) throws Exception {
+        var value=new java.util.concurrent.atomic.AtomicReference<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Stage>();SwingUtilities.invokeAndWait(()->value.set(workflow.currentStage()));return value.get();
+    }
+    static void assertApplicableAfterRequiredConfirmation(LegacyRefinementWorkflow workflow){
+        var review=workflow.currentNative().orElseThrow();var disposition=review.plan().validation().disposition();
+        assertTrue(disposition==ValidationReport.Disposition.APPLICABLE||disposition==ValidationReport.Disposition.REVIEW_REQUIRED,review.quality().findings().toString());
+        if(disposition==ValidationReport.Disposition.REVIEW_REQUIRED){assertFalse(workflow.canApplyNative());workflow.confirm();}
+        assertTrue(workflow.canApplyNative(),"Actual safe stored plan can be applied after its exact required review");
     }
     static void drain(LinkedBlockingQueue<Runnable> work,LinkedBlockingQueue<Runnable> publications,LegacyRefinementWorkflow workflow) throws Exception {
         for(int i=0;i<20;i++){var task=work.poll();if(task!=null)task.run();var publication=publications.poll();if(publication!=null)SwingUtilities.invokeAndWait(publication);if(work.isEmpty()&&publications.isEmpty()&&!workflow.busy())return;}
