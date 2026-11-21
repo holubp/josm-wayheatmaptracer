@@ -162,7 +162,8 @@ public final class BenchmarkHostMain {
                 TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false,
                 AlignmentSourceMode.MANAGED_TILES));
         PluginPreferences.saveGeometryCleanup(GeometryCleanupConfig.disabled());
-        config = PluginPreferences.load();
+        // This benchmark captures the declared B fixture, independently of live-start migration.
+        config = PluginPreferences.load().withTrackerMode(TrackerMode.PROBABILISTIC);
         var selection = SelectionResolver.resolve(dataSet, false);
         if (selection.startIndex() != range.firstIndex() || selection.endIndex() != range.lastIndex()) {
             throw new IllegalStateException("Original selected range differs");

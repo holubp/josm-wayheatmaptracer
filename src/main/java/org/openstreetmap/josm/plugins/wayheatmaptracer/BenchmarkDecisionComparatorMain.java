@@ -263,7 +263,8 @@ public final class BenchmarkDecisionComparatorMain {
                 throw new IllegalStateException("Original selected occurrence range differs");
             }
             var seed = new LiveBPreviewService().captureManagedSeed(dataSet, resolved,
-                    new AlignmentConfig(PluginPreferences.load(), GeometryCleanupConfig.disabled()), fixture.sourceIdentity());
+                    new AlignmentConfig(PluginPreferences.load().withTrackerMode(TrackerMode.PROBABILISTIC),
+                            GeometryCleanupConfig.disabled()), fixture.sourceIdentity());
             requireSameNetwork(candidate.network(), seed.network());
             if (!candidate.evidence().coordinateFrame().equals(seed.frame())
                     || candidate.request().engine() != seed.engine()

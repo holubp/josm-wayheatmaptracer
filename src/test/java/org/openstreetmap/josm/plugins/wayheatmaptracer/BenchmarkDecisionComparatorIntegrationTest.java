@@ -135,7 +135,10 @@ class BenchmarkDecisionComparatorIntegrationTest {
         PluginPreferences.saveGeometryCleanup(GeometryCleanupConfig.disabled());
         var seed = BenchmarkHostMain.onEventThread(() -> new LiveBPreviewService().captureManagedSeed(original,
                 SelectionResolver.resolve(original, false),
-                new AlignmentConfig(PluginPreferences.load(), GeometryCleanupConfig.disabled()), fixture.sourceIdentity()));
+                new AlignmentConfig(PluginPreferences.load().withTrackerMode(TrackerMode.PROBABILISTIC),
+                        GeometryCleanupConfig.disabled()), fixture.sourceIdentity()));
+        assertEquals(TrackerMode.PROBABILISTIC, seed.engine());
+        assertEquals(fixture.sourceIdentity(), seed.sourceIdentity());
         BufferedImage image = new BufferedImage(600, 600, BufferedImage.TYPE_INT_ARGB);
         for (int y = 0; y < 600; y++) {
             // A narrow, centered ridge has measured below-threshold brackets inside the
@@ -605,7 +608,10 @@ class BenchmarkDecisionComparatorIntegrationTest {
         PluginPreferences.saveGeometryCleanup(GeometryCleanupConfig.disabled());
         var seed = BenchmarkHostMain.onEventThread(() -> new LiveBPreviewService().captureManagedSeed(original,
                 SelectionResolver.resolve(original, false),
-                new AlignmentConfig(PluginPreferences.load(), GeometryCleanupConfig.disabled()), fixture.sourceIdentity()));
+                new AlignmentConfig(PluginPreferences.load().withTrackerMode(TrackerMode.PROBABILISTIC),
+                        GeometryCleanupConfig.disabled()), fixture.sourceIdentity()));
+        assertEquals(TrackerMode.PROBABILISTIC, seed.engine());
+        assertEquals(fixture.sourceIdentity(), seed.sourceIdentity());
         var input = new FrozenReplayInput(computed.request(), computed.evidence(), computed.captured().network(), computed.options());
         BenchmarkHostMain.requireNativeBaselineCapture(input, seed);
         var changed = recordWith(seed, "settingsHash", "unapproved-config");
@@ -715,7 +721,10 @@ class BenchmarkDecisionComparatorIntegrationTest {
         var service = new LiveBPreviewService();
         var seed = BenchmarkHostMain.onEventThread(() -> service.captureManagedSeed(dataSet,
                 SelectionResolver.resolve(dataSet, false),
-                new AlignmentConfig(PluginPreferences.load(), GeometryCleanupConfig.disabled()), fixture.sourceIdentity()));
+                new AlignmentConfig(PluginPreferences.load().withTrackerMode(TrackerMode.PROBABILISTIC),
+                        GeometryCleanupConfig.disabled()), fixture.sourceIdentity()));
+        assertEquals(TrackerMode.PROBABILISTIC, seed.engine());
+        assertEquals(fixture.sourceIdentity(), seed.sourceIdentity());
         assertFalse(seed.intervalPartition().fixedIslands().isEmpty());
         var raster = computed.captured().managedRaster();
         var captured = service.attachManagedRaster(seed, raster);

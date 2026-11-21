@@ -13,6 +13,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentSourceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoverySettings;
@@ -32,21 +34,30 @@ class V022PreviewStateTest {
     }
 
     @Test
-    void t115AllFiveEnginesAreSelectableAndMissingPreferenceDefaultsToLegacy() {
+    void t115HistoricalEngineEnumerationAndMissingLivePreference() {
         assertEquals(5, TrackerMode.selectableValues().length);
         assertEquals(TrackerMode.LEGACY_V02, PluginPreferences.loadTracingSettings().engine());
     }
 
     @Test
-    void t116ExistingEngineChoiceRoundTripsWithoutPromotion() {
+    void t116LiveEngineMigratesWhileOtherSettingsAndHistoricalIdentityRemain() {
         // Ordinary radius belongs to the existing search-width setting, not saveTracingSettings.
         Config.getPref().putDouble(PREFIX + "searchHalfWidthMeters", 7.01);
+        Config.getPref().put(PREFIX + "alignmentMode", AlignmentMode.PRECISE_SHAPE.name());
+        Config.getPref().put(PREFIX + "color", "blue");
+        RecoverySettings recovery = new RecoverySettings(RecoverySettings.CURRENT_SCHEMA_VERSION,
+            true, 7.01, 20.0, JunctionPolicy.FIXED, false);
         TracingSettings settings = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
-            TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false);
+            TrackerMode.PROBABILISTIC, recovery, false, AlignmentSourceMode.MANAGED_TILES);
 
         PluginPreferences.saveTracingSettings(settings);
 
-        assertEquals(settings, PluginPreferences.loadTracingSettings());
+        assertEquals(new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION, TrackerMode.LEGACY_V02,
+            recovery, false, AlignmentSourceMode.MANAGED_TILES), PluginPreferences.loadTracingSettings());
+        assertEquals(AlignmentMode.PRECISE_SHAPE, PluginPreferences.load().alignmentMode());
+        assertEquals("blue", PluginPreferences.load().color());
+        assertEquals(TrackerMode.PROBABILISTIC, TrackerMode.fromPreference("PROBABILISTIC"));
+        assertEquals(TrackerMode.HYBRID, TrackerMode.valueOf("HYBRID"));
     }
 
     @Test
