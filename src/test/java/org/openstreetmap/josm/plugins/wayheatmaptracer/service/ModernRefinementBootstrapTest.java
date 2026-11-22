@@ -13,6 +13,46 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoc
 import org.openstreetmap.josm.spi.preferences.*;
 
 class ModernRefinementBootstrapTest {
+    @Test void nativeIntervalRootRetainsExactSelectedOccurrences() throws Exception {
+        Config.setPreferencesInstance(new MemoryPreferences());
+        ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+        var projection=ProjectionRegistry.getProjection();
+        var data=new org.openstreetmap.josm.data.osm.DataSet();
+        var nodes=new ArrayList<org.openstreetmap.josm.data.osm.Node>();
+        for(int i=0;i<=30;i++) {
+            var node=new org.openstreetmap.josm.data.osm.Node(projection.eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth(i-15,0)));
+            data.addPrimitive(node);nodes.add(node);
+        }
+        var way=new org.openstreetmap.josm.data.osm.Way();way.setNodes(nodes);way.put("highway","path");data.addPrimitive(way);
+        for(int i:List.of(8,12,18,22))nodes.get(i).put("note","fixed boundary");
+        for(int i:List.of(10,20)) {
+            var remote=new org.openstreetmap.josm.data.osm.Node(projection.eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth(i-15,20)));
+            data.addPrimitive(remote);var branch=new org.openstreetmap.josm.data.osm.Way();branch.setNodes(List.of(nodes.get(i),remote));data.addPrimitive(branch);
+        }
+        var selection=new SelectionContext(way,1,29,nodes.subList(1,30),Set.of(nodes.get(1),nodes.get(29)));
+        var config=V022LiveBPreviewServiceTest.config(TrackerMode.PROBABILISTIC);
+        var original=V022LiveBPreviewServiceTest.raster();int size=320,start=140;var pixels=new int[size*size];var full=original.argb();
+        for(int y=0;y<size;y++)System.arraycopy(full,(y+start)*original.width()+start,pixels,y*size,size);
+        double pitch=original.projectionUnitsPerViewPixel()/6;var epoch=new VisibleSourceEpoch();
+        var raster=new LiveBPreviewService.VisibleRaster(size,size,pixels,original.minimumEast()+start*pitch,original.maximumNorth()-(start+size)*pitch,original.minimumEast()+(start+size)*pitch,original.maximumNorth()-start*pitch,original.projectionUnitsPerViewPixel(),original.groundMetersPerViewPixel(),original.nativePitchMeters(),original.sourceIdentity(),original.projectionCode(),epoch.captureStable());
+        var service=new LiveBPreviewService();var capture=new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(()->capture[0]=service.capture(data,selection,raster,config,true));
+        var computed=service.compute(capture[0],CancellationProbe.NONE);assertTrue(computed.partitioned());assertNull(computed.pipeline());
+        var assessment=new FixedIntervalEditPlanComposer().compose(computed.intervalBatch(),Map.of());assertTrue(assessment.plan().isPresent(),assessment.toString());
+        var root=new ModernReviewRoot[1];
+        SwingUtilities.invokeAndWait(()->root[0]=ModernReviewRoot.fromIntervalSelection(data,selection,config,new ModernReviewRoot.IntervalSelection(computed,Map.of(),assessment),null,()->{}));
+        try(var memory=AttemptMemoryLedger.production().rootOwner()) {
+            var work=new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,memory);
+            try(var prepared=new ModernRefinementBootstrap().complete(root[0],work)) {
+                var selected=prepared.root().stage().candidates().get(0);var payload=selected.payload();
+                assertSame(assessment.plan().orElseThrow(),payload.nativeReview().orElseThrow().plan());
+                var points=root[0].selectedCandidate().finalPreviewPoints();
+                assertEquals(nodes.get(1).getEastNorth(),points.get(0));assertEquals(nodes.get(29).getEastNorth(),points.get(points.size()-1));
+                assertEquals(points.size(),payload.nativeReview().orElseThrow().finalPointIds().orElseThrow().size());
+                assertEquals(assessment,payload.rootReviewState().orElseThrow().intervalAssessment().orElseThrow());
+            }
+        } finally {SwingUtilities.invokeAndWait(root[0]::close);}
+    }
     @Test void nativeRootSupportsHistoryWithoutLegacyInference() throws Exception {
         Config.setPreferencesInstance(new MemoryPreferences());
         ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
