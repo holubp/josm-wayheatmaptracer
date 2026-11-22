@@ -213,6 +213,9 @@ public final class PublicGuiSmokeMain {
                 if(engine==TrackerMode.CORRIDOR_AWARE||engine==TrackerMode.PROBABILISTIC) {
                     exerciseOriginalNativeApply(preview,fixture,geometry,original,originalUndo);
                     exerciseOriginalNativeStaleInspection(action,session,fixture,original,originalUndo);
+                    if(engine==TrackerMode.CORRIDOR_AWARE&&requestedMode==AlignmentMode.PRECISE_SHAPE
+                            ||engine==TrackerMode.PROBABILISTIC&&requestedMode==AlignmentMode.MOVE_EXISTING_NODES)
+                        exerciseSmoothThenRefineGui(report,action,session,fixture,original,originalUndo,engine==TrackerMode.PROBABILISTIC?StageKind.REFINE_A:StageKind.REFINE_B);
                 } else onEventThread(() -> {preview.dispatchEvent(new WindowEvent(preview, WindowEvent.WINDOW_CLOSING));return null;});
             } finally {
                 Toolkit.getDefaultToolkit().removeAWTEventListener(listener);
@@ -1633,6 +1636,62 @@ public final class PublicGuiSmokeMain {
             requireUnchanged(fixture,original,originalUndo);Format15ArchiveReader.read(exportThroughActualMenu());
             onEventThread(()->{dialog.dispatchEvent(new WindowEvent(dialog,WindowEvent.WINDOW_CLOSING));return null;});requireUnchanged(fixture,original,originalUndo);
         }finally{onEventThread(()->{Config.getPref().put("wayheatmaptracer.color",color);return null;});Toolkit.getDefaultToolkit().removeAWTEventListener(listener);}
+    }
+    private static void exerciseSmoothThenRefineGui(Path report,AlignWayAction action,PreviewSessionController<?> session,
+            PublicGuiSmokeFixture fixture,List<String> original,int originalUndo,StageKind continuation) throws Exception {
+        var opened=new CompletableFuture<JDialog>();
+        AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED
+                &&e.getWindow() instanceof JDialog dialog&&isPreview(dialog))opened.complete(dialog);};
+        Toolkit.getDefaultToolkit().addAWTEventListener(listener,AWTEvent.WINDOW_EVENT_MASK);
+        try {
+            onEventThread(()->{fixture.dataSet().setSelected(fixture.selectedWay());action.actionPerformed(null);return null;});
+            var dialog=opened.get(180,TimeUnit.SECONDS);
+            var owner=onEventThread(()->{
+                if(dialog.isModal())throw new IllegalStateException("Smoothing review must be modeless");
+                if(session.currentAttempt().result() instanceof LiveBPreviewService.Computed computed)selectRidgeRoute(dialog,computed);
+                return (LegacyRefinementWorkflow)dialog.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner");
+            });
+            var parentGeometry=onEventThread(owner::selectedGeometry);var parentChoice=onEventThread(owner::selectedChoiceIdentity);
+            int calls=owner.actualNativeCalls();var source=ManagedTileRuntime.initializedCoordinator().stats();
+            clickAndAwaitStage(report,dialog,owner,"smooth",StageKind.SMOOTH);
+            var smooth=onEventThread(()->{
+                var stage=owner.currentStage();
+                if(!stage.parentChoice().orElseThrow().value().equals(parentChoice)||owner.actualNativeCalls()!=calls
+                        ||!ManagedTileRuntime.initializedCoordinator().stats().equals(source)
+                        ||owner.currentNative().orElseThrow().smoothingReceipt().isEmpty())throw new IllegalStateException("Actual smoothing changed source/native work or parent ownership");
+                requiredNamed(dialog.getContentPane(),"undo",javax.swing.JButton.class).doClick();
+                if(!parentGeometry.equals(owner.selectedGeometry())||!parentChoice.equals(owner.selectedChoiceIdentity()))throw new IllegalStateException("Smoothing Undo lost its exact selected parent");
+                requiredNamed(dialog.getContentPane(),"redo",javax.swing.JButton.class).doClick();
+                if(owner.currentStage()!=stage)throw new IllegalStateException("Smoothing Redo recomputed its stage");return stage;
+            });
+            requireUnchanged(fixture,original,originalUndo);Format15ArchiveReader.read(exportThroughActualMenu());
+            clickAndAwaitStage(report,dialog,owner,continuation==StageKind.REFINE_A?"refineA":"refineB",continuation);
+            var plan=onEventThread(()->{
+                if(!owner.currentStage().parent().orElseThrow().equals(smooth.id())
+                        ||!owner.currentStage().parentChoice().orElseThrow().equals(smooth.selected())||owner.actualNativeCalls()<=calls)
+                    throw new IllegalStateException("Post-smoothing refinement did not use its displayed smoothed parent");
+                return owner.currentNative().orElseThrow().plan();
+            });
+            requireUnchanged(fixture,original,originalUndo);
+            var confirm=onEventThread(()->labelledButton(dialog.getContentPane(),"Confirm review").isEnabled());
+            if(confirm)confirmStepwiseNative(dialog);
+            onEventThread(()->{var apply=labelledButton(dialog.getContentPane(),"Apply");if(!apply.isEnabled())throw new IllegalStateException("Post-smoothing native child is not applicable");apply.doClick();return null;});
+            if(onEventThread(dialog::isDisplayable)||UndoRedoHandler.getInstance().getUndoCommands().size()!=originalUndo+1)throw new IllegalStateException("Smoothing chain did not publish exactly one command");
+            var expected=plan.finalPreviewWays().get(plan.selectedWayKey());
+            if(!expected.equals(fixture.selectedWay().getNodes().stream().map(node->new GeographicPoint(node.lat(),node.lon())).toList()))throw new IllegalStateException("Smoothing chain command differs from its stored plan");
+            var applied=wayState(fixture);onEventThread(()->{UndoRedoHandler.getInstance().undo();return null;});requireUnchanged(fixture,original,originalUndo);
+            onEventThread(()->{UndoRedoHandler.getInstance().redo();return null;});if(!applied.equals(wayState(fixture)))throw new IllegalStateException("Smoothing chain Redo changed stored geometry");
+            onEventThread(()->{UndoRedoHandler.getInstance().undo();return null;});requireUnchanged(fixture,original,originalUndo);
+        }finally{Toolkit.getDefaultToolkit().removeAWTEventListener(listener);}
+    }
+    private static void confirmStepwiseNative(JDialog dialog) throws Exception {
+        AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog modal&&modal.isModal()){
+            var panes=new ArrayList<javax.swing.JOptionPane>();collectOptionPanes(modal.getContentPane(),panes);
+            if(panes.size()==1&&panes.get(0).getOptionType()==javax.swing.JOptionPane.YES_NO_OPTION)SwingUtilities.invokeLater(()->panes.get(0).setValue(javax.swing.JOptionPane.YES_OPTION));
+        }};
+        Toolkit.getDefaultToolkit().addAWTEventListener(listener,AWTEvent.WINDOW_EVENT_MASK);
+        try{onEventThread(()->{labelledButton(dialog.getContentPane(),"Confirm review").doClick();return null;});}
+        finally{Toolkit.getDefaultToolkit().removeAWTEventListener(listener);}
     }
     private static JMenuItem diagnosticsExportItem(javax.swing.JMenu menu) {
         for(Component component:menu.getMenuComponents()) {
