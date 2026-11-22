@@ -149,7 +149,7 @@ public final class RefinementRootAuthority {
             var registered=nativeAcquisitions.get(source.evidence());
             if(registered==null||registered.source()!=source)throw new IllegalArgumentException("Original native source was not registered by its producer");
         }
-        source.requireCurrent();requireAcquisitionEvidence(source.evidence());
+        requireAcquisitionEvidence(source.evidence());source.requireCurrent();
     }
     public static void requireAcquisitionEvidence(EvidenceSnapshot authority,EvidenceSnapshot actual) {
         if(authority==null||actual==null||!authority.sourceIdentity().equals(actual.sourceIdentity())
