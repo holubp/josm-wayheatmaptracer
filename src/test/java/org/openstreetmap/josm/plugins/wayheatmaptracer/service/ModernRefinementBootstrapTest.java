@@ -10,6 +10,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec;
 import org.openstreetmap.josm.spi.preferences.*;
 
 class ModernRefinementBootstrapTest {
@@ -28,7 +29,9 @@ class ModernRefinementBootstrapTest {
         SwingUtilities.invokeAndWait(()->{
             review[0]=ModernReviewRoot.fromFullChoices(fixture.dataSet(),fixture.selection(),config,choices,null,()->{});
             workflow[0]=new LegacyRefinementWorkflow(review[0],null,review[0]::select,d->{},s->{},task->{throw new java.util.concurrent.RejectedExecutionException();},publications::add);
-            workflow[0].enableNativeRuntimeDiagnostics(c->{throw new AssertionError("No prepared root exists");},c->{throw new AssertionError("No prepared root exists");});
+            workflow[0].enableNativeRuntimeDiagnostics(c->{throw new AssertionError("No prepared root exists");},c->{throw new AssertionError("No prepared root exists");},
+                ()->org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Artifact.text("original-native-work.json",
+                    "{\"scope\":\"original-production-attempt\",\"requestHash\":\""+FrozenReplayCodec.canonicalRequestHash(computed.request())+"\",\"transitions\":"+computed.pipeline().inference().evaluatedTransitions()+"}"));
             workflow[0].refine(TrackerMode.CORRIDOR_AWARE);
         });
         try {
@@ -40,6 +43,10 @@ class ModernRefinementBootstrapTest {
             var json=new String(archive.artifact("latest-operation.json").orElseThrow().bytes(),java.nio.charset.StandardCharsets.UTF_8);
             assertTrue(json.contains("\"phase\":\"BOOTSTRAP\""));assertTrue(json.contains("\"cause\":\"EXECUTOR_REJECTED\""));assertTrue(json.contains("\"requestedEngine\":\"CORRIDOR_AWARE\""));
             assertTrue(json.contains("\"nativeCalls\":0"));assertTrue(json.contains("\"nativeFrozenInputs\":\"unavailable\""));
+            assertTrue(json.contains("\"originalNativeWork\":\"available\""));
+            var originalWork=new String(archive.artifact("original-native-work.json").orElseThrow().bytes(),java.nio.charset.StandardCharsets.UTF_8);
+            assertTrue(originalWork.contains(FrozenReplayCodec.canonicalRequestHash(computed.request())));
+            assertTrue(originalWork.contains("\"transitions\":"+computed.pipeline().inference().evaluatedTransitions()));
             assertTrue(archive.artifact("refinement-lineage.json").isEmpty());assertTrue(archive.artifact("original-osm-geographic.csv").isPresent());
         } finally {SwingUtilities.invokeAndWait(()->{workflow[0].close();review[0].close();});org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.setLastBundle(null);}
     }
