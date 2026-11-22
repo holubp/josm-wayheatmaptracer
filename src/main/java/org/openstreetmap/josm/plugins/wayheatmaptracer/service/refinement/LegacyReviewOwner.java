@@ -16,7 +16,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewServi
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionIntegrity;
 
 /** Lightweight Legacy-first ownership. Native authority and scalar evidence are deliberately absent. */
-public final class LegacyReviewOwner implements AutoCloseable {
+public final class LegacyReviewOwner implements RefinementReviewRoot {
     private static final Set<String> MATERIAL_SETTINGS = Set.of("keyPairId", "policy", "signature", "session",
         "activity", "color", "manualLayerName", "layerRegex", "alignmentMode", "trackerMode", "multiColorDetection",
         "aggregateAllColorSchemes", "parallelWayAwareness", "allowUndownloadedAlignment", "adjustJunctionNodes",
@@ -54,6 +54,9 @@ public final class LegacyReviewOwner implements AutoCloseable {
     private boolean closed;
 
     private LegacyReviewOwner(DataSet dataSet, SelectionContext selection, AlignmentConfig config) {
+        this(dataSet,selection,config,false);
+    }
+    private LegacyReviewOwner(DataSet dataSet,SelectionContext selection,AlignmentConfig config,boolean nativeObserver) {
         this.dataSet = Objects.requireNonNull(dataSet);
         this.selection = new SelectionContext(selection.way(), selection.startIndex(), selection.endIndex(),
                 List.copyOf(selection.segmentNodes()), Set.copyOf(selection.fixedNodes()));
@@ -61,7 +64,7 @@ public final class LegacyReviewOwner implements AutoCloseable {
         originalGeometry = selection.segmentNodes().stream().map(Node::getEastNorth).toList();
         projectionCode = ProjectionRegistry.getProjection().toCode();
         this.config = Objects.requireNonNull(config);
-        if (config.heatmap().trackerMode() != TrackerMode.LEGACY_V02) {
+        if (!nativeObserver&&config.heatmap().trackerMode() != TrackerMode.LEGACY_V02) {
             throw new IllegalArgumentException("A live refinement review requires an original Legacy attempt");
         }
         SelectionIntegrity.requirePreviewSourceUnchanged(dataSet, this.selection, originalGeometry);
@@ -78,6 +81,13 @@ public final class LegacyReviewOwner implements AutoCloseable {
         // Host lock acquisition has no promised time bound.
         return dataSet.update(() -> new LegacyReviewOwner(dataSet, selection, config));
     }
+    /** Geometry/settings observer only; native authority remains the original native capture receipt. */
+    static LegacyReviewOwner observeNative(DataSet dataSet,SelectionContext selection,AlignmentConfig config) {
+        requireEdt();return dataSet.update(()->new LegacyReviewOwner(dataSet,selection,config,true));
+    }
+    public TrackerMode engine(){return config.heatmap().trackerMode();}
+    public SelectionContext selection(){requireOpen();return selection;}
+    public void requireAuthorityCurrent(){requireLegacyAuthorityCurrent();}
     /** Retains the actual existing Legacy result and its factual slide-time metadata without copying its raster. */
     public void captured(AlignmentResult result, LegacyVisibleSource source) {
         captured(result, source, null);

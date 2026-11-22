@@ -12,6 +12,19 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.Refine
 
 /** Explicitly shared immutable payload ownership; no process-global snapshot cache. */
 public final class RefinementPayload {
+    /** Exact native root controls; interval and full-route ownership are mutually exclusive. */
+    public record RootReviewState(String sourceOwnerIdentity,OptionalInt fullRouteIndex,Map<Integer,Integer> routeChoices,
+            String compositionIdentity,Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer.Assessment> intervalAssessment) {
+        public RootReviewState {
+            Objects.requireNonNull(sourceOwnerIdentity);Objects.requireNonNull(fullRouteIndex);Objects.requireNonNull(compositionIdentity);Objects.requireNonNull(intervalAssessment);
+            routeChoices=Map.copyOf(routeChoices);
+            if(sourceOwnerIdentity.isBlank()||compositionIdentity.isBlank()||fullRouteIndex.orElse(0)<0
+                    ||fullRouteIndex.isPresent()&&(intervalAssessment.isPresent()||!routeChoices.isEmpty())
+                    ||fullRouteIndex.isEmpty()&&intervalAssessment.isEmpty())throw new IllegalArgumentException("Exact native root selection required");
+        }
+    }
+    private final Optional<RootReviewState> rootReviewState;
+    public Optional<RootReviewState> rootReviewState(){return rootReviewState;}
     public record SourceNode(long id, double latitude, double longitude) { }
     /** Original full-way source and selection, frozen before any command or mutable-handle change. */
     public record SourceSelection(long wayId,int firstOccurrence,int lastOccurrence,List<SourceNode> fullWayNodes,
@@ -51,14 +64,23 @@ public final class RefinementPayload {
         this(result,nodes,selection,Optional.empty());
     }
     private RefinementPayload(AlignmentResult result,List<SourceNode> nodes,Optional<SourceSelection> selection,Optional<NativeReview> nativeReview) {
+        this(result,nodes,selection,nativeReview,Optional.empty());
+    }
+    private RefinementPayload(AlignmentResult result,List<SourceNode> nodes,Optional<SourceSelection> selection,Optional<NativeReview> nativeReview,Optional<RootReviewState> rootState) {
+        rootReviewState=rootState;
         this.nativeReview=nativeReview;
         sourceSelection=selection;
         this.result = result;
         sourceNodes = List.copyOf(nodes);
         charges = measure(result);
         nativeReview.ifPresent(review->charges.putAll(nativeReviewCharges(review)));
+        rootState.ifPresent(state->charges.putAll(RefinementRootAuthority.detachedCharges(state)));
         charges.put(this,96L);
         charges.put(selection.<Object>map(value->value).orElse(sourceNodes),sourceCharge(nodes.size(),selection.map(v->v.selectedNodeIds().size()).orElse(0)));
+    }
+    public RefinementPayload withRootReviewState(RootReviewState state) {
+        if(nativeReview.isEmpty())throw new IllegalStateException("Native root state requires a stored native plan");
+        return new RefinementPayload(result,sourceNodes,sourceSelection,nativeReview,Optional.of(state));
     }
     /**
      * Checks a conservative, overflow-safe bound before copying any raster, point, map or node list.

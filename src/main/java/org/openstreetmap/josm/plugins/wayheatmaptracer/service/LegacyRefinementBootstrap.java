@@ -393,21 +393,26 @@ public final class LegacyRefinementBootstrap {
         } finally {scratch.close();}
     }
     private static List<ParentArc> correspondence(LiveBPreviewService.LegacyRootSeed facts,CenterlineCandidate candidate,List<MetricPoint> points) {
-        var range=facts.specification().selectedRange();var arcs=new ArrayList<ParentArc>();
-        if(facts.network().closure().mayCreateNodes()==false) {
+        return correspondence(facts.network(),facts.specification().selectedWayKey(),facts.specification().selectedRange(),facts.sourceMetric(),facts.projectionCode(),facts.frame(),candidate,points);
+    }
+    /** Original occurrence mapping shared by actual Legacy and native captures; no inference or authority acquisition. */
+    public static List<ParentArc> correspondence(NetworkSnapshot network,PrimitiveKey selectedWay,OccurrenceRange range,List<MetricPoint> sourceMetric,
+            String projectionCode,LocalMetricFrame frame,CenterlineCandidate candidate,List<MetricPoint> points) {
+        var arcs=new ArrayList<ParentArc>();
+        if(network.closure().mayCreateNodes()==false) {
             if(points.size()!=range.size())throw new IllegalStateException("Original Move candidate occurrence count differs");
             for(int i=0;i<range.size();i++)arcs.add(new ParentArc(range.firstIndex()+i,Math.min(i,points.size()-2),i==points.size()-1?1:0));
             return arcs;
         }
         // Original precise replacement retains protected/shared identities at their actual candidate-owned targets.
-        var way=(DetachedWay)facts.network().primitives().get(facts.specification().selectedWayKey());
+        var way=(DetachedWay)network.primitives().get(selectedWay);
         int previous=-1;
         for(int i=0;i<range.size();i++) {
             var key=way.nodeKeys().get(range.firstIndex()+i);
-            if(facts.network().closure().removableExistingNodeKeys().contains(key))continue;
+            if(network.closure().removableExistingNodeKeys().contains(key))continue;
             var target=candidate.proposedNodePositions().get(key.id());
-            MetricPoint expected=facts.sourceMetric().get(i);
-            if(target!=null){var ll=org.openstreetmap.josm.data.projection.Projections.getProjectionByCode(facts.projectionCode()).eastNorth2latlon(target);expected=facts.frame().toMetric(new GeographicPoint(ll.lat(),ll.lon()));}
+            MetricPoint expected=sourceMetric.get(i);
+            if(target!=null){var ll=org.openstreetmap.josm.data.projection.Projections.getProjectionByCode(projectionCode).eastNorth2latlon(target);expected=frame.toMetric(new GeographicPoint(ll.lat(),ll.lon()));}
             int best=-1;double distance=Double.POSITIVE_INFINITY;
             for(int j=previous+1;j<points.size();j++){double d=points.get(j).distanceTo(expected);if(d<distance){distance=d;best=j;}}
             if(best<0||distance>1e-6)throw new IllegalStateException("Original protected occurrence lacks exact final-preview correspondence");
@@ -417,7 +422,7 @@ public final class LegacyRefinementBootstrap {
         // chainage monotonically BETWEEN the exact protected correspondences. This does
         // not assign a surviving Node identity or grant movement/removal authority.
         double[] sourceChain=new double[range.size()],parentChain=new double[points.size()];
-        for(int i=1;i<sourceChain.length;i++)sourceChain[i]=sourceChain[i-1]+facts.sourceMetric().get(i-1).distanceTo(facts.sourceMetric().get(i));
+        for(int i=1;i<sourceChain.length;i++)sourceChain[i]=sourceChain[i-1]+sourceMetric.get(i-1).distanceTo(sourceMetric.get(i));
         for(int i=1;i<parentChain.length;i++)parentChain[i]=parentChain[i-1]+points.get(i-1).distanceTo(points.get(i));
         var complete=new ArrayList<ParentArc>();
         for(int interval=0;interval<arcs.size()-1;interval++) {
