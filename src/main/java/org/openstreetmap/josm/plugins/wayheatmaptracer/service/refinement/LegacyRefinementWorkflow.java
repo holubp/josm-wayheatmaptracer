@@ -798,6 +798,12 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                 });});
         }catch(RuntimeException refused){
             if(session==null)bootstrapFailed(refused,true);
+            else if(preparing==null){
+                computationEvidence="preparation; failed="+refused.getClass().getSimpleName()+"; phase=PREPARATION";
+                for(var frame:refused.getStackTrace())if(frame.getClassName().startsWith("org.openstreetmap.josm.plugins.wayheatmaptracer.")){computationEvidence+="; boundary="+frame.getClassName().substring(frame.getClassName().lastIndexOf('.')+1)+"."+frame.getMethodName()+":"+frame.getLineNumber();break;}
+                if(refused instanceof RefinementSession.Refused typed)computationEvidence+="; refusal="+typed.reason().name();
+                if(refused instanceof SmoothingParentBinder.Unavailable typed)computationEvidence+="; smoothing-binding="+typed.reason().name();
+            }
             if(active!=null&&!busy){
                 if(preparing!=null)publishDiagnostics(active,preparing,RefinementAttemptDiagnostics.Publication.REFUSED,
                     refused instanceof AttemptMemoryLedger.ResourceLimitException||refused instanceof RefinementSession.Refused?RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT:RefinementAttemptDiagnostics.Cause.FAILED);
