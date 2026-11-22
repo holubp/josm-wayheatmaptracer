@@ -121,10 +121,17 @@ class OrdinaryModernApplyPreparationTest {
                 (network,plan)->{
                     try{var field=LiveNetworkSnapshotValidator.class.getDeclaredField("captured");field.setAccessible(true);assertSame(original,field.get(network),"Plan preparation must retain the original pre-inference receipt");}
                     catch(ReflectiveOperationException unavailable){throw new AssertionError(unavailable);}
-                    return network;
+                    return AlignWayAction.detachedNativeApplyValidator(network,generation,message->{});
                 }));
             assertNotNull(prepared.command());assertEquals(before,state(fixture.dataSet()));assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+            edt(()->{attempt.session.close(attempt.owner);attempt.activeWindow.set(null);return null;});
+            edt(()->{AlignWayAction.addReviewedCommand(UndoRedoHandler.getInstance(),prepared.command());return null;});
+            var applied=state(fixture.dataSet());assertNotEquals(before,applied);
+            edt(()->{UndoRedoHandler.getInstance().undo();return null;});assertEquals(before,state(fixture.dataSet()));
+            edt(()->{UndoRedoHandler.getInstance().redo();return null;});assertEquals(applied,state(fixture.dataSet()));
+            edt(()->{UndoRedoHandler.getInstance().undo();return null;});assertEquals(before,state(fixture.dataSet()));
             attempt.source.updateActiveGeneration(new ManagedTileGeneration(1));assertThrows(IllegalStateException.class,generation::getAsLong);
+            assertFalse(edt(()->prepared.command().executeCommand()));assertEquals(before,state(fixture.dataSet()));assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
         }
     }
 

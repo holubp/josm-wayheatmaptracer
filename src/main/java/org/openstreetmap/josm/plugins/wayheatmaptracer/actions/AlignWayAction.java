@@ -1336,20 +1336,15 @@ public class AlignWayAction extends JosmAction {
                 AlignmentEditPlan currentPlan = state.currentPlanForApply();
                 NetworkSnapshotCapture.CapturedSnapshot receipt = computed.captured().originalReceipt().orElseGet(()->NetworkSnapshotCapture.captureBound(
                         dataSet, computed.captured().specification()));
+                var generation=detachedNativeCommandGeneration(computed.captured(),previewSourceOwner,detachedCommandContext(dataSet,null,previewSourceOwner));
                 LiveNetworkSnapshotValidator network = new LiveNetworkSnapshotValidator(receipt,
-                        currentPlan,
-                        () -> ManagedTileRuntime.initializedCoordinator().activeGenerationValue());
+                        currentPlan,generation);
                 ManagedSourceReceipt managedReceipt = ManagedSourceReceipt.forCurrentPlugin(
                         previewSourceOwner, computed.captured(), slideConfig.heatmap(),
                         state.batch().options().sourceTier());
+                managedReceipt.requireCurrent();
                 ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(dataSet,
-                        currentPlan, new ManagedSourceLockedApplyValidator(network, livePreviewService,
-                            computed.captured(), () -> {
-                                managedReceipt.requireCurrent();
-                                requireLiveBSourceOwnerCurrent(dataSet, imageryLayer,
-                                        slideConfig, persistedSlideConfig, tracingAtCapture,
-                                        computed.captured(), previewSourceOwner);
-                            }, redoFailureReporter(this::showError)),
+                        currentPlan,detachedNativeApplyValidator(network,generation,detachedSourceFailureReporter()),
                         tr("Apply modern interval alignment"));
                 applyWithPreparedIntervalDiagnostics(
                         () -> createIntervalDiagnostics(computed, state,
@@ -2070,6 +2065,11 @@ public class AlignWayAction extends JosmAction {
                 LiveBPreviewService.PreviewChoice choice = previewChoices.get(index);
                 LiveBPreviewService.Computed run = choice.owner();
                 int routeIndex = choice.localRouteIndex();
+                boolean detached=run.captured().originalReceipt().isPresent()&&(run.captured().managedRaster()!=null||run.captured().raster().sourceReceipt()!=null);
+                long capturedGeneration=run.captured().network().sourceGeneration();
+                LongSupplier generation=detached?detachedNativeCommandGeneration(run.captured(),previewSourceOwner,
+                    detachedCommandContext(dataSet,run.captured().managedRaster()==null?imageryLayer:null,run.captured().managedRaster()==null?null:previewSourceOwner)):
+                    run.captured().managedRaster()!=null?()->ManagedTileRuntime.initializedCoordinator().activeGenerationValue():()->capturedGeneration;
                 PreparedModernApply prepared = prepareModernApply(dataSet, run, routeIndex,
                         choice.reviewIdentity(), review[0], () -> {
                             if (!livePreviewSession.isCurrentWindow(previewOwner, dialog, activePreviewDialog,
@@ -2079,13 +2079,13 @@ public class AlignWayAction extends JosmAction {
                             requireSupportedApplySource(computed.captured(), imageryLayer);
                             requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
                                     persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
-                        }, computed.captured().managedRaster() != null
-                            ? () -> ManagedTileRuntime.initializedCoordinator().activeGenerationValue()
-                            : () -> computed.captured().network().sourceGeneration(),
+                        },generation,
                         (network, currentPlan) -> {
                             ManagedSourceReceipt managedReceipt = computed.captured().managedRaster() == null ? null
                                 : ManagedSourceReceipt.forCurrentPlugin(previewSourceOwner,
                                     computed.captured(), slideConfig.heatmap(), run.options().sourceTier());
+                            if(managedReceipt!=null)managedReceipt.requireCurrent();
+                            if(detached)return detachedNativeApplyValidator(network,generation,detachedSourceFailureReporter());
                             return computed.captured().managedRaster() != null
                             ? new ManagedSourceLockedApplyValidator(network, livePreviewService,
                                 computed.captured(), () -> {
@@ -2775,6 +2775,42 @@ public class AlignWayAction extends JosmAction {
             livePreviewService.requireCurrent(dataSet, captured, currentRaster);
         }
     }
+
+    private interface DetachedNativeGeneration extends LongSupplier {
+        default void withSource(Runnable transaction){getAsLong();transaction.run();}
+    }
+    private record ManagedCommandGeneration(TileFetchCoordinator coordinator,ManagedTileGeneration generation,long sourceGeneration,Runnable context) implements DetachedNativeGeneration {
+        public long getAsLong(){context.run();if(!coordinator.isActiveGeneration(generation))throw new IllegalStateException("The original managed command source changed");return sourceGeneration;}
+    }
+    private record VisibleCommandGeneration(VisibleSourceEpoch.Receipt receipt,long sourceGeneration,Runnable context) implements DetachedNativeGeneration {
+        public long getAsLong(){context.run();receipt.owner().requireCurrent(receipt);return sourceGeneration;}
+        public void withSource(Runnable transaction){synchronized(receipt.owner()){getAsLong();transaction.run();}}
+    }
+    /** Creates a command-only generation witness without retaining the capture or its images. */
+    static LongSupplier detachedNativeCommandGeneration(LiveBPreviewService.Captured captured,TileFetchCoordinator coordinator,Runnable context) {
+        Objects.requireNonNull(context);long value=captured.network().sourceGeneration();
+        DetachedNativeGeneration guard;
+        if(captured.managedRaster()!=null) {
+            if(coordinator==null||captured.sourceOwner()!=null&&captured.sourceOwner()!=coordinator)throw new IllegalStateException("Original managed command owner differs");
+            guard=new ManagedCommandGeneration(coordinator,captured.managedRaster().generation(),value,context);
+        } else guard=new VisibleCommandGeneration(Objects.requireNonNull(captured.raster().sourceReceipt(),"Original visible command receipt unavailable"),value,context);
+        guard.getAsLong();return guard;
+    }
+    private record DetachedNativeApplyValidator(LiveNetworkSnapshotValidator network,DetachedNativeGeneration source,Consumer<String> reporter) implements LockedApplyValidator {
+        public String datasetIdentity(){return network.datasetIdentity();}
+        public boolean returnsNormallyAfterCompletedTransaction(){return true;}
+        public Runnable prepareExecution(DataSet data,boolean redo){source.getAsLong();return ()->source.getAsLong();}
+        public void executeWithPreparedSource(Runnable transaction){source.withSource(transaction);}
+        public void validateLocked(DataSet data,AlignmentEditPlan plan,boolean requireSource){network.validateLocked(data,plan,true);}
+        public void validateUndoLocked(DataSet data,AlignmentEditPlan plan){network.validateUndoLocked(data,plan);}
+        public void reportRejectedRedo(RuntimeException failure){reporter.accept("The captured source or network changed; recompute alignment before applying.");}
+        public void reportRejectedUndo(RuntimeException failure){reporter.accept("Alignment Undo was refused because the OSM context changed.");}
+    }
+    static LockedApplyValidator detachedNativeApplyValidator(LiveNetworkSnapshotValidator network,LongSupplier generation,Consumer<String> reporter) {
+        if(!(generation instanceof DetachedNativeGeneration source))throw new IllegalArgumentException("Detached native source witness required");
+        return new DetachedNativeApplyValidator(network,source,Objects.requireNonNull(reporter));
+    }
+    private static Consumer<String> detachedSourceFailureReporter(){return message->JOptionPane.showMessageDialog(MainApplication.getMainFrame(),message,tr("WayHeatmapTracer"),JOptionPane.WARNING_MESSAGE);}
 
     /** Small detached command guard: no capture, candidate, history, dialog or credential strings. */
     private record DetachedCommandContext(DataSet data,ImageryLayer layer,TileFetchCoordinator coordinator,
