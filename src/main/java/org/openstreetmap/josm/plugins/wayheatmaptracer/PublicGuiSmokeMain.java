@@ -123,9 +123,9 @@ public final class PublicGuiSmokeMain {
                 } else addOfflineManagedLayer(PluginPreferences.load(), MainApplication.getLayerManager()::addLayer);
                 MainApplication.getLayerManager().setActiveLayer(layer);
                 fixture.dataSet().setSelected(fixture.selectedWay());
-                if(visibleGui)verifyNativeVisibleCaptureContract(fixture);
                 return loaded;
             });
+            if(visibleGui)onEventThread(()->{MainApplication.getMainFrame().validate();verifyNativeVisibleCaptureContract(fixture);return null;});
             if (engine != TrackerMode.LEGACY_V02) onEventThread(() -> {
                 for (Window window : Window.getWindows()) if (window.isShowing()) requireNoObsoleteMethodUi(window);
                 return null;
@@ -919,6 +919,7 @@ public final class PublicGuiSmokeMain {
     /** Independent public pixels prove the actual native viewport, metadata and two-chunk assembly. */
     private static void verifyNativeVisibleCaptureContract(PublicGuiSmokeFixture fixture) throws Exception {
         var view=MainApplication.getMap().mapView;var layer=org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.HeatmapLayerResolver.resolve();
+        System.err.println("GUI_SMOKE_VISIBLE_BEFORE showing="+view.isShowing()+" component="+view.getWidth()+"x"+view.getHeight()+" state="+view.getState().getViewWidth()+"x"+view.getState().getViewHeight()+" scale="+view.getScale());
         view.prepareToDraw();
         var size=view.getSize();var center=view.getCenter();double scale=view.getScale();int zoom=((org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer)layer).getZoomLevel();
         var nodes=fixture.selectedWay().getNodes();var selection=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext(fixture.selectedWay(),0,nodes.size()-1,nodes,java.util.Set.of(nodes.get(0),nodes.get(nodes.size()-1)));
