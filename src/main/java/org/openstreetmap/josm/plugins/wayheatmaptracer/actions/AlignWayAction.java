@@ -3039,6 +3039,10 @@ public class AlignWayAction extends JosmAction {
     /** Values are fixed local codes/enums and numeric work counters, never exception or source text. */
     private static Format15Bundle withFailureSummary(Format15Bundle base, String phase, String code,
             LiveBPreviewService.Computed computed) {
+        return withFailureSummary(base,phase,code,computed,null,null);
+    }
+    private static Format15Bundle withFailureSummary(Format15Bundle base,String phase,String code,
+            LiveBPreviewService.Computed computed,RuntimeException failure,String boundary) {
         String scope = computed == null ? "ATTEMPT" : computed.partitioned()
                 ? "INTERVAL_SOURCE_BATCH" : "SOURCE_RUN";
         String work;
@@ -3067,8 +3071,17 @@ public class AlignWayAction extends JosmAction {
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
         artifacts.put("failure-summary.json", Format15Artifact.text("failure-summary.json",
                 "{\"phase\":\"" + phase + "\",\"failureCode\":\"" + code
-                + "\",\"scope\":\"" + scope + "\",\"applyPlanIncluded\":false" + work + "}\n"));
+                + "\",\"scope\":\"" + scope + "\",\"applyPlanIncluded\":false" + work
+                +(failure==null?"":",\"exceptionKind\":\""+diagnosticExceptionKind(failure)+"\",\"boundary\":\""+boundary+"\"")+"}\n"));
         return new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(), base.parameterHash(), artifacts);
+    }
+    private static String diagnosticExceptionKind(RuntimeException failure) {
+        if(failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached)return "AUXILIARY_RESOURCE_LIMIT";
+        if(failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.ResourceLimitException)return "OWNERSHIP_RESOURCE_LIMIT";
+        if(failure instanceof IllegalArgumentException)return "ILLEGAL_ARGUMENT";
+        if(failure instanceof IllegalStateException)return "ILLEGAL_STATE";
+        if(failure instanceof UnsupportedOperationException)return "UNSUPPORTED_OPERATION";
+        return "OTHER_RUNTIME";
     }
 
     static ManualJunctionEligibility.Reason manualCaptureReason(String failure) {
@@ -3250,7 +3263,7 @@ public class AlignWayAction extends JosmAction {
                             ? "visible-layer" : "managed-tiles", attemptIdentity);
             LiveBPreviewService.Computed selected = state.selectedRun() == null ? computed : state.selectedRun();
             DiagnosticsRegistry.setLastModernBundle(withFailureSummary(fallback, "DIAGNOSTIC_EXPORT",
-                    format15FailureCode(failure), selected));
+                    format15FailureCode(failure), selected,failure,"INTERVAL_DIAGNOSTIC_BUNDLE"));
             PluginLog.verbose("Format15 interval export unavailable status=%s cause=%s",
                     terminal, format15FailureCode(failure));
         }
@@ -3369,7 +3382,7 @@ public class AlignWayAction extends JosmAction {
                     LastSlideDebugBundle.buildIdentity(), diagnosticStatus, sourceLineage, attemptIdentity,
                     assessedManualReason);
             DiagnosticsRegistry.setLastModernBundle(withFailureSummary(fallback, "DIAGNOSTIC_EXPORT",
-                    format15FailureCode(failure), computed));
+                    format15FailureCode(failure), computed,failure,"FULL_ROUTE_DIAGNOSTIC_BUNDLE"));
             PluginLog.verbose("Format15 support export unavailable status=%s cause=%s",
                     diagnosticStatus, format15FailureCode(failure));
         }
@@ -3384,6 +3397,12 @@ public class AlignWayAction extends JosmAction {
             case "scalar-output-budget" -> "scalar-output-budget";
             case "Modern counter value is invalid" -> "counter-invalid";
             case "Modern counter inventory exceeds budget" -> "counter-budget";
+            case "Replay scalar field exceeds artifact budget" -> "frozen-scalar-artifact-budget";
+            case "Replay aggregate collection budget exceeded" -> "frozen-aggregate-budget";
+            case "Replay aggregate retained-memory budget exceeded" -> "frozen-retention-budget";
+            case "Frozen replay input exceeds byte budget" -> "frozen-input-byte-budget";
+            case "Diagnostic artifact exceeds the per-file limit" -> "artifact-byte-limit";
+            case "Replay collection exceeds component budget" -> "frozen-component-budget";
             default -> "export-failed";
         };
     }

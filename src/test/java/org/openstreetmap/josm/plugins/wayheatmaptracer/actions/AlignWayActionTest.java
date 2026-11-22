@@ -263,6 +263,8 @@ class AlignWayActionTest {
                 StandardCharsets.UTF_8);
         assertTrue(fallbackSummary.contains("\"phase\":\"DIAGNOSTIC_EXPORT\""));
         assertTrue(fallbackSummary.contains("counter-budget"));
+        assertTrue(fallbackSummary.contains("\"exceptionKind\":\"ILLEGAL_ARGUMENT\""));
+        assertTrue(fallbackSummary.contains("\"boundary\":\"FULL_ROUTE_DIAGNOSTIC_BUNDLE\""));
         assertTrue(fallbackSummary.contains("\"evaluatedTransitions\":"
                 + computed.pipeline().inference().evaluatedTransitions()));
         assertFalse(fallback.artifact("frozen-input.bin").isPresent());
@@ -741,6 +743,8 @@ class AlignWayActionTest {
                 StandardCharsets.UTF_8);
         assertTrue(summary.contains("\"phase\":\"DIAGNOSTIC_EXPORT\""));
         assertTrue(summary.contains("\"scope\":\"INTERVAL_SOURCE_BATCH\""));
+        assertTrue(summary.contains("\"exceptionKind\":\"ILLEGAL_ARGUMENT\""));
+        assertTrue(summary.contains("\"boundary\":\"INTERVAL_DIAGNOSTIC_BUNDLE\""));
         assertTrue(summary.contains("\"intervalRuns\":" + computed.intervalBatch().runs().size()));
         assertTrue(summary.contains("\"intervalTransitions\":" + computed.intervalBatch().totalUsage().transitions()));
         assertFalse(summary.contains("\"inferenceStatus\":"), "There was no single full-way inference");

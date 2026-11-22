@@ -85,6 +85,7 @@ jobs:
               filters=(--tests '*VisibleRefinementWorkflowTest' --tests '*RefinementAttemptDiagnosticsTest' --tests '*RefinementLineageCodecTest' --tests '*RefinementSessionTest' --tests '*PluginPreferencesTest' --tests '*RefinementRootAuthorityTest' --tests '*HeatmapSettingsDialogTest' --tests '*V022LiveBPreviewServiceTest.distantCompleteReceiverKeepsInteriorJunctionFixedDuringCapture' --tests '*V022LiveBPreviewServiceTest.managedCompleteSourceSetRunsNativeAndAggregateSeparately' --tests '*RefinementSmoothingAdapterTest' --tests '*SmoothingParentBinderTest' --tests '*SmoothingWorkContextTest' --tests '*RetainedSmoothingRootTest' --tests '*ModernRefinementBootstrapTest' --tests '*RefinementControlsTest' --tests '*RefinementReviewLifecycleTest' --tests '*StepwiseRefinementApplyTest' --tests '*StepwiseRefinementOwnershipTest' --tests '*LegacyRefinementWorkflowTest' --tests '*LegacyVisibleRefinementBootstrapTest' --tests '*RuntimeRefinementDiagnosticsTest' --tests '*RefinementPipelineTest' --tests '*RefinementIntervalPlannerTest' --tests '*OrdinaryModernApplyPreparationTest.originalCaptureReceiptSurvivesPlanPreparation')
               filters+=(--tests '*OrdinaryModernApplyPreparationTest.noChangeIsCurrentOnlyForTheExactCapturedNetworkAndCreatesNoHistory')
               filters+=(--tests '*V022FixedIntervalEditPlanComposerTest.allUsableUnchangedIntervalsRequireTheirOwnValidatedGraphProof' --tests '*V022FixedIntervalEditPlanComposerTest.geometricallyUnchangedRouteIsNotReportedAsALocalFailure')
+              filters+=(--tests '*AlignWayActionTest.noRouteFromManualJunctionShowsInstructionWhileOrdinaryNoRouteKeepsItsReason' --tests '*AlignWayActionTest.intervalExportFailureRetainsActualBatchWorkWithoutClaimingFullWayInference')
               ;;
             refs/heads/codex/g004-smoothing-adapter-20261121)
               filters=(
@@ -126,6 +127,7 @@ jobs:
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RetainedSmoothingRootTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.ModernRefinementBootstrapTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.V022FixedIntervalEditPlanComposerTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayActionTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControlsTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementReviewLifecycleTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.actions.StepwiseRefinementApplyTest.xml",
@@ -180,6 +182,7 @@ jobs:
               ],
           }
           classes["refs/heads/codex/g004-stepwise-20261119"].append("V022FixedIntervalEditPlanComposerTest")
+          classes["refs/heads/codex/g004-stepwise-20261119"].append("AlignWayActionTest")
           selected = classes[os.environ["FOCUSED_REF"]]
           source = Path("build/test-results/test")
           destination = Path("build/reports/g004-focused-artifact/junit")
@@ -216,6 +219,7 @@ jobs:
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RetainedSmoothingRootTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/ModernRefinementBootstrapTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/V022FixedIntervalEditPlanComposerTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/actions/AlignWayActionTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/ui/RefinementControlsTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/ui/RefinementReviewLifecycleTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/actions/StepwiseRefinementApplyTest.java",

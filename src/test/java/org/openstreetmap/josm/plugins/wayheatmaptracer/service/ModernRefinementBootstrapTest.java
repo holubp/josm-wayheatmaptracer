@@ -427,6 +427,12 @@ class ModernRefinementBootstrapTest {
             var work=new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,memory);
             try(var prepared=new ModernRefinementBootstrap().complete(review[0],work,port)) {
                 assertTrue(prepared.root().stage().candidates().stream().allMatch(c->c.payload().rootNoChangeReview().isPresent()));
+                var stage=prepared.root().stage();var candidate=stage.candidates().stream().filter(c->c.id().equals(stage.selected())).findFirst().orElseThrow();
+                var source=candidate.payload().rootNoChangeReview().orElseThrow().source();
+                var input=new RefinementModels.SmoothingInput(stage.id(),candidate.id(),stage.id(),candidate.id(),"Medium");
+                var ticket=new RefinementModels.OperationTicket(new RefinementModels.SessionId(java.util.UUID.randomUUID()),1,stage.id(),candidate.id(),TrackerMode.PROBABILISTIC,AlignmentMode.MOVE_EXISTING_NODES,RefinementModels.StageKind.SMOOTH,Optional.of(input));
+                var bound=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.SmoothingParentBinder().bind(prepared.root().authority(),ticket,candidate,source,work);
+                assertSame(source.evidence(),bound.evidence());assertEquals(proof.finalSelection().pointIds().size(),bound.reference().points().size());
             }
         }
         SwingUtilities.invokeAndWait(()->{workflow[0]=new LegacyRefinementWorkflow(review[0],null,review[0]::select,d->{},s->{},workers::add,publications::add,port);workflow[0].enableNativeRuntimeDiagnostics(c->null,c->null);workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.MEDIUM);});
