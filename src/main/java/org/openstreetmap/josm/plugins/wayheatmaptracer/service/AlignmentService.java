@@ -3089,11 +3089,12 @@ public final class AlignmentService {
             VisibleSourceResolutionResolver.SourceResolution sourceResolution =
                 new VisibleSourceResolutionResolver().resolveAtZoom(
                     imageryLayer, capturedZoom.sourceTileZoom(), representativeLatitude);
+            var finalCaptureBounds=captureBounds;
             return new RenderedCapture(
                 raster,
                 captureBounds,
                 targetScale,
-                sourcePolyline.stream().map(point -> toCaptureRasterPoint(point, captureBounds, targetScale)).toList(),
+                sourcePolyline.stream().map(point -> toCaptureRasterPoint(point, finalCaptureBounds, targetScale)).toList(),
                 captureState,
                 capturedZoom.sourceTileZoom(),
                 capturedZoom.bestSourceTileZoom(),
