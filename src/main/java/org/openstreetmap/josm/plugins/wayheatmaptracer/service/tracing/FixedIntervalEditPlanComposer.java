@@ -159,11 +159,7 @@ public final class FixedIntervalEditPlanComposer {
                 continue;
             }
             var route = run.routes().get(routeChoices.getOrDefault(i, 0));
-            boolean missingSupport = route.quality().has(
-                    FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY)
-                    && !(route.quality().disposition() == FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED
-                            && Double.isFinite(route.quality().directlySupportedLengthMeters())
-                            && route.quality().directlySupportedLengthMeters() > 0.0);
+            boolean missingSupport = missingSupport(route.quality());
             if (!routeChangesOriginal(batch, selected, run, route)) {
                 frozen.add(i);
                 reasons.put(i, "NO_GEOMETRY_CHANGE");
@@ -246,10 +242,12 @@ public final class FixedIntervalEditPlanComposer {
             var route=run.routes().get(choices.getOrDefault(i,0));var quality=route.quality();
             if(routeChangesOriginal(batch,selected,run,route)||quality.disposition()==FinalGeometryEvaluator.Disposition.HARD_BLOCKED
                     ||!Double.isFinite(quality.directlySupportedLengthMeters())||quality.directlySupportedLengthMeters()<=0
-                    ||quality.has(FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY))return false;
+                    ||missingSupport(quality))return false;
         }
         return true;
     }
+    private static boolean missingSupport(FinalGeometryEvaluator.Result quality){return quality.has(FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY)
+            &&!(quality.disposition()==FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED&&Double.isFinite(quality.directlySupportedLengthMeters())&&quality.directlySupportedLengthMeters()>0);}
 
     /** A fixed/failing interval cannot turn an explicit request into a stand-alone unglue command. */
     private static List<Integer> unownedDisconnections(IntervalTraceBatch batch,

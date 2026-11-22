@@ -151,7 +151,14 @@ public final class PublicGuiSmokeMain {
             Toolkit.getDefaultToolkit().addAWTEventListener(listener, AWTEvent.WINDOW_EVENT_MASK);
             try {
                 onEventThread(() -> { action.actionPerformed(null); return null; });
-                JDialog preview = visiblePreview.get(180, TimeUnit.SECONDS);
+                JDialog preview;
+                try{preview=visiblePreview.get(180,TimeUnit.SECONDS);}
+                catch(java.util.concurrent.TimeoutException timeout){
+                    var attempt=session.currentAttempt();System.err.println("GUI_SMOKE_PREVIEW_TIMEOUT state="+(attempt==null?"unavailable":attempt.state())+" cause="+(attempt==null?"unavailable":safeToken(attempt.failureReason())));
+                    for(Window window:Window.getWindows())if(window.isShowing()&&window instanceof JDialog dialog)System.err.println("GUI_SMOKE_PREVIEW_WINDOW title="+safeToken(dialog.getTitle())+" modal="+dialog.isModal()+" name="+safeToken(String.valueOf(dialog.getName())));
+                    for(var thread:Thread.getAllStackTraces().keySet())if(thread.getName().startsWith("AWT-EventQueue")||thread.getName().contains("alignment"))printSafeStartupFrames("preview-timeout",thread,12);
+                    throw timeout;
+                }
                 if (!onEventThread(() -> preview.isVisible() && preview.isDisplayable() && !preview.isModal())) {
                     throw new IllegalStateException("Production preview is not visible and modeless");
                 }
