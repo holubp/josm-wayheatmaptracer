@@ -334,6 +334,10 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             boolean published=DiagnosticsRegistry.publishRefinement(diagnosticOwner,admission.read(encoded),terminal);
             if(published){diagnosticSealed=terminal;exportUnavailable=ExportUnavailable.NONE;}
         } catch(Exception unavailable){exportUnavailable=unavailable instanceof AttemptMemoryLedger.ResourceLimitException||unavailable instanceof ExportBudgetRefused?ExportUnavailable.BUDGET:unavailable instanceof java.io.IOException?ExportUnavailable.ENCODING:ExportUnavailable.BINDING;
+            computationEvidence+="; failed="+unavailable.getClass().getSimpleName()+"; phase=EXPORT";
+            for(var frame:unavailable.getStackTrace())if(frame.getClassName().startsWith("org.openstreetmap.josm.plugins.wayheatmaptracer.")) {
+                computationEvidence+="; boundary="+frame.getClassName().substring(frame.getClassName().lastIndexOf('.')+1)+"."+frame.getMethodName()+":"+frame.getLineNumber();break;
+            }
             if(terminal&&isCurrent())diagnosticSealed=DiagnosticsRegistry.sealRefinementUnavailable(diagnosticOwner,DiagnosticsRegistry.RefinementUnavailable.valueOf(exportUnavailable.name()));
         }
         finally {

@@ -1664,7 +1664,9 @@ public final class PublicGuiSmokeMain {
                 requiredNamed(dialog.getContentPane(),"redo",javax.swing.JButton.class).doClick();
                 if(owner.currentStage()!=stage)throw new IllegalStateException("Smoothing Redo recomputed its stage");return stage;
             });
-            requireUnchanged(fixture,original,originalUndo);Format15ArchiveReader.read(exportThroughActualMenu());
+            requireUnchanged(fixture,original,originalUndo);
+            try{Format15ArchiveReader.read(exportThroughActualMenu());}
+            catch(Exception unavailable){throw new IllegalStateException("Actual smoothing export unavailable: "+fixedFailureBoundary(onEventThread(owner::computationEvidence)),unavailable);}
             clickAndAwaitStage(report,dialog,owner,continuation==StageKind.REFINE_A?"refineA":"refineB",continuation);
             var plan=onEventThread(()->{
                 if(!owner.currentStage().parent().orElseThrow().equals(smooth.id())
