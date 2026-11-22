@@ -985,6 +985,11 @@ public final class PublicGuiSmokeMain {
         if(captured.sourceReceipt()==null||captured.nativePitchMeters().isEmpty())throw new IllegalStateException("Actual managed visible epoch and z15 pixel metadata required");
         var pixels=captured.argb();int signal=publicVisibleSample(captured,pixels,0,4),background=publicVisibleSample(captured,pixels,0,-20);
         if(signal<120||background>60)throw new IllegalStateException("Actual visible source missed the independently predicted public ridge/background: "+signal+"/"+background);
+        var authoritative=service.captureAuthoritativeVisibleInput(selection,(org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer)layer,view,config,"public-authoritative-visible-contract",null);
+        authoritative.receipt().requireRaster(authoritative.raster());
+        if(!java.util.Arrays.equals(pixels,authoritative.raster().argb()))throw new IllegalStateException("Authoritative visible producer changed the actual sampled pixels");
+        var actual=authoritative.raster();var clone=new LiveBPreviewService.VisibleRaster(actual.width(),actual.height(),actual.argb(),actual.minimumEast(),actual.minimumNorth(),actual.maximumEast(),actual.maximumNorth(),actual.projectionUnitsPerViewPixel(),actual.groundMetersPerViewPixel(),actual.nativePitchMeters(),actual.sourceIdentity(),actual.projectionCode(),actual.sourceReceipt());
+        try{authoritative.receipt().requireRaster(clone);throw new AssertionError("Reconstructed pixels cannot borrow a producer-only visible receipt");}catch(IllegalArgumentException expected){}
         try{
             view.setNativeScaleLayer(null);var withoutSnapper=service.captureLiveBVisibleRaster(selection,layer,view,config,"public-static-visible-null-snapper");
             if(view.getNativeScaleLayer()!=null||!java.util.Arrays.equals(pixels,withoutSnapper.argb()))throw new IllegalStateException("Null and actual native scale-grid captures differ");
