@@ -59,6 +59,14 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     private PreviewWorkGate workGate;
     private PreviewWorkGate.Work activeWork;
     private RefinementReviewLifecycle lifecycle;
+    private Runnable commandContext=()->{};
+    public void attachCommandContext(Runnable context) {
+        if(!SwingUtilities.isEventDispatchThread()||busy||closed||session!=null)throw new IllegalStateException("Command context requires an idle original review");
+        commandContext=Objects.requireNonNull(context);
+    }
+    private record CommandGeneration(java.util.function.LongSupplier source,Runnable context) implements java.util.function.LongSupplier {
+        public long getAsLong(){context.run();return source.getAsLong();}
+    }
     public void attachLifecycle(RefinementReviewLifecycle lifecycle) {
         if(!SwingUtilities.isEventDispatchThread()||busy||closed||!ownsPublication())throw new IllegalStateException("Review lifecycle requires the current idle owner");
         if(this.lifecycle!=null)throw new IllegalStateException("Review lifecycle is already attached");
@@ -826,7 +834,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         review.requireOriginalAttemptCurrent();
         if(!canApplyNative())throw new IllegalStateException("Refinement candidate requires review or is busy");
         var plan=currentNative().orElseThrow().plan();
-        var sourceGuard=sourceContext.detachedCommandGeneration();
+        var sourceGuard=new CommandGeneration(sourceContext.detachedCommandGeneration(),commandContext);
         var validator=new LiveNetworkSnapshotValidator(root.receipt(),plan,sourceGuard);
         var command=new ApplyAlignmentEditPlanCommand(review.dataSet(),plan,validator,"Apply heatmap refinement");
         if(!session.terminalizeForApply())throw new IllegalStateException("The refinement session is no longer idle");

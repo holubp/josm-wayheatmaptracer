@@ -2066,6 +2066,7 @@ public class AlignWayAction extends JosmAction {
                         else {disconnect.setEnabled(true);refresh.run();}
                     });
                 refinement[0].controls().externalRootSelection(true);
+                refinement[0].attachCommandContext(detachedCommandContext(dataSet,computed.captured().managedRaster()==null?imageryLayer:null,computed.captured().managedRaster()!=null?previewSourceOwner:null));
                 refinement[0].enableRuntimeDiagnostics(()->null);
                 var reviewBody=new JPanel(new BorderLayout(4,4));reviewBody.add(originalReviewBody,BorderLayout.CENTER);reviewBody.add(refinement[0].controls(),BorderLayout.SOUTH);panel.add(reviewBody,BorderLayout.CENTER);
                 dialog.getRootPane().putClientProperty("wayheatmaptracer.refinementOwner",refinement[0]);
@@ -2632,6 +2633,33 @@ public class AlignWayAction extends JosmAction {
         }
     }
 
+    /** Small detached command guard: no capture, candidate, history, dialog or credential strings. */
+    private record DetachedCommandContext(DataSet data,ImageryLayer layer,TileFetchCoordinator coordinator,
+            org.openstreetmap.josm.spi.preferences.IPreferences preferences,String settings,String tracing,String projection) implements Runnable {
+        public void run() {
+            if(preferences!=org.openstreetmap.josm.spi.preferences.Config.getPref()
+                    ||!settings.equals(commandSettingsIdentity())||!tracing.equals(PluginPreferences.loadTracingSettings().toString())
+                    ||!projection.equals(ProjectionRegistry.getProjection().toCode())
+                    ||data!=null&&MainApplication.getLayerManager().getEditDataSet()!=data
+                    ||coordinator!=null&&ManagedTileRuntime.initializedCoordinator()!=coordinator
+                    ||layer!=null&&(!layer.isVisible()||HeatmapLayerResolver.resolveOptional().orElse(null)!=layer))
+                throw new IllegalStateException("The command dataset, source or settings changed");
+        }
+    }
+    static Runnable detachedCommandContext(DataSet data,ImageryLayer layer,TileFetchCoordinator coordinator) {
+        return new DetachedCommandContext(data,layer,coordinator,org.openstreetmap.josm.spi.preferences.Config.getPref(),commandSettingsIdentity(),PluginPreferences.loadTracingSettings().toString(),ProjectionRegistry.getProjection().toCode());
+    }
+    private static String commandSettingsIdentity() {
+        var config=PluginPreferences.load();
+        try {
+            var digest=java.security.MessageDigest.getInstance("SHA-256");
+            for(String value:java.util.Arrays.asList(config.toRedactedJson(),PluginPreferences.loadGeometryCleanup().toRedactedJson(),config.keyPairId(),config.policy(),config.signature(),config.sessionToken())) {
+                var bytes=Objects.toString(value,"").getBytes(StandardCharsets.UTF_8);
+                digest.update(java.nio.ByteBuffer.allocate(4).putInt(bytes.length).array());digest.update(bytes);
+            }
+            return java.util.HexFormat.of().formatHex(digest.digest());
+        }catch(java.security.NoSuchAlgorithmException unavailable){throw new IllegalStateException("Required command digest unavailable");}
+    }
     private void requireLiveBSourceOwnerCurrent(DataSet dataSet, ImageryLayer imageryLayer,
             AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
             TracingSettings tracingAtCapture, LiveBPreviewService.Captured captured,
@@ -3778,6 +3806,7 @@ public class AlignWayAction extends JosmAction {
             livePreviewSession.close(rootOwner);dialog.dispose();overlay.hide();
         });
         attachRefinementLifecycle(dialog,workflow[0]);
+        workflow[0].attachCommandContext(detachedCommandContext(dataSet,legacyReview.managedReceipt()==null?imageryLayer:null,legacyReview.managedReceipt()!=null?ManagedTileRuntime.initializedCoordinator():null));
         confirm.addActionListener(event -> {
             try {
                 if(!livePreviewSession.isCurrent(rootOwner))throw new IllegalStateException("The preview owner was superseded");
