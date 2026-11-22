@@ -10,6 +10,24 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 
 class RefinementRootAuthorityTest {
+    @Test void acquisitionFrameExtensionCertifiesCoverageWithoutRenewingOriginalAuthority() {
+        var origin=new GeographicPoint(0,0);var southWest=new GeographicPoint(-.001,-.001);var northEast=new GeographicPoint(.001,.001);
+        var original=LocalMetricFrame.certifiedEquirectangular(origin,southWest,northEast);
+        var required=MetricRegion.rectangle(-150,-150,150,150);
+        var extended=original.certifiedExtension(required);
+        assertNotEquals(original,extended);assertTrue(extended.isCertifiedExtensionOf(original));assertFalse(original.isCertifiedExtensionOf(extended));
+        assertEquals(original.origin(),extended.origin());
+        assertEquals(Double.doubleToLongBits(original.distortionCertificate().eastMetersPerRadian()),Double.doubleToLongBits(extended.distortionCertificate().eastMetersPerRadian()));
+        assertEquals(Double.doubleToLongBits(original.distortionCertificate().northMetersPerRadian()),Double.doubleToLongBits(extended.distortionCertificate().northMetersPerRadian()));
+        for(var polygon:required.polygons())for(var point:polygon)assertDoesNotThrow(()->extended.toGeographic(point));
+        var outside=new MetricPoint(150,150);assertThrows(IllegalArgumentException.class,()->original.toGeographic(outside));
+        assertEquals(original.toGeographic(new MetricPoint(10,10)),extended.toGeographic(new MetricPoint(10,10)));
+        var shifted=LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0,.00001),southWest,northEast);
+        assertFalse(extended.isCertifiedExtensionOf(shifted));
+        var historical=LocalMetricFrame.legacyCertifiedEquirectangular(origin,southWest,northEast);
+        assertFalse(extended.isCertifiedExtensionOf(historical));assertThrows(IllegalArgumentException.class,()->historical.certifiedExtension(required));
+        assertThrows(IllegalArgumentException.class,()->original.certifiedExtension(MetricRegion.rectangle(-30_000_000,-150,30_000_000,150)));
+    }
     @Test void factualNativeRootBindsExactEngineAndMode() throws Exception {
         SwingUtilities.invokeAndWait(()->{
             for(var engine:List.of(TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC))for(var mode:AlignmentMode.values()) {

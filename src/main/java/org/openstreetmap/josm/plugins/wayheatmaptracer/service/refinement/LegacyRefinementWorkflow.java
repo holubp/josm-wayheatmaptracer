@@ -496,7 +496,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                 publishRootComposition(modern,selection,candidate,publication);published=true;message="";
             }catch(RuntimeException failed) {
                 computationEvidence="root-selection; failed="+failed.getClass().getSimpleName()+"; phase=PREPARATION";
-                for(var frame:failed.getStackTrace())if(frame.getClassName().startsWith("org.openstreetmap.josm.plugins.wayheatmaptracer.")) {
+                for(var frame:failed.getStackTrace())if(frame.getClassName().startsWith("org.openstreetmap.josm.plugins.wayheatmaptracer.")&&!frame.getClassName().contains(".AttemptMemoryLedger")) {
                     computationEvidence+="; boundary="+frame.getClassName().substring(frame.getClassName().lastIndexOf('.')+1)+"."+frame.getMethodName()+":"+frame.getLineNumber();break;
                 }
                 message=cancellation.isCancelled()?"Root selection cancelled; retained the previous composition.":"Root selection unavailable; retained the previous composition.";
