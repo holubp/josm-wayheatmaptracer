@@ -42,7 +42,7 @@ public final class SmoothingParentBinder {
         if(candidate.payload().nativeReview().isPresent()&&!recordedAlias)throw new Unavailable(Reason.SELECTED_SOURCE_NOT_RETAINED);
         var mappings=candidate.payload().detectorAttempts().stream().filter(a->RefinementPayload.detectorContains(a,candidate.nativeCandidateId(),work)
             &&a.sourcePalette().equals(request.palette())).map(DetectorAttempt::mappingName).distinct().toList();
-        try{root.requireAcquisitionEvidence(source.evidence());}catch(IllegalArgumentException mismatch){throw new Unavailable(Reason.SOURCE_MISMATCH);}
+        try{if(recordedAlias)root.requireSelectedAcquisitionEvidence(candidate,source);else root.requireAcquisitionEvidence(source.evidence());}catch(IllegalArgumentException mismatch){throw new Unavailable(Reason.SOURCE_MISMATCH);}
         if(!recordedAlias&&!request.palette().equals(reference.parentPalette())||!mappings.contains(request.mapping()))
             throw new Unavailable(Reason.SOURCE_MISMATCH);
         candidate.payload().nativeReview().ifPresent(review->{

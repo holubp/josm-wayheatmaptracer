@@ -229,7 +229,7 @@ public final class ParentBackedComposer {
         var whole=new ArrayList<>(way.nodeKeys().subList(0,parent.originalRange().firstIndex()));whole.addAll(replacement);
         whole.addAll(way.nodeKeys().subList(parent.originalRange().lastIndex()+1,way.nodeKeys().size()));
         after.put(way.key(),new DetachedWay(way.key(),whole,way.tags(),false,true));
-        var topology=ModernSingleWayEditPlanAdapter.assessFinalTopology(root.network(),after,root.request(),root.evidence(),evidence,root.request().permissions().ordinaryRadiusMeters());
+        var topology=ModernSingleWayEditPlanAdapter.assessFinalTopology(root,after,evidence,root.request().permissions().ordinaryRadiusMeters());
         for(String finding:topology.findingCodes())extra.add(new FinalGeometryEvaluator.Finding(
             finding.contains("review-required")?FinalGeometryEvaluator.FindingCode.INDEPENDENT_CONTEXT_CONTACT:FinalGeometryEvaluator.FindingCode.PREJUNCTION_CROSSING,
             finding.contains("review-required")?FinalGeometryEvaluator.Severity.REVIEW:FinalGeometryEvaluator.Severity.HARD_BLOCK,0,candidate.points().size()-1,0));

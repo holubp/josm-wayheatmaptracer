@@ -177,7 +177,8 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
             }
             nativeFacts.putAll(RefinementRootAuthority.detachedCharges(capture.specification(),capture.disconnectionSource(),capture.sourceGeographic(),capture.sourceMetric(),capture.outputGrid(),capture.alternativeMappings()));
             nativeFacts.put(capture,capturedBytes(capture));
-            var authority=new RefinementRootAuthority(capture.network(),primary.request(),primary.evidence(),config,capture.projectionCode(),sourceIdentity,capture.intervalPartition(),primarySource,work,memory).withRetainedFacts(nativeFacts);
+            var authority=new RefinementRootAuthority(capture.network(),primary.request(),primary.evidence(),config,capture.projectionCode(),sourceIdentity,capture.intervalPartition(),primarySource,work,memory)
+                .withRetainedFacts(nativeFacts).withNativeAcquisitions(capture,owners,retainedSources,work,memory);
             for(var item:authority.charges().entrySet())admit(memory,work,item.getKey(),item.getValue());
             var way=(DetachedWay)capture.network().primitives().get(primary.request().selectedWayKey());
             var nodes=way.nodeKeys().stream().map(k->{var p=((DetachedNode)capture.network().primitives().get(k)).coordinate();return new RefinementPayload.SourceNode(k.id(),p.latitudeDegrees(),p.longitudeDegrees());}).toList();

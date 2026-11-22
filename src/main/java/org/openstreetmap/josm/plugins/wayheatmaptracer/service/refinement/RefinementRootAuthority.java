@@ -5,6 +5,10 @@ import java.lang.reflect.RecordComponent;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.JunctionTopologyRules;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.SharedNodeDisconnectionPlanner;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.projection.Projections;
@@ -26,6 +30,16 @@ public final class RefinementRootAuthority {
     private final Optional<FrozenGeometryProof> frozenGeometryProof;
     private final Map<Object,Long> charges;
     private final long retainedBytes;
+    private final Map<EvidenceSnapshot,NativeAcquisition> nativeAcquisitions;
+    private record NativeAcquisition(RetainedSmoothingSource source,TraceRequest request,
+            NetworkSnapshotCapture.CapturedSnapshot receipt,AttemptMemoryLedger.Owner owner) {
+        void requireCurrent(){
+            if(owner.isClosed()||source.evidence().snapshotId().equals(request.evidenceSnapshotId())==false
+                    ||receipt.snapshot().snapshotId().equals(request.networkSnapshotId())==false)
+                throw new IllegalArgumentException("Original native acquisition is no longer retained");
+            source.requireCurrent();
+        }
+    }
     public RefinementRootAuthority(NetworkSnapshot network,TraceRequest request,EvidenceSnapshot evidence,
             AlignmentConfig effectiveConfig,String projectionCode,String sourceIdentity) {
         this(network,request,evidence,effectiveConfig,projectionCode,sourceIdentity,null);
@@ -52,6 +66,7 @@ public final class RefinementRootAuthority {
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner) {
         Objects.requireNonNull(network); Objects.requireNonNull(request); Objects.requireNonNull(evidence);
         Objects.requireNonNull(effectiveConfig);
+        nativeAcquisitions=Map.of();
         org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Reservation metadata=null;
         if(source!=null||work!=null) {
             if(source==null||work==null||source.evidence()!=evidence)throw new IllegalArgumentException("Root evidence group is foreign");
@@ -116,7 +131,26 @@ public final class RefinementRootAuthority {
     public TraceRequest request(){return request;}
     public EvidenceSnapshot evidence(){return evidence;}
     /** Acquisition may add certified image support without replacing original network/edit authority. */
-    public void requireAcquisitionEvidence(EvidenceSnapshot actual){requireAcquisitionEvidence(evidence,actual);}
+    public void requireAcquisitionEvidence(EvidenceSnapshot actual){
+        var registered=nativeAcquisitions.get(actual);
+        if(registered==null){requireAcquisitionEvidence(evidence,actual);return;}
+        registered.requireCurrent();requireAcquisitionFrame(actual);
+    }
+    private void requireAcquisitionFrame(EvidenceSnapshot actual){
+        if(!actual.coordinateFrame().equals(evidence.coordinateFrame())&&!actual.coordinateFrame().isCertifiedExtensionOf(evidence.coordinateFrame()))
+            throw new IllegalArgumentException("Original native acquisition uses a different numerical frame");
+    }
+    /** Selected-source alias is checked before exact original registration or fresh acquisition authority. */
+    public void requireSelectedAcquisitionEvidence(RefinementModels.Candidate candidate,RetainedSmoothingSource source){
+        var selected=candidate.payload().nativeReview().orElseThrow(()->new IllegalArgumentException("Native source selection unavailable"));
+        if(selected.retainedSources().get(source.source())!=source||!selected.sources().contains(source.source()))
+            throw new IllegalArgumentException("Source is not the selected candidate's exact retained alias");
+        if(candidate.payload().rootReviewState().isPresent()) {
+            var registered=nativeAcquisitions.get(source.evidence());
+            if(registered==null||registered.source()!=source)throw new IllegalArgumentException("Original native source was not registered by its producer");
+        }
+        source.requireCurrent();requireAcquisitionEvidence(source.evidence());
+    }
     public static void requireAcquisitionEvidence(EvidenceSnapshot authority,EvidenceSnapshot actual) {
         if(authority==null||actual==null||!authority.sourceIdentity().equals(actual.sourceIdentity())
                 ||!actual.coordinateFrame().equals(authority.coordinateFrame())&&!actual.coordinateFrame().isCertifiedExtensionOf(authority.coordinateFrame()))
@@ -131,13 +165,48 @@ public final class RefinementRootAuthority {
         return new RefinementRootAuthority(this,additional);
     }
     private RefinementRootAuthority(RefinementRootAuthority original,Map<Object,Long> additional) {
+        this(original,additional,original.nativeAcquisitions);
+    }
+    private RefinementRootAuthority(RefinementRootAuthority original,Map<Object,Long> additional,Map<EvidenceSnapshot,NativeAcquisition> acquisitions) {
         network=original.network;request=original.request;evidence=original.evidence;effectiveConfig=original.effectiveConfig;
         projectionCode=original.projectionCode;sourceIdentity=original.sourceIdentity;frozenGeometryProof=original.frozenGeometryProof;
+        nativeAcquisitions=Collections.unmodifiableMap(new IdentityHashMap<>(acquisitions));
         var inventory=new IdentityHashMap<Object,Long>(original.charges);
         additional.forEach((identity,bytes)->{if(identity==null||bytes==null||bytes<0)throw new IllegalArgumentException("Invalid admitted native ownership");inventory.merge(identity,bytes,Math::max);});
         inventory.put(this,256L);long total=0;for(long value:inventory.values())total=Math.addExact(total,value);
         if(total>RefinementLimits.defaults().maxPayloadBytes())throw new RefinementSession.Refused(RefinementModels.RefusalReason.PAYLOAD_LIMIT);
         charges=Collections.unmodifiableMap(inventory);retainedBytes=total;
+    }
+    /** Producer-only registration of the actual completed runs, never reconstructed diagnostic data. */
+    RefinementRootAuthority withNativeAcquisitions(LiveBPreviewService.Captured capture,
+            Collection<LiveBPreviewService.Computed> actualOwners,Map<LiveBPreviewService.Computed,RetainedSmoothingSource> retained,
+            GeometryWorkContext work,AttemptMemoryLedger.Owner owner) {
+        var receipt=capture.originalReceipt().orElseThrow(()->new IllegalArgumentException("Original acquisition receipt unavailable"));
+        if(receipt.snapshot()!=network||capture.network()!=network||!receipt.specification().equals(capture.specification())
+                ||capture.geometryMode()!=request.geometryMode()||capture.engine()!=request.engine()
+                ||!capture.settingsHash().equals(request.settingsHash())||!capture.specification().permissions().equals(request.permissions()))
+            throw new IllegalArgumentException("Original acquisition receipt differs from root authority");
+        var bindings=new IdentityHashMap<EvidenceSnapshot,NativeAcquisition>();
+        for(var entry:retained.entrySet()) {
+            work.visit(GeometryWorkContext.Kind.BIND,1);
+            var run=entry.getKey();var source=entry.getValue();var nativeRequest=run.request();var actual=run.evidence();
+            if(actualOwners.stream().noneMatch(value->value==run)||run.captured()!=capture||source.evidence()!=actual
+                    ||!nativeRequest.networkSnapshotId().equals(network.snapshotId())||!nativeRequest.networkContentHash().equals(network.canonicalHash())
+                    ||!nativeRequest.evidenceSnapshotId().equals(actual.snapshotId())||!nativeRequest.evidenceContentHash().equals(actual.canonicalHash(work))
+                    ||!nativeRequest.permissions().equals(request.permissions())||!nativeRequest.settingsHash().equals(request.settingsHash())
+                    ||nativeRequest.engine()!=request.engine()||nativeRequest.geometryMode()!=request.geometryMode()
+                    ||!source.source().mapping().equals(ModernReviewRoot.mapping(run))||!source.source().palette().equals(capture.palette())
+                    ||!source.hasFactualInputHash())throw new IllegalArgumentException("Native acquisition does not bind the actual original run");
+            if(capture.managedRaster()!=null?source.generation().isEmpty()||source.generation().getAsLong()!=capture.managedRaster().generation().value()
+                    :source.visibleReceipt().isEmpty()||!source.visibleReceipt().get().equals(capture.raster().sourceReceipt()))
+                throw new IllegalArgumentException("Native acquisition generation differs from its original receipt");
+            requireAcquisitionFrame(actual);source.requireCurrent();source.retainInto(owner);
+            if(bindings.put(actual,new NativeAcquisition(source,nativeRequest,receipt,owner))!=null)throw new IllegalArgumentException("Duplicate native acquisition evidence");
+        }
+        if(bindings.isEmpty()||bindings.size()>32)throw new IllegalArgumentException("Bounded original native acquisitions required");
+        long bytes=4096L+512L*bindings.size();
+        work.reserveOn(owner,"original-native-acquisition-registry",bytes).adopt(bindings);
+        return new RefinementRootAuthority(this,Map.of(bindings,bytes),bindings);
     }
     public Optional<FrozenGeometryProof> frozenGeometryProof(){return frozenGeometryProof;}
     public String frozenGeometryIdentity(){return frozenGeometryProof.map(FrozenGeometryProof::identity).orElse("frozen-geometry-unavailable");}

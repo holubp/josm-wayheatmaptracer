@@ -327,6 +327,7 @@ class ModernRefinementBootstrapTest {
                     assertTrue(prepared.memory().retainIfAbsent(capture[0]).bytes()>=(long)size*size*4,"Original native raster owner must be admitted");
                     assertDoesNotThrow(()->prepared.memory().retainIfAbsent(computed),"Actual native owner must be admitted");
                     var selected=prepared.root().stage().candidates().stream().filter(c->c.id().equals(prepared.root().stage().selected())).findFirst().orElseThrow();
+                    assertOriginalNativeAcquisitionAuthority(prepared,selected,review[0],work,computed);
                     assertEquals(choices.get(choices.size()-1).localRouteIndex(),selected.payload().rootReviewState().orElseThrow().fullRouteIndex().orElseThrow());
                     assertEquals(mode,prepared.root().authority().request().geometryMode());
                     assertSame(capture[0].network(),selected.payload().nativeReview().orElseThrow().plan().before());
@@ -350,8 +351,51 @@ class ModernRefinementBootstrapTest {
                         });
                     } finally {SwingUtilities.invokeAndWait(workflow[0]::close);}
                     epoch.sourceChanged();assertThrows(IllegalStateException.class,prepared.source()::requireCurrent);
+                    var retainedSource=selected.payload().nativeReview().orElseThrow().retainedSources().values().iterator().next();
+                    assertThrows(IllegalStateException.class,()->prepared.root().authority().requireSelectedAcquisitionEvidence(selected,retainedSource));
+                    prepared.close();assertThrows(IllegalArgumentException.class,()->prepared.root().authority().requireSelectedAcquisitionEvidence(selected,retainedSource));
                 }
             } finally {SwingUtilities.invokeAndWait(review[0]::close);}
+        }
+    }
+    private static void assertOriginalNativeAcquisitionAuthority(PreparedRefinementRoot prepared,RefinementModels.Candidate selected,
+            ModernReviewRoot review,GeometryWorkContext work,LiveBPreviewService.Computed computed) throws Exception {
+        var root=prepared.root().authority();var nativeReview=selected.payload().nativeReview().orElseThrow();
+        var source=nativeReview.retainedSources().values().iterator().next();var evidence=source.evidence();
+        assertDoesNotThrow(()->root.requireSelectedAcquisitionEvidence(selected,source));
+        var foreign=new EvidenceSnapshot(evidence.snapshotId(),evidence.coordinateFrame(),evidence.transform(),evidence.resolution(),
+            evidence.decisionRegion(),evidence.evidenceRegion(),evidence.fields(),evidence.resampling(),evidence.sourceIdentity()+"/foreign-owner");
+        assertThrows(IllegalArgumentException.class,()->root.requireAcquisitionEvidence(foreign),"Same dimensions/axes/geometry never authorize a foreign source");
+        for(var receipt:List.of(source.visibleReceipt(),Optional.of(new VisibleSourceEpoch().captureStable()))) {
+        var fake=RetainedSmoothingSource.fromOriginalConversion(source.source(),source.intensityMode(),source.fieldName(),source.evidence(),
+            source.referenceTransform(),source.referenceWidth(),source.referenceHeight(),source.backingBytes(),()->{},source.imageOwnershipIdentity(),
+            source.inputByteHash(),source.generation(),receipt,source.legacyDisposition(),source.inputHashProtocol(),work,prepared.memory());
+        var forgedReview=new RefinementPayload.NativeReview(nativeReview.plan(),nativeReview.quality(),nativeReview.operation(),nativeReview.sources(),
+            nativeReview.retainedParentSections(),Map.of(source.source(),fake),nativeReview.sourceSpans(),nativeReview.finalPointIds(),nativeReview.smoothingReceipt());
+        var payload=RefinementPayload.captureNative(review.originalResult(),selected.payload(),forgedReview,RefinementLimits.defaults().maxPayloadBytes())
+            .withRootReviewState(selected.payload().rootReviewState().orElseThrow());
+        var forged=new RefinementModels.Candidate(selected.id(),payload,selected.correspondence(),selected.immutableIdentity(),selected.nativeCandidateId(),selected.sourcePalette());
+        assertThrows(IllegalArgumentException.class,()->root.requireSelectedAcquisitionEvidence(forged,fake),"A constructed descriptor and matching candidate alias cannot create original acquisition authority");
+        }
+        var actualOwner=computed.productionRuns().stream().filter(run->run.evidence()==evidence).findFirst().orElseThrow();
+        var r=actualOwner.request();
+        var foreignRequest=new TraceRequest(r.selectedWayKey(),r.selectedRange(),r.engine(),r.geometryMode(),r.permissions(),r.budgets(),
+            r.evidenceSnapshotId(),r.evidenceContentHash(),r.networkSnapshotId()+"-foreign",r.networkContentHash(),r.settingsHash(),r.parameterHash(),
+            r.samplerId(),r.configuredSampleStepMeters(),r.profileChainage(),r.evidenceResolution(),r.corridorInput(),r.disconnectionSource());
+        var foreignOwner=new LiveBPreviewService.Computed(computed.captured(),evidence,foreignRequest,actualOwner.pipeline(),actualOwner.options(),
+            actualOwner.counters(),actualOwner.intervalBatch(),actualOwner.settingsResolutionJson(),List.of());
+        var register=RefinementRootAuthority.class.getDeclaredMethod("withNativeAcquisitions",LiveBPreviewService.Captured.class,Collection.class,Map.class,GeometryWorkContext.class,AttemptMemoryLedger.Owner.class);
+        register.setAccessible(true);
+        var rejected=assertThrows(java.lang.reflect.InvocationTargetException.class,()->register.invoke(root,computed.captured(),computed.productionRuns(),Map.of(foreignOwner,source),work,prepared.memory()));
+        assertInstanceOf(IllegalArgumentException.class,rejected.getCause(),"A foreign request/owner cannot register an original acquisition");
+        var otherReceipt=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture.CapturedSnapshot[1];
+        SwingUtilities.invokeAndWait(()->otherReceipt[0]=org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture.captureBound(review.dataSet(),computed.captured().specification()));
+        assertThrows(IllegalArgumentException.class,()->computed.captured().withOriginalReceipt(otherReceipt[0]),"Another original receipt cannot replace the acquisition's captured snapshot identity");
+        if(!evidence.sourceIdentity().equals(root.sourceIdentity())) {
+            var clone=new EvidenceSnapshot(evidence.snapshotId(),evidence.coordinateFrame(),evidence.transform(),evidence.resolution(),evidence.decisionRegion(),
+                evidence.evidenceRegion(),evidence.fields(),evidence.resampling(),evidence.sourceIdentity());
+            assertEquals(evidence.canonicalHash(),clone.canonicalHash());
+            assertThrows(IllegalArgumentException.class,()->root.requireAcquisitionEvidence(clone),"Even exact alternative hashes require the registered evidence object");
         }
     }
 }

@@ -2314,6 +2314,16 @@ public final class ModernSingleWayEditPlanAdapter {
                 evidence, searchHalfWidthMeters, authority.replacements(), authority.proposedPortReplacements());
     }
 
+    /** Refinement may use an exact producer-registered original alternative, retaining root edit authority. */
+    public static FinalTopologyAssessment assessFinalTopology(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementRootAuthority root,
+            Map<PrimitiveKey,DetachedPrimitive> after,EvidenceSnapshot evidence,double searchHalfWidthMeters) {
+        root.requireAcquisitionEvidence(evidence);
+        var request=root.request();var before=root.network();
+        var authority=SharedNodeDisconnectionPlanner.forRequest(request,before);
+        return assessFinalTopology(before,after,request.selectedWayKey(),request.selectedRange(),evidence,
+            searchHalfWidthMeters,authority.replacements(),authority.proposedPortReplacements());
+    }
     /** Assesses a complete validated plan, including its exact disconnected endpoint identities. */
     public static FinalTopologyAssessment assessFinalTopology(AlignmentEditPlan plan,
             EvidenceSnapshot evidence, double searchHalfWidthMeters) {
