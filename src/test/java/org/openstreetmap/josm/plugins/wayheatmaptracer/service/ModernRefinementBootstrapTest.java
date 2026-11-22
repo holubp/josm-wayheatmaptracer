@@ -38,14 +38,34 @@ class ModernRefinementBootstrapTest {
             double east=-200+x/3.0,north=20-y/3.0;
             double branch=east>-140&&east< -110?-4*Math.pow(Math.sin(Math.PI*(east+140)/30),2):0;
             double primary=Math.exp(-.5*north*north/1.44),secondary=Math.exp(-.5*Math.pow(north-branch,2)/1.44);
-            int gray=Math.abs(east)<25?0:(int)Math.round(255*(.02+.8*Math.max(primary,secondary)));
+            // Actual middle trace is x=-40..40. Strict output-grid bilinear reaches one
+            // 1.56m cell; capture inverse bilinear adds one1/3m input pixel. Snap
+            // ceil(3*(40+1.56+1/3))/3=42 outward in this original pixel frame.
+            int gray=Math.abs(east)<=42?0:(int)Math.round(255*(.02+.8*Math.max(primary,secondary)));
             pixels[y*width+x]=0xff000000|gray<<16|gray<<8|gray;
         }
         var raster=new LiveBPreviewService.VisibleRaster(width,height,pixels,-200,-20,200,20,2,2,OptionalDouble.of(2),"visible-interval-root-test","EPSG:3857",epoch.captureStable());
         var service=new LiveBPreviewService();var capture=new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(()->capture[0]=service.capture(data,selection,raster,config,true));
         var computed=service.compute(capture[0],CancellationProbe.NONE);assertTrue(computed.partitioned());assertNull(computed.pipeline());
+        assertEquals(1.56,computed.evidence().resolution().resampledPitchMeters().orElseThrow(),1e-12);
+        var missing=computed.intervalBatch().runs().stream().filter(run->run.interval().traceRange().firstIndex()==11&&run.interval().traceRange().lastIndex()==19).findFirst().orElseThrow();
+        assertEquals("NO_ROUTE",missing.result().inference().status().name());assertTrue(missing.routes().isEmpty());
         var assessment=new FixedIntervalEditPlanComposer().compose(computed.intervalBatch(),Map.of());assertTrue(assessment.plan().isPresent(),assessment.toString());
+        var frozen=assessment.intervals().stream().filter(row->row.intervalIndex()==computed.intervalBatch().runs().indexOf(missing)).findFirst().orElseThrow();
+        assertEquals(FixedIntervalEditPlanComposer.Disposition.FROZEN_LOCAL_FAILURE,frozen.disposition());assertEquals("NO_PRODUCTION_ROUTE",frozen.reason());
+        assertTrue(assessment.intervals().stream().anyMatch(row->row.disposition()==FixedIntervalEditPlanComposer.Disposition.CHANGED));
+        var stored=assessment.plan().orElseThrow();var originalWay=(DetachedWay)computed.intervalBatch().network().primitives().get(computed.request().selectedWayKey());
+        var afterWay=(DetachedWay)stored.after().primitives().get(originalWay.key());
+        var frozenKeys=originalWay.nodeKeys().subList(missing.interval().range().firstIndex(),missing.interval().range().lastIndex()+1);
+        int retainedStart=afterWay.nodeKeys().indexOf(frozenKeys.get(0));
+        assertTrue(retainedStart>=0);assertEquals(frozenKeys,afterWay.nodeKeys().subList(retainedStart,retainedStart+frozenKeys.size()));
+        for(int occurrence=missing.interval().range().firstIndex();occurrence<=missing.interval().range().lastIndex();occurrence++) {
+            var key=originalWay.nodeKeys().get(occurrence);assertTrue(afterWay.nodeKeys().contains(key));
+            assertEquals(((DetachedNode)computed.intervalBatch().network().primitives().get(key)).coordinate(),((DetachedNode)stored.after().primitives().get(key)).coordinate());
+            var id=new FinalRoutePointId.ExistingWayNodeOccurrence(originalWay.key(),key,occurrence);
+            assertEquals(computed.evidence().coordinateFrame().toMetric(((DetachedNode)computed.intervalBatch().network().primitives().get(key)).coordinate()),assessment.assignments().get(id));
+        }
         assertTrue(assessment.intervals().stream().anyMatch(i->i.disposition()==FixedIntervalEditPlanComposer.Disposition.FROZEN_LOCAL_FAILURE),
             ()->"Native intervals="+computed.intervalBatch().runs().stream().map(run->run.interval().traceRange()+":"+run.result().inference().status()+":routes="+run.routes().size()+":quality="+run.routes().stream().limit(8).map(route->originalRouteFacts(computed.intervalBatch(),run,route)+":"+route.quality().disposition()+":"+route.quality().findings().stream().map(f->f.code().name()).toList()).toList()).toList()+"; composition="+assessment.intervals());
         var root=new ModernReviewRoot[1];
