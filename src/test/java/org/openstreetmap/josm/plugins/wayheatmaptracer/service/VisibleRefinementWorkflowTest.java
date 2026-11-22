@@ -31,6 +31,7 @@ class VisibleRefinementWorkflowTest {
         for(var mode:AlignmentMode.values()) {
             var workers=new LinkedBlockingQueue<Runnable>();var publications=new LinkedBlockingQueue<Runnable>();
             var owner=new LegacyReviewOwner[1];var workflow=new LegacyRefinementWorkflow[1];
+            var refuseDisplay=new java.util.concurrent.atomic.AtomicBoolean();
             SwingUtilities.invokeAndWait(()->{
                 var data=new DataSet();var nodes=new ArrayList<Node>();var projection=ProjectionRegistry.getProjection();
                 for(int i=0;i<5;i++){var node=new Node(projection.eastNorth2latlon(new EastNorth(-60+30*i,0)));data.addPrimitive(node);nodes.add(node);}
@@ -46,12 +47,13 @@ class VisibleRefinementWorkflowTest {
                 var result=new AlignmentResult(selection,image,List.of(candidate),original,preview,List.of(),null,null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(candidate.id()),"","")),List.of(candidate));
                 var source=new LegacyVisibleSource(-100,-50,100,50,6,6,OptionalDouble.of(2),"EPSG:3857",new VisibleSourceEpoch().captureStable(),OptionalDouble.of(7.01),OptionalDouble.of(1.56));
                 owner[0].captured(result,LegacyVisibleRefinementBootstrapTest.factualFrame(source,200,100,0,0));
-                workflow[0]=new LegacyRefinementWorkflow(owner[0],null,owner[0]::select,d->{},s->{},workers::add,publications::add);
+                workflow[0]=new LegacyRefinementWorkflow(owner[0],null,owner[0]::select,d->{if(refuseDisplay.compareAndSet(true,false))throw new IllegalStateException("synthetic-smoothing-publication-refusal");},s->{},workers::add,publications::add);
                 workflow[0].enableRuntimeDiagnostics(()->null);
                 workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.MEDIUM);
             });
             try {
                 drain(workers,publications,workflow[0]);
+                var medium=stage(workflow[0]);
                 SwingUtilities.invokeAndWait(()->{
                     assertEquals("SMOOTH",workflow[0].currentStage().kind().name(),workflow[0].computationEvidence());
                     assertEquals(0,workflow[0].actualNativeCalls());
@@ -65,6 +67,23 @@ class VisibleRefinementWorkflowTest {
                         assertTrue(workflow[0].latestAttemptDiagnostics().orElseThrow().pipeline().isEmpty());
                         assertGaussianPublicationBound(archive,workflow[0]);
                     }catch(Exception unavailable){throw new AssertionError("Actual Gaussian export unavailable",unavailable);}
+                    workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.STRONG);
+                    workflow[0].cancel();
+                });
+                drain(workers,publications,workflow[0]);
+                SwingUtilities.invokeAndWait(()->{
+                    assertSame(medium,workflow[0].currentStage());assertEquals(RefinementAttemptDiagnostics.Cause.CANCELLED,workflow[0].latestAttemptDiagnostics().orElseThrow().cause());
+                    assertFalse(workflow[0].currentNative().orElseThrow().smoothingTicket().orElseThrow().equals(workflow[0].latestAttemptDiagnostics().orElseThrow().binding().ticket()));
+                    assertRetainedGaussianExport(workflow[0],temp.resolve("cancelled-strong-"+mode.name()+".zip"));
+                    refuseDisplay.set(true);workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.STRONG);
+                });
+                drain(workers,publications,workflow[0]);
+                SwingUtilities.invokeAndWait(()->{
+                    assertSame(medium,workflow[0].currentStage());assertEquals(RefinementAttemptDiagnostics.Publication.FAILED,workflow[0].latestAttemptDiagnostics().orElseThrow().publication());
+                    var failedTicket=workflow[0].latestAttemptDiagnostics().orElseThrow().binding().ticket();
+                    assertRetainedGaussianExport(workflow[0],temp.resolve("failed-strong-"+mode.name()+".zip"));
+                    ((JButton)find(workflow[0].controls(),"undo")).doClick();((JButton)find(workflow[0].controls(),"redo")).doClick();
+                    assertSame(medium,workflow[0].currentStage());assertEquals(failedTicket,workflow[0].latestAttemptDiagnostics().orElseThrow().binding().ticket());assertEquals(0,workflow[0].actualNativeCalls());
                     workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.STRONG);
                 });
                 drain(workers,publications,workflow[0]);
@@ -88,12 +107,17 @@ class VisibleRefinementWorkflowTest {
             } finally {SwingUtilities.invokeAndWait(()->{workflow[0].close();owner[0].close();});}
         }
     }
+    private static void assertRetainedGaussianExport(LegacyRefinementWorkflow workflow,Path path){
+        try{org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.writeLatest(path.toFile());assertGaussianPublicationBound(org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader.read(path),workflow);}
+        catch(Exception unavailable){throw new AssertionError("Retained actual Gaussian publication and latest failed attempt must export together",unavailable);}
+    }
     private static void assertGaussianPublicationBound(org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Archive archive,LegacyRefinementWorkflow workflow) {
         var bundle=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle(archive.buildIdentity(),archive.sourceIdentityHash(),archive.parameterHash(),archive.artifacts());
         var stage=workflow.currentStage();var codec=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.readBound(bundle,stage.id(),stage.selected()).orElseThrow();
         var selected=codec.stages().stream().filter(s->s.id().equals(stage.id())).findFirst().orElseThrow().candidates().stream().filter(c->c.id().equals(stage.selected())).findFirst().orElseThrow();
         var actual=selected.smoothingPublication().orElseThrow();
-        assertEquals(workflow.latestAttemptDiagnostics().orElseThrow().binding().ticket(),actual.ticket());assertTrue(selected.operation().isEmpty());
+        assertEquals(workflow.currentNative().orElseThrow().smoothingTicket().orElseThrow(),actual.ticket());assertTrue(selected.operation().isEmpty());
+        if(workflow.latestAttemptDiagnostics().orElseThrow().publication()==RefinementAttemptDiagnostics.Publication.PUBLISHED)assertEquals(workflow.latestAttemptDiagnostics().orElseThrow().binding().ticket(),actual.ticket());
         var artifact=bundle.artifacts().get(actual.receipt().artifact());var changed=new LinkedHashMap<>(bundle.artifacts());
         changed.put(artifact.name(),org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Artifact.text(artifact.name(),"{}"));
         var corrupt=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle(bundle.buildIdentity(),bundle.sourceIdentityHash(),bundle.parameterHash(),changed);
