@@ -13,4 +13,6 @@ public interface RefinementSourceContext {
     RefinementPipeline.Sources open(RefinementSourcePlanner.Plan plan,Stage parent,GeometryWorkContext work,
         AttemptMemoryLedger.Owner owner,CancellationProbe cancellation);
     LongSupplier detachedCommandGeneration();
+    /** Coordinate-free work witness when the actual provider produces one. */
+    default java.util.Optional<RefinementAttemptDiagnostics.SourceFacts> sourceFacts(){return java.util.Optional.empty();}
 }

@@ -42,6 +42,8 @@ def test_focused_xml_gate_uses_suite_identity_and_requires_executed_green_tests(
         "service.refinement.SmoothingWorkContextTest",
         "service.refinement.RetainedSmoothingRootTest",
         "service.ModernRefinementBootstrapTest",
+        "ui.RefinementControlsTest",
+        "ui.RefinementReviewLifecycleTest",
     ]
     for index, name in enumerate(names):
         (reports / f"TEST-randomized-{index}.xml").write_text(

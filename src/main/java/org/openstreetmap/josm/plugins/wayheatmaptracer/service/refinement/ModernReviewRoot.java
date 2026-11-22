@@ -95,7 +95,7 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
     public String sourceIdentity(){return sourceIdentity;}
     public void close(){observer.close();}
     private LiveBPreviewService.Computed firstOwner(){return interval==null?nativeChoices.get(0).owner():interval.owner();}
-    private NativeRefinementSourceContext source(){return new NativeRefinementSourceContext(firstOwner().captured(),config,coordinator);}
+    NativeRefinementSourceContext source(){return new NativeRefinementSourceContext(firstOwner().captured(),config,coordinator);}
 
     /** Worker preparation retains factual native plans/evidence, without inference or new capture. */
     public PreparedRefinementRoot prepare(GeometryWorkContext work) {
