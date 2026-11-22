@@ -396,6 +396,12 @@ class V022LiveBPreviewServiceTest {
         });
 
         PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE, junction.getUniqueId());
+        for(Object capture:List.of(visible[0],managed[0])) {
+            var receipt=(java.util.Optional<?>)capture.getClass().getMethod("originalReceipt").invoke(capture);
+            var bound=(NetworkSnapshotCapture.CapturedSnapshot)receipt.orElseThrow();
+            var network=capture instanceof LiveBPreviewService.Captured value?value.network():((LiveBPreviewService.ManagedCaptureSeed)capture).network();
+            assertSame(network,bound.snapshot(),"Native refinement must retain the original factual capture receipt");
+        }
         assertTrue(visible[0].network().closure().protectedExistingNodeKeys().contains(key));
         assertTrue(managed[0].network().closure().protectedExistingNodeKeys().contains(key));
         assertFalse(visible[0].network().closure().movableExistingNodeKeys().contains(key));

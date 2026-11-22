@@ -36,6 +36,11 @@ def test_focused_xml_gate_uses_suite_identity_and_requires_executed_green_tests(
         "config.PluginPreferencesTest",
         "service.refinement.RefinementRootAuthorityTest",
         "ui.HeatmapSettingsDialogTest",
+        "service.V022LiveBPreviewServiceTest",
+        "service.refinement.RefinementSmoothingAdapterTest",
+        "service.refinement.SmoothingParentBinderTest",
+        "service.refinement.SmoothingWorkContextTest",
+        "service.refinement.RetainedSmoothingRootTest",
     ]
     for index, name in enumerate(names):
         (reports / f"TEST-randomized-{index}.xml").write_text(
