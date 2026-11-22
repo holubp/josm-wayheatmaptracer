@@ -8,6 +8,22 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.Refine
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 
 class RefinementAttemptDiagnosticsTest {
+    @Test void sourceFactsRequireExactUtf8Sha256Binding() {
+        var ticket=new OperationTicket(new SessionId(UUID.randomUUID()),1,new StageId(UUID.randomUUID()),new CandidateId("parent"),TrackerMode.PROBABILISTIC,AlignmentMode.MOVE_EXISTING_NODES);
+        String hash="12ea3684bf5746acdebbfc2de080fbbe8afefec7130a8b32f43b0b9504962d63";
+        var binding=new RefinementAttemptDiagnostics.Binding(ticket,ticket.parent(),"source-Žluťoučký-東京","network","settings","frozen","parent");
+        var counters=new EnumMap<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind,Long>(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.class);
+        for(var kind:org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values())counters.put(kind,0L);
+        java.util.function.BiFunction<OperationTicket,String,RefinementAttemptDiagnostics> diagnostic=(factTicket,sourceHash)->{
+            var facts=new RefinementAttemptDiagnostics.SourceFacts(factTicket,sourceHash,RefinementAttemptDiagnostics.SourceKind.VISIBLE,RefinementAttemptDiagnostics.Coverage.COVERED,hash,hash,hash,RefinementAttemptDiagnostics.InputFrameRole.ORIGINAL_INPUT,2,3,4,5,0,OptionalLong.empty());
+            var work=new RefinementAttemptDiagnostics.SourcePreparationWork(RefinementAttemptDiagnostics.Cause.NONE,0,counters,Optional.empty(),Optional.empty(),Optional.of(facts));
+            return new RefinementAttemptDiagnostics(binding,Optional.empty(),RefinementAttemptDiagnostics.Publication.NO_CHILD,RefinementAttemptDiagnostics.Phase.SOURCE_PREPARATION,RefinementAttemptDiagnostics.Cause.NONE,0,true,Optional.of(work));
+        };
+        assertEquals(hash,diagnostic.apply(ticket,hash).sourcePreparation().orElseThrow().sourceFacts().orElseThrow().sourceIdentityHash());
+        assertThrows(IllegalArgumentException.class,()->diagnostic.apply(ticket,"0".repeat(64)));
+        var foreign=new OperationTicket(ticket.session(),2,ticket.parent(),ticket.choice(),ticket.engine(),ticket.mode());
+        assertThrows(IllegalArgumentException.class,()->diagnostic.apply(foreign,hash));
+    }
     @Test void oneByteShortPublicationAdmissionKeepsActualAssessedReceiptAndInputs() {
         withAssessedPublication((parent,ticket,result,evidence,payload,original,progress,input,publication)->{
             long allowance=1024*1024, pinned=input.currentBytes();

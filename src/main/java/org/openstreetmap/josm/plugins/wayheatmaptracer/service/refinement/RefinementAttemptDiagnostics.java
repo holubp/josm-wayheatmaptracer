@@ -68,11 +68,19 @@ public record RefinementAttemptDiagnostics(Binding binding, Optional<RefinementO
         Objects.requireNonNull(binding);Objects.requireNonNull(pipeline);Objects.requireNonNull(publication);Objects.requireNonNull(phase);Objects.requireNonNull(cause);Objects.requireNonNull(sourcePreparation);
         if(materializationRefusals<0)throw new IllegalArgumentException("Negative observed refusal count");
         sourcePreparation.flatMap(SourcePreparationWork::sourceFacts).ifPresent(facts->{
-            if(!facts.ticket().equals(binding.ticket())||!facts.sourceIdentityHash().equals(org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Safety.sha256(binding.rootSourceIdentity())))
+            if(!facts.ticket().equals(binding.ticket())||!facts.sourceIdentityHash().equals(sourceIdentityHash(binding.rootSourceIdentity())))
                 throw new IllegalArgumentException("Source facts belong to another attempt");
         });
         pipeline.ifPresent(receipt->{if(!receipt.ticket().equals(binding.ticket())||!receipt.parentIdentity().equals(binding.parentIdentity())
             ||!receipt.originalNetworkHash().equals(binding.originalNetworkHash()))throw new IllegalArgumentException("Attempt receipt binding differs");});
+    }
+    private static String sourceIdentityHash(String identity) {
+        try {
+            return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(identity.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch(java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("Required SHA-256 is unavailable",impossible);
+        }
     }
     /** One fixed bounded slot within the existing attempt ledger; absent admission retains no fabricated receipt. */
     static final class Slot implements AutoCloseable {

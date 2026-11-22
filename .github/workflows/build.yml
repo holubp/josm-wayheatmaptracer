@@ -82,7 +82,7 @@ jobs:
         run: |
           case "$GITHUB_REF" in
             refs/heads/codex/g004-stepwise-20261119)
-              filters=(--tests '*VisibleRefinementWorkflowTest')
+              filters=(--tests '*VisibleRefinementWorkflowTest' --tests '*RefinementAttemptDiagnosticsTest' --tests '*RefinementLineageCodecTest')
               ;;
             refs/heads/codex/g004-smoothing-adapter-20261121)
               filters=(
@@ -110,6 +110,8 @@ jobs:
           names = {
               "refs/heads/codex/g004-stepwise-20261119": [
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.VisibleRefinementWorkflowTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnosticsTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodecTest.xml",
               ],
               "refs/heads/codex/g004-smoothing-adapter-20261121": [
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementSmoothingAdapterTest.xml",
@@ -138,7 +140,7 @@ jobs:
           from pathlib import Path
 
           classes = {
-              "refs/heads/codex/g004-stepwise-20261119": ["VisibleRefinementWorkflowTest"],
+              "refs/heads/codex/g004-stepwise-20261119": ["VisibleRefinementWorkflowTest", "RefinementAttemptDiagnosticsTest", "RefinementLineageCodecTest"],
               "refs/heads/codex/g004-smoothing-adapter-20261121": [
                   "RefinementSmoothingAdapterTest",
                   "PostprocessingValidationWorkTest",
@@ -169,6 +171,8 @@ jobs:
           test_names = {
               "refs/heads/codex/g004-stepwise-20261119": [
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/VisibleRefinementWorkflowTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RefinementAttemptDiagnosticsTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/diagnostics/replay/format15/RefinementLineageCodecTest.java",
               ],
               "refs/heads/codex/g004-smoothing-adapter-20261121": [
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RefinementSmoothingAdapterTest.java",
