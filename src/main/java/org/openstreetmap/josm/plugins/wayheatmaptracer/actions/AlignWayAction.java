@@ -1416,7 +1416,7 @@ public class AlignWayAction extends JosmAction {
                     else if(refinement[0].currentSourceAvailable())refresh.run();
                     else {sourceChoices.setEnabled(false);choices.forEach(choice->choice.setEnabled(false));apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);quality.setText(tr("The source changed. This cached result is available for inspection and diagnostics; run alignment again before applying."));}
                 },nativeVisibleCapturePort(computed.captured(),imageryLayer,mapView,refinementRoot[0]::requireAuthorityCurrent));
-                refinement[0].controls().externalRootSelection(true);refinement[0].enableNativeRuntimeDiagnostics(candidate->createNativeRootContext(computed,candidate,false),candidate->createNativeRootContext(computed,candidate,true));
+                refinement[0].controls().externalRootSelection(true);refinement[0].enableNativeRuntimeDiagnostics(candidate->createNativeRootContext(computed,candidate,false),candidate->createNativeRootContext(computed,candidate,true),()->originalNativeWork(computed));
                 refinement[0].attachCommandContext(detachedCommandContext(dataSet,computed.captured().managedRaster()==null?imageryLayer:null,computed.captured().managedRaster()!=null?previewSourceOwner:null));
                 footer.add(refinement[0].controls(),BorderLayout.CENTER);
                 dialog.getRootPane().putClientProperty("wayheatmaptracer.refinementOwner",refinement[0]);
@@ -2175,7 +2175,7 @@ public class AlignWayAction extends JosmAction {
                     },nativeVisibleCapturePort(computed.captured(),imageryLayer,mapView,refinementRoot[0]::requireAuthorityCurrent));
                 refinement[0].controls().externalRootSelection(true);
                 refinement[0].attachCommandContext(detachedCommandContext(dataSet,computed.captured().managedRaster()==null?imageryLayer:null,computed.captured().managedRaster()!=null?previewSourceOwner:null));
-                refinement[0].enableNativeRuntimeDiagnostics(candidate->createNativeRootContext(computed,candidate,false),candidate->createNativeRootContext(computed,candidate,true));
+                refinement[0].enableNativeRuntimeDiagnostics(candidate->createNativeRootContext(computed,candidate,false),candidate->createNativeRootContext(computed,candidate,true),()->originalNativeWork(computed));
                 var reviewBody=new JPanel(new BorderLayout(4,4));reviewBody.add(originalReviewBody,BorderLayout.CENTER);reviewBody.add(refinement[0].controls(),BorderLayout.SOUTH);panel.add(reviewBody,BorderLayout.CENTER);
                 dialog.getRootPane().putClientProperty("wayheatmaptracer.refinementOwner",refinement[0]);
                 livePreviewSession.replaceWindow(previewOwner,()->{refinement[0].close();dialog.dispose();overlay.hide();});
@@ -2487,6 +2487,18 @@ public class AlignWayAction extends JosmAction {
         artifacts.put("source-choices.json", Format15Artifact.text("source-choices.json", json.toString()));
         return new Format15Bundle(bundle.buildIdentity(), bundle.sourceIdentityHash(),
                 bundle.parameterHash(), artifacts);
+    }
+    private static Format15Artifact originalNativeWork(LiveBPreviewService.Computed root) {
+        var json=new StringBuilder("{\"schema\":1,\"scope\":\"original-production-attempt\",\"sources\":[");
+        boolean first=true;
+        for(var owner:root.productionRuns()) {
+            if(!first)json.append(',');first=false;
+            json.append("{\"sourceTier\":\"").append(safeChoiceToken(owner.options().sourceTier()))
+                .append("\",\"evidenceHash\":\"").append(owner.request().evidenceContentHash()).append('"');
+            appendOriginalSourceWork(json,owner);json.append('}');
+            if(json.length()>65536)throw new IllegalStateException("Original production metadata exceeds bounded fallback");
+        }
+        return Format15Artifact.text("original-native-work.json",json.append("]}\n").toString());
     }
     private static void appendOriginalSourceWork(StringBuilder json,LiveBPreviewService.Computed owner) {
         json.append(",\"work\":{\"schema\":1,\"scope\":\"").append(owner.partitioned()?"INTERVAL_SOURCE_BATCH":"FULL_SELECTED_SOURCE_RUN")

@@ -15,6 +15,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.*;
 
@@ -91,13 +92,19 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         legacyContextSupplier=Objects.requireNonNull(rootContext);ratingSupplier=Objects.requireNonNull(ratings);initialDiagnosticChoice=review.choiceId(review.selectedCandidate());
     }
     public void enableNativeRuntimeDiagnostics(java.util.function.Function<Candidate,Format15Bundle> context,java.util.function.Function<Candidate,Format15Bundle> boundedFallback) {
+        enableNativeRuntimeDiagnostics(context,boundedFallback,()->null);
+    }
+    /** Original completed work remains factual even when optional root preparation never succeeds. */
+    public void enableNativeRuntimeDiagnostics(java.util.function.Function<Candidate,Format15Bundle> context,java.util.function.Function<Candidate,Format15Bundle> boundedFallback,java.util.function.Supplier<Format15Artifact> originalWork) {
         enableRuntimeDiagnostics(()->null);
         nativeContextSupplier=Objects.requireNonNull(context);nativeContextFallback=Objects.requireNonNull(boundedFallback);
+        nativeOriginalWorkSupplier=Objects.requireNonNull(originalWork);
     }
     private java.util.function.Supplier<Map<String,CandidateRating>> ratingSupplier;
     private java.util.function.Supplier<LastSlideDebugBundle> legacyContextSupplier;
     private LastSlideDebugBundle legacyDiagnosticContext;
     private java.util.function.Function<Candidate,Format15Bundle> nativeContextSupplier,nativeContextFallback;
+    private java.util.function.Supplier<Format15Artifact> nativeOriginalWorkSupplier;
     private Candidate originalNativeContextChoice;
     private Format15Bundle nativeDiagnosticContext;
     private DiagnosticsRegistry.RefinementOwner diagnosticOwner;
@@ -121,6 +128,10 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         DiagnosticsRegistry.invalidateRefinement(diagnosticOwner);
     }
     private void bootstrapFailed(RuntimeException failure,boolean workerReturned) {
+        computationEvidence="bootstrap; failed="+failure.getClass().getSimpleName()+"; phase=PREPARATION";
+        for(var frame:failure.getStackTrace())if(frame.getClassName().startsWith("org.openstreetmap.josm.plugins.wayheatmaptracer.")&&!frame.getClassName().contains("AttemptMemoryLedger")) {
+            computationEvidence+="; boundary="+frame.getClassName().substring(frame.getClassName().lastIndexOf('.')+1)+"."+frame.getMethodName()+":"+frame.getLineNumber();break;
+        }
         if(bootstrapDiagnostic==null)return;
         String cause=cancellation!=null&&cancellation.isCancelled()?"CANCELLED":review.invalidated()?"STALE":
             failure instanceof java.util.concurrent.RejectedExecutionException?"EXECUTOR_REJECTED":
@@ -138,13 +149,20 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         for(int i=0;i<original.size();i++){var point=projection.eastNorth2latlon(original.get(i));csv.append(i).append(',').append(point.lat()).append(',').append(point.lon()).append('\n');}
         var geometry=Format15Artifact.text("original-osm-geographic.csv",csv.toString());
         var settings=Format15Artifact.text("original-review-settings.json","{\"scope\":\"original-review-settings-only\",\"heatmap\":"+review.originalConfig().heatmap().toRedactedJson()+",\"cleanup\":"+review.originalConfig().cleanup().toRedactedJson()+"}\n");
+        Format15Artifact originalWork=null;
+        if(nativeOriginalWorkSupplier!=null)try {
+            var known=nativeOriginalWorkSupplier.get();
+            if(known!=null&&known.name().equals("original-native-work.json")&&known.bytes().length<=65536)originalWork=known;
+        }catch(RuntimeException unavailable){PluginLog.verbose("Original native preparation work unavailable: %s",unavailable.getClass().getSimpleName());}
         String cause=terminal&&busy?"CANCELLED":attempt.cause();
         String json="{\"schema\":1,\"attempt\":\""+attempt.attempt()+"\",\"phase\":\"BOOTSTRAP\",\"cause\":\""+cause
             +"\",\"operation\":\""+attempt.operation()+"\",\"requestedEngine\":"+(attempt.requestedEngine()==null?"null":"\""+attempt.requestedEngine().name()+"\"")
-            +",\"strength\":\""+attempt.strength()+"\",\"publication\":\"NO_PREPARED_ROOT\",\"nativeCalls\":0,\"nativeFrozenInputs\":\"unavailable\",\"originalNativeWork\":\"unavailable\",\"chainReplay\":\"unavailable\",\"originalGeometryScope\":\"immutable-original-selected-segment\",\"auxiliaryWorkVisits\":"+(attempt.workVisits().isPresent()?attempt.workVisits().getAsLong():"null")+"}\n";
+            +",\"strength\":\""+attempt.strength()+"\",\"publication\":\"NO_PREPARED_ROOT\",\"nativeCalls\":0,\"nativeCallScope\":\"requested-optional-operation\",\"nativeFrozenInputs\":\"unavailable\",\"originalNativeWork\":\""+(originalWork==null?"unavailable":"available")+"\",\"chainReplay\":\"unavailable\",\"originalGeometryScope\":\"immutable-original-selected-segment\",\"auxiliaryWorkVisits\":"+(attempt.workVisits().isPresent()?attempt.workVisits().getAsLong():"null")+"}\n";
         var status=Format15Artifact.text("latest-operation.json",json);
         // This fallback deliberately has no authority receipt, generated geometry or lineage.
-        return new Format15Bundle("runtime-stepwise-preparation-v1",bootstrapSourceHash(review.sourceIdentity()),settings.sha256(),Map.of(geometry.name(),geometry,settings.name(),settings,status.name(),status));
+        var artifacts=new LinkedHashMap<String,Format15Artifact>();artifacts.put(geometry.name(),geometry);artifacts.put(settings.name(),settings);artifacts.put(status.name(),status);
+        if(originalWork!=null)artifacts.put(originalWork.name(),originalWork);
+        return new Format15Bundle("runtime-stepwise-preparation-v1",bootstrapSourceHash(review.sourceIdentity()),settings.sha256(),artifacts);
     }
     private static String bootstrapSourceHash(String source) {
         try{return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(source.getBytes(java.nio.charset.StandardCharsets.UTF_8)));}
@@ -1063,6 +1081,6 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             &&metadata.paintedFrame().filter(LegacyVisibleSource.PaintedFrame::commonResolution).isPresent()
             &&review.originalResult().capturedHeatmap()!=null&&(intensity==null||intensity.usesColorMapping())&&!review.originalConfig().heatmap().aggregateAllColorSchemes();
     }
-    private void releaseClosed(){bootstrapDiagnostic=null;if(bootstrapDiagnosticMemory!=null)bootstrapDiagnosticMemory.close();bootstrapDiagnosticMemory=null;latestDiagnostics=null;latestSmoothingReceipt=Optional.empty();latestSmoothingProtocol=Optional.empty();diagnosticsSlot=null;diagnosticsAvailability=RefinementAttemptDiagnostics.Availability.NONE;rootCompositionOwners.values().forEach(AttemptMemoryLedger.Owner::close);rootCompositionOwners.clear();diagnosticMemory.closeWorkflow();legacyDiagnosticContext=null;legacyContextSupplier=null;nativeDiagnosticContext=null;nativeContextSupplier=null;nativeContextFallback=null;originalNativeContextChoice=null;ratingSupplier=null;pendingLegacyReview=null;pendingLegacyReviewMemory=null;retainedStages.clear();seed=null;root=null;preparedRoot=null;sourceContext=null;preparingSourceCurrent=()->{};session=null;confirmation=null;}
+    private void releaseClosed(){bootstrapDiagnostic=null;if(bootstrapDiagnosticMemory!=null)bootstrapDiagnosticMemory.close();bootstrapDiagnosticMemory=null;latestDiagnostics=null;latestSmoothingReceipt=Optional.empty();latestSmoothingProtocol=Optional.empty();diagnosticsSlot=null;diagnosticsAvailability=RefinementAttemptDiagnostics.Availability.NONE;rootCompositionOwners.values().forEach(AttemptMemoryLedger.Owner::close);rootCompositionOwners.clear();diagnosticMemory.closeWorkflow();legacyDiagnosticContext=null;legacyContextSupplier=null;nativeDiagnosticContext=null;nativeContextSupplier=null;nativeContextFallback=null;nativeOriginalWorkSupplier=null;originalNativeContextChoice=null;ratingSupplier=null;pendingLegacyReview=null;pendingLegacyReviewMemory=null;retainedStages.clear();seed=null;root=null;preparedRoot=null;sourceContext=null;preparingSourceCurrent=()->{};session=null;confirmation=null;}
     @Override public void close(){if(closed)return;if(isCurrent()&&!diagnosticSealed){if(!diagnosticState.equals("apply-failed"))diagnosticsChanged("cancelled");freezeDiagnostics(true,false);}closed=true;if(lifecycle!=null)lifecycle.close();workGate.release(this);if(cancellation!=null)cancellation.cancel();if(session!=null)session.close();if(!busy)releaseClosed();}
 }

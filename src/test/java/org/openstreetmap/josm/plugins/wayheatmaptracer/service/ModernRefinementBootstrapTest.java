@@ -239,6 +239,7 @@ class ModernRefinementBootstrapTest {
         });
         try {
             VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
+            SwingUtilities.invokeAndWait(()->assertDoesNotThrow(workflow[0]::currentStage,workflow[0].computationEvidence()));
             var first=VisibleRefinementWorkflowTest.stage(workflow[0]);assertEquals(RefinementModels.StageKind.REFINE_A,first.kind(),workflow[0].computationEvidence());
             assertTrue(workflow[0].actualNativeCalls()>0);assertTrue(paints.get()>0);
             var originalParent=first.parentChoice().orElseThrow();int calls=workflow[0].actualNativeCalls(),captured=paints.get();
