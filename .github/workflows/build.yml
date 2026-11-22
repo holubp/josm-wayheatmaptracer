@@ -87,6 +87,8 @@ jobs:
               filters+=(--tests '*V022FixedIntervalEditPlanComposerTest.allUsableUnchangedIntervalsRequireTheirOwnValidatedGraphProof' --tests '*V022FixedIntervalEditPlanComposerTest.geometricallyUnchangedRouteIsNotReportedAsALocalFailure')
               filters+=(--tests '*AlignWayActionTest.noRouteFromManualJunctionShowsInstructionWhileOrdinaryNoRouteKeepsItsReason' --tests '*AlignWayActionTest.intervalExportFailureRetainsActualBatchWorkWithoutClaimingFullWayInference')
               filters+=(--tests '*VisibleRenderPolicyTest')
+              filters+=(--tests '*RefinementAcquisitionTest.frozenVisiblePlanConvertsSameEpochPixelsAndRejectsShortFrameBeforeScalarWork')
+              filters+=(--tests '*BenchmarkDecisionComparatorIntegrationTest.selectedObservationRejectsAbsentStaleAndSameCoreMissingWitnessOwners' --tests '*AlignWayActionTest.ordinaryBRouteFreezesSupportedSettingsWithoutChangingRequestedPreferences' --tests '*V022PreviewStateTest.t116SupportedLiveEnginePersistsWhileOtherSettingsAndHistoricalIdentityRemain' --tests '*VisibleEvidencePlanTest.pointsAndDecisionFitDoNotProveCompleteEngineSupport')
               ;;
             refs/heads/codex/g004-smoothing-adapter-20261121)
               filters=(
@@ -130,6 +132,10 @@ jobs:
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.V022FixedIntervalEditPlanComposerTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayActionTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleRenderPolicyTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.BenchmarkDecisionComparatorIntegrationTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.ui.V022PreviewStateTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.VisibleEvidencePlanTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAcquisitionTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControlsTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementReviewLifecycleTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.actions.StepwiseRefinementApplyTest.xml",
@@ -186,6 +192,7 @@ jobs:
           classes["refs/heads/codex/g004-stepwise-20261119"].append("V022FixedIntervalEditPlanComposerTest")
           classes["refs/heads/codex/g004-stepwise-20261119"].append("AlignWayActionTest")
           classes["refs/heads/codex/g004-stepwise-20261119"].append("VisibleRenderPolicyTest")
+          classes["refs/heads/codex/g004-stepwise-20261119"].extend(["BenchmarkDecisionComparatorIntegrationTest", "V022PreviewStateTest", "VisibleEvidencePlanTest", "RefinementAcquisitionTest"])
           selected = classes[os.environ["FOCUSED_REF"]]
           source = Path("build/test-results/test")
           destination = Path("build/reports/g004-focused-artifact/junit")
@@ -224,6 +231,10 @@ jobs:
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/V022FixedIntervalEditPlanComposerTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/actions/AlignWayActionTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/imagery/VisibleRenderPolicyTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/BenchmarkDecisionComparatorIntegrationTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/ui/V022PreviewStateTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/VisibleEvidencePlanTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RefinementAcquisitionTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/ui/RefinementControlsTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/ui/RefinementReviewLifecycleTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/actions/StepwiseRefinementApplyTest.java",

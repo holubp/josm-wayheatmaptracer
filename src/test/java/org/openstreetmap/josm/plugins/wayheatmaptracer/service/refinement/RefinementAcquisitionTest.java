@@ -20,7 +20,8 @@ class RefinementAcquisitionTest {
    var work=VisibleEvidencePlanTest.work(owner);var old=VisibleEvidencePlanTest.original(source,epoch,1);
    var original=new LegacyVisibleSource(old.minimumEast(),old.minimumNorth(),old.maximumEast(),old.maximumNorth(),10,6,OptionalDouble.of(1),old.projectionCode(),old.sourceReceipt(),old.decisionRadiusMeters(),old.sampleStepMeters());
    var plan=VisibleEvidencePlan.create(source,VisibleEvidencePlanTest.factual(original),work);var raster=VisibleRefinementCaptureTest.raster(plan);
-   var captured=RefinementAcquisition.captureVisible(source,plan,raster,"blue",work);var evidence=captured.value().evidence();
+   var captured=RefinementAcquisition.captureVisible(source,plan,raster,"blue",work,Optional.empty());var evidence=captured.value().evidence();
+   assertTrue(work.counters().get(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.HASH)>0,"Generic/fresh visible inputs retain their actual metered original ARGB hash");
    assertEquals(plan.grid().transform(),evidence.transform());assertEquals(plan.grid().width(),evidence.resampling().outputWidth());assertEquals(1,evidence.resolution().outputRasterPitchMeters());
    assertTrue(work.counters().get(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.MAP)>0);
    var descriptor=captured.value().retentionDescriptor(source.requests().stream().filter(r->r.palette().equals("blue")&&r.mapping().equals("blue")).findFirst().orElseThrow(),evidence);

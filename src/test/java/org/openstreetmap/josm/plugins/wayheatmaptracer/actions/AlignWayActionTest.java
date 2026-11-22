@@ -1125,7 +1125,7 @@ class AlignWayActionTest {
             PluginPreferences.saveGeometryCleanup(GeometryCleanupPreset.STRONG.apply());
             ManagedHeatmapConfig loadedHeatmap = PluginPreferences.load();
             GeometryCleanupConfig loadedCleanup = PluginPreferences.loadGeometryCleanup();
-            assertEquals(TrackerMode.LEGACY_V02, loadedHeatmap.trackerMode());
+            assertEquals(TrackerMode.PROBABILISTIC, loadedHeatmap.trackerMode());
             assertEquals(loadedHeatmap, PluginPreferences.load());
             assertEquals(loadedCleanup, PluginPreferences.loadGeometryCleanup());
             assertTrue(Config.getPref().getBoolean("wayheatmaptracer.simplifyEnabled", false));

@@ -232,7 +232,12 @@ class BenchmarkDecisionComparatorIntegrationTest {
         var old = new NetworkSnapshot(network.snapshotId(), network.role(), network.datasetIdentity(),
                 network.sourceGeneration(), network.closure(), network.primitives(), network.incomingReferrerWatches());
         assertEquals(network.canonicalHash(), old.canonicalHash(), "witness is additive to historical core identity");
-        var captured = recordWith(owner.captured(), "network", old);
+        var refused = assertThrows(java.lang.reflect.InvocationTargetException.class,()->recordWith(owner.captured(), "network", old));
+        assertTrue(refused.getCause() instanceof IllegalArgumentException,"A foreign network cannot retain the actual original capture receipt");
+        // Historical compatibility input has no producer receipt. Preserve the comparator's
+        // independent same-core/missing-witness oracle without inventing a later capture.
+        var historical = recordWith(owner.captured(), "originalReceipt", java.util.Optional.empty());
+        var captured = recordWith(historical, "network", old);
         var stale = recordWith(owner, "captured", captured);
         var rejected = assertThrows(IllegalStateException.class, () ->
                 org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayAction

@@ -100,7 +100,13 @@ public class VisibleEvidencePlanTest {
   try(var owner=AttemptMemoryLedger.production().rootOwner()) {
    var work=work(owner);var o=original(a,epoch,1);
    o=new LegacyVisibleSource(o.minimumEast(),o.minimumNorth(),o.maximumEast(),o.maximumNorth(),10,6,o.nativePitchMeters(),o.projectionCode(),o.sourceReceipt(),o.decisionRadiusMeters(),o.sampleStepMeters());
-   o=factual(o);var ap=VisibleEvidencePlan.create(a,o,work);var bp=VisibleEvidencePlan.create(b,o,work);var raster=VisibleRefinementCaptureTest.raster(bp);
+   o=factual(o);var ap=VisibleEvidencePlan.create(a,o,work);var bp=VisibleEvidencePlan.create(b,o,work);
+   // The normal acquisition canvas includes origin-lattice padding and may cover
+   // both engines. This factual tight raster covers B's complete requested grid,
+   // while retaining a genuinely insufficient A halo in the same projection/epoch.
+   var bounds=bp.requestedBounds();double pitch=bp.projectedScale()/6;
+   int width=(int)Math.ceil((bounds.maximumEast()-bounds.minimumEast())/pitch),height=(int)Math.ceil((bounds.maximumNorth()-bounds.minimumNorth())/pitch);
+   var raster=new LiveBPreviewService.VisibleRaster(width,height,new int[width*height],bounds.minimumEast(),bounds.maximumNorth()-height*pitch,bounds.minimumEast()+width*pitch,bounds.maximumNorth(),bp.projectedScale(),o.groundMetersPerViewPixel(),o.nativePitchMeters(),a.parent().root().sourceIdentity(),o.projectionCode(),o.sourceReceipt());
    assertEquals(13,ap.haloPixels());assertEquals(7,bp.haloPixels());assertEquals(VisibleEvidencePlan.Support.COVERED,bp.support(raster));assertEquals(VisibleEvidencePlan.Support.NEEDS_CAPTURE,ap.support(raster));
    var transform=org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform.visibleWebMercator(raster.minimumEast(),raster.maximumNorth(),raster.projectionUnitsPerViewPixel(),6);
    for(var point:a.parent().points()){var pixel=transform.toRasterCenter(ap.grid().coordinateFrame().toGeographic(point));assertTrue(pixel.x()>=0&&pixel.x()<raster.width()-1&&pixel.y()>=0&&pixel.y()<raster.height()-1);}

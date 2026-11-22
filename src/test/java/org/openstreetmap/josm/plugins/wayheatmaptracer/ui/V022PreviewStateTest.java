@@ -40,7 +40,7 @@ class V022PreviewStateTest {
     }
 
     @Test
-    void t116LiveEngineMigratesWhileOtherSettingsAndHistoricalIdentityRemain() {
+    void t116SupportedLiveEnginePersistsWhileOtherSettingsAndHistoricalIdentityRemain() {
         // Ordinary radius belongs to the existing search-width setting, not saveTracingSettings.
         Config.getPref().putDouble(PREFIX + "searchHalfWidthMeters", 7.01);
         Config.getPref().put(PREFIX + "alignmentMode", AlignmentMode.PRECISE_SHAPE.name());
@@ -52,8 +52,7 @@ class V022PreviewStateTest {
 
         PluginPreferences.saveTracingSettings(settings);
 
-        assertEquals(new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION, TrackerMode.LEGACY_V02,
-            recovery, false, AlignmentSourceMode.MANAGED_TILES), PluginPreferences.loadTracingSettings());
+        assertEquals(settings, PluginPreferences.loadTracingSettings());
         assertEquals(AlignmentMode.PRECISE_SHAPE, PluginPreferences.load().alignmentMode());
         assertEquals("blue", PluginPreferences.load().color());
         assertEquals(TrackerMode.PROBABILISTIC, TrackerMode.fromPreference("PROBABILISTIC"));

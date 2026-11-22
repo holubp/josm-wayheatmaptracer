@@ -835,7 +835,7 @@ public final class PublicGuiSmokeMain {
             } catch(Exception failure) {
                 try {
                     var observed=onEventThread(()->laterExportSnapshot(owner,expected,actionObserved.get(),admissions));
-                    if(expected==StageKind.SMOOTH)System.err.println("GUI_SMOKE_ACTUAL_SMOOTHING_WORK "+observed.diagnostic().flatMap(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics::sourcePreparation));
+                    System.err.println("GUI_SMOKE_ACTUAL_AUXILIARY_WORK "+observed.diagnostic().flatMap(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics::sourcePreparation));
                     String evidence=observed.evidence();
                     String exportStatus="UNAVAILABLE"; String archiveHash=null;
                     try {
