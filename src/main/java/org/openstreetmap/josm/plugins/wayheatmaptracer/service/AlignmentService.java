@@ -3028,10 +3028,12 @@ public final class AlignmentService {
         if(!javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Visible renderer requires EDT");
         request.requireChunk(chunk);request.evidencePlan().requireCurrent();
         if(ProjectionRegistry.getProjection()==null||!ProjectionRegistry.getProjection().toCode().equals(request.evidencePlan().original().projectionCode()))throw request.evidencePlan().sourceContextChanged();
+        try(var nativeViewport=new NativeViewportScope(view)) {
         var bounds=chunk.bounds();double scale=request.evidencePlan().projectedScale();
         view.setSize(chunk.viewWidth(),chunk.viewHeight());
         view.prepareToDraw();
         view.zoomTo(new EastNorth((bounds.minimumEast()+bounds.maximumEast())/2,(bounds.minimumNorth()+bounds.maximumNorth())/2),scale,false);
+        requireNativePaintFrame(view,chunk.viewWidth(),chunk.viewHeight(),new ProjectionBounds(bounds.minimumEast(),bounds.minimumNorth(),bounds.maximumEast(),bounds.maximumNorth()),scale);
         var actual=view.getProjectionBounds();
         var raster=sampler.captureLayer(layer,view);
         var zoom=capturedTileZoom(layer);
@@ -3041,6 +3043,7 @@ public final class AlignmentService {
         var resolution=new VisibleSourceResolutionResolver().resolveAtZoom(layer,zoom.sourceTileZoom(),latitude);
         request.evidencePlan().requireCurrent();
         return new VisibleRefinementCapture.RenderedChunk(raster,new VisibleRefinementCapture.Bounds(actual.minEast,actual.minNorth,actual.maxEast,actual.maxNorth),zoom.sourceTileZoom(),resolution.metersPerPixel(),physical.representativeMetersPerProjectionUnit()*scale);
+        }
     }
 
     private RenderedCapture captureVisibleHeatmap(
@@ -3065,7 +3068,7 @@ public final class AlignmentService {
         VisibleCaptureState captureState = new VisibleCaptureState(originalCenter, originalScale, originalBounds,
             originalSize, requestedBounds, captureBounds, captureSize, targetScale, false, 1);
         List<LegacyVisibleSource.PaintedChunk> paintedChunks=new ArrayList<>();
-        try {
+        try(var nativeState=nativeViewport?new NativeViewportScope(mapView):null) {
             BufferedImage raster;
             if (captureSize.width <= MAX_CAPTURE_VIEW_DIMENSION_PX && captureSize.height <= MAX_CAPTURE_VIEW_DIMENSION_PX) {
                 captureState = captureState.withCapturePlan(false, 1);
@@ -3103,11 +3106,7 @@ public final class AlignmentService {
                 LegacyVisibleSource.PaintedFrame.common(raster.getWidth(),raster.getHeight(),paintedChunks)
             );
         } finally {
-            mapView.setSize(originalSize);
-            if(nativeViewport)mapView.prepareToDraw();
-            mapView.zoomTo(originalCenter, originalScale, false);
-            if(nativeViewport)requireNativePaintFrame(mapView,originalSize.width,originalSize.height,captureBoundsForSize(originalCenter,originalSize,originalScale),originalScale);
-            PluginLog.verbose("Restored JOSM map view after heatmap capture.");
+            if(!nativeViewport){mapView.setSize(originalSize);mapView.zoomTo(originalCenter, originalScale, false);PluginLog.verbose("Restored JOSM map view after heatmap capture.");}
         }
     }
 
@@ -3161,6 +3160,28 @@ public final class AlignmentService {
         return mosaic;
     }
 
+    /** Native rendering owns a temporary unsnapped viewport, never a preference or source change. */
+    private final class NativeViewportScope implements AutoCloseable {
+        private final MapView view;
+        private final EastNorth center;
+        private final double scale;
+        private final Dimension size;
+        private final org.openstreetmap.josm.gui.layer.NativeScaleLayer snapper;
+        private boolean closed;
+        NativeViewportScope(MapView view){
+            if(!javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Native viewport ownership requires EDT");
+            this.view=view;center=view.getCenter();scale=view.getScale();size=view.getSize();snapper=view.getNativeScaleLayer();
+            if(view.scaleRound(scale)!=scale)throw new IllegalStateException("Original visible viewport scale cannot be restored exactly under its source snapper");
+            try{view.setNativeScaleLayer(null);}catch(RuntimeException|Error failed){try{close();}catch(RuntimeException|Error restore){failed.addSuppressed(restore);}throw failed;}
+        }
+        public void close(){
+            if(closed)return;closed=true;Throwable failed=null;
+            try{if(view.getNativeScaleLayer()!=null)view.setNativeScaleLayer(null);view.setSize(size);view.prepareToDraw();view.zoomTo(center,scale,false);}catch(RuntimeException|Error restore){failed=restore;}
+            try{view.setNativeScaleLayer(snapper);}catch(RuntimeException|Error restore){if(failed==null)failed=restore;else if(failed!=restore)failed.addSuppressed(restore);}
+            try{requireNativePaintFrame(view,size.width,size.height,captureBoundsForSize(center,size,scale),scale);if(view.getNativeScaleLayer()!=snapper)throw new IllegalStateException("Original visible viewport source snapper was not restored");}catch(RuntimeException|Error restore){if(failed==null)failed=restore;else if(failed!=restore)failed.addSuppressed(restore);}
+            if(failed!=null)throw new IllegalStateException("Native visible viewport restoration failed",failed);
+        }
+    }
     /** Native viewport checks permit only arithmetic round-off, never a source-domain extension. */
     private static void requireNativePaintFrame(MapView view,int width,int height,ProjectionBounds expected,double scale) {
         if(!view.isShowing())throw new IllegalStateException("Native visible paint viewport is not showing");

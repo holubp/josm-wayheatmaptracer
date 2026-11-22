@@ -919,30 +919,61 @@ public final class PublicGuiSmokeMain {
     }
 
     private static volatile AutoCloseable visiblePainterFixture;
+    private static final java.util.concurrent.atomic.AtomicReference<Runnable> visiblePaintFault=new java.util.concurrent.atomic.AtomicReference<>();
+    private static final java.util.concurrent.atomic.AtomicInteger visiblePaintCalls=new java.util.concurrent.atomic.AtomicInteger();
     /** Independent public pixels prove the actual native viewport, metadata and two-chunk assembly. */
     private static void verifyNativeVisibleCaptureContract(PublicGuiSmokeFixture fixture) throws Exception {
         var view=MainApplication.getMap().mapView;var layer=org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.HeatmapLayerResolver.resolve();
         System.err.println("GUI_SMOKE_VISIBLE_BEFORE showing="+view.isShowing()+" component="+view.getWidth()+"x"+view.getHeight()+" state="+view.getState().getViewWidth()+"x"+view.getState().getViewHeight()+" scale="+view.getScale());
         view.prepareToDraw();
-        var size=view.getSize();var center=view.getCenter();double scale=view.getScale();int zoom=((org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer)layer).getZoomLevel();
+        var size=view.getSize();var center=view.getCenter();double scale=view.getScale();var snapper=view.getNativeScaleLayer();int zoom=((org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer)layer).getZoomLevel();
+        if(snapper!=layer)throw new IllegalStateException("Actual visible managed source must own the non-null native scale grid in this contract");
         var nodes=fixture.selectedWay().getNodes();var selection=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext(fixture.selectedWay(),0,nodes.size()-1,nodes,java.util.Set.of(nodes.get(0),nodes.get(nodes.size()-1)));
         var service=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService();
         var config=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig(PluginPreferences.load(),GeometryCleanupConfig.disabled());
         var captured=service.captureLiveBVisibleRaster(selection,layer,view,config,"public-static-visible-contract");
-        if(!size.equals(view.getSize())||view.getCenter().distance(center)>4*Math.ulp(Math.max(1,Math.max(Math.abs(center.east()),Math.abs(center.north()))))||scale!=view.getScale()||zoom!=((org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer)layer).getZoomLevel())throw new IllegalStateException("Native source capture did not restore its original viewport and source zoom");
+        if(!size.equals(view.getSize())||view.getCenter().distance(center)>4*Math.ulp(Math.max(1,Math.max(Math.abs(center.east()),Math.abs(center.north()))))||scale!=view.getScale()||view.getNativeScaleLayer()!=snapper||zoom!=((org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer)layer).getZoomLevel())throw new IllegalStateException("Native source capture did not restore its original viewport, native scale grid and source zoom");
         if(captured.sourceReceipt()==null||captured.nativePitchMeters().isEmpty())throw new IllegalStateException("Actual managed visible epoch and z15 pixel metadata required");
         var pixels=captured.argb();int signal=publicVisibleSample(captured,pixels,0,4),background=publicVisibleSample(captured,pixels,0,-20);
         if(signal<120||background>60)throw new IllegalStateException("Actual visible source missed the independently predicted public ridge/background: "+signal+"/"+background);
+        try{
+            view.setNativeScaleLayer(null);var withoutSnapper=service.captureLiveBVisibleRaster(selection,layer,view,config,"public-static-visible-null-snapper");
+            if(view.getNativeScaleLayer()!=null||!java.util.Arrays.equals(pixels,withoutSnapper.argb()))throw new IllegalStateException("Null and actual native scale-grid captures differ");
+        }finally{restorePublicViewport(view,size,center,scale,snapper);}
+        var shifted=new AtomicBoolean();
+        var controlledScales=new org.openstreetmap.josm.gui.layer.NativeScaleLayer.ScaleList(List.of(scale)){
+            @Override public org.openstreetmap.josm.gui.layer.NativeScaleLayer.ScaleList withIntermediateSteps(double ratio){return this;}
+            @Override public org.openstreetmap.josm.gui.layer.NativeScaleLayer.Scale getSnapScale(double requested,double ratio,boolean floor){return new org.openstreetmap.josm.gui.layer.NativeScaleLayer.Scale(shifted.get()?requested*2:requested,0);}
+        };
+        org.openstreetmap.josm.gui.layer.NativeScaleLayer changingSnapper=()->controlledScales;
+        try{
+            view.setNativeScaleLayer(changingSnapper);shifted.set(true);int beforePaints=visiblePaintCalls.get();var beforeCenter=view.getCenter();var beforeSize=view.getSize();double beforeScale=view.getScale();
+            try{service.captureLiveBVisibleRaster(selection,layer,view,config,"public-static-visible-off-grid");throw new AssertionError("Off-grid native viewport must refuse before mutation");}
+            catch(IllegalStateException refused){if(!refused.getMessage().contains("cannot be restored exactly"))throw refused;}
+            if(view.getNativeScaleLayer()!=changingSnapper||!beforeSize.equals(view.getSize())||!beforeCenter.equals(view.getCenter())||beforeScale!=view.getScale()||beforePaints!=visiblePaintCalls.get())throw new IllegalStateException("Off-grid rejection changed the original viewport or painted pixels");
+        }finally{shifted.set(false);restorePublicViewport(view,size,center,scale,snapper);}
+        var paintFailure=new IllegalStateException("synthetic-public-visible-paint-failure");visiblePaintFault.set(()->{throw paintFailure;});
+        try{service.captureLiveBVisibleRaster(selection,layer,view,config,"public-static-visible-paint-failure");throw new AssertionError("Actual painter failure must propagate");}
+        catch(IllegalStateException failed){if(failed!=paintFailure||failed.getSuppressed().length!=0)throw new IllegalStateException("Native viewport replaced its primary painter failure",failed);}
+        if(view.getNativeScaleLayer()!=snapper||!size.equals(view.getSize())||scale!=view.getScale())throw new IllegalStateException("Native paint failure did not restore its user viewport");
+        var primary=new IllegalStateException("synthetic-public-visible-primary-failure");
+        try{
+            view.setNativeScaleLayer(changingSnapper);visiblePaintFault.set(()->{shifted.set(true);throw primary;});
+            try{service.captureLiveBVisibleRaster(selection,layer,view,config,"public-static-visible-restore-failure");throw new AssertionError("Combined painter/restoration failure must propagate");}
+            catch(IllegalStateException failed){if(failed!=primary||failed.getSuppressed().length!=1||!failed.getSuppressed()[0].getMessage().contains("restoration failed"))throw new IllegalStateException("Native viewport failed to keep primary and restoration errors distinct",failed);}
+        }finally{visiblePaintFault.set(null);shifted.set(false);restorePublicViewport(view,size,center,scale,snapper);}
         var method=org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService.class.getDeclaredMethod("captureLayerInChunks",org.openstreetmap.josm.gui.layer.ImageryLayer.class,org.openstreetmap.josm.gui.MapView.class,org.openstreetmap.josm.data.ProjectionBounds.class,java.awt.Dimension.class,double.class,java.awt.Dimension.class,List.class,List.class,boolean.class);method.setAccessible(true);
         var bounds=new org.openstreetmap.josm.data.ProjectionBounds(captured.minimumEast(),captured.minimumNorth(),captured.maximumEast(),captured.maximumNorth());
         java.awt.image.BufferedImage stitched;var chunks=new ArrayList<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyVisibleSource.PaintedChunk>();
-        try{stitched=(java.awt.image.BufferedImage)method.invoke(service,layer,view,bounds,new java.awt.Dimension(captured.width()/6,captured.height()/6),captured.projectionUnitsPerViewPixel(),new java.awt.Dimension(320,240),nodes.stream().map(Node::getEastNorth).toList(),chunks,true);}
-        finally{view.setSize(size);view.prepareToDraw();view.zoomTo(center,scale,false);}
+        try{view.setNativeScaleLayer(null);stitched=(java.awt.image.BufferedImage)method.invoke(service,layer,view,bounds,new java.awt.Dimension(captured.width()/6,captured.height()/6),captured.projectionUnitsPerViewPixel(),new java.awt.Dimension(320,240),nodes.stream().map(Node::getEastNorth).toList(),chunks,true);}
+        finally{restorePublicViewport(view,size,center,scale,snapper);}
         if(chunks.size()<2||stitched.getWidth()!=captured.width()||stitched.getHeight()!=captured.height())throw new IllegalStateException("Actual native chunk contract did not produce the complete same raster extent");
         int maximumDifference=0;for(int y=0;y<captured.height();y++)for(int x=0;x<captured.width();x++)maximumDifference=Math.max(maximumDifference,Math.abs((pixels[y*captured.width()+x]&255)-(stitched.getRGB(x,y)&255)));
         if(maximumDifference!=0)throw new IllegalStateException("Native chunk stitching differs from the same public single-frame pixels: "+maximumDifference);
+        captured.sourceReceipt().owner().requireCurrent(captured.sourceReceipt());
         System.err.println("GUI_SMOKE_VISIBLE_CONTRACT source=static-public-z15-png epoch=actual-managed-layer signal="+signal+" background="+background+" chunks="+chunks.size()+" maximumGrayDifference="+maximumDifference+" viewportRestored=true");
     }
+    private static void restorePublicViewport(org.openstreetmap.josm.gui.MapView view,java.awt.Dimension size,org.openstreetmap.josm.data.coor.EastNorth center,double scale,org.openstreetmap.josm.gui.layer.NativeScaleLayer snapper){view.setNativeScaleLayer(null);view.setSize(size);view.prepareToDraw();view.zoomTo(center,scale,false);view.setNativeScaleLayer(snapper);}
     private static int publicVisibleSample(LiveBPreviewService.VisibleRaster raster,int[] pixels,double east,double north){
         var geographic=PublicGuiSmokeOracle.point(east,north);var projected=ProjectionRegistry.getProjection().latlon2eastNorth(new LatLon(geographic.latitudeDegrees(),geographic.longitudeDegrees()));
         int x=(int)Math.round((projected.east()-raster.minimumEast())/raster.projectionUnitsPerViewPixel()*6),y=(int)Math.round((raster.maximumNorth()-projected.north())/raster.projectionUnitsPerViewPixel()*6);
@@ -960,7 +991,7 @@ public final class PublicGuiSmokeMain {
         var original=painters.get(layer);if(original==null)throw new IllegalStateException("Actual visible source painter is not registered");
         var analytic=new AnalyticVisibleLayer(fixture.visibleTile());
         var replacement=new org.openstreetmap.josm.gui.layer.MapViewPaintable.LayerPainter(){
-            public void paint(org.openstreetmap.josm.gui.layer.MapViewGraphics graphics){if(layer.getZoomLevel()!=15)throw new IllegalStateException("Public visible painter metadata differs from its actual z15 pixels");analytic.paint(graphics.getDefaultGraphics(),graphics.getMapView(),graphics.getClipBounds().getLatLonBoundsBox());}
+            public void paint(org.openstreetmap.josm.gui.layer.MapViewGraphics graphics){visiblePaintCalls.incrementAndGet();var fault=visiblePaintFault.getAndSet(null);if(fault!=null)fault.run();if(layer.getZoomLevel()!=15)throw new IllegalStateException("Public visible painter metadata differs from its actual z15 pixels");analytic.paint(graphics.getDefaultGraphics(),graphics.getMapView(),graphics.getClipBounds().getLatLonBoundsBox());}
             public void detachFromMapView(org.openstreetmap.josm.gui.layer.MapViewPaintable.MapViewEvent event){original.detachFromMapView(event);}
         };
         painters.put(layer,replacement);
