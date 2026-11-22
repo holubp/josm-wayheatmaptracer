@@ -20,21 +20,25 @@ class ModernRefinementBootstrapTest {
         var data=new org.openstreetmap.josm.data.osm.DataSet();
         var nodes=new ArrayList<org.openstreetmap.josm.data.osm.Node>();
         for(int i=0;i<=30;i++) {
-            var node=new org.openstreetmap.josm.data.osm.Node(projection.eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth(i-15,0)));
+            var node=new org.openstreetmap.josm.data.osm.Node(projection.eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth((i-15)*10,0)));
             data.addPrimitive(node);nodes.add(node);
         }
         var way=new org.openstreetmap.josm.data.osm.Way();way.setNodes(nodes);way.put("highway","path");data.addPrimitive(way);
-        for(int i:List.of(8,12,18,22))nodes.get(i).put("note","fixed boundary");
-        for(int i:List.of(10,20)) {
-            var remote=new org.openstreetmap.josm.data.osm.Node(projection.eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth(i-15,20)));
+        for(int i:List.of(4,12,18,26))nodes.get(i).put("note","fixed boundary");
+        for(int i:List.of(8,22)) {
+            var remote=new org.openstreetmap.josm.data.osm.Node(projection.eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth((i-15)*10,40)));
             data.addPrimitive(remote);var branch=new org.openstreetmap.josm.data.osm.Way();branch.setNodes(List.of(nodes.get(i),remote));data.addPrimitive(branch);
         }
         var selection=new SelectionContext(way,1,29,nodes.subList(1,30),Set.of(nodes.get(1),nodes.get(29)));
         var config=V022LiveBPreviewServiceTest.config(TrackerMode.PROBABILISTIC);
-        var original=V022LiveBPreviewServiceTest.raster();int size=320,start=140;var pixels=new int[size*size];var full=original.argb();
-        for(int y=0;y<size;y++)System.arraycopy(full,(y+start)*original.width()+start,pixels,y*size,size);
-        double pitch=original.projectionUnitsPerViewPixel()/6;var epoch=new VisibleSourceEpoch();
-        var raster=new LiveBPreviewService.VisibleRaster(size,size,pixels,original.minimumEast()+start*pitch,original.maximumNorth()-(start+size)*pitch,original.minimumEast()+(start+size)*pitch,original.maximumNorth()-start*pitch,original.projectionUnitsPerViewPixel(),original.groundMetersPerViewPixel(),original.nativePitchMeters(),original.sourceIdentity(),original.projectionCode(),epoch.captureStable());
+        // Exact horizontal crop of the established400m native interval fixture: no changed pixel phase.
+        int width=1200,height=120;var pixels=new int[width*height];var epoch=new VisibleSourceEpoch();
+        for(int y=0;y<height;y++) {
+            double distance=(y-60.0)/3.0;
+            int gray=(int)Math.round(255*(.02+.8*Math.exp(-.5*distance*distance/1.44)));
+            Arrays.fill(pixels,y*width,(y+1)*width,0xff000000|gray<<16|gray<<8|gray);
+        }
+        var raster=new LiveBPreviewService.VisibleRaster(width,height,pixels,-200,-20,200,20,2,2,OptionalDouble.of(2),"visible-interval-root-test","EPSG:3857",epoch.captureStable());
         var service=new LiveBPreviewService();var capture=new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(()->capture[0]=service.capture(data,selection,raster,config,true));
         var computed=service.compute(capture[0],CancellationProbe.NONE);assertTrue(computed.partitioned());assertNull(computed.pipeline());
