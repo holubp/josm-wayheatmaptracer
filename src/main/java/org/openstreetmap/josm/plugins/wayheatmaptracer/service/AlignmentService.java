@@ -3163,8 +3163,10 @@ public final class AlignmentService {
 
     /** Native viewport checks permit only arithmetic round-off, never a source-domain extension. */
     private static void requireNativePaintFrame(MapView view,int width,int height,ProjectionBounds expected,double scale) {
-        if(!view.isShowing()||view.getWidth()!=width||view.getHeight()!=height||view.getState().getViewWidth()!=width||view.getState().getViewHeight()!=height||view.getScale()!=scale)
-            throw new IllegalStateException("Native visible paint viewport did not settle to its requested dimensions and scale");
+        if(!view.isShowing())throw new IllegalStateException("Native visible paint viewport is not showing");
+        if(view.getWidth()!=width||view.getHeight()!=height)throw new IllegalStateException("Native visible paint component dimensions changed");
+        if(view.getState().getViewWidth()!=width||view.getState().getViewHeight()!=height)throw new IllegalStateException("Native visible paint coordinate-grid dimensions are stale");
+        if(view.getScale()!=scale)throw new IllegalStateException("Native visible paint scale differs from its requested scale");
         var actual=view.getProjectionBounds(new java.awt.Rectangle(0,0,width,height));
         double[] observed={actual.minEast,actual.minNorth,actual.maxEast,actual.maxNorth},requested={expected.minEast,expected.minNorth,expected.maxEast,expected.maxNorth};
         for(int i=0;i<observed.length;i++)if(!Double.isFinite(observed[i])||Math.abs(observed[i]-requested[i])>4*Math.ulp(Math.max(1,Math.abs(requested[i]))))throw new IllegalStateException("Native visible paint clip differs from its requested projected frame");

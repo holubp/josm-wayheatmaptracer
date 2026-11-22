@@ -399,7 +399,9 @@ class ModernRefinementBootstrapTest {
         var remote=new org.openstreetmap.josm.data.osm.Node(projection.eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth(0,usable?100:30)));data.addPrimitive(remote);
         var branch=new org.openstreetmap.josm.data.osm.Way();branch.setNodes(List.of(nodes.get(middle),remote));branch.put("highway","path");data.addPrimitive(branch);
         var selection=new SelectionContext(way,1,last,nodes.subList(1,last+1),Set.of(nodes.get(1),nodes.get(last)));var base=V022LiveBPreviewServiceTest.config(TrackerMode.PROBABILISTIC);
-        var config=new AlignmentConfig(base.heatmap().withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES),base.cleanup());var epoch=new VisibleSourceEpoch();int width=usable?400:600,height=usable?80:160;double pitch=usable?1:1./6,ground=pitch*6;var pixels=new int[width*height];
+        var config=new AlignmentConfig(base.heatmap().withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES),base.cleanup());var epoch=new VisibleSourceEpoch();int width=usable?720:600,height=usable?180:160;double pitch=usable?1./3:1./6,ground=pitch*6;var pixels=new int[width*height];
+        assertTrue(width*pitch/2>90+config.heatmap().crossSectionHalfWidthPx()*ground||!usable,"The factual visible view-pixel decision radius must fit beside both original endpoints");
+        assertTrue(height*pitch/2>config.heatmap().crossSectionHalfWidthPx()*ground,"The factual complete B decision window must fit vertically before capture");
         for(int y=0;y<height;y++){double north=(height/2.-y)*pitch;int gray=(int)Math.round(255*(.02+.8*Math.exp(-.5*north*north/1.44)));java.util.Arrays.fill(pixels,y*width,(y+1)*width,0xff000000|gray<<16|gray<<8|gray);}
         var raster=new LiveBPreviewService.VisibleRaster(width,height,pixels,-width*pitch/2,-height*pitch/2,width*pitch/2,height*pitch/2,ground,ground,OptionalDouble.of(1),"actual-unchanged-interval","EPSG:3857",epoch.captureStable());
         var service=new LiveBPreviewService();var captured=new LiveBPreviewService.Captured[1];SwingUtilities.invokeAndWait(()->captured[0]=service.capture(data,selection,raster,config,true));
