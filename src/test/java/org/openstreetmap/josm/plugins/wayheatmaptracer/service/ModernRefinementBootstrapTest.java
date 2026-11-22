@@ -20,7 +20,7 @@ class ModernRefinementBootstrapTest {
         var data=new org.openstreetmap.josm.data.osm.DataSet();
         var nodes=new ArrayList<org.openstreetmap.josm.data.osm.Node>();
         for(int i=0;i<=30;i++) {
-            var node=new org.openstreetmap.josm.data.osm.Node(projection.eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth((i-15)*10,2)));
+            var node=new org.openstreetmap.josm.data.osm.Node(projection.eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth((i-15)*10,0)));
             data.addPrimitive(node);nodes.add(node);
         }
         var way=new org.openstreetmap.josm.data.osm.Way();way.setNodes(nodes);way.put("highway","path");data.addPrimitive(way);
@@ -31,18 +31,22 @@ class ModernRefinementBootstrapTest {
         }
         var selection=new SelectionContext(way,1,29,nodes.subList(1,30),Set.of(nodes.get(1),nodes.get(29)));
         var config=V022LiveBPreviewServiceTest.config(TrackerMode.PROBABILISTIC);
-        // Keep the established400m interval frame/phase, with two measured parallel ridges for real route alternatives.
+        // A straight measured primary preserves every original connector. A secondary branch joins
+        // that primary exactly at the first eligible interval boundaries; the middle interval has no signal.
         int width=1200,height=120;var pixels=new int[width*height];var epoch=new VisibleSourceEpoch();
-        for(int y=0;y<height;y++) {
-            double left=(y-54.0)/3.0,right=(y-66.0)/3.0;
-            int gray=(int)Math.round(255*(.02+.8*Math.max(Math.exp(-.5*left*left/1.44),Math.exp(-.5*right*right/1.44))));
-            Arrays.fill(pixels,y*width,(y+1)*width,0xff000000|gray<<16|gray<<8|gray);
+        for(int x=0;x<width;x++)for(int y=0;y<height;y++) {
+            double east=-200+x/3.0,north=20-y/3.0;
+            double branch=east>-140&&east< -110?-4*Math.pow(Math.sin(Math.PI*(east+140)/30),2):0;
+            double primary=Math.exp(-.5*north*north/1.44),secondary=Math.exp(-.5*Math.pow(north-branch,2)/1.44);
+            int gray=Math.abs(east)<25?0:(int)Math.round(255*(.02+.8*Math.max(primary,secondary)));
+            pixels[y*width+x]=0xff000000|gray<<16|gray<<8|gray;
         }
         var raster=new LiveBPreviewService.VisibleRaster(width,height,pixels,-200,-20,200,20,2,2,OptionalDouble.of(2),"visible-interval-root-test","EPSG:3857",epoch.captureStable());
         var service=new LiveBPreviewService();var capture=new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(()->capture[0]=service.capture(data,selection,raster,config,true));
         var computed=service.compute(capture[0],CancellationProbe.NONE);assertTrue(computed.partitioned());assertNull(computed.pipeline());
         var assessment=new FixedIntervalEditPlanComposer().compose(computed.intervalBatch(),Map.of());assertTrue(assessment.plan().isPresent(),assessment.toString());
+        assertTrue(assessment.intervals().stream().anyMatch(i->i.disposition()==FixedIntervalEditPlanComposer.Disposition.FROZEN_LOCAL_FAILURE),"A failed interval must remain explicit");
         var root=new ModernReviewRoot[1];
         SwingUtilities.invokeAndWait(()->root[0]=ModernReviewRoot.fromIntervalSelection(data,selection,config,new ModernReviewRoot.IntervalSelection(computed,Map.of(),assessment),null,()->{}));
         try(var memory=AttemptMemoryLedger.production().rootOwner()) {
