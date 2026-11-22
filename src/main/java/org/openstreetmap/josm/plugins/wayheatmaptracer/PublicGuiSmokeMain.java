@@ -91,7 +91,7 @@ public final class PublicGuiSmokeMain {
             if (!fixture.tilesUsable()) throw new IllegalStateException("Public Hot tile is unusable");
             ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
             boolean intervalGui="INTERVAL".equals(System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder"));
-            boolean visibleGui="VISIBLE_B_A".equals(System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder"));
+            boolean visibleGui=isVisibleGuiScenario();
             if(intervalGui)onEventThread(()->{configureIntervalFixture(fixture);return null;});
             AlignmentMode requestedMode=AlignmentMode.valueOf(System.getProperty("wayheatmaptracer.guiSmoke.alignmentMode","PRECISE_SHAPE"));
             AlignmentMode savedMode = engine == TrackerMode.LEGACY_THEN_B
@@ -134,7 +134,7 @@ public final class PublicGuiSmokeMain {
                 ||engine==TrackerMode.CORRIDOR_AWARE&&requestedMode==AlignmentMode.PRECISE_SHAPE
                 ? registeredOrdinaryAction() : registeredEntryAction(engine));
             PreviewSessionController<?> session = productionSession(plugin);
-            if(visibleGui){qualifyLargeVisibleLimitedReview(report,fixture,action,session);onEventThread(()->{fixture.configureCompactVisibleSelection();return null;});}
+            if(visibleGui){if(isRawVisibleGuiScenario())qualifyLargeVisibleLimitedReview(report,fixture,action,session);onEventThread(()->{fixture.configureCompactVisibleSelection();return null;});}
             List<String> original = wayState(fixture);
             int originalUndo = UndoRedoHandler.getInstance().getUndoCommands().size();
             if(PluginPreferences.loadTracingSettings().engine()==TrackerMode.LEGACY_V02){
@@ -239,7 +239,8 @@ public final class PublicGuiSmokeMain {
             } finally {
                 Toolkit.getDefaultToolkit().removeAWTEventListener(listener);
             }
-            if(visibleGui)exerciseVisibleIntervalApplyAndDescendant(report,action,session,fixture,original,originalUndo);
+            if(visibleGui&&!isRawVisibleGuiScenario())exerciseVisibleIntervalApplyAndDescendant(report,action,session,fixture,original,originalUndo);
+            if(isRawVisibleGuiScenario()&&!rawVisibleResourceRetained)throw new IllegalStateException("The named raw visible case must retain its factual bounded recapture refusal");
             stage = "cancel";
             long cancelledSequence = onEventThread(() -> {
                 action.actionPerformed(null);
@@ -282,7 +283,8 @@ public final class PublicGuiSmokeMain {
                     + "\"visiblePreview\":true,\"selectedRouteIndex\":" + selectedRouteIndex + ","
                     + "\"selectedCandidateId\":\"" + selectedId + "\",\"geometryOracle\":true,"
                     + "\"cancelledNonterminal\":true,\"noLatePreview\":true,"
-                    + "\"datasetUnchanged\":true,\"undoUnchanged\":true,\"silentSettingsSave\":true}\n");
+                    + "\"datasetUnchanged\":true,\"undoUnchanged\":true,\"silentSettingsSave\":true"
+                    +(visibleGui?",\"visibleInferenceMode\":\""+(isRawVisibleGuiScenario()?"RAW_HIGH_RESOLUTION":"STABLE_FIXED_SCALE")+"\",\"rawRecaptureResourceRetained\":"+rawVisibleResourceRetained:"")+"}\n");
             System.exit(0);
         } catch (Exception | LinkageError failure) {
             writeSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
@@ -927,12 +929,15 @@ public final class PublicGuiSmokeMain {
     }
 
     private static volatile AutoCloseable visiblePainterFixture;
+    private static boolean rawVisibleResourceRetained;
+    private static boolean isVisibleGuiScenario(){return System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder","").startsWith("VISIBLE_B_A");}
+    private static boolean isRawVisibleGuiScenario(){return "VISIBLE_B_A".equals(System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder"));}
     private static final java.util.concurrent.atomic.AtomicReference<Runnable> visiblePaintFault=new java.util.concurrent.atomic.AtomicReference<>();
     private static final AtomicBoolean visiblePixelFault=new AtomicBoolean();
     private static final java.util.concurrent.atomic.AtomicInteger visiblePaintCalls=new java.util.concurrent.atomic.AtomicInteger();
     /** Independent public pixels prove the actual native viewport, metadata and two-chunk assembly. */
     private static void verifyGuiFinalGeometry(List<GeographicPoint> geometry) {
-        if("VISIBLE_B_A".equals(System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder")))PublicGuiSmokeOracle.verifyCompactVisibleFinalGeometry(geometry);
+        if(isVisibleGuiScenario())PublicGuiSmokeOracle.verifyCompactVisibleFinalGeometry(geometry);
         else PublicGuiSmokeOracle.verifyFinalGeometry(geometry);
     }
     /** Retain the original80m real native result and its bounded export refusal as a separate case. */
@@ -1487,7 +1492,7 @@ public final class PublicGuiSmokeMain {
                 "all", "hot", "", ".*", AlignmentMode.PRECISE_SHAPE,
                 TrackerMode.PROBABILISTIC, false, false, false, aggregate, false,
                 false, false, false, false, false, 7, 4, 3.0,
-                InferenceMode.RAW_HIGH_RESOLUTION, 15, 14, 7.01, 1.56,
+                "VISIBLE_B_A_STABLE".equals(System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder"))?InferenceMode.STABLE_FIXED_SCALE:InferenceMode.RAW_HIGH_RESOLUTION, 15, 14, 7.01, 1.56,
                 IntensitySamplingMode.COLOR_MAPPING, 0L);
     }
 
@@ -1863,7 +1868,7 @@ public final class PublicGuiSmokeMain {
         onEventThread(()->{
             var point=junction.getEastNorth();remote.setCoor(ProjectionRegistry.getProjection().eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth(point.east(),point.north()+30)));
             remote.setOsmId(9201,1);branch.setOsmId(9202,1);branch.setNodes(List.of(junction,remote));branch.put("highway","path");
-            fixture.dataSet().addPrimitive(remote);fixture.dataSet().addPrimitive(branch);remote.setModified(false);branch.setModified(false);return null;
+            fixture.dataSet().addPrimitive(remote);fixture.dataSet().addPrimitive(branch);remote.setModified(false);branch.setModified(false);fixture.dataSet().setSelected(fixture.selectedWay());return null;
         });
         var baseline=wayState(fixture);var opened=new CompletableFuture<JDialog>();
         AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog dialog&&isPreview(dialog))opened.complete(dialog);};
@@ -1977,7 +1982,15 @@ public final class PublicGuiSmokeMain {
             requireUnchanged(fixture,original,originalUndo);
             try{Format15ArchiveReader.read(exportThroughActualMenu());}
             catch(Exception unavailable){throw new IllegalStateException("Actual smoothing export unavailable: "+fixedFailureBoundary(onEventThread(owner::computationEvidence)),unavailable);}
-            clickAndAwaitStage(report,dialog,owner,continuation==StageKind.REFINE_A?"refineA":"refineB",continuation);
+            var historyBefore=onEventThread(()->retainedHistory(owner));var smoothGeometry=onEventThread(owner::selectedGeometry);
+            try{clickAndAwaitStage(report,dialog,owner,continuation==StageKind.REFINE_A?"refineA":"refineB",continuation);}
+            catch(Exception failure){
+                if(!isRawVisibleGuiScenario())throw failure;
+                requireRawVisibleResourceRetention(dialog,owner,smooth,smoothGeometry,historyBefore,calls);
+                requireUnchanged(fixture,original,originalUndo);Format15ArchiveReader.read(exportThroughActualMenu());
+                var retainedPlan=onEventThread(()->owner.currentNative().orElseThrow().plan());
+                applyStoredNativePlan(dialog,fixture,retainedPlan,original,originalUndo);rawVisibleResourceRetained=true;return;
+            }
             var plan=onEventThread(()->{
                 if(!owner.currentStage().parent().orElseThrow().equals(smooth.id())
                         ||!owner.currentStage().parentChoice().orElseThrow().equals(smooth.selected())||owner.actualNativeCalls()<=calls)
@@ -1996,6 +2009,38 @@ public final class PublicGuiSmokeMain {
             onEventThread(()->{UndoRedoHandler.getInstance().redo();return null;});if(!applied.equals(wayState(fixture)))throw new IllegalStateException("Smoothing chain Redo changed stored geometry");
             onEventThread(()->{UndoRedoHandler.getInstance().undo();return null;});requireUnchanged(fixture,original,originalUndo);
         }finally{Toolkit.getDefaultToolkit().removeAWTEventListener(listener);}
+    }
+    private static List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Stage> retainedHistory(LegacyRefinementWorkflow owner) throws Exception {
+        var field=LegacyRefinementWorkflow.class.getDeclaredField("session");field.setAccessible(true);
+        return List.copyOf(((org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementSession)field.get(owner)).history());
+    }
+    private static void requireRawVisibleResourceRetention(JDialog dialog,LegacyRefinementWorkflow owner,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Stage parent,List<org.openstreetmap.josm.data.coor.EastNorth> geometry,
+            List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Stage> history,int calls) throws Exception {
+        onEventThread(()->{
+            var diagnostic=owner.latestAttemptDiagnostics().orElseThrow();var work=diagnostic.sourcePreparation().orElseThrow();var facts=work.sourceFacts().orElseThrow();
+            long cells=Math.multiplyExact((long)facts.outputGridWidth(),facts.outputGridHeight());
+            long inverseLowerBound=Math.addExact(Math.multiplyExact(5L,cells),Math.multiplyExact((long)facts.outputGridWidth()-1,facts.outputGridHeight()-1));
+            var retained=retainedHistory(owner);
+            if(diagnostic.phase()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Phase.SOURCE_PREPARATION
+                    ||diagnostic.cause()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT
+                    ||diagnostic.publication()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Publication.NO_CHILD
+                    ||!diagnostic.binding().ticket().parent().equals(parent.id())||!diagnostic.binding().ticket().choice().equals(parent.selected())
+                    ||facts.coverage()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Coverage.RECAPTURED
+                    ||facts.frameRole()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.InputFrameRole.CAPTURED_INPUT
+                    ||inverseLowerBound<=8_000_000L||work.visits()<=0||work.visits()>8_000_000L
+                    ||work.nativeWork().orElseThrow().nativeCalls().orElseThrow()!=0||work.counters().get(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.MAP)!=0
+                    ||owner.currentStage()!=parent||!owner.selectedGeometry().equals(geometry)||owner.actualNativeCalls()!=calls
+                    ||owner.busy()||!dialog.isShowing()||dialog.isModal()||retained.size()!=history.size())throw new IllegalStateException("Raw visible refusal lost its exact actual work, source or parent authority");
+            for(int i=0;i<history.size();i++)if(retained.get(i)!=history.get(i))throw new IllegalStateException("Raw visible refusal changed retained history");
+            if(owner.currentNative().orElseThrow().plan().validation().disposition()==org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport.Disposition.REVIEW_REQUIRED&&owner.canApplyNative())throw new IllegalStateException("A failed optional operation must not invent confirmation");
+            requiredNamed(dialog.getContentPane(),"undo",javax.swing.JButton.class).doClick();
+            if(!owner.currentStage().id().equals(parent.parent().orElseThrow()))throw new IllegalStateException("Raw refusal Undo lost the unsmoothed parent");
+            requiredNamed(dialog.getContentPane(),"redo",javax.swing.JButton.class).doClick();
+            if(owner.currentStage()!=parent||!owner.selectedGeometry().equals(geometry)||owner.actualNativeCalls()!=calls)throw new IllegalStateException("Raw refusal Redo recomputed or lost its cached Strong stage");
+            System.err.println("GUI_SMOKE_VISIBLE_RAW_RESOURCE inverseMapLowerBound="+inverseLowerBound+" actualAuxiliaryVisits="+work.visits()+" actualNativeCalls=0 exactStrongParent=true cachedUndoRedo=true");
+            return null;
+        });
     }
     private static org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Stage selectStrongAndAwait(
             JDialog dialog,LegacyRefinementWorkflow owner,org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Stage medium) throws Exception {
