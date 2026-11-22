@@ -46,7 +46,11 @@ class VisibleRefinementWorkflowTest {
                     var result=new AlignmentResult(selection,image,List.of(first,chosen),points,points,List.of(),null,null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(first.id(),chosen.id()),"","")),List.of(first,chosen));
                     var metadata=new LegacyVisibleSource(-100,-100,100,100,6,6,OptionalDouble.empty(),"EPSG:3857",epoch.captureStable(),OptionalDouble.of(7.01),OptionalDouble.of(1.56));
                     owner[0].captured(result,LegacyVisibleRefinementBootstrapTest.factualFrame(metadata,200,200,0,0));owner[0].select(chosen);
-                    workflow[0]=new LegacyRefinementWorkflow(owner[0],coordinator,owner[0]::select,d->{},s->{},work::add,publications::add);
+                    workflow[0]=new LegacyRefinementWorkflow(owner[0],coordinator,owner[0]::select,d->{},s->{},work::add,publication->{
+                        publications.add(publication);
+                        if(mode==AlignmentMode.MOVE_EXISTING_NODES&&engine==TrackerMode.PROBABILISTIC)
+                            throw new IllegalStateException("Dispatcher accepted before reporting failure");
+                    });
                     workflow[0].enableRuntimeDiagnostics(()->null);
                     workflow[0].attachLifecycle(new org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementReviewLifecycle(()->lifecycleEvents.add("hide"),()->lifecycleEvents.add("show"),()->lifecycleEvents.add("progress"),()->lifecycleEvents.add("settled-view"),message->lifecycleEvents.add("failure")));
                     assertTrue(((JButton)find(workflow[0].controls(),engine==TrackerMode.CORRIDOR_AWARE?"refineA":"refineB")).isEnabled(),"Factual visible Color Mapping enables refinement");
