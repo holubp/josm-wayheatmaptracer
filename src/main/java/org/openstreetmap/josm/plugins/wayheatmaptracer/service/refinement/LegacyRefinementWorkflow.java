@@ -663,9 +663,11 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,CancellationProbe probe,AttemptProgress progress,
             AttemptMemoryLedger.Owner publication,long allowance,List<Map<Object,Long>> baseline) {
         progress.phase=RefinementAttemptDiagnostics.Phase.PREPARATION;
+        computationEvidence="smoothing-preparation";
         try {
             var bound=new SmoothingParentBinder().bind(root.authority(),ticket,parent,source,work);
             try(var result=new RefinementSmoothingAdapter().smooth(bound,strength==RefinementControls.Strength.STRONG?SmoothingModels.Preset.STRONG_2PX:SmoothingModels.Preset.MEDIUM_1PX,work,probe)) {
+                computationEvidence="smoothing-"+result.receipt().outcome()+":"+result.receipt().reason()+"; visits="+result.receipt().workVisits();
                 probe.checkpoint();progress.phase=RefinementAttemptDiagnostics.Phase.MATERIALIZATION;
                 if(result.plan().isEmpty()) {
                     var cause=result.receipt().outcome()==RefinementSmoothingAdapter.Outcome.RETAINED_RESOURCE?RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT:RefinementAttemptDiagnostics.Cause.PLAN_REFUSED;
@@ -690,6 +692,8 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                     progress.pipelineOutcome=Outcome.COMPLETE;return new Computed(Optional.of(child),RefinementAttemptDiagnostics.Cause.NONE,Optional.of(reserve));
                 }catch(RuntimeException|Error failure){reserve.close();throw failure;}
             }
+        } catch(SmoothingParentBinder.Unavailable unavailable) {
+            computationEvidence="smoothing-binding-"+unavailable.reason();throw unavailable;
         } finally {progress.sourcePreparation=Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(RefinementAttemptDiagnostics.Cause.NONE,work.visits(),work.counters(),Optional.empty(),Optional.empty()));}
     }
     private Computed compute(OperationTicket ticket,ParentTraceReference parent,RefinementSourcePlanner.Plan plan,
