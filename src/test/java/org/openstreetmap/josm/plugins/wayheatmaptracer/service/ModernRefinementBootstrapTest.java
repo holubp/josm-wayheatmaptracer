@@ -83,6 +83,7 @@ class ModernRefinementBootstrapTest {
         var service=new LiveBPreviewService();var capture=new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(()->capture[0]=service.capture(data,selection,raster,config,true));
         var computed=service.compute(capture[0],CancellationProbe.NONE);assertTrue(computed.partitioned());assertNull(computed.pipeline());
+        assertProducedEvidenceProof(computed);
         assertEquals(1./3,computed.evidence().resolution().resampledPitchMeters().orElseThrow(),1e-12);
         var missing=computed.intervalBatch().runs().stream().filter(run->run.interval().traceRange().firstIndex()==11&&run.interval().traceRange().lastIndex()==19).findFirst().orElseThrow();
         assertEquals("NO_ROUTE",missing.result().inference().status().name());assertTrue(missing.routes().isEmpty());
@@ -212,6 +213,7 @@ class ModernRefinementBootstrapTest {
         var service=new LiveBPreviewService();var capture=new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(()->capture[0]=service.capture(fixture.dataSet(),fixture.selection(),raster,config,true));
         var computed=service.compute(capture[0],CancellationProbe.NONE);
+        assertProducedEvidenceProof(computed);
         var choices=service.adaptChoices(computed,p->ProjectionRegistry.getProjection().latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(p.latitudeDegrees(),p.longitudeDegrees())));
         assertFalse(choices.isEmpty(),"The compact same-policy capture must produce an actual native root choice");
         var initial=choices.get(choices.size()-1);var initialAssessment=new ModernSingleWayEditPlanAdapter().assess(initial.owner(),initial.localRouteIndex());
@@ -315,6 +317,7 @@ class ModernRefinementBootstrapTest {
             var capture=new LiveBPreviewService.Captured[1];
             SwingUtilities.invokeAndWait(()->capture[0]=service.capture(fixture.dataSet(),fixture.selection(),raster,config,true));
             var computed=service.compute(capture[0],CancellationProbe.NONE);
+            assertProducedEvidenceProof(computed);
             var choices=service.adaptChoices(computed,g->ProjectionRegistry.getProjection().latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(g.latitudeDegrees(),g.longitudeDegrees())));
             assertFalse(choices.isEmpty());
             var review=new ModernReviewRoot[1];
@@ -364,6 +367,36 @@ class ModernRefinementBootstrapTest {
             } finally {SwingUtilities.invokeAndWait(review[0]::close);}
         }
     }
+    private static void assertProducedEvidenceProof(LiveBPreviewService.Computed run) {
+        var proof=run.producedEvidenceProof().orElseThrow();var e=run.evidence();var r=run.request();var o=run.options();
+        try(var memory=AttemptMemoryLedger.production().rootOwner()) {
+            var work=new GeometryWorkContext(256,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,memory);
+            assertEquals(r.evidenceContentHash(),proof.requireMatches(run,work));assertEquals(8,work.visits(),"Production proof reuse has constant charged metadata work");
+            assertEquals(r.evidenceContentHash(),proof.requireMatches(run.withSettingsResolution("{}").withSourceAttempts(List.of()).withCorridorReceipt(run.corridorReceipt()),work));
+            var cloned=new EvidenceSnapshot(e.snapshotId(),e.coordinateFrame(),e.transform(),e.resolution(),e.decisionRegion(),e.evidenceRegion(),e.fields(),e.resampling(),e.sourceIdentity());
+            var request=new TraceRequest(r.selectedWayKey(),r.selectedRange(),r.engine(),r.geometryMode(),r.permissions(),r.budgets(),r.evidenceSnapshotId(),r.evidenceContentHash(),r.networkSnapshotId(),r.networkContentHash(),r.settingsHash(),r.parameterHash(),r.samplerId(),r.configuredSampleStepMeters(),r.profileChainage(),r.evidenceResolution(),r.corridorInput(),r.disconnectionSource());
+            var options=new ModernTracePipeline.Options(o.fieldName(),o.cleanup(),o.sourceTier(),o.mappingPreference());
+            for(var foreign:List.<java.util.function.Supplier<LiveBPreviewService.Computed>>of(
+                ()->proofCopy(run,run.captured().withOriginalReceipt(run.captured().originalReceipt().orElseThrow()),e,r,run.pipeline(),run.intervalBatch(),o),
+                ()->proofCopy(run,run.captured(),cloned,r,run.pipeline(),run.intervalBatch(),o),
+                ()->proofCopy(run,run.captured(),e,request,run.pipeline(),run.intervalBatch(),o),
+                ()->proofCopy(run,run.captured(),e,r,run.pipeline(),run.intervalBatch(),options)))
+                assertThrows(IllegalArgumentException.class,()->proof.requireMatches(foreign.get(),work));
+            if(run.pipeline()!=null)assertThrows(IllegalArgumentException.class,()->proof.requireMatches(proofCopy(run,run.captured(),e,r,new ModernTracePipeline.Result(run.pipeline().inference(),run.pipeline().routes()),null,o),work));
+            else {
+                var b=run.intervalBatch();var clone=new IntervalTraceBatch(b.fullRequest(),b.evidence(),b.network(),b.partition(),b.runs(),b.options(),run.captured().specification());
+                assertThrows(IllegalArgumentException.class,()->proof.requireMatches(proofCopy(run,run.captured(),e,r,null,clone,o),work));
+            }
+            var cancelled=new GeometryWorkContext(256,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,()->{throw new java.util.concurrent.CancellationException();},memory);
+            assertThrows(java.util.concurrent.CancellationException.class,()->proof.requireMatches(run,cancelled));assertEquals(0,cancelled.visits());
+            var refused=new GeometryWorkContext(0,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,memory);
+            assertThrows(GeometryWorkContext.LimitReached.class,()->proof.requireMatches(run,refused));assertEquals(0,refused.visits());
+            assertTrue(new LiveBPreviewService.Computed(run.captured(),e,r,run.pipeline(),o,run.counters(),run.intervalBatch(),run.settingsResolutionJson(),List.of(),run.legacyB(),run.corridorReceipt()).producedEvidenceProof().isEmpty(),"Compatibility data cannot mint a traversal proof");
+        }
+    }
+    private static LiveBPreviewService.Computed proofCopy(LiveBPreviewService.Computed run,LiveBPreviewService.Captured capture,EvidenceSnapshot evidence,TraceRequest request,ModernTracePipeline.Result pipeline,IntervalTraceBatch batch,ModernTracePipeline.Options options) {
+        return new LiveBPreviewService.Computed(capture,evidence,request,pipeline,options,run.counters(),batch,run.settingsResolutionJson(),List.of(),run.legacyB(),run.corridorReceipt(),run.producedEvidenceProof());
+    }
     private static void assertOriginalNativeAcquisitionAuthority(PreparedRefinementRoot prepared,RefinementModels.Candidate selected,
             ModernReviewRoot review,GeometryWorkContext work,LiveBPreviewService.Computed computed) throws Exception {
         var root=prepared.root().authority();var nativeReview=selected.payload().nativeReview().orElseThrow();
@@ -390,9 +423,9 @@ class ModernRefinementBootstrapTest {
             r.samplerId(),r.configuredSampleStepMeters(),r.profileChainage(),r.evidenceResolution(),r.corridorInput(),r.disconnectionSource());
         var foreignOwner=new LiveBPreviewService.Computed(computed.captured(),evidence,foreignRequest,actualOwner.pipeline(),actualOwner.options(),
             actualOwner.counters(),actualOwner.intervalBatch(),actualOwner.settingsResolutionJson(),List.of());
-        var register=RefinementRootAuthority.class.getDeclaredMethod("withNativeAcquisitions",LiveBPreviewService.Captured.class,Collection.class,Map.class,GeometryWorkContext.class,AttemptMemoryLedger.Owner.class);
+        var register=RefinementRootAuthority.class.getDeclaredMethod("withNativeAcquisitions",LiveBPreviewService.Captured.class,Collection.class,Map.class,GeometryWorkContext.class,AttemptMemoryLedger.Owner.class,Map.class);
         register.setAccessible(true);
-        var rejected=assertThrows(java.lang.reflect.InvocationTargetException.class,()->register.invoke(root,computed.captured(),computed.productionRuns(),Map.of(foreignOwner,source),work,prepared.memory()));
+        var rejected=assertThrows(java.lang.reflect.InvocationTargetException.class,()->register.invoke(root,computed.captured(),computed.productionRuns(),Map.of(foreignOwner,source),work,prepared.memory(),new IdentityHashMap<>()));
         assertInstanceOf(IllegalArgumentException.class,rejected.getCause(),"A foreign request/owner cannot register an original acquisition");
         var otherReceipt=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture.CapturedSnapshot[1];
         SwingUtilities.invokeAndWait(()->otherReceipt[0]=org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture.captureBound(review.dataSet(),computed.captured().specification()));

@@ -158,11 +158,11 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
             var context=new NativeRefinementSourceContext(capture,config,coordinator,visibleCapture);
             var retainedSources=new IdentityHashMap<LiveBPreviewService.Computed,RetainedSmoothingSource>();
             var hashes=new IdentityHashMap<Object,String>();
-            work.reserveOn(memory,"native-original-hash-cache",8192).adopt(hashes);
+            work.reserveOn(memory,"native-original-hash-cache",32768).adopt(hashes);
             var primarySource=NativeRefinementSourceContext.retain(primary,settings,context,work,memory,hashes);retainedSources.put(primary,primarySource);
             context.bindOriginalInputHash(primarySource.inputByteHash());
             var nativeFacts=new IdentityHashMap<Object,Long>();
-            nativeFacts.put(hashes,8192L);
+            nativeFacts.put(hashes,32768L);
             var owners=Collections.newSetFromMap(new IdentityHashMap<LiveBPreviewService.Computed,Boolean>());
             if(interval!=null)owners.addAll(intervalSources);else nativeChoices.forEach(c->owners.add(c.owner()));
             // Admit each existing scalar backing as one group before the native result graph
@@ -173,12 +173,13 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
             for(var owner:owners) {
                 nativeFacts.putAll(RefinementRootAuthority.detachedCharges(owner.request(),owner.pipeline(),owner.options(),owner.counters(),owner.intervalBatch(),owner.settingsResolutionJson()));
                 nativeFacts.put(owner,512L);
+                owner.producedEvidenceProof().ifPresent(proof->nativeFacts.put(proof,256L));
                 owner.corridorReceipt().ifPresent(nativeReceipt->nativeFacts.put(nativeReceipt,nativeReceiptBytes(nativeReceipt)));
             }
             nativeFacts.putAll(RefinementRootAuthority.detachedCharges(capture.specification(),capture.disconnectionSource(),capture.sourceGeographic(),capture.sourceMetric(),capture.outputGrid(),capture.alternativeMappings()));
             nativeFacts.put(capture,capturedBytes(capture));
-            var authority=new RefinementRootAuthority(capture.network(),primary.request(),primary.evidence(),config,capture.projectionCode(),sourceIdentity,capture.intervalPartition(),primarySource,work,memory)
-                .withRetainedFacts(nativeFacts).withNativeAcquisitions(capture,owners,retainedSources,work,memory);
+            var authority=RefinementRootAuthority.fromNativeProduction(primary,config,sourceIdentity,primarySource,work,memory,hashes)
+                .withRetainedFacts(nativeFacts).withNativeAcquisitions(capture,owners,retainedSources,work,memory,hashes);
             for(var item:authority.charges().entrySet())admit(memory,work,item.getKey(),item.getValue());
             var way=(DetachedWay)capture.network().primitives().get(primary.request().selectedWayKey());
             var nodes=way.nodeKeys().stream().map(k->{var p=((DetachedNode)capture.network().primitives().get(k)).coordinate();return new RefinementPayload.SourceNode(k.id(),p.latitudeDegrees(),p.longitudeDegrees());}).toList();

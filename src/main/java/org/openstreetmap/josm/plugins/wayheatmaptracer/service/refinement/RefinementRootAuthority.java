@@ -64,6 +64,11 @@ public final class RefinementRootAuthority {
             SelectedWayIntervalPartitioner.Partition capturedPartition,RetainedSmoothingSource source,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner) {
+        this(network,request,evidence,effectiveConfig,projectionCode,sourceIdentity,capturedPartition,source,work,owner,null);
+    }
+    private RefinementRootAuthority(NetworkSnapshot network,TraceRequest request,EvidenceSnapshot evidence,
+            AlignmentConfig effectiveConfig,String projectionCode,String sourceIdentity,SelectedWayIntervalPartitioner.Partition capturedPartition,
+            RetainedSmoothingSource source,GeometryWorkContext work,AttemptMemoryLedger.Owner owner,String producedHash) {
         Objects.requireNonNull(network); Objects.requireNonNull(request); Objects.requireNonNull(evidence);
         Objects.requireNonNull(effectiveConfig);
         nativeAcquisitions=Map.of();
@@ -91,7 +96,7 @@ public final class RefinementRootAuthority {
                 || !request.networkSnapshotId().equals(network.snapshotId())
                 || !request.networkContentHash().equals(network.canonicalHash())
                 || !request.evidenceSnapshotId().equals(evidence.snapshotId())
-                || !request.evidenceContentHash().equals(work==null?evidence.canonicalHash():evidence.canonicalHash(work))
+                || !request.evidenceContentHash().equals(producedHash!=null?producedHash:work==null?evidence.canonicalHash():evidence.canonicalHash(work))
                 || !request.evidenceResolution().equals(evidence.resolution())
                 || request.geometryMode() != effectiveConfig.heatmap().alignmentMode()
                 || effectiveConfig.heatmap().trackerMode()!=request.engine() || request.selectedRange().size()<2
@@ -178,9 +183,26 @@ public final class RefinementRootAuthority {
         charges=Collections.unmodifiableMap(inventory);retainedBytes=total;
     }
     /** Producer-only registration of the actual completed runs, never reconstructed diagnostic data. */
+    static RefinementRootAuthority fromNativeProduction(LiveBPreviewService.Computed primary,AlignmentConfig config,String sourceIdentity,
+            RetainedSmoothingSource source,GeometryWorkContext work,AttemptMemoryLedger.Owner owner,Map<Object,String> hashCache) {
+        String hash=validatedNativeHash(primary,work,hashCache);var capture=primary.captured();
+        return new RefinementRootAuthority(capture.network(),primary.request(),primary.evidence(),config,capture.projectionCode(),sourceIdentity,
+            capture.intervalPartition(),source,work,owner,hash);
+    }
+    private static String validatedNativeHash(LiveBPreviewService.Computed run,GeometryWorkContext work,Map<Object,String> hashCache) {
+        String actual;
+        if(run.producedEvidenceProof().isPresent())actual=run.producedEvidenceProof().orElseThrow().requireMatches(run,work);
+        else {
+            actual=hashCache.get(run.evidence());
+            if(actual==null)actual=run.evidence().canonicalHash(work);
+        }
+        if(!run.request().evidenceSnapshotId().equals(run.evidence().snapshotId())||!run.request().evidenceContentHash().equals(actual))
+            throw new IllegalArgumentException("Original native request differs from its completed evidence traversal");
+        hashCache.put(run.evidence(),actual);return actual;
+    }
     RefinementRootAuthority withNativeAcquisitions(LiveBPreviewService.Captured capture,
             Collection<LiveBPreviewService.Computed> actualOwners,Map<LiveBPreviewService.Computed,RetainedSmoothingSource> retained,
-            GeometryWorkContext work,AttemptMemoryLedger.Owner owner) {
+            GeometryWorkContext work,AttemptMemoryLedger.Owner owner,Map<Object,String> hashCache) {
         var receipt=capture.originalReceipt().orElseThrow(()->new IllegalArgumentException("Original acquisition receipt unavailable"));
         if(receipt.snapshot()!=network||capture.network()!=network||!receipt.specification().equals(capture.specification())
                 ||capture.geometryMode()!=request.geometryMode()||capture.engine()!=request.engine()
@@ -192,7 +214,7 @@ public final class RefinementRootAuthority {
             var run=entry.getKey();var source=entry.getValue();var nativeRequest=run.request();var actual=run.evidence();
             if(actualOwners.stream().noneMatch(value->value==run)||run.captured()!=capture||source.evidence()!=actual
                     ||!nativeRequest.networkSnapshotId().equals(network.snapshotId())||!nativeRequest.networkContentHash().equals(network.canonicalHash())
-                    ||!nativeRequest.evidenceSnapshotId().equals(actual.snapshotId())||!nativeRequest.evidenceContentHash().equals(actual.canonicalHash(work))
+                    ||!nativeRequest.evidenceSnapshotId().equals(actual.snapshotId())
                     ||!nativeRequest.permissions().equals(request.permissions())||!nativeRequest.settingsHash().equals(request.settingsHash())
                     ||nativeRequest.engine()!=request.engine()||nativeRequest.geometryMode()!=request.geometryMode()
                     ||!source.source().mapping().equals(ModernReviewRoot.mapping(run))||!source.source().palette().equals(capture.palette())
@@ -200,6 +222,7 @@ public final class RefinementRootAuthority {
             if(capture.managedRaster()!=null?source.generation().isEmpty()||source.generation().getAsLong()!=capture.managedRaster().generation().value()
                     :source.visibleReceipt().isEmpty()||!source.visibleReceipt().get().equals(capture.raster().sourceReceipt()))
                 throw new IllegalArgumentException("Native acquisition generation differs from its original receipt");
+            validatedNativeHash(run,work,hashCache);
             requireAcquisitionFrame(actual);source.requireCurrent();source.retainInto(owner);
             if(bindings.put(actual,new NativeAcquisition(source,nativeRequest,receipt,owner))!=null)throw new IllegalArgumentException("Duplicate native acquisition evidence");
         }
