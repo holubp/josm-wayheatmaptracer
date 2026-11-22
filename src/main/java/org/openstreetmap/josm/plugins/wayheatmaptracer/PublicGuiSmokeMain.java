@@ -264,7 +264,8 @@ public final class PublicGuiSmokeMain {
             writeSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
                     + "\"status\":\"FAIL\",\"stage\":\"" + safeToken(stage)
                     + "\",\"errorType\":\"" + safeToken(failure.getClass().getSimpleName())
-                    + "\"" + (firstRefinementFailureEvidence == null ? "" : ",\"firstRefinement\":" + firstRefinementFailureEvidence)
+                    + "\"" + (intervalEvidence==null?"":",\"nativeInterval\":"+intervalEvidence)
+                    + (firstRefinementFailureEvidence == null ? "" : ",\"firstRefinement\":" + firstRefinementFailureEvidence)
                     + (laterRefinementFailureEvidence == null ? "" : ",\"laterRefinement\":" + laterRefinementFailureEvidence)
                     + (shortcutFailureEvidence == null ? "" : ",\"shortcut\":" + shortcutFailureEvidence)
                     + "}\n");
@@ -285,10 +286,12 @@ public final class PublicGuiSmokeMain {
         var branch=new org.openstreetmap.josm.data.osm.Way();branch.setOsmId(9002,1);branch.setNodes(List.of(nodes.get(5),other));branch.put("highway","path");fixture.dataSet().addPrimitive(branch);
         fixture.dataSet().allPrimitives().forEach(value->value.setModified(false));
     }
+    private static volatile String intervalEvidence;
     private static void runNativeIntervalGui(Path report,PublicGuiSmokeFixture fixture,JDialog preview,PreviewSessionController<?> session,List<String> original,int originalUndo) throws Exception {
         var owner=onEventThread(()->{
             var attempt=session.currentAttempt();if(attempt==null||!(attempt.result() instanceof LiveBPreviewService.Computed computed)||!computed.partitioned()
                     ||computed.intervalBatch().runs().stream().noneMatch(run->run.usage().transitions()>0))throw new IllegalStateException("Actual native interval inference unavailable");
+            intervalEvidence="{\"capturedPartition\":"+(computed.captured().intervalPartition()!=null)+",\"producedSources\":"+computed.productionRuns().size()+",\"intervals\":"+computed.intervalBatch().runs().size()+",\"sourceEngine\":\""+computed.request().engine().name()+"\",\"originalStatuses\":\""+computed.intervalBatch().runs().stream().map(run->run.result().inference().status().name()).toList()+"\"}";
             var value=preview.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner");
             if(!(value instanceof LegacyRefinementWorkflow workflow)||preview.isModal())throw new IllegalStateException("Native interval modeless refinement owner unavailable");
             for(String name:List.of("refineA","refineB","smooth"))if(!requiredNamed(preview.getContentPane(),name,javax.swing.JButton.class).isShowing())throw new IllegalStateException("Native interval optional control unavailable");
@@ -1021,6 +1024,8 @@ public final class PublicGuiSmokeMain {
             + ",\"workerReturned\":" + (entry == null ? "null" : Boolean.toString(entry.workerReturned()))
             + ",\"settled\":" + (entry == null ? "null" : Boolean.toString(entry.settlement().toCompletableFuture().isDone()))
             + ",\"diagnosticsAvailability\":\"" + owner.attemptDiagnosticsAvailability().name()
+            + "\",\"frozenGeometryProof\":\""+diagnostics.map(d->d.binding().frozenGeometryIdentity().equals("frozen-geometry-unavailable")?"UNAVAILABLE":"AVAILABLE").orElse("UNAVAILABLE")
+            + "\",\"refusalReasons\":\""+DIAGNOSTIC_REASONS.stream().filter(owner.computationEvidence()::contains).sorted().toList()
             + "\",\"operationKind\":\"" + operationKind + "\",\"phase\":\"" + phase + "\",\"cause\":\"" + cause
             + "\",\"publication\":\"" + publication + "\",\"pipelineOutcome\":\"" + outcome
             + "\",\"pipelineAttempts\":" + pipeline.map(p -> Integer.toString(p.attempts().size())).orElse("null")
