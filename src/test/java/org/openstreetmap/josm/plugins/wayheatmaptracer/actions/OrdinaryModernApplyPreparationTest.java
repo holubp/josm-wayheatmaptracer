@@ -114,14 +114,17 @@ class OrdinaryModernApplyPreparationTest {
             assertTrue(assessment.applyAvailable(),assessment.detail());
             var original=attempt.computed.captured().originalReceipt().orElseThrow();
             var before=state(fixture.dataSet());
+            var generation=AlignWayAction.detachedNativeCommandGeneration(attempt.computed.captured(),attempt.source,()->{});
+            for(var field:generation.getClass().getDeclaredFields())assertFalse(field.getType().getSimpleName().matches("Captured|Computed|ModernReviewRoot|LegacyReviewOwner|LegacyRefinementWorkflow|AlignmentConfig|ManagedHeatmapConfig"),field.toString());
             var prepared=edt(()->AlignWayAction.prepareModernApply(fixture.dataSet(),attempt.computed,0,"ordinary-route",review(assessment.plan().orElseThrow()),
-                ()->{attempt.receipt.requireCurrent();attempt.service.requireCurrent(fixture.dataSet(),attempt.computed.captured());},attempt.source::activeGenerationValue,
+                ()->{attempt.receipt.requireCurrent();attempt.service.requireCurrent(fixture.dataSet(),attempt.computed.captured());},generation,
                 (network,plan)->{
                     try{var field=LiveNetworkSnapshotValidator.class.getDeclaredField("captured");field.setAccessible(true);assertSame(original,field.get(network),"Plan preparation must retain the original pre-inference receipt");}
                     catch(ReflectiveOperationException unavailable){throw new AssertionError(unavailable);}
                     return network;
                 }));
             assertNotNull(prepared.command());assertEquals(before,state(fixture.dataSet()));assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+            attempt.source.updateActiveGeneration(new ManagedTileGeneration(1));assertThrows(IllegalStateException.class,generation::getAsLong);
         }
     }
 
