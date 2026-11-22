@@ -42,6 +42,7 @@ def test_focused_xml_gate_uses_suite_identity_and_requires_executed_green_tests(
         "service.refinement.SmoothingWorkContextTest",
         "service.refinement.RetainedSmoothingRootTest",
         "service.ModernRefinementBootstrapTest",
+        "service.tracing.V022FixedIntervalEditPlanComposerTest",
         "ui.RefinementControlsTest",
         "ui.RefinementReviewLifecycleTest",
         "actions.StepwiseRefinementApplyTest",
