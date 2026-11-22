@@ -181,6 +181,9 @@ public final class RefinementPayload {
         for(var mode:selected.evidence().consensusModes()){metadataVisit(work);bytes=Math.addExact(bytes,Math.addExact(256L,Math.multiplyExact(16L,mode.length())));}
         for(var reason:selected.geometryCleanup().reasons()){metadataVisit(work);bytes=Math.addExact(bytes,Math.addExact(256L,Math.multiplyExact(16L,reason.length())));}
         for(var attempt:result.detectorAttempts()){metadataVisit(work);bytes=Math.addExact(bytes,Math.addExact(4096L,Math.multiplyExact(32L,(long)attempt.sourcePalette().length()+attempt.mappingName().length()+attempt.candidateIds().size())));}
+        if(nativeReview.isPresent()&&nativeReview.get().plan()!=null)for(var reason:nativeReview.get().plan().validation().findingCodes()) {
+            metadataVisit(work);bytes=Math.addExact(bytes,Math.addExact(256L,Math.multiplyExact(16L,reason.length())));
+        }
         if(nativeReview.isPresent())for(var span:nativeReview.get().sourceSpans()) {
             metadataVisit(work);bytes=Math.addExact(bytes,4096L);
             if(span.nativeProvenance().isPresent()) {
@@ -203,7 +206,8 @@ public final class RefinementPayload {
         return new SmoothingModels.NativeFacts(source,selected.evidence(),selected.geometryCleanup(),selected.safetyWarnings(),selected.junctionSafetyFindings(),
             source.legacyDisposition().filter(d->d.nativeCandidateId().equals(id)).map(RetainedSmoothingSource.LegacyDisposition::applicable)
                 .orElseGet(()->{boolean applicable=false;for(var candidate:result.applicableCandidates()){metadataVisit(work);if(candidate.id().equals(id))applicable=true;}return applicable;}),attempts,nativeReview.map(NativeReview::quality),
-            nativeReview.map(r->r.plan().validation().disposition()),nativeReview.map(NativeReview::sourceSpans).orElse(List.of()));
+            nativeReview.map(r->r.plan().validation().disposition()),nativeReview.map(NativeReview::sourceSpans).orElse(List.of()),
+            nativeReview.map(NativeReview::plan).map(AlignmentEditPlan::validation));
     }
     public long retainedBytes() { return sum(charges); }
     /** Frozen original full-way coordinate/occurrence values, independent of the retained live handles. */

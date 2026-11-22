@@ -139,7 +139,9 @@ public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datas
     }
 
     static boolean scopedWayNodesPresent(Set<PrimitiveKey> keys,java.util.List<PrimitiveKey> nodes) {
-        return keys.containsAll(nodes);
+        if(PostprocessingValidationWork.current()==null)return keys.containsAll(nodes);
+        for(var node:nodes){PostprocessingValidationWork.visit();if(!keys.contains(node))return false;}
+        return true;
     }
     private static void validateInventoryBounds(Map<PrimitiveKey, DetachedPrimitive> primitives,
         Map<PrimitiveKey, Set<PrimitiveKey>> watches) {

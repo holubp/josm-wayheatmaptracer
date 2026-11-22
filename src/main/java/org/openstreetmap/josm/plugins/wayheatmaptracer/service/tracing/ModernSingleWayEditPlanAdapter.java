@@ -721,24 +721,34 @@ public final class ModernSingleWayEditPlanAdapter {
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference parent,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.Assessed assessed,
             EvidenceSnapshot evidence) {
-        return adaptRefinementInternal(parent,assessed,evidence,false);
+        return adaptRefinementInternal(parent,assessed,evidence,false,Optional.empty());
     }
     /** Same immutable plan contract for an already assessed whole-output postprocessing result. */
     public AlignmentEditPlan adaptPostprocessed(
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference parent,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.Assessed assessed,
             EvidenceSnapshot evidence,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
-        try(var scope=PostprocessingValidationWork.open(work)) {return adaptRefinementInternal(parent,assessed,evidence,true);}
+        return adaptPostprocessed(parent,assessed,evidence,work,Optional.empty());
+    }
+    /** Carries exact inherited plan reasons separately from the newly measured quality. */
+    public AlignmentEditPlan adaptPostprocessed(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference parent,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.Assessed assessed,
+            EvidenceSnapshot evidence,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,
+            Optional<ValidationReport> inheritedValidation) {
+        java.util.Objects.requireNonNull(inheritedValidation);
+        try(var scope=PostprocessingValidationWork.open(work)) {return adaptRefinementInternal(parent,assessed,evidence,true,inheritedValidation);}
     }
     private AlignmentEditPlan adaptRefinementInternal(
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference parent,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.Assessed assessed,
-            EvidenceSnapshot evidence,boolean postprocessing) {
+            EvidenceSnapshot evidence,boolean postprocessing,Optional<ValidationReport> inheritedValidation) {
         if(postprocessing)parent.requireComplete();else parent.requireRefinementGeometryAuthority();
         var root=parent.root();var request=root.request();var before=root.network();
         if(!evidence.coordinateFrame().equals(root.evidence().coordinateFrame())
                 ||assessed.quality().disposition()==FinalGeometryEvaluator.Disposition.HARD_BLOCKED
-                ||!assessed.topologyFindings().isEmpty())throw new IllegalArgumentException("Refinement final geometry is blocked");
+                ||!assessed.topologyFindings().isEmpty()
+                ||inheritedValidation.filter(v->v.disposition()==ValidationReport.Disposition.HARD_BLOCKED).isPresent())throw new IllegalArgumentException("Refinement final geometry is blocked");
         if(!assessed.copies().isEmpty())throw new IllegalArgumentException("Refinement copy destinations need a qualified plan adapter");
         var composed=assessed.candidate();var ids=composed.pointIds();var assignments=composed.assignments();
         var selected=(DetachedWay)before.primitives().get(request.selectedWayKey());
@@ -762,7 +772,9 @@ public final class ModernSingleWayEditPlanAdapter {
         var topology=assessFinalTopology(before,afterValues,selected.key(),request.selectedRange(),evidence,request.permissions().ordinaryRadiusMeters(),Map.of(),Map.of());
         if(!topology.findingCodes().isEmpty())throw new IllegalArgumentException("Refinement final topology is blocked");
         var findings=assessed.quality().findings().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).map(f->"refinement-final:"+f.code().name()).collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        inheritedValidation.ifPresent(v->{PostprocessingValidationWork.charge(v.findingCodes().size());findings.addAll(v.findingCodes());});
         var disposition=assessed.quality().disposition()==FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED
+                ||inheritedValidation.filter(v->v.disposition()==ValidationReport.Disposition.REVIEW_REQUIRED).isPresent()
             ?ValidationReport.Disposition.REVIEW_REQUIRED:ValidationReport.Disposition.APPLICABLE;
         if(request.permissions().junctionPolicy()!=JunctionPolicy.FIXED){disposition=ValidationReport.Disposition.REVIEW_REQUIRED;findings.add("network-review-required");}
         var after=new NetworkSnapshot(before.snapshotId()+":refinement:"+composed.id(),SnapshotRole.PROPOSED_AFTER,before.datasetIdentity(),before.sourceGeneration(),
@@ -2180,7 +2192,7 @@ public final class ModernSingleWayEditPlanAdapter {
             }
         });
         Map<PrimitiveKey, List<GeographicPoint>> result = new LinkedHashMap<>();
-        after.entrySet().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).sorted(Map.Entry.comparingByKey()).forEach(entry -> { PostprocessingValidationWork.visit();
+        after.entrySet().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).sorted(PostprocessingValidationWork.comparator(Map.Entry.comparingByKey())).forEach(entry -> { PostprocessingValidationWork.visit();
             if (!(entry.getValue() instanceof DetachedWay way)) {
                 return;
             }
@@ -2206,33 +2218,40 @@ public final class ModernSingleWayEditPlanAdapter {
         Map<PrimitiveKey, Set<PrimitiveKey>> result = new LinkedHashMap<>();
         for (PrimitiveKey target : after.keySet()) {
             PostprocessingValidationWork.visit();
+            PostprocessingValidationWork.charge(afterInternal.get(target).size());
             Set<PrimitiveKey> referrers = new LinkedHashSet<>(afterInternal.get(target));
             if (before.primitives().containsKey(target)) {
+                PostprocessingValidationWork.charge(before.incomingReferrerWatches().get(target).size()+
+                    (long)beforeInternal.get(target).size());
                 Set<PrimitiveKey> external = new LinkedHashSet<>(
                     before.incomingReferrerWatches().get(target));
                 external.removeAll(beforeInternal.get(target));
+                PostprocessingValidationWork.charge(external.size());
                 referrers.addAll(external);
             }
+            PostprocessingValidationWork.charge(referrers.size());
             result.put(target, Set.copyOf(referrers));
         }
+        PostprocessingValidationWork.charge(result.size());
         return Map.copyOf(result);
     }
 
     static Map<PrimitiveKey, Set<PrimitiveKey>> internalWatches(
             Map<PrimitiveKey, DetachedPrimitive> values) {
         Map<PrimitiveKey, Set<PrimitiveKey>> result = new LinkedHashMap<>();
-        values.keySet().forEach(key -> result.put(key, new LinkedHashSet<>()));
+        values.keySet().forEach(key -> {PostprocessingValidationWork.visit();result.put(key, new LinkedHashSet<>());});
         for (DetachedPrimitive primitive : values.values()) {
             PostprocessingValidationWork.visit();
             if (primitive instanceof DetachedWay way) {
-                way.nodeKeys().forEach(node -> result.get(node).add(way.key()));
+                way.nodeKeys().forEach(node -> {PostprocessingValidationWork.visit();result.get(node).add(way.key());});
             } else if (primitive instanceof DetachedRelation relation) {
-                relation.members().forEach(member ->
-                    result.get(member.memberKey()).add(relation.key()));
+                relation.members().forEach(member -> {
+                    PostprocessingValidationWork.visit();result.get(member.memberKey()).add(relation.key());});
             }
         }
         Map<PrimitiveKey, Set<PrimitiveKey>> immutable = new LinkedHashMap<>();
-        result.forEach((key, referrers) -> immutable.put(key, Set.copyOf(referrers)));
+        result.forEach((key, referrers) -> {PostprocessingValidationWork.charge(referrers.size()+1L);immutable.put(key, Set.copyOf(referrers));});
+        PostprocessingValidationWork.charge(immutable.size());
         return Map.copyOf(immutable);
     }
 
@@ -2344,7 +2363,7 @@ public final class ModernSingleWayEditPlanAdapter {
         List<Segment> segments = new ArrayList<>();
         boolean[] clippedOrExcludedContext = {false};
         after.values().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).filter(DetachedWay.class::isInstance)
-                .map(DetachedWay.class::cast).sorted(java.util.Comparator.comparing(DetachedWay::key))
+                .map(DetachedWay.class::cast).sorted(PostprocessingValidationWork.comparator(java.util.Comparator.comparing(DetachedWay::key)))
                 .forEach(way -> { PostprocessingValidationWork.visit();
                     if(way.key().equals(selectedWay))PostprocessingValidationWork.charge(2L*way.nodeKeys().size());
                     int selectedFirstIndex = way.key().equals(selectedWay)

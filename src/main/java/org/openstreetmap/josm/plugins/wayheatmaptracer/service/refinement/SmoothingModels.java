@@ -74,10 +74,20 @@ public final class SmoothingModels {
     public record NativeFacts(RetainedSmoothingSource source,CandidateEvidence evidence,CandidateGeometryCleanup geometryCleanup,
             List<String> safetyWarnings,List<JunctionSafetyFinding> junctionFindings,boolean parentApplicable,List<DetectorAttempt> detectorAttempts,
             Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result> quality,
-            Optional<ValidationReport.Disposition> nativeDisposition,List<RefinementPipeline.SourceSpan> sourceSpans) {
+            Optional<ValidationReport.Disposition> nativeDisposition,List<RefinementPipeline.SourceSpan> sourceSpans,
+            Optional<ValidationReport> nativeValidation) {
+        /** Historical facts have no separately retained native plan finding codes. */
+        public NativeFacts(RetainedSmoothingSource source,CandidateEvidence evidence,CandidateGeometryCleanup geometryCleanup,
+                List<String> safetyWarnings,List<JunctionSafetyFinding> junctionFindings,boolean parentApplicable,List<DetectorAttempt> detectorAttempts,
+                Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result> quality,
+                Optional<ValidationReport.Disposition> nativeDisposition,List<RefinementPipeline.SourceSpan> sourceSpans) {
+            this(source,evidence,geometryCleanup,safetyWarnings,junctionFindings,parentApplicable,detectorAttempts,quality,nativeDisposition,sourceSpans,Optional.empty());
+        }
         public NativeFacts {
             Objects.requireNonNull(source);Objects.requireNonNull(evidence);Objects.requireNonNull(geometryCleanup);
-            Objects.requireNonNull(quality);Objects.requireNonNull(nativeDisposition);
+            Objects.requireNonNull(quality);Objects.requireNonNull(nativeDisposition);Objects.requireNonNull(nativeValidation);
+            if(nativeValidation.isPresent()&&!nativeDisposition.equals(Optional.of(nativeValidation.get().disposition())))
+                throw new IllegalArgumentException("Native validation disposition differs from captured plan");
             safetyWarnings=List.copyOf(safetyWarnings);junctionFindings=List.copyOf(junctionFindings);detectorAttempts=List.copyOf(detectorAttempts);sourceSpans=List.copyOf(sourceSpans);
         }
     }
