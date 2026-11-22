@@ -296,6 +296,22 @@ public final class PublicGuiSmokeMain {
         if(!"PROBABILISTIC".equals(sparseStatus.getString("rootEngine"))||!"AVAILABLE".equals(sparseStatus.getString("latestAttemptAvailability"))
                 ||sparseExport.artifact("root/stage-0-choice-0.json").isEmpty()||sparseExport.artifact("native-root-diagnostics.zip").isEmpty())
             throw new IllegalStateException("Actual menu export lacks retained native root and failed-operation evidence");
+        var originalContext=Format15ArchiveReader.read(new java.io.ByteArrayInputStream(sparseExport.artifact("native-root-diagnostics.zip").orElseThrow().bytes()));
+        var sourceChoices=parseReviewStatus(new String(originalContext.artifact("source-choices.json").orElseThrow().bytes(),StandardCharsets.UTF_8));
+        var sourceOwner=onEventThread(()->(LiveBPreviewService.Computed)session.currentAttempt().result());
+        for(var actual:sourceOwner.productionRuns()) {
+            var recorded=sourceChoices.getJsonArray("attempts").stream().map(value->value.asJsonObject())
+                .filter(value->value.containsKey("work")&&value.getString("tier").equals(actual.options().sourceTier())).findFirst().orElseThrow();
+            var work=recorded.getJsonObject("work");
+            if(!work.getString("scope").equals("INTERVAL_SOURCE_BATCH")||!work.getString("engine").equals(actual.request().engine().name())
+                    ||work.getJsonArray("runs").size()!=actual.intervalBatch().runs().size())throw new IllegalStateException("Original native source work scope differs");
+            for(int i=0;i<actual.intervalBatch().runs().size();i++) {
+                var run=actual.intervalBatch().runs().get(i);var row=work.getJsonArray("runs").getJsonObject(i);
+                if(!row.getString("requestHash").equals(org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec.canonicalRequestHash(run.request()))
+                        ||row.getJsonNumber("evaluatedTransitions").longValueExact()!=run.result().inference().evaluatedTransitions()
+                        ||row.getJsonNumber("finalRoutes").intValueExact()!=run.routes().size())throw new IllegalStateException("Original native source work does not match its actual run");
+            }
+        }
         onEventThread(()->{
             var diagnostic=sparseOwner.latestAttemptDiagnostics().orElseThrow();
             if(diagnostic.publication()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Publication.NO_CHILD
