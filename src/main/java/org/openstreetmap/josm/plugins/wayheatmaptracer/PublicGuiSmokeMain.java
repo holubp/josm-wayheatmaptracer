@@ -840,6 +840,7 @@ public final class PublicGuiSmokeMain {
                         Path archive=report.resolveSibling("later-refinement-failure.zip");
                         DiagnosticsRegistry.writeLatest(archive.toFile());
                         var read=Format15ArchiveReader.read(archive);
+                        if(expected==StageKind.SMOOTH)read.artifact("latest-smoothing-attempt.json").ifPresent(actual->System.err.println("GUI_SMOKE_ACTUAL_SMOOTHING "+new String(actual.bytes(),StandardCharsets.UTF_8)));
                         if(read.formatVersion()!=15)throw new IllegalStateException("Refinement format unavailable");
                         var bundle=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle(read.buildIdentity(),read.sourceIdentityHash(),read.parameterHash(),read.artifacts());
                         var lineage=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.readBound(bundle,observed.stage(),observed.choice()).orElseThrow();
@@ -990,6 +991,21 @@ public final class PublicGuiSmokeMain {
         if(!java.util.Arrays.equals(pixels,authoritative.raster().argb()))throw new IllegalStateException("Authoritative visible producer changed the actual sampled pixels");
         var actual=authoritative.raster();var clone=new LiveBPreviewService.VisibleRaster(actual.width(),actual.height(),actual.argb(),actual.minimumEast(),actual.minimumNorth(),actual.maximumEast(),actual.maximumNorth(),actual.projectionUnitsPerViewPixel(),actual.groundMetersPerViewPixel(),actual.nativePitchMeters(),actual.sourceIdentity(),actual.projectionCode(),actual.sourceReceipt());
         try{authoritative.receipt().requireRaster(clone);throw new AssertionError("Reconstructed pixels cannot borrow a producer-only visible receipt");}catch(IllegalArgumentException expected){}
+        var authority=authoritative.receipt().commandAuthority(0);var before=wayState(fixture);int undo=UndoRedoHandler.getInstance().getUndoCommands().size();
+        try(var memory=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production().rootOwner()){
+            var exhausted=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(0,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE,memory);
+            try{authority.prepareExecution(false,exhausted);throw new AssertionError("Visible preparation must retain its work bound");}catch(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached expected){}
+            var cancelled=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(8_000_000,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,()->{throw new java.util.concurrent.CancellationException();},memory);
+            try{authority.prepareExecution(false,cancelled);throw new AssertionError("Visible preparation must honor cancellation before painting");}catch(java.util.concurrent.CancellationException expected){}
+        }
+        authority.prepareExecution(false).run();requireUnchanged(fixture,before,undo);
+        if(!size.equals(view.getSize())||scale!=view.getScale()||view.getNativeScaleLayer()!=snapper)throw new IllegalStateException("Visible source preflight lost the callback-time viewport");
+        var prepared=authority.prepareExecution(false);
+        var gamma=layer.getImageProcessors().stream().filter(p->p.getClass()==org.openstreetmap.josm.gui.layer.imagery.GammaImageProcessor.class).map(org.openstreetmap.josm.gui.layer.imagery.GammaImageProcessor.class::cast).findFirst().orElseThrow();double previousGamma=gamma.getGamma();
+        try{gamma.setGamma(previousGamma+.1);try{prepared.run();throw new AssertionError("A direct policy mutation between preflight and transaction must reject");}catch(IllegalStateException expected){}}
+        finally{gamma.setGamma(previousGamma);}
+        try{authority.getAsLong();throw new AssertionError("Observed stale input authority cannot be revived by resetting a processor");}catch(IllegalStateException expected){}
+        requireUnchanged(fixture,before,undo);
         try{
             view.setNativeScaleLayer(null);var withoutSnapper=service.captureLiveBVisibleRaster(selection,layer,view,config,"public-static-visible-null-snapper");
             if(view.getNativeScaleLayer()!=null||!java.util.Arrays.equals(pixels,withoutSnapper.argb()))throw new IllegalStateException("Null and actual native scale-grid captures differ");
@@ -1047,13 +1063,18 @@ public final class PublicGuiSmokeMain {
         var original=painters.get(layer);if(original==null)throw new IllegalStateException("Actual visible source painter is not registered");
         var analytic=new AnalyticVisibleLayer(fixture.visibleTile());
         var replacement=new org.openstreetmap.josm.gui.layer.MapViewPaintable.LayerPainter(){
-            public void paint(org.openstreetmap.josm.gui.layer.MapViewGraphics graphics){visiblePaintCalls.incrementAndGet();var fault=visiblePaintFault.getAndSet(null);if(fault!=null)fault.run();if(layer.getZoomLevel()!=15)throw new IllegalStateException("Public visible painter metadata differs from its actual z15 pixels");analytic.paint(graphics.getDefaultGraphics(),graphics.getMapView(),graphics.getClipBounds().getLatLonBoundsBox());}
+            public void paint(org.openstreetmap.josm.gui.layer.MapViewGraphics graphics){requirePaintOutsideDatasetLock(fixture.dataSet());visiblePaintCalls.incrementAndGet();var fault=visiblePaintFault.getAndSet(null);if(fault!=null)fault.run();if(layer.getZoomLevel()!=15)throw new IllegalStateException("Public visible painter metadata differs from its actual z15 pixels");analytic.paint(graphics.getDefaultGraphics(),graphics.getMapView(),graphics.getClipBounds().getLatLonBoundsBox());}
             public void detachFromMapView(org.openstreetmap.josm.gui.layer.MapViewPaintable.MapViewEvent event){original.detachFromMapView(event);}
         };
         painters.put(layer,replacement);
         return ()->{if(painters.get(layer)==replacement)painters.put(layer,original);analytic.destroy();};
     }
 
+    private static void requirePaintOutsideDatasetLock(org.openstreetmap.josm.data.osm.DataSet data) {
+        var available=new AtomicBoolean();var probe=new Thread(()->{var lock=data.getReadLock();if(lock.tryLock())try{available.set(true);}finally{lock.unlock();}},"public-visible-lock-probe");
+        probe.start();try{probe.join(5000);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new AssertionError("Visible lock probe interrupted",interrupted);}
+        if(!available.get())throw new AssertionError("Visible pixels were painted under the dataset write lock");
+    }
     static void addOfflineManagedLayer(ManagedHeatmapConfig config,
             java.util.function.Consumer<org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer> add) {
         if (!config.hasManagedAccessValues()) throw new IllegalStateException("Managed heatmap access values are incomplete");

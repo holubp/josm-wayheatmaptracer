@@ -46,12 +46,13 @@ class VisibleRenderPolicyTest {
     @Test void actualProcessorIdentityOrderAndExactClassesAreRequired() throws Exception {
         withLayer(layer->{var policy=VisibleRenderPolicy.capture(layer);assertTrue(layer.getImageProcessors().size()>=2);java.util.Collections.swap(layer.getImageProcessors(),0,1);assertThrows(IllegalStateException.class,policy::requireCurrent);});
         withLayer(layer->{var policy=VisibleRenderPolicy.capture(layer);layer.addImageProcessor(new GammaImageProcessor());assertThrows(IllegalStateException.class,policy::requireCurrent);});
+        withLayer(layer->{var policy=VisibleRenderPolicy.capture(layer);layer.getImageProcessors().remove(0);assertThrows(IllegalStateException.class,policy::requireCurrent);});
         withLayer(layer->{layer.addImageProcessor(image->image);assertThrows(UnsupportedOperationException.class,()->VisibleRenderPolicy.capture(layer));});
         withLayer(layer->{layer.addImageProcessor(new GammaImageProcessor(){});assertThrows(UnsupportedOperationException.class,()->VisibleRenderPolicy.capture(layer));});
     }
     @Test void effectiveDisplayStateAndSourceDestructionInvalidatePolicy() throws Exception {
         for(Consumer<ManagedHeatmapLayer> mutation:List.<Consumer<ManagedHeatmapLayer>>of(
-                layer->layer.setOpacity(.5),layer->layer.setVisible(false),
+                layer->layer.setOpacity(.5),layer->layer.setVisible(false),ManagedHeatmapLayer::filterChanged,
                 layer->layer.getDisplaySettings().setAutoLoad(true),layer->layer.getDisplaySettings().setShowErrors(!layer.getDisplaySettings().isShowErrors()),
                 layer->layer.getDisplaySettings().setOffsetBookmark(new OffsetBookmark("EPSG:3857","public-id","public-policy","offset",1,2))))withLayer(layer->{var policy=VisibleRenderPolicy.capture(layer);mutation.accept(layer);assertThrows(IllegalStateException.class,policy::requireCurrent);});
         withLayer(layer->{var policy=VisibleRenderPolicy.capture(layer);layer.destroy();assertThrows(IllegalStateException.class,policy::requireCurrent);},false);
