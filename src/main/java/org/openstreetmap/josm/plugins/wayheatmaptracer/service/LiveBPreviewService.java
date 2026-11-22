@@ -157,7 +157,22 @@ public final class LiveBPreviewService {
             ManagedModernPreviewSource.SourceRasters sourceRasters,
             TileFetchCoordinator sourceOwner, List<String> alternativeMappings,
             NetworkSnapshot disconnectionSource,
-            java.util.Optional<NetworkSnapshotCapture.CapturedSnapshot> originalReceipt) {
+            java.util.Optional<NetworkSnapshotCapture.CapturedSnapshot> originalReceipt,
+            java.util.Optional<AlignmentService.VisibleInputReceipt> visibleInputReceipt) {
+        /** Compatibility inputs do not acquire producer authority from pixels or an epoch alone. */
+        public Captured(VisibleRaster raster,ManagedModernPreviewSource.Raster managedRaster,
+                NetworkSnapshotCapture.Specification specification,NetworkSnapshot network,
+                List<GeographicPoint> sourceGeographic,List<MetricPoint> sourceMetric,MetricRasterGrid outputGrid,
+                String palette,double searchRadiusMeters,double sampleStepMeters,String settingsHash,String parameterHash,
+                GeometryCleanupConfig cleanup,AlignmentMode geometryMode,TrackerMode engine,String projectionCode,
+                ManualJunctionEligibility.Decision junctionDecision,SelectedWayIntervalPartitioner.Partition intervalPartition,
+                IntensitySamplingMode intensityMode,ManagedModernPreviewSource.SourceRasters sourceRasters,
+                TileFetchCoordinator sourceOwner,List<String> alternativeMappings,NetworkSnapshot disconnectionSource,
+                java.util.Optional<NetworkSnapshotCapture.CapturedSnapshot> originalReceipt) {
+            this(raster,managedRaster,specification,network,sourceGeographic,sourceMetric,outputGrid,palette,searchRadiusMeters,
+                sampleStepMeters,settingsHash,parameterHash,cleanup,geometryMode,engine,projectionCode,junctionDecision,
+                intervalPartition,intensityMode,sourceRasters,sourceOwner,alternativeMappings,disconnectionSource,originalReceipt,java.util.Optional.empty());
+        }
         /** Historical fixtures carry no original authority receipt. */
         public Captured(VisibleRaster raster,ManagedModernPreviewSource.Raster managedRaster,
                 NetworkSnapshotCapture.Specification specification,NetworkSnapshot network,
@@ -176,7 +191,13 @@ public final class LiveBPreviewService {
                 throw new IllegalArgumentException("Original native receipt differs from captured facts");
             return new Captured(raster,managedRaster,specification,network,sourceGeographic,sourceMetric,outputGrid,palette,
                 searchRadiusMeters,sampleStepMeters,settingsHash,parameterHash,cleanup,geometryMode,engine,projectionCode,
-                junctionDecision,intervalPartition,intensityMode,sourceRasters,sourceOwner,alternativeMappings,disconnectionSource,java.util.Optional.of(receipt));
+                junctionDecision,intervalPartition,intensityMode,sourceRasters,sourceOwner,alternativeMappings,disconnectionSource,java.util.Optional.of(receipt),visibleInputReceipt);
+        }
+        public Captured withVisibleInputReceipt(AlignmentService.VisibleInputReceipt receipt) {
+            Objects.requireNonNull(receipt).requireRaster(raster);
+            return new Captured(raster,managedRaster,specification,network,sourceGeographic,sourceMetric,outputGrid,palette,
+                searchRadiusMeters,sampleStepMeters,settingsHash,parameterHash,cleanup,geometryMode,engine,projectionCode,
+                junctionDecision,intervalPartition,intensityMode,sourceRasters,sourceOwner,alternativeMappings,disconnectionSource,originalReceipt,java.util.Optional.of(receipt));
         }
         private Captured withOriginalReceipt(java.util.Optional<NetworkSnapshotCapture.CapturedSnapshot> receipt) {
             return receipt.map(this::withOriginalReceipt).orElse(this);
@@ -204,7 +225,7 @@ public final class LiveBPreviewService {
                     sourceMetric, outputGrid, palette, searchRadiusMeters, sampleStepMeters,
                     settingsHash, parameterHash, cleanup, geometryMode, engine, projectionCode,
                     junctionDecision, intervalPartition, intensityMode, sourceRasters, sourceOwner,
-                    alternativeMappings, initial,originalReceipt);
+                    alternativeMappings, initial,originalReceipt,visibleInputReceipt);
         }
         public Captured(VisibleRaster raster, ManagedModernPreviewSource.Raster managedRaster,
                 NetworkSnapshotCapture.Specification specification, NetworkSnapshot network,
@@ -258,6 +279,7 @@ public final class LiveBPreviewService {
         }
         public Captured {
             Objects.requireNonNull(originalReceipt);
+            Objects.requireNonNull(visibleInputReceipt);visibleInputReceipt.ifPresent(proof->proof.requireRaster(raster));
             if(originalReceipt.isPresent()&&(originalReceipt.get().snapshot()!=network||!originalReceipt.get().specification().equals(specification)))
                 throw new IllegalArgumentException("Foreign native capture receipt");
             requireBoundDisconnectionSource(specification, network, disconnectionSource);
@@ -644,6 +666,12 @@ public final class LiveBPreviewService {
                 permissions);
     }
 
+    /** Binds a real producer receipt to its exact raster before capturing original OSM authority. */
+    public Captured capture(DataSet dataSet,SelectionContext selection,VisibleRaster raster,AlignmentConfig config,
+            boolean explicitVisibleSource,RecoveryPermissions permissions,AlignmentService.VisibleInputReceipt proof) {
+        Objects.requireNonNull(proof).requireRaster(raster);
+        return captureInternal(dataSet,selection,raster,config,explicitVisibleSource,permissions).withVisibleInputReceipt(proof);
+    }
     private Captured captureInternal(DataSet dataSet, SelectionContext selection,
             VisibleRaster raster, AlignmentConfig config, boolean explicitVisibleSource,
             RecoveryPermissions requestedPermissions) {
@@ -2277,6 +2305,7 @@ public final class LiveBPreviewService {
                 || !captured.raster().projectionCode().equals(projectionCode)) {
             throw new IllegalStateException("Live preview source, layer, or projection is stale");
         }
+        captured.visibleInputReceipt().ifPresent(AlignmentService.VisibleInputReceipt::requireCurrent);
         NetworkSnapshot current = NetworkSnapshotCapture.capture(dataSet, captured.specification());
         if (!current.canonicalHash().equals(captured.network().canonicalHash())
                 || !org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness

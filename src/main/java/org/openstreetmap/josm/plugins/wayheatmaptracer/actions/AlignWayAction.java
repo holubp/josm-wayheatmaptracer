@@ -192,6 +192,7 @@ public class AlignWayAction extends JosmAction {
     interface OrdinaryVisibleRasterCapture<S> {
         LiveBPreviewService.VisibleRaster capture(S source,
                 ModernAlignmentInvocation invocation, RecoveryPermissions permissions);
+        default Optional<AlignmentService.VisibleInputReceipt> inputReceipt(LiveBPreviewService.VisibleRaster raster){return Optional.empty();}
     }
 
     /** Acquires the external managed pixels for one EDT-captured ordinary seed. */
@@ -269,7 +270,9 @@ public class AlignWayAction extends JosmAction {
                     LiveBPreviewService.VisibleRaster raster = Objects.requireNonNull(
                             visibleCapture.capture(routing.visibleSource(), invocation, permissions),
                             "visible ordinary raster");
-                    LiveBPreviewService.Captured captured = previewService.capture(dataSet,
+                    var receipt=visibleCapture.inputReceipt(raster);
+                    LiveBPreviewService.Captured captured = receipt.isPresent()?previewService.capture(dataSet,
+                            selection,raster,invocation.config(),true,permissions,receipt.orElseThrow()):previewService.capture(dataSet,
                             selection, raster, invocation.config(), true, permissions);
                     yield new AlignmentJob.CapturedAttempt<>(snapshot(captured, sourceIdentity),
                             new OrdinaryCapturedSource(invocation, captured, null,
@@ -924,9 +927,7 @@ public class AlignWayAction extends JosmAction {
                 final TileFetchCoordinator coordinator = previewSourceOwner;
                 ordinaryAttemptAssembly.startWithSources(livePreviewSession, previewOwner, ordinaryRouting,
                         dataSet, selection, sourceIdentity,
-                        (frozenSource, invocation, permissions) ->
-                                alignmentService.captureLiveBVisibleRaster(selection, frozenSource,
-                                        mapView, invocation.config(), sourceIdentity, permissions),
+                        visibleRasterCapture(selection,mapView,sourceIdentity),
                         (seed, invocation, context) -> {
                             ManagedModernPreviewSource source = new ManagedModernPreviewSource(coordinator);
                             return source.acquireSources(seed.sourceGeographic(),
@@ -962,10 +963,10 @@ public class AlignWayAction extends JosmAction {
                         diagnosticAttemptIdentity, previewSourceOwner));
             } else {
                 livePreviewSession.startDetached(previewOwner, () -> {
-                    LiveBPreviewService.VisibleRaster raster = alignmentService.captureLiveBVisibleRaster(
-                            selection, imageryLayer, mapView, slideConfig, sourceIdentity,
-                            recoveryPermissions);
-                    LiveBPreviewService.Captured captured = recoveryPermissions == null
+                    var authoritative=imageryLayer instanceof ManagedHeatmapLayer managed?alignmentService.captureAuthoritativeVisibleInput(selection,managed,mapView,slideConfig,sourceIdentity,recoveryPermissions):null;
+                    LiveBPreviewService.VisibleRaster raster = authoritative==null?alignmentService.captureLiveBVisibleRaster(
+                            selection, imageryLayer, mapView, slideConfig, sourceIdentity,recoveryPermissions):authoritative.raster();
+                    LiveBPreviewService.Captured captured = authoritative!=null?livePreviewService.capture(dataSet,selection,raster,slideConfig,explicitVisibleSource,recoveryPermissions,authoritative.receipt()):recoveryPermissions == null
                             ? livePreviewService.capture(dataSet, selection, raster, slideConfig,
                                     explicitVisibleSource)
                             : livePreviewService.capture(dataSet, selection, raster, slideConfig,
@@ -1345,7 +1346,7 @@ public class AlignWayAction extends JosmAction {
                 AlignmentEditPlan currentPlan = state.currentPlanForApply();
                 NetworkSnapshotCapture.CapturedSnapshot receipt = computed.captured().originalReceipt().orElseGet(()->NetworkSnapshotCapture.captureBound(
                         dataSet, computed.captured().specification()));
-                var generation=detachedNativeCommandGeneration(computed.captured(),previewSourceOwner,detachedCommandContext(dataSet,null,previewSourceOwner));
+                var generation=detachedNativeCommandGeneration(computed.captured(),previewSourceOwner,detachedCommandContext(dataSet,computed.captured().managedRaster()==null?imageryLayer:null,computed.captured().managedRaster()!=null?previewSourceOwner:null));
                 LiveNetworkSnapshotValidator network = new LiveNetworkSnapshotValidator(receipt,
                         currentPlan,generation);
                 ManagedSourceReceipt managedReceipt = ManagedSourceReceipt.forCurrentPlugin(
@@ -2815,14 +2816,25 @@ public class AlignWayAction extends JosmAction {
         }
     }
 
-    private interface DetachedNativeGeneration extends LongSupplier {
+    private OrdinaryVisibleRasterCapture<ImageryLayer> visibleRasterCapture(SelectionContext selection,MapView view,String identity) {
+        return new OrdinaryVisibleRasterCapture<>() {
+            private AlignmentService.VisibleInputReceipt receipt;
+            public LiveBPreviewService.VisibleRaster capture(ImageryLayer layer,ModernAlignmentInvocation invocation,RecoveryPermissions permissions){
+                if(layer instanceof ManagedHeatmapLayer managed){var input=alignmentService.captureAuthoritativeVisibleInput(selection,managed,view,invocation.config(),identity,permissions);receipt=input.receipt();return input.raster();}
+                receipt=null;return alignmentService.captureLiveBVisibleRaster(selection,layer,view,invocation.config(),identity,permissions);
+            }
+            public Optional<AlignmentService.VisibleInputReceipt> inputReceipt(LiveBPreviewService.VisibleRaster raster){if(receipt!=null)receipt.requireRaster(raster);return Optional.ofNullable(receipt);}
+        };
+    }
+    private interface DetachedNativeGeneration extends org.openstreetmap.josm.plugins.wayheatmaptracer.util.PreparedCommandSource {
         default void withSource(Runnable transaction){getAsLong();transaction.run();}
     }
     private record ManagedCommandGeneration(TileFetchCoordinator coordinator,ManagedTileGeneration generation,long sourceGeneration,Runnable context) implements DetachedNativeGeneration {
         public long getAsLong(){context.run();if(!coordinator.isActiveGeneration(generation))throw new IllegalStateException("The original managed command source changed");return sourceGeneration;}
     }
-    private record VisibleCommandGeneration(VisibleSourceEpoch.Receipt receipt,long sourceGeneration,Runnable context) implements DetachedNativeGeneration {
-        public long getAsLong(){context.run();receipt.owner().requireCurrent(receipt);return sourceGeneration;}
+    private record VisibleCommandGeneration(VisibleSourceEpoch.Receipt receipt,long sourceGeneration,Runnable context,AlignmentService.VisibleCommandAuthority authority) implements DetachedNativeGeneration {
+        public long getAsLong(){context.run();if(authority!=null)return authority.getAsLong();receipt.owner().requireCurrent(receipt);return sourceGeneration;}
+        public Runnable prepareExecution(boolean redo){context.run();if(authority==null){getAsLong();return ()->getAsLong();}var prepared=authority.prepareExecution(redo);return ()->{context.run();prepared.run();};}
         public void withSource(Runnable transaction){synchronized(receipt.owner()){getAsLong();transaction.run();}}
     }
     /** Creates a command-only generation witness without retaining the capture or its images. */
@@ -2832,13 +2844,13 @@ public class AlignWayAction extends JosmAction {
         if(captured.managedRaster()!=null) {
             if(coordinator==null||captured.sourceOwner()!=null&&captured.sourceOwner()!=coordinator)throw new IllegalStateException("Original managed command owner differs");
             guard=new ManagedCommandGeneration(coordinator,captured.managedRaster().generation(),value,context);
-        } else guard=new VisibleCommandGeneration(Objects.requireNonNull(captured.raster().sourceReceipt(),"Original visible command receipt unavailable"),value,context);
+        } else guard=new VisibleCommandGeneration(Objects.requireNonNull(captured.raster().sourceReceipt(),"Original visible command receipt unavailable"),value,context,captured.visibleInputReceipt().map(proof->proof.commandAuthority(value)).orElse(null));
         guard.getAsLong();return guard;
     }
     private record DetachedNativeApplyValidator(LiveNetworkSnapshotValidator network,DetachedNativeGeneration source,Consumer<String> reporter) implements LockedApplyValidator {
         public String datasetIdentity(){return network.datasetIdentity();}
         public boolean returnsNormallyAfterCompletedTransaction(){return true;}
-        public Runnable prepareExecution(DataSet data,boolean redo){source.getAsLong();return ()->source.getAsLong();}
+        public Runnable prepareExecution(DataSet data,boolean redo){return source.prepareExecution(redo);}
         public void executeWithPreparedSource(Runnable transaction){source.withSource(transaction);}
         public void validateLocked(DataSet data,AlignmentEditPlan plan,boolean requireSource){network.validateLocked(data,plan,true);}
         public void validateUndoLocked(DataSet data,AlignmentEditPlan plan){network.validateUndoLocked(data,plan);}
@@ -2899,6 +2911,7 @@ public class AlignWayAction extends JosmAction {
             AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
             TracingSettings tracingAtCapture, LiveBPreviewService.Captured captured,
             TileFetchCoordinator sourceOwner) {
+        captured.visibleInputReceipt().ifPresent(AlignmentService.VisibleInputReceipt::requireCurrent);
         AlignmentConfig currentPersisted = new AlignmentConfig(PluginPreferences.load(),
                 PluginPreferences.loadGeometryCleanup());
         TracingSettings currentTracing = PluginPreferences.loadTracingSettings();
@@ -2937,6 +2950,7 @@ public class AlignWayAction extends JosmAction {
     static void requireSupportedApplySource(LiveBPreviewService.Captured captured,
             ImageryLayer layer) {
         if (captured.managedRaster() == null && layer instanceof ManagedHeatmapLayer) {
+            if(captured.visibleInputReceipt().isPresent()){var proof=captured.visibleInputReceipt().orElseThrow();proof.requireRaster(captured.raster());proof.requireOwner(layer);return;}
             throw new IllegalStateException("The managed rendered source cannot verify unchanged pixels; "
                     + "use direct managed tiles for Apply.");
         }
@@ -2944,7 +2958,10 @@ public class AlignWayAction extends JosmAction {
 
     /** Interval Apply currently requires a plugin-owned direct tile receipt and locked validator. */
     static boolean intervalApplySourceAvailable(LiveBPreviewService.Captured captured) {
-        return captured != null && captured.managedRaster() != null;
+        if(captured==null)return false;
+        if(captured.managedRaster()!=null)return true;
+        try{captured.visibleInputReceipt().orElseThrow().requireRaster(captured.raster());return true;}
+        catch(RuntimeException unavailable){return false;}
     }
 
     /** Queues one fixed, credential-free host Redo failure for the user-visible error surface. */

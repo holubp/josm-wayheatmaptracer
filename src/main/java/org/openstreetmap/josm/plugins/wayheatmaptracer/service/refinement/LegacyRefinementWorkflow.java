@@ -67,8 +67,10 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         if(!SwingUtilities.isEventDispatchThread()||busy||closed||session!=null)throw new IllegalStateException("Command context requires an idle original review");
         commandContext=Objects.requireNonNull(context);
     }
-    private record CommandGeneration(java.util.function.LongSupplier source,Runnable context) implements java.util.function.LongSupplier {
+    private record CommandGeneration(java.util.function.LongSupplier source,Runnable context) implements org.openstreetmap.josm.plugins.wayheatmaptracer.util.PreparedCommandSource {
         public long getAsLong(){context.run();return source.getAsLong();}
+        public Runnable prepareExecution(boolean redo){context.run();if(source instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.util.PreparedCommandSource prepared){var receipt=prepared.prepareExecution(redo);return ()->{context.run();receipt.run();};}getAsLong();return ()->getAsLong();}
+        public void withSource(Runnable transaction){context.run();if(source instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.util.PreparedCommandSource prepared)prepared.withSource(()->{context.run();transaction.run();});else{getAsLong();transaction.run();}}
     }
     public void attachLifecycle(RefinementReviewLifecycle lifecycle) {
         if(!SwingUtilities.isEventDispatchThread()||busy||closed||!ownsPublication())throw new IllegalStateException("Review lifecycle requires the current idle owner");
@@ -1094,8 +1096,10 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         if(!canApplyNative())throw new IllegalStateException("Refinement candidate requires review or is busy");
         if(currentNoChangeRoot().isPresent())throw new IllegalStateException("No-change acceptance does not create an edit command");
         var plan=currentNative().orElseThrow().plan();
-        var sourceGuard=new CommandGeneration(sourceContext.detachedCommandGeneration(),commandContext);
-        var validator=new LiveNetworkSnapshotValidator(root.receipt(),plan,sourceGuard);
+        var detached=sourceContext.detachedCommandGeneration();var sourceGuard=new CommandGeneration(detached,commandContext);
+        var network=new LiveNetworkSnapshotValidator(root.receipt(),plan,sourceGuard);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.LockedApplyValidator validator=detached instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.util.PreparedCommandSource
+            ?new org.openstreetmap.josm.plugins.wayheatmaptracer.util.SourcePreparedApplyValidator(network,sourceGuard,reason->javax.swing.JOptionPane.showMessageDialog(org.openstreetmap.josm.gui.MainApplication.getMainFrame(),reason,"WayHeatmapTracer",javax.swing.JOptionPane.WARNING_MESSAGE)):network;
         var command=new ApplyAlignmentEditPlanCommand(review.dataSet(),plan,validator,"Apply heatmap refinement");
         if(!session.terminalizeForApply())throw new IllegalStateException("The refinement session is no longer idle");
         return command;

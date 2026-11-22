@@ -244,21 +244,27 @@ public final class AlignmentService {
             MapView view,AlignmentConfig config,String sourceIdentity,RecoveryPermissions permissions) {
         if(!org.openstreetmap.josm.gui.MainApplication.getLayerManager().getLayers().contains(layer))throw new IllegalStateException("Authoritative visible source is not registered");
         var policy=VisibleRenderPolicy.capture(layer);var source=toEastNorth(selection.segmentNodes());
-        var capture=captureVisibleHeatmap(layer,view,source,visibleSearchHalfWidthPixels(config,source,permissions),true);
-        policy.requireCurrent();var frame=capture.paintedFrame().orElseThrow(()->new IllegalStateException("Actual visible paint recipe unavailable"));
-        if(!frame.commonResolution())throw new IllegalStateException("Actual visible paint resolution is heterogeneous");
-        String hash;
+        int halfWidth=visibleSearchHalfWidthPixels(config,source,permissions);
+        var proposed=requiredCaptureSize(expandedBounds(source,visibleCaptureMarginProjectionUnits(halfWidth)),REFERENCE_CAPTURE_PROJECTION_UNITS_PER_VIEW_PIXEL);
+        long count=Math.multiplyExact(Math.multiplyExact((long)proposed.width+2,proposed.height+2),36L);
         try(var owner=AttemptMemoryLedger.production().rootOwner()) {
-            var work=visibleAuthorityWork(owner);hash=RasterEvidenceCapture.hashOriginalArgb(capture.raster(),work);
+            var work=visibleAuthorityWork(owner);work.visit(GeometryWorkContext.Kind.BIND,1);
+            if(count>8_000_000L/4)throw new GeometryWorkContext.LimitReached();
+            try(var memory=work.reserve("visible-authoritative-input",Math.addExact(16384L,Math.multiplyExact(12L,count)))) {
+                var capture=captureVisibleHeatmap(layer,view,source,halfWidth,true);
+                policy.requireCurrent();var frame=capture.paintedFrame().orElseThrow(()->new IllegalStateException("Actual visible paint recipe unavailable"));
+                if(!frame.commonResolution()||(long)frame.width()*frame.height()!=count)throw new IllegalStateException("Actual visible paint recipe differs from admission");
+                var hash=RasterEvidenceCapture.hashOriginalArgb(capture.raster(),work);
+                policy.requireCurrent();var bounds=capture.bounds();var image=capture.raster();
+                var raster=new LiveBPreviewService.VisibleRaster(image.getWidth(),image.getHeight(),image.getRGB(0,0,image.getWidth(),image.getHeight(),null,0,image.getWidth()),
+                    bounds.minEast,bounds.minNorth,bounds.maxEast,bounds.maxNorth,capture.projectionUnitsPerViewPixel(),frame.groundMetersPerViewPixel(),
+                    capture.sourceResolution().metersPerPixel(),sourceIdentity,ProjectionRegistry.getProjection().toCode(),policy.publication());
+                for(int i=0;i<source.size();i+=256)work.visit(GeometryWorkContext.Kind.BIND,Math.min(256,source.size()-i));
+                double latitude=source.stream().map(ProjectionRegistry.getProjection()::eastNorth2latlon).mapToDouble(LatLon::lat).average().orElseThrow();
+                var state=new VisibleInputState(new VisibleFrameRecipe(frame,latitude),hash,policy,view);
+                return new AuthoritativeVisibleInput(raster,new VisibleInputReceipt(raster,state));
+            }
         }
-        policy.requireCurrent();var bounds=capture.bounds();var image=capture.raster();
-        var raster=new LiveBPreviewService.VisibleRaster(image.getWidth(),image.getHeight(),image.getRGB(0,0,image.getWidth(),image.getHeight(),null,0,image.getWidth()),
-            bounds.minEast,bounds.minNorth,bounds.maxEast,bounds.maxNorth,capture.projectionUnitsPerViewPixel(),
-            ProjectionGroundScale.measure(source,capture.projectionUnitsPerViewPixel()).representativeMetersPerProjectionUnit()*capture.projectionUnitsPerViewPixel(),
-            capture.sourceResolution().metersPerPixel(),sourceIdentity,ProjectionRegistry.getProjection().toCode(),policy.publication());
-        double latitude=source.stream().map(ProjectionRegistry.getProjection()::eastNorth2latlon).mapToDouble(LatLon::lat).average().orElseThrow();
-        var state=new VisibleInputState(new VisibleFrameRecipe(frame,latitude),hash,policy,view);
-        return new AuthoritativeVisibleInput(raster,new VisibleInputReceipt(raster,state));
     }
     public record AuthoritativeVisibleInput(LiveBPreviewService.VisibleRaster raster,VisibleInputReceipt receipt) {
         public AuthoritativeVisibleInput{receipt.requireRaster(raster);}

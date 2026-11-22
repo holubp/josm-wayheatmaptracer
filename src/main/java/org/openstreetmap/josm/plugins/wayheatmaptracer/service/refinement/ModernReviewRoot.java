@@ -220,6 +220,7 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
             }
             nativeFacts.putAll(RefinementRootAuthority.detachedCharges(capture.specification(),capture.disconnectionSource(),capture.sourceGeographic(),capture.sourceMetric(),capture.outputGrid(),capture.alternativeMappings()));
             nativeFacts.put(capture,capturedBytes(capture));
+            capture.visibleInputReceipt().ifPresent(proof->nativeFacts.put(proof,proof.metadataBytes()));
             var authority=RefinementRootAuthority.fromNativeProduction(primary,config,sourceIdentity,primarySource,work,memory,hashes)
                 .withRetainedFacts(nativeFacts).withNativeAcquisitions(capture,owners,retainedSources,work,memory,hashes);
             for(var item:authority.charges().entrySet())admit(memory,work,item.getKey(),item.getValue());

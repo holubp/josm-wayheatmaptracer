@@ -30,7 +30,8 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
         if(captured.raster()!=null) {
             var receipt=captured.raster().sourceReceipt();
             if(receipt==null)throw new IllegalStateException("Original visible source receipt unavailable");
-            guard=()->{receipt.owner().requireCurrent(receipt);return value;};
+            guard=captured.visibleInputReceipt().<LongSupplier>map(proof->proof.commandAuthority(value))
+                .orElseGet(()->()->{receipt.owner().requireCurrent(receipt);return value;});
         } else {
             if(coordinator==null||captured.sourceOwner()!=null&&captured.sourceOwner()!=coordinator)throw new IllegalStateException("Original managed source owner unavailable");
             var generation=captured.managedRaster().generation();
@@ -126,6 +127,9 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
             var raster=capture.raster();width=raster.width();height=raster.height();
             transform=SupportedInputRasterTransform.visibleWebMercator(raster.minimumEast(),raster.maximumNorth(),raster.projectionUnitsPerViewPixel(),6);
             hash=hashes.get(raster);
+            if(hash==null&&capture.visibleInputReceipt().isPresent()){
+                work.visit(GeometryWorkContext.Kind.BIND,8);var proof=capture.visibleInputReceipt().orElseThrow();proof.requireRaster(raster);hash=proof.inputArgbHash();hashes.put(raster,hash);
+            }
             if(hash==null)try(var scratch=work.reserve("native-original-image-hash",Math.addExact(8192,8L*width*height))) {
                 var image=new BufferedImage(width,height,BufferedImage.TYPE_INT_ARGB);
                 var pixels=raster.argb();
