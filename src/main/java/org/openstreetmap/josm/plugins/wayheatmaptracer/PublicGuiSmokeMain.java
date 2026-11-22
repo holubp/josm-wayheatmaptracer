@@ -98,7 +98,7 @@ public final class PublicGuiSmokeMain {
                 ? AlignmentMode.MOVE_EXISTING_NODES
                 : engine == TrackerMode.CORRIDOR_AWARE ? AlignmentMode.PRECISE_SHAPE : requestedMode;
             // Supported starting engines survive; historical Hybrid remains a migration row.
-            PluginPreferences.save(stepwiseConfig(savedMode).withTrackerMode(engine));
+            PluginPreferences.save((visibleGui?config(false,false).withAlignmentMode(savedMode):stepwiseConfig(savedMode)).withTrackerMode(engine));
             PluginPreferences.saveTracingSettings(new TracingSettings(
                     TracingSettings.CURRENT_SCHEMA_VERSION, engine,
                     RecoverySettings.defaults(7.01), false, visibleGui?AlignmentSourceMode.VISIBLE_LAYER:AlignmentSourceMode.MANAGED_TILES));
@@ -195,7 +195,7 @@ public final class PublicGuiSmokeMain {
                     throw new IllegalStateException("Production preview diagnostics are not open");
                 }
                 if (!status.contains("\"sourceLineage\":\""+(visibleGui?"visible-layer":"managed-tiles")+"\"")) {
-                    throw new IllegalStateException("Production preview did not use managed source tiles");
+                    throw new IllegalStateException("Production preview did not use its requested source lineage");
                 }
                 if (!status.contains("\"routeIndex\":" + selectedRouteIndex)) {
                     throw new IllegalStateException("Selected route was not published in diagnostics");

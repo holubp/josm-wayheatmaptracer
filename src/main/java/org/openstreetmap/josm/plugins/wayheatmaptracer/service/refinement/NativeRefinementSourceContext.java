@@ -70,11 +70,26 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
                 var actual=frame.value();
                 facts=Optional.of(new RefinementAttemptDiagnostics.SourceFacts(plan.ticket(),sourceHash,kind(),RefinementAttemptDiagnostics.Coverage.RECAPTURED,planHash,hash(actual.actualBounds().toString()+actual.chunks(),work),actual.inputHash(),RefinementAttemptDiagnostics.InputFrameRole.CAPTURED_INPUT,actual.width(),actual.height(),evidencePlan.grid().width(),evidencePlan.grid().height(),metadata.sourceReceipt().revision(),OptionalLong.of(work.visits()-start)));
             } else if(support!=VisibleEvidencePlan.Support.COVERED)throw new UnsupportedOperationException("visible-original-frame-unavailable");
-            for(var request:plan.requests())if(request.unavailableReason().isEmpty()&&!request.aggregate()&&request.palette().equals(plan.settings().selectedPalette())) {
-                cancellation.checkpoint();var converted=frame==null?RefinementAcquisition.captureVisible(plan,evidencePlan,raster,request.mapping(),work):RefinementAcquisition.captureVisible(plan,evidencePlan,frame.value(),request.mapping(),work);
-                converted.owner().transferTo(owner);mappings.put(request.mapping(),converted.value());
-            }
-            requireCurrent();return RefinementPipeline.visibleSources(mappings);
+            // Preserve one factual input, then derive only the mapping actually requested by
+            // the pipeline. A later source refusal must not preclude an earlier useful run.
+            LiveBPreviewService.VisibleRaster actualRaster=raster;
+            if(frame!=null){var copied=frame.value().copyRaster(work);copied.owner().transferTo(owner);actualRaster=copied.value();}
+            var input=actualRaster;requireCurrent();
+            return new RefinementPipeline.Sources(){
+                public void requireCurrent(){NativeRefinementSourceContext.this.requireCurrent();evidencePlan.requireCurrent();}
+                public Optional<RefinementSourcePlanner.Plan> binding(){return Optional.of(plan);}
+                public EvidenceSnapshot evidence(RefinementSourcePlanner.SourceRequest request,CancellationProbe probe){
+                    probe.checkpoint();requireCurrent();
+                    if(!plan.requests().contains(request)||request.aggregate()||!request.unavailableReason().isEmpty()||!request.palette().equals(plan.settings().selectedPalette()))throw new RefinementPipeline.SourceUnavailable();
+                    var existing=mappings.get(request.mapping());
+                    if(existing==null){var converted=RefinementAcquisition.captureVisible(plan,evidencePlan,input,request.mapping(),work);converted.owner().transferTo(owner);existing=converted.value();mappings.put(request.mapping(),existing);}
+                    probe.checkpoint();requireCurrent();return existing.evidence();
+                }
+                public Optional<RetainedSmoothingSource> retentionDescriptor(RefinementSourcePlanner.SourceRequest request,EvidenceSnapshot evidence){
+                    requireCurrent();var actual=mappings.get(request.mapping());
+                    return actual==null?Optional.empty():Optional.of(actual.retentionDescriptor(request,evidence));
+                }
+            };
         } finally {if(capture!=null)capture.settled().toCompletableFuture().join();if(frame!=null)frame.owner().close();}
     }
     private static String hash(String text,GeometryWorkContext work) {
