@@ -1314,6 +1314,7 @@ public class AlignWayAction extends JosmAction {
             if (applying[0]) return;
             applying[0] = true;
             apply.setEnabled(false);
+            boolean[] commandAttempted = {false};
             if(refinement[0]!=null&&refinement[0].nativeSelected()) {
                 boolean applied=applyRefinementReview(refinement[0],dataSet,slideConfig,()->completed[0]=true,()->{dialog.dispose();overlay.hide();PluginLog.endSlideSession();});
                 applying[0]=false;if(!applied&&dialog.isDisplayable())refresh.run();return;
@@ -1352,7 +1353,7 @@ public class AlignWayAction extends JosmAction {
                                     ? IntervalArtifactStatus.APPLIED_AFTER_REVIEW
                                     : IntervalArtifactStatus.APPLIED),
                         currentPlan.canonicalHash(),
-                        () -> UndoRedoHandler.getInstance().add(command),
+                        () -> {commandAttempted[0]=true;UndoRedoHandler.getInstance().add(command);},
                         () -> livePreviewSession.isCurrentWindow(owner, dialog,
                                 activePreviewDialog, dialog.isDisplayable()));
                 completed[0] = true;
@@ -1363,12 +1364,17 @@ public class AlignWayAction extends JosmAction {
                             closeFailure.getClass().getSimpleName());
                 }
             } catch (RuntimeException failure) {
-                completed[0] = true;
                 if (livePreviewSession.isCurrent(owner)) {
                     recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.FAILED,
                             diagnosticAttemptIdentity);
                 }
-                dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
+                if(commandAttempted[0]||refinement[0]==null) {
+                    completed[0]=true;
+                    dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
+                } else {
+                    applying[0]=false;refinement[0].refresh();
+                    apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);
+                }
                 showError(tr("Interval alignment Apply failed: {0}", failure.getMessage()));
             }
         });
@@ -1918,11 +1924,11 @@ public class AlignWayAction extends JosmAction {
                 refresh.run();
                 if(refinement[0]!=null)refinement[0].refresh();
             } catch (RuntimeException exception) {
-                completed[0] = true;
                 LiveBPreviewService.PreviewChoice failedChoice = previewChoices.get(
                         Math.max(0, choices.getSelectedIndex()));
                 recordModernDiagnostics(computed, failedChoice.owner(), "failed", failedChoice.localRouteIndex(),
                         null, false, false, diagnosticAttemptIdentity);
+                completed[0]=true;
                 boolean closed = livePreviewSession.close(previewOwner);
                 dialog.dispose();
                 if (closed) {
@@ -2008,12 +2014,15 @@ public class AlignWayAction extends JosmAction {
                                 plan[0].validation().findingCodes(), true,
                                 tr("review confirmed; Apply available")));
             } catch (RuntimeException exception) {
-                completed[0] = true;
                 LiveBPreviewService.PreviewChoice failedChoice = previewChoices.get(
                         Math.max(0, choices.getSelectedIndex()));
                 recordModernDiagnostics(computed, failedChoice.owner(), "failed", failedChoice.localRouteIndex(),
                         null, false, false, diagnosticAttemptIdentity);
-                dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
+                if(refinement[0]!=null) {
+                    refinement[0].refresh();apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);preciseRerun.setEnabled(false);
+                } else {
+                    completed[0]=true;dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
+                }
                 showError(tr("Alignment preview became stale: {0}", exception.getMessage()));
             }
         });
@@ -2056,6 +2065,7 @@ public class AlignWayAction extends JosmAction {
             }
             applying[0] = true;
             apply.setEnabled(false);
+            boolean[] commandAttempted = {false};
             try {
                 if(refinement[0]!=null&&refinement[0].nativeSelected()) {
                     boolean applied=applyRefinementReview(refinement[0],dataSet,slideConfig,()->completed[0]=true,()->{dialog.dispose();overlay.hide();PluginLog.endSlideSession();});
@@ -2109,7 +2119,7 @@ public class AlignWayAction extends JosmAction {
                 applyWithPreparedDiagnostics(
                     () -> createModernDiagnostics(computed, run, "applied", routeIndex, currentPlan,
                             review[0].confirmed(), true, null, assessment[0], null),
-                    () -> UndoRedoHandler.getInstance().add(command));
+                    () -> {commandAttempted[0]=true;UndoRedoHandler.getInstance().add(command);});
                 completed[0] = true;
                 try {
                     dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
@@ -2118,13 +2128,17 @@ public class AlignWayAction extends JosmAction {
                             closeFailure.getClass().getSimpleName());
                 }
             } catch (RuntimeException exception) {
-                completed[0] = true;
                 LiveBPreviewService.PreviewChoice failedChoice = previewChoices.get(
                         Math.max(0, choices.getSelectedIndex()));
                 recordModernDiagnostics(computed, failedChoice.owner(), "failed", failedChoice.localRouteIndex(),
                         null, false, false,
                         diagnosticAttemptIdentity);
-                dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
+                if(commandAttempted[0]||refinement[0]==null) {
+                    completed[0]=true;dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
+                } else {
+                    applying[0]=false;refinement[0].refresh();
+                    apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);preciseRerun.setEnabled(false);
+                }
                 showError(tr("Alignment Apply failed: {0}", exception.getMessage()));
             }
         });
@@ -3793,10 +3807,11 @@ public class AlignWayAction extends JosmAction {
 
     /** Once the edit commits, diagnostic/presentation failures cannot turn it into a rejected edit. */
     private boolean applyRefinementReview(LegacyRefinementWorkflow workflow,DataSet data,AlignmentConfig config,Runnable committed,Runnable close) {
-        boolean applied=false;
+        boolean applied=false,commandAttempted=false;
         try {
             if(!config.heatmap().allowUndownloadedAlignment())requirePreviewWithinDownloadedArea(workflow.selectedGeometry(),data);
-            var publication=addReviewedCommand(UndoRedoHandler.getInstance(),workflow.command());applied=true;
+            var command=workflow.command();commandAttempted=true;
+            var publication=addReviewedCommand(UndoRedoHandler.getInstance(),command);applied=true;
             committed.run();
             try{workflow.appliedDiagnostics(publication==CommandPublication.COMMITTED_NOTIFICATION_FAILED);}
             catch(Exception failed){PluginLog.verbose("Committed refinement diagnostics unavailable: %s",failed.getClass().getSimpleName());}
@@ -3806,7 +3821,10 @@ public class AlignWayAction extends JosmAction {
             else {
                 try{workflow.diagnosticsChanged("apply-failed");workflow.refresh();}
                 catch(Exception unavailable){PluginLog.verbose("Refinement failure presentation unavailable: %s",unavailable.getClass().getSimpleName());}
-                showError(tr("The selected refinement could not be applied. Inspect the retained preview and run alignment again if its source changed."));
+                if(commandAttempted) {
+                    try{close.run();}catch(Exception unavailable){PluginLog.verbose("Failed refinement review close unavailable: %s",unavailable.getClass().getSimpleName());}
+                    showError(tr("The selected refinement could not be applied. Run alignment again and inspect the failure diagnostics."));
+                } else showError(tr("The selected refinement could not be applied. Inspect the retained preview and run alignment again if its source changed."));
             }
         }
         return applied;

@@ -1623,9 +1623,12 @@ public final class PublicGuiSmokeMain {
             onEventThread(()->{action.actionPerformed(null);return null;});var dialog=opened.get(180,TimeUnit.SECONDS);
             onEventThread(()->{
                 var computed=(LiveBPreviewService.Computed)session.currentAttempt().result();selectRidgeRoute(dialog,computed);confirmOriginalNative(dialog);
-                Config.getPref().put("wayheatmaptracer.color",color.equals("blue")?"hot":"blue");labelledButton(dialog.getContentPane(),"Apply").doClick();return null;
+                Config.getPref().put("wayheatmaptracer.color",color.equals("blue")?"hot":"blue");
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.begin();
+                try{labelledButton(dialog.getContentPane(),"Apply").doClick();if(org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.snapshot().containsKey("apply.commandExecutions"))throw new IllegalStateException("Stale source preflight entered Command.execute");}
+                finally{org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.end();}return null;
             });
-            if(modal.get()||!onEventThread(()->dialog.isShowing()&&!dialog.isModal()&&!labelledButton(dialog.getContentPane(),"Apply").isEnabled()))throw new IllegalStateException("Stale original native review must remain modeless and inspectable with Apply disabled");
+            if(!onEventThread(()->dialog.isShowing()&&!dialog.isModal()&&!labelledButton(dialog.getContentPane(),"Apply").isEnabled()))throw new IllegalStateException("Stale original native review must remain modeless and inspectable with Apply disabled");
             requireUnchanged(fixture,original,originalUndo);Format15ArchiveReader.read(exportThroughActualMenu());
             onEventThread(()->{dialog.dispatchEvent(new WindowEvent(dialog,WindowEvent.WINDOW_CLOSING));return null;});requireUnchanged(fixture,original,originalUndo);
         }finally{onEventThread(()->{Config.getPref().put("wayheatmaptracer.color",color);return null;});Toolkit.getDefaultToolkit().removeAWTEventListener(listener);}

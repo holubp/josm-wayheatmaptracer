@@ -230,7 +230,7 @@ jobs:
               ],
           }
           package_root = Path("src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer")
-          source_roots = [package_root / name for name in ("service", "model", "actions")]
+          source_roots = [package_root / name for name in ("service", "model", "actions", "util")]
           paths = sorted(path for root in source_roots for path in root.rglob("*.java"))
           selected_tests = [Path("src/test/java") / name for name in test_names[os.environ["FOCUSED_REF"]]]
           missing_tests = [path.as_posix() for path in selected_tests if not path.is_file()]

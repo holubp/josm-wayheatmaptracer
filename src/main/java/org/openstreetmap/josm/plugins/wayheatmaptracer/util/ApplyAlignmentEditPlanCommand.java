@@ -172,6 +172,7 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
      */
     @Override
     public boolean executeCommand() {
+        ModernDiagnosticCounters.add("apply.commandExecutions",1);
         if (!SwingUtilities.isEventDispatchThread()) {
             throw new IllegalStateException("Alignment Apply must execute on the EDT");
         }
