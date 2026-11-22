@@ -209,10 +209,10 @@ public final class PublicGuiSmokeMain {
                 List<GeographicPoint> geometry = plan.finalPreviewWays().get(plan.selectedWayKey());
                 PublicGuiSmokeOracle.verifyFinalGeometry(geometry);
                 requireUnchanged(fixture, original, originalUndo);
-                onEventThread(() -> {
-                    preview.dispatchEvent(new WindowEvent(preview, WindowEvent.WINDOW_CLOSING));
-                    return null;
-                });
+                if(engine==TrackerMode.CORRIDOR_AWARE||engine==TrackerMode.PROBABILISTIC) {
+                    exerciseOriginalNativeApply(preview,fixture,geometry,original,originalUndo);
+                    exerciseOriginalNativeStaleInspection(action,session,fixture,original,originalUndo);
+                } else onEventThread(() -> {preview.dispatchEvent(new WindowEvent(preview, WindowEvent.WINDOW_CLOSING));return null;});
             } finally {
                 Toolkit.getDefaultToolkit().removeAWTEventListener(listener);
             }
@@ -1585,6 +1585,50 @@ public final class PublicGuiSmokeMain {
 
     private static boolean hasEnabledDiagnosticsExport(javax.swing.JMenu menu) {
         return diagnosticsExportItem(menu)!=null;
+    }
+    private static javax.swing.JButton labelledButton(Container parent,String label) {
+        var buttons=new ArrayList<javax.swing.JButton>();collectLabelledButtons(parent,org.openstreetmap.josm.tools.I18n.tr(label),buttons);
+        if(buttons.size()!=1)throw new IllegalStateException("Expected one original native footer control");return buttons.get(0);
+    }
+    private static void collectLabelledButtons(Container parent,String label,List<javax.swing.JButton> found) {
+        for(Component child:parent.getComponents()){if(child instanceof javax.swing.JButton button&&label.equals(button.getText()))found.add(button);else if(child instanceof Container nested)collectLabelledButtons(nested,label,found);}
+    }
+    private static void confirmOriginalNative(JDialog dialog) {
+        var confirm=labelledButton(dialog.getContentPane(),"Confirm review");if(confirm.isEnabled())confirm.doClick();
+        if(!labelledButton(dialog.getContentPane(),"Apply").isEnabled())throw new IllegalStateException("Exact original native plan is not applicable after its review");
+    }
+    private static void exerciseOriginalNativeApply(JDialog dialog,PublicGuiSmokeFixture fixture,List<GeographicPoint> expected,List<String> original,int originalUndo) throws Exception {
+        var modal=new AtomicBoolean();AWTEventListener dismiss=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog warning&&warning.isModal()){modal.set(true);SwingUtilities.invokeLater(warning::dispose);}};
+        Toolkit.getDefaultToolkit().addAWTEventListener(dismiss,AWTEvent.WINDOW_EVENT_MASK);
+        try{onEventThread(()->{
+            var owner=(LegacyRefinementWorkflow)dialog.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner");
+            if(owner.nativeSelected()||owner.busy())throw new IllegalStateException("Original native Apply must need no optional operation");
+            confirmOriginalNative(dialog);labelledButton(dialog.getContentPane(),"Apply").doClick();return null;
+        });}finally{Toolkit.getDefaultToolkit().removeAWTEventListener(dismiss);}
+        if(modal.get()||onEventThread(dialog::isDisplayable))throw new IllegalStateException("Original native Apply did not commit and close its review");
+        var applied=wayState(fixture);if(applied.equals(original)||UndoRedoHandler.getInstance().getUndoCommands().size()!=originalUndo+1)throw new IllegalStateException("Original native Apply did not publish one command");
+        var actual=fixture.selectedWay().getNodes().stream().map(node->new GeographicPoint(node.lat(),node.lon())).toList();
+        if(!expected.equals(actual))throw new IllegalStateException("Original native command differs from its exact stored plan");
+        onEventThread(()->{UndoRedoHandler.getInstance().undo();return null;});requireUnchanged(fixture,original,originalUndo);
+        onEventThread(()->{UndoRedoHandler.getInstance().redo();return null;});if(!applied.equals(wayState(fixture)))throw new IllegalStateException("Original native Redo changed its stored geometry");
+        onEventThread(()->{UndoRedoHandler.getInstance().undo();return null;});requireUnchanged(fixture,original,originalUndo);
+    }
+    private static void exerciseOriginalNativeStaleInspection(AlignWayAction action,PreviewSessionController<?> session,PublicGuiSmokeFixture fixture,List<String> original,int originalUndo) throws Exception {
+        var opened=new CompletableFuture<JDialog>();var modal=new AtomicBoolean();
+        AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog dialog){
+            if(isPreview(dialog))opened.complete(dialog);else if(dialog.isModal()){modal.set(true);SwingUtilities.invokeLater(dialog::dispose);}
+        }};
+        Toolkit.getDefaultToolkit().addAWTEventListener(listener,AWTEvent.WINDOW_EVENT_MASK);String color=Config.getPref().get("wayheatmaptracer.color","hot");
+        try {
+            onEventThread(()->{action.actionPerformed(null);return null;});var dialog=opened.get(180,TimeUnit.SECONDS);
+            onEventThread(()->{
+                var computed=(LiveBPreviewService.Computed)session.currentAttempt().result();selectRidgeRoute(dialog,computed);confirmOriginalNative(dialog);
+                Config.getPref().put("wayheatmaptracer.color",color.equals("blue")?"hot":"blue");labelledButton(dialog.getContentPane(),"Apply").doClick();return null;
+            });
+            if(modal.get()||!onEventThread(()->dialog.isShowing()&&!dialog.isModal()&&!labelledButton(dialog.getContentPane(),"Apply").isEnabled()))throw new IllegalStateException("Stale original native review must remain modeless and inspectable with Apply disabled");
+            requireUnchanged(fixture,original,originalUndo);Format15ArchiveReader.read(exportThroughActualMenu());
+            onEventThread(()->{dialog.dispatchEvent(new WindowEvent(dialog,WindowEvent.WINDOW_CLOSING));return null;});requireUnchanged(fixture,original,originalUndo);
+        }finally{onEventThread(()->{Config.getPref().put("wayheatmaptracer.color",color);return null;});Toolkit.getDefaultToolkit().removeAWTEventListener(listener);}
     }
     private static JMenuItem diagnosticsExportItem(javax.swing.JMenu menu) {
         for(Component component:menu.getMenuComponents()) {
