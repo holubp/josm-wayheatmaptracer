@@ -24,6 +24,8 @@ import java.util.function.LongSupplier;
 import java.util.function.Function;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyReviewOwner;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyRefinementWorkflow;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ModernReviewRoot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementReviewLifecycle;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.InvocationSourceWatch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyVisibleSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls;
@@ -50,6 +52,7 @@ import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.Bounds;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
+import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.gui.MainApplication;
 import org.openstreetmap.josm.gui.MapView;
 import org.openstreetmap.josm.gui.help.HelpUtil;
@@ -1331,6 +1334,7 @@ public class AlignWayAction extends JosmAction {
         });
         close.addActionListener(event -> dialog.dispatchEvent(
                 new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING)));
+        var originalReviewBody=((BorderLayout)panel.getLayout()).getLayoutComponent(BorderLayout.CENTER);
         try {
             refresh.run();
             recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.PREVIEW,
@@ -1657,6 +1661,8 @@ public class AlignWayAction extends JosmAction {
         AlignmentEditPlan[] benchmarkDisplayedPlan = {null};
         boolean[] applying = {false};
         boolean[] completed = {false};
+        LegacyRefinementWorkflow[] refinement = {null};
+        ModernReviewRoot[] refinementRoot = {null};
         JButton confirm = new JButton(tr("Confirm review"));
         JButton apply = new JButton(tr("Apply"));
         JButton preciseRerun = new JButton(tr("Rerun once with Precise Shape"));
@@ -1820,7 +1826,9 @@ public class AlignWayAction extends JosmAction {
             };
         choices.addActionListener(event -> {
             try {
+                if(refinementRoot[0]!=null)refinementRoot[0].select(previewChoices.get(Math.max(0,choices.getSelectedIndex())).candidate());
                 refresh.run();
+                if(refinement[0]!=null)refinement[0].refresh();
             } catch (RuntimeException exception) {
                 completed[0] = true;
                 LiveBPreviewService.PreviewChoice failedChoice = previewChoices.get(
@@ -1839,6 +1847,7 @@ public class AlignWayAction extends JosmAction {
         });
         dialog.addWindowListener(new WindowAdapter() {
             @Override public void windowClosing(WindowEvent event) {
+                if(refinement[0]!=null){if(refinement[0].handlesRuntimeDiagnostics())completed[0]=true;refinement[0].close();}
                 boolean closed = closeAndPublishIfCurrent(livePreviewSession, previewOwner, () -> {
                     if (!completed[0]) {
                         completed[0] = true;
@@ -1856,6 +1865,8 @@ public class AlignWayAction extends JosmAction {
                 }
             }
             @Override public void windowClosed(WindowEvent event) {
+                if(refinement[0]!=null)refinement[0].close();
+                if(refinementRoot[0]!=null)refinementRoot[0].close();
                 if (livePreviewSession.close(previewOwner)) {
                     overlay.hide();
                 }
@@ -1866,6 +1877,11 @@ public class AlignWayAction extends JosmAction {
         });
         confirm.addActionListener(event -> {
             try {
+                if(refinement[0]!=null&&refinement[0].nativeSelected()) {
+                    int answer=JOptionPane.showConfirmDialog(dialog,tr("Confirm that you reviewed the complete displayed refinement geometry."),tr("Confirm reviewed candidate"),JOptionPane.YES_NO_OPTION,JOptionPane.WARNING_MESSAGE);
+                    if(answer==JOptionPane.YES_OPTION){refinement[0].confirm();refinement[0].refresh();}
+                    return;
+                }
                 refresh.run();
                 if (review[0] == null || review[0].disposition()
                         != org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport.Disposition.REVIEW_REQUIRED
@@ -1953,6 +1969,12 @@ public class AlignWayAction extends JosmAction {
             applying[0] = true;
             apply.setEnabled(false);
             try {
+                if(refinement[0]!=null&&refinement[0].nativeSelected()) {
+                    if(!slideConfig.heatmap().allowUndownloadedAlignment())requirePreviewWithinDownloadedArea(refinement[0].selectedGeometry(),dataSet);
+                    var publication=addReviewedCommand(UndoRedoHandler.getInstance(),refinement[0].command());
+                    refinement[0].appliedDiagnostics(publication==CommandPublication.COMMITTED_NOTIFICATION_FAILED);completed[0]=true;
+                    dialog.dispose();overlay.hide();PluginLog.endSlideSession();return;
+                }
                 int index = Math.max(0, choices.getSelectedIndex());
                 LiveBPreviewService.PreviewChoice choice = previewChoices.get(index);
                 LiveBPreviewService.Computed run = choice.owner();
@@ -2017,6 +2039,47 @@ public class AlignWayAction extends JosmAction {
         });
         close.addActionListener(event -> dialog.dispatchEvent(
                 new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING)));
+        if(slideConfig.heatmap().trackerMode()==TrackerMode.CORRIDOR_AWARE||slideConfig.heatmap().trackerMode()==TrackerMode.PROBABILISTIC) {
+            try {
+                refinementRoot[0]=ModernReviewRoot.fromFullChoices(dataSet,selection,slideConfig,previewChoices,previewSourceOwner,
+                    ()->requireLiveBSourceOwnerCurrent(dataSet,imageryLayer,slideConfig,persistedSlideConfig,tracingAtCapture,computed.captured(),previewSourceOwner));
+                refinement[0]=new LegacyRefinementWorkflow(refinementRoot[0],previewSourceOwner,
+                    candidate->{for(int i=0;i<previewChoices.size();i++)if(previewChoices.get(i).candidate()==candidate){choices.setSelectedIndex(i);return;}throw new IllegalArgumentException("Foreign native root choice");},
+                    displayed->{
+                        var nativeReview=displayed.nativeReview().orElseThrow();plan[0]=nativeReview.plan();
+                        var projected=new LinkedHashMap<PrimitiveKey,List<EastNorth>>();
+                        var projection=Projections.getProjectionByCode(computed.captured().projectionCode());
+                        plan[0].finalPreviewWays().forEach((key,points)->projected.put(key,points.stream().map(g->projection.latlon2eastNorth(new LatLon(g.latitudeDegrees(),g.longitudeDegrees()))).toList()));
+                        overlay.show(selection,displayed.result(),displayed.candidate(),CandidateAssessment.Disposition.valueOf(plan[0].validation().disposition().name()),false,PluginPreferences.isDebugEnabled(),projected);
+                    },message->{
+                        if(refinement[0]==null)return;
+                        boolean nativeStage=refinement[0].nativeSelected(),busy=refinement[0].busy();
+                        refinement[0].controls().externalRootSelection(!nativeStage);
+                        choices.setVisible(!nativeStage&&candidates.size()>1);
+                        if(nativeStage) {
+                            quality.setText(message);quality.setCaretPosition(0);
+                            var actual=refinement[0].currentNative().orElseThrow().plan();
+                            confirm.setEnabled(!busy&&actual.validation().disposition()==ValidationReport.Disposition.REVIEW_REQUIRED&&!refinement[0].canApplyNative());
+                            apply.setEnabled(!busy&&!applying[0]&&refinement[0].canApplyNative());
+                            disconnect.setEnabled(false);preciseRerun.setVisible(false);
+                        } else if(busy){apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);preciseRerun.setEnabled(false);}
+                        else {disconnect.setEnabled(true);refresh.run();}
+                    });
+                refinement[0].controls().externalRootSelection(true);
+                refinement[0].enableRuntimeDiagnostics(()->null);
+                var reviewBody=new JPanel(new BorderLayout(4,4));reviewBody.add(originalReviewBody,BorderLayout.CENTER);reviewBody.add(refinement[0].controls(),BorderLayout.SOUTH);panel.add(reviewBody,BorderLayout.CENTER);
+                dialog.getRootPane().putClientProperty("wayheatmaptracer.refinementOwner",refinement[0]);
+                livePreviewSession.replaceWindow(previewOwner,()->{refinement[0].close();dialog.dispose();overlay.hide();});
+                refinement[0].attachOwnership(livePreviewSession.workGate(),previewOwner,()->{livePreviewSession.close(previewOwner);dialog.dispose();overlay.hide();});
+                attachRefinementLifecycle(dialog,refinement[0]);dialog.pack();
+            } catch(RuntimeException unavailable) {
+                if(refinement[0]!=null)refinement[0].close();if(refinementRoot[0]!=null)refinementRoot[0].close();refinement[0]=null;refinementRoot[0]=null;
+                panel.add(originalReviewBody,BorderLayout.CENTER);choices.setVisible(candidates.size()>1);
+                if(livePreviewSession.isCurrent(previewOwner))livePreviewSession.replaceWindow(previewOwner,dialog::dispose);
+                header.add(new JLabel(tr("Optional refinement preparation is unavailable for this capture.")));
+                PluginLog.verbose("Native refinement attachment unavailable: %s",unavailable.getClass().getSimpleName());
+            }
+        }
         try {
             refresh.run();
             dialog.setVisible(true);
@@ -3504,6 +3567,26 @@ public class AlignWayAction extends JosmAction {
             noRefinement, noRefinement, noSmoothing));
     }
 
+    private void attachRefinementLifecycle(JDialog review,LegacyRefinementWorkflow owner) {
+        var progress=new JDialog(MainApplication.getMainFrame(),tr("Updating heatmap result"),false);
+        progress.setName("refinement-progress");
+        progress.getRootPane().putClientProperty("wayheatmaptracer.refinementOwner",owner);
+        var status=new JTextArea(tr("Updating the selected result. The map and diagnostics menu remain available."),3,42);
+        status.setEditable(false);status.setLineWrap(true);status.setWrapStyleWord(true);
+        var cancel=new JButton(tr("Cancel"));cancel.setName("refinement-cancel");
+        Runnable cancelWork=()->{status.setText(tr("Cancelling; waiting for the current operation to settle."));owner.cancel();};
+        cancel.addActionListener(event->cancelWork.run());
+        var buttons=new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.TRAILING));buttons.add(cancel);
+        var contents=new JPanel(new BorderLayout(4,4));contents.add(new JScrollPane(status),BorderLayout.CENTER);contents.add(buttons,BorderLayout.SOUTH);
+        progress.setContentPane(contents);progress.setDefaultCloseOperation(JDialog.DO_NOTHING_ON_CLOSE);progress.pack();progress.setLocationRelativeTo(MainApplication.getMainFrame());
+        progress.addWindowListener(new WindowAdapter(){@Override public void windowClosing(WindowEvent event){cancelWork.run();}});
+        review.addWindowListener(new WindowAdapter(){@Override public void windowClosed(WindowEvent event){progress.dispose();}});
+        owner.attachLifecycle(new RefinementReviewLifecycle(()->review.setVisible(false),
+            ()->{if(owner.ownsPublication()&&review.isDisplayable())review.setVisible(true);},
+            ()->{if(!owner.ownsPublication()||!review.isDisplayable())throw new IllegalStateException("The review owner is closed");status.setText(tr("Updating the selected result. The map and diagnostics menu remain available."));progress.setVisible(true);},
+            ()->progress.setVisible(false),message->{status.setText(message);}));
+    }
+
     private void showCandidatePreview(
         DataSet dataSet,
         SelectionContext selection,
@@ -3694,6 +3777,7 @@ public class AlignWayAction extends JosmAction {
         workflow[0].attachOwnership(livePreviewSession.workGate(),rootOwner,()->{
             livePreviewSession.close(rootOwner);dialog.dispose();overlay.hide();
         });
+        attachRefinementLifecycle(dialog,workflow[0]);
         confirm.addActionListener(event -> {
             try {
                 if(!livePreviewSession.isCurrent(rootOwner))throw new IllegalStateException("The preview owner was superseded");

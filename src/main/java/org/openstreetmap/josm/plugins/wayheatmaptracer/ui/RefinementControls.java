@@ -55,6 +55,8 @@ public final class RefinementControls extends JPanel {
         smooth.addActionListener(e -> listener.smooth((Strength) strength.getSelectedItem())); cancel.addActionListener(e -> listener.cancel());
     }
     private static JButton button(String text, String name) { JButton result = new JButton(text); result.setName(name); return result; }
+    /** The original native dialog owns the root selector until optional history is prepared. */
+    public void externalRootSelection(boolean external){candidate.setVisible(!external);}
     private static void availability(JComponent control, Availability availability, boolean busy) {
         control.setEnabled(!busy && availability.enabled());
         control.setToolTipText(busy ? "Operation in progress" : availability.enabled() ? null : availability.reason());

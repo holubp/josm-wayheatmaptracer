@@ -831,8 +831,8 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         if(diagnosticOwner!=null&&!diagnosticSealed)DiagnosticsRegistry.invalidateRefinement(diagnosticOwner);
         var yes=new RefinementControls.Availability(!busy,"");
         List<RefinementControls.Choice> choices;String selected;String stage;boolean undo=false,redo=false;
-        if(session==null){choices=review.choices().stream().map(c->new RefinementControls.Choice(c.id(),"Legacy / "+c.candidate().displayName())).toList();selected=review.choiceId(review.selectedCandidate());stage="Legacy — stage 1";}
-        else{var current=session.current();choices=current.candidates().stream().map(c->new RefinementControls.Choice(c.id().value(),current.engine()+" / "+c.sourcePalette())).toList();selected=current.selected().value();int cursor=session.history().indexOf(current);undo=cursor>0;redo=cursor+1<session.history().size();stage=current.engine()+" — stage "+(cursor+1);}
+        if(session==null){choices=review.choices().stream().map(c->new RefinementControls.Choice(c.id(),review.engine()+" / "+c.candidate().displayName())).toList();selected=review.choiceId(review.selectedCandidate());stage=review.engine()+" — stage 1";}
+        else{var current=session.current();String label=current.kind()==StageKind.SMOOTH?"Smoothen ("+current.smoothingInput().orElseThrow().preset()+")":current.engine().toString();choices=current.candidates().stream().map(c->new RefinementControls.Choice(c.id().value(),label+" / "+c.sourcePalette())).toList();selected=current.selected().value();int cursor=session.history().indexOf(current);undo=cursor>0;redo=cursor+1<session.history().size();stage=label+" — stage "+(cursor+1);}
         String quality=message;
         if(nativeSelected()){
             var actual=currentNative().orElseThrow();
