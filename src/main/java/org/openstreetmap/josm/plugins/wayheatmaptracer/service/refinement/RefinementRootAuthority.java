@@ -167,6 +167,25 @@ public final class RefinementRootAuthority {
         registered.requireCurrent();
         return Optional.of(registered.request().evidenceContentHash());
     }
+    /** Opaque reuse authority, issued only after the selected candidate's exact original alias is validated. */
+    Optional<OriginalEvidenceHashProof> registeredOriginalEvidenceHashProof(RefinementModels.Candidate candidate,RetainedSmoothingSource source,GeometryWorkContext work) {
+        return registeredOriginalEvidenceHash(candidate,source,work).map(hash->new OriginalEvidenceHashProof(this,source));
+    }
+    /** No hash supplied by a caller can construct this proof. It retains no candidate or history. */
+    public static final class OriginalEvidenceHashProof {
+        private final RefinementRootAuthority root;
+        private final RetainedSmoothingSource source;
+        private OriginalEvidenceHashProof(RefinementRootAuthority root,RetainedSmoothingSource source){this.root=root;this.source=source;}
+        public String requireMatches(RefinementRootAuthority actualRoot,EvidenceSnapshot evidence,RetainedSmoothingSource actualSource,GeometryWorkContext work) {
+            work.visit(GeometryWorkContext.Kind.BIND,8);
+            if(actualRoot!=root||actualSource!=source||evidence!=source.evidence())
+                throw new IllegalArgumentException("Original evidence hash proof belongs to another acquisition");
+            var registered=root.nativeAcquisitions.get(evidence);
+            if(registered==null||registered.source()!=source)throw new IllegalArgumentException("Original evidence hash proof is not registered");
+            registered.requireCurrent();root.requireAcquisitionFrame(evidence);
+            return registered.request().evidenceContentHash();
+        }
+    }
     public static void requireAcquisitionEvidence(EvidenceSnapshot authority,EvidenceSnapshot actual) {
         if(authority==null||actual==null||!authority.sourceIdentity().equals(actual.sourceIdentity())
                 ||!actual.coordinateFrame().equals(authority.coordinateFrame())&&!actual.coordinateFrame().isCertifiedExtensionOf(authority.coordinateFrame()))

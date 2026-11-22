@@ -1894,6 +1894,8 @@ public final class PublicGuiSmokeMain {
                 if(!stage.parentChoice().orElseThrow().value().equals(parentChoice)||owner.actualNativeCalls()!=calls
                         ||!ManagedTileRuntime.initializedCoordinator().stats().equals(source)
                         ||owner.currentNative().orElseThrow().smoothingReceipt().isEmpty())throw new IllegalStateException("Actual smoothing changed source/native work or parent ownership");
+                var nativeReview=owner.currentNative().orElseThrow();
+                if(!nativeReview.plan().evidenceHash().equals(nativeReview.smoothingReceipt().orElseThrow().reference().evidenceHash()))throw new IllegalStateException("Smoothing plan changed its factual selected evidence hash");
                 requiredNamed(dialog.getContentPane(),"undo",javax.swing.JButton.class).doClick();
                 if(!parentGeometry.equals(owner.selectedGeometry())||!parentChoice.equals(owner.selectedChoiceIdentity()))throw new IllegalStateException("Smoothing Undo lost its exact selected parent");
                 requiredNamed(dialog.getContentPane(),"redo",javax.swing.JButton.class).doClick();

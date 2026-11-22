@@ -53,11 +53,16 @@ public final class SmoothingModels {
         public String units(){return "baseline-capture-reference-units";}
     }
     public record Parent(OperationTicket ticket,ParentTraceReference reference,Frame frame,Optional<FinalControlBasis> nativeBasis,
-            FinalControlBasis smoothingBasis,String representationIdentity,List<FinalRoutePointId> pointIds,ImageCostField image,EvidenceSnapshot evidence,NativeFacts nativeFacts,BaselineReference baselineReference) {
+            FinalControlBasis smoothingBasis,String representationIdentity,List<FinalRoutePointId> pointIds,ImageCostField image,EvidenceSnapshot evidence,NativeFacts nativeFacts,BaselineReference baselineReference,
+            Optional<RefinementRootAuthority.OriginalEvidenceHashProof> originalEvidenceHashProof) {
+        public Parent(OperationTicket ticket,ParentTraceReference reference,Frame frame,Optional<FinalControlBasis> nativeBasis,
+                FinalControlBasis smoothingBasis,String representationIdentity,List<FinalRoutePointId> pointIds,ImageCostField image,EvidenceSnapshot evidence,NativeFacts nativeFacts,BaselineReference baselineReference) {
+            this(ticket,reference,frame,nativeBasis,smoothingBasis,representationIdentity,pointIds,image,evidence,nativeFacts,baselineReference,Optional.empty());
+        }
         public Parent {
             Objects.requireNonNull(ticket);Objects.requireNonNull(reference);Objects.requireNonNull(frame);Objects.requireNonNull(nativeBasis);
             Objects.requireNonNull(smoothingBasis);Objects.requireNonNull(image);Objects.requireNonNull(evidence);Objects.requireNonNull(nativeFacts);pointIds=List.copyOf(pointIds);
-            Objects.requireNonNull(baselineReference);
+            Objects.requireNonNull(baselineReference);Objects.requireNonNull(originalEvidenceHashProof);
             var scalar=evidence.fields().get(nativeFacts.source().fieldName());
             if(!baselineReference.transform().equals(evidence.transform())||!baselineReference.fieldName().equals(nativeFacts.source().fieldName())
                     ||baselineReference.width()!=scalar.width()||baselineReference.height()!=scalar.height()||!baselineReference.mappingIdentity().equals(frame.mappingIdentity()))

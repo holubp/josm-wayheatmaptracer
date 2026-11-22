@@ -96,15 +96,16 @@ public final class SmoothingParentBinder {
                 source.evidence().resampling().inputCoordinateConvention(),affine(source));}
             catch(IllegalArgumentException missing){throw new Unavailable(Reason.SOURCE_FRAME_UNAVAILABLE);}
             var image=ImageCostField.fromEvidence(source.evidence(),source.fieldName(),work,bindingOwner);
-            String evidenceHash=(recordedAlias?root.registeredOriginalEvidenceHash(candidate,source,work):Optional.<String>empty())
-                .orElseGet(()->source.evidence().canonicalHash(work));
+            var hashProof=recordedAlias?root.registeredOriginalEvidenceHashProof(candidate,source,work):Optional.<RefinementRootAuthority.OriginalEvidenceHashProof>empty();
+            hashProof.ifPresent(proof->work.reserveOn(bindingOwner,"smoothing-original-hash-proof",256).adopt(proof));
+            String evidenceHash=hashProof.map(proof->proof.requireMatches(root,source.evidence(),source,work)).orElseGet(()->source.evidence().canonicalHash(work));
             String identity=identity(reference,frame,ids,fixed,evidenceHash,facts,work);
             var bases=facts.sourceSpans().stream().filter(s->s.source().equals(source.source())&&!s.span().parentRetained()&&s.span().firstVertex()==0&&s.span().lastVertex()==n-1)
                 .flatMap(s->s.nativeProvenance().stream()).flatMap(p->p.nativeBasis().stream()).distinct().toList();
             if(bases.size()>1)throw new Unavailable(Reason.FINAL_SLOT_IDENTITY_UNAVAILABLE);
             var scalar=source.evidence().fields().get(source.fieldName());
             var baseline=new BaselineReference("captured-scalar-reference-v1",evidenceHash,source.fieldName(),request.mapping(),source.evidence().transform(),scalar.width(),scalar.height());
-            var parent=new Parent(ticket,reference,frame,bases.stream().findFirst(),basis,identity,ids,image,source.evidence(),facts,baseline);
+            var parent=new Parent(ticket,reference,frame,bases.stream().findFirst(),basis,identity,ids,image,source.evidence(),facts,baseline,hashProof);
             current(source);admitted.adopt(parent);bindingOwner.transferTo(work.owner());return parent;
         }
     }

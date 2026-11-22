@@ -85,7 +85,7 @@ public final class RefinementSmoothingAdapter {
                         var evaluated=new ParentBackedComposer().assessPostprocessed(parent.reference(),candidate,parent.evidence(),parent.image(),work,cancellation,sourceCells);
                         if(evaluated.quality().disposition()==FinalGeometryEvaluator.Disposition.HARD_BLOCKED)continue;
                         assessed=inheritReview(parent,evaluated);
-                        plan=new ModernSingleWayEditPlanAdapter().adaptPostprocessed(parent.reference(),assessed.evaluated(),parent.evidence(),work,assessed.inheritedValidation());
+                        plan=new ModernSingleWayEditPlanAdapter().adaptPostprocessed(parent,assessed.evaluated(),work,assessed.inheritedValidation());
                     }
                     catch(IllegalArgumentException unsafe){continue;}
                     cancellation.checkpoint();PostprocessingValidationWork.visit();current(parent);

@@ -751,7 +751,7 @@ public final class ModernSingleWayEditPlanAdapter {
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference parent,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.Assessed assessed,
             EvidenceSnapshot evidence) {
-        return adaptRefinementInternal(parent,assessed,evidence,false,Optional.empty());
+        return adaptRefinementInternal(parent,assessed,evidence,false,Optional.empty(),Optional.empty());
     }
     /** Same immutable plan contract for an already assessed whole-output postprocessing result. */
     public AlignmentEditPlan adaptPostprocessed(
@@ -767,12 +767,23 @@ public final class ModernSingleWayEditPlanAdapter {
             EvidenceSnapshot evidence,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,
             Optional<ValidationReport> inheritedValidation) {
         java.util.Objects.requireNonNull(inheritedValidation);
-        try(var scope=PostprocessingValidationWork.open(work)) {return adaptRefinementInternal(parent,assessed,evidence,true,inheritedValidation);}
+        try(var scope=PostprocessingValidationWork.open(work)) {return adaptRefinementInternal(parent,assessed,evidence,true,inheritedValidation,Optional.empty());}
+    }
+    /** Reuses only an opaque producer proof from the exact admitted smoothing source. */
+    public AlignmentEditPlan adaptPostprocessed(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.SmoothingModels.Parent parent,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.Assessed assessed,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,Optional<ValidationReport> inheritedValidation) {
+        java.util.Objects.requireNonNull(inheritedValidation);
+        try(var scope=PostprocessingValidationWork.open(work)) {
+            var evidenceHash=parent.originalEvidenceHashProof().map(proof->proof.requireMatches(parent.reference().root(),parent.evidence(),parent.nativeFacts().source(),work));
+            return adaptRefinementInternal(parent.reference(),assessed,parent.evidence(),true,inheritedValidation,evidenceHash);
+        }
     }
     private AlignmentEditPlan adaptRefinementInternal(
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference parent,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.Assessed assessed,
-            EvidenceSnapshot evidence,boolean postprocessing,Optional<ValidationReport> inheritedValidation) {
+            EvidenceSnapshot evidence,boolean postprocessing,Optional<ValidationReport> inheritedValidation,Optional<String> provedEvidenceHash) {
         org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.requireFrozenGeometryPreserved(parent,assessed.candidate());
         var root=parent.root();var request=root.request();var before=root.network();
         root.requireAcquisitionEvidence(evidence);
@@ -809,7 +820,7 @@ public final class ModernSingleWayEditPlanAdapter {
         if(request.permissions().junctionPolicy()!=JunctionPolicy.FIXED){disposition=ValidationReport.Disposition.REVIEW_REQUIRED;findings.add("network-review-required");}
         var after=new NetworkSnapshot(before.snapshotId()+":refinement:"+composed.id(),SnapshotRole.PROPOSED_AFTER,before.datasetIdentity(),before.sourceGeneration(),
             before.closure(),afterValues,proposedWatches(before,afterValues),null);
-        return new AlignmentEditPlan(selected.key(),request.selectedRange(),before,after,root.evidence().coordinateFrame(),request.permissions(),request.settingsHash(),postprocessingEvidenceHash(evidence),
+        return new AlignmentEditPlan(selected.key(),request.selectedRange(),before,after,root.evidence().coordinateFrame(),request.permissions(),request.settingsHash(),provedEvidenceHash.orElseGet(()->postprocessingEvidenceHash(evidence)),
             request.parameterHash(),composed.id(),finalPreviewWays(before,afterValues),new ValidationReport(disposition,findings));
     }
 

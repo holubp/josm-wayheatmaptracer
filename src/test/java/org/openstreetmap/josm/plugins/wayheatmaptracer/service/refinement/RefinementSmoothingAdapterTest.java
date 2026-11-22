@@ -22,11 +22,13 @@ class RefinementSmoothingAdapterTest {
             var work=work(owner);var parent=parent(mode,owner,work,()->{});var before=parent.reference().root().network();
             assertTrue(parent.nativeBasis().isEmpty());assertEquals("blue-native",parent.reference().nativeCandidateId());
             for(var strength:SmoothingModels.Preset.values()) {
-                long started=work.visits();
+                long started=work.visits(),hashStarted=work.counters().get(GeometryWorkContext.Kind.HASH);
                 try(var result=new RefinementSmoothingAdapter().smooth(parent,strength,work,CancellationProbe.NONE)) {
                 assertEquals(RefinementSmoothingAdapter.Outcome.CHANGED,result.receipt().outcome(),mode+" "+strength);
                 assertNotEquals(parent.reference().points(),result.points());
                 var plan=result.plan().orElseThrow();assertSame(before,plan.before());assertEquals(mode,parent.ticket().mode());
+                assertTrue(parent.originalEvidenceHashProof().isEmpty());assertTrue(work.counters().get(GeometryWorkContext.Kind.HASH)>hashStarted,"Unregistered postprocessing still hashes the actual evidence");
+                assertEquals(parent.evidence().canonicalHash(),plan.evidenceHash());
                 assertEquals(parent.frame().inputHash(),result.receipt().inputHash());
                 assertEquals(parent.evidence().transform(),result.receipt().reference().transform());
                 assertEquals("postprocessing-final-slots-v1",result.receipt().representation());

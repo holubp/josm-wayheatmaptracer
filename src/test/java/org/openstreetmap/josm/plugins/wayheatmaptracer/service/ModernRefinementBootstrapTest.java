@@ -432,6 +432,8 @@ class ModernRefinementBootstrapTest {
                 var input=new RefinementModels.SmoothingInput(stage.id(),candidate.id(),stage.id(),candidate.id(),"Medium");
                 var ticket=new RefinementModels.OperationTicket(new RefinementModels.SessionId(java.util.UUID.randomUUID()),1,stage.id(),candidate.id(),TrackerMode.PROBABILISTIC,AlignmentMode.MOVE_EXISTING_NODES,RefinementModels.StageKind.SMOOTH,Optional.of(input));
                 var bound=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.SmoothingParentBinder().bind(prepared.root().authority(),ticket,candidate,source,work);
+                assertTrue(bound.originalEvidenceHashProof().isPresent());
+                assertEquals(bound.baselineReference().evidenceHash(),bound.originalEvidenceHashProof().orElseThrow().requireMatches(prepared.root().authority(),source.evidence(),source,work));
                 assertSame(source.evidence(),bound.evidence());assertEquals(proof.finalSelection().pointIds().size(),bound.reference().points().size());
             }
         }

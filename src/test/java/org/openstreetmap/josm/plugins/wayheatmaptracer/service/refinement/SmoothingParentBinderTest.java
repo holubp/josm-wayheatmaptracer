@@ -39,6 +39,7 @@ class SmoothingParentBinderTest {
         try(var owner=AttemptMemoryLedger.production().rootOwner()) {
             var source=source(root,"blue",owner,()->{});var ticket=ticket(candidate,root.request().geometryMode());
             var bindingWork=work(owner);var parent=new SmoothingParentBinder().bind(root,ticket,candidate,source,bindingWork);
+            assertTrue(parent.originalEvidenceHashProof().isEmpty(),"Unregistered Legacy evidence cannot mint a producer hash proof");
             assertTrue(bindingWork.counters().get(GeometryWorkContext.Kind.HASH)>0,"Unregistered Legacy evidence keeps its actual metered canonical traversal");
             assertEquals("blue",parent.frame().palette());assertEquals("blue",parent.frame().mappingIdentity());
             assertEquals("blue-native",parent.reference().nativeCandidateId());assertEquals(53,parent.reference().points().get(2).yMeters(),1e-7);
