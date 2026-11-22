@@ -28,6 +28,7 @@ class VisibleRefinementWorkflowTest {
     void visibleABPreciseAndMove(AlignmentMode mode,TrackerMode engine) throws Exception {
         var decoder=new TileDecoderClassifier();var work=new LinkedBlockingQueue<Runnable>();var publications=new LinkedBlockingQueue<Runnable>();
         var workflow=new LegacyRefinementWorkflow[1];var owner=new LegacyReviewOwner[1];var epoch=new VisibleSourceEpoch();
+        var lifecycleEvents=new ArrayList<String>();
         try(var coordinator=new TileFetchCoordinator((r,c)->{fail("Visible refinement must not fetch managed tiles");return null;},new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())) {
             try {
                 SwingUtilities.invokeAndWait(()->{
@@ -47,12 +48,15 @@ class VisibleRefinementWorkflowTest {
                     owner[0].captured(result,LegacyVisibleRefinementBootstrapTest.factualFrame(metadata,200,200,0,0));owner[0].select(chosen);
                     workflow[0]=new LegacyRefinementWorkflow(owner[0],coordinator,owner[0]::select,d->{},s->{},work::add,publications::add);
                     workflow[0].enableRuntimeDiagnostics(()->null);
+                    workflow[0].attachLifecycle(new org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementReviewLifecycle(()->lifecycleEvents.add("hide"),()->lifecycleEvents.add("show"),()->lifecycleEvents.add("progress"),()->lifecycleEvents.add("settled-view"),message->lifecycleEvents.add("failure")));
                     assertTrue(((JButton)find(workflow[0].controls(),engine==TrackerMode.CORRIDOR_AWARE?"refineA":"refineB")).isEnabled(),"Factual visible Color Mapping enables refinement");
                     workflow[0].refine(engine);
+                    assertEquals(List.of("hide","progress"),lifecycleEvents,"Hide review at the first click, before bootstrap completion");
                 });
                 drain(work,publications,workflow[0]);
                 SwingUtilities.invokeAndWait(()->{
                     assertTrue(workflow[0].nativeSelected(),workflow[0].computationEvidence());
+                    assertEquals(1,java.util.Collections.frequency(lifecycleEvents,"show"),"Bootstrap and refinement reopen only the final result");
                     assertTrue(workflow[0].actualNativeCalls()>0);assertFalse(workflow[0].currentStage().candidates().isEmpty());
                     var nativeReview=workflow[0].currentNative().orElseThrow();
                     assertApplicableAfterRequiredConfirmation(workflow[0]);
