@@ -22,7 +22,12 @@ class ModernRefinementBootstrapTest {
             var base=V022LiveBPreviewServiceTest.config(engine);
             var config=new AlignmentConfig(base.heatmap().withAlignmentMode(mode),base.cleanup());
             var pixels=V022LiveBPreviewServiceTest.raster();var epoch=new VisibleSourceEpoch();
-            var raster=new LiveBPreviewService.VisibleRaster(pixels.width(),pixels.height(),pixels.argb(),pixels.minimumEast(),pixels.minimumNorth(),pixels.maximumEast(),pixels.maximumNorth(),pixels.projectionUnitsPerViewPixel(),pixels.groundMetersPerViewPixel(),pixels.nativePitchMeters(),pixels.sourceIdentity(),pixels.projectionCode(),epoch.captureStable());
+            // Same world pixels and source scale, cropped around the complete selected decision corridor.
+            // The optional8M operation also hashes scalar canonical bytes; a600-square fixture exceeds it.
+            int size=320,start=140;var crop=new int[size*size];var full=pixels.argb();
+            for(int y=0;y<size;y++)System.arraycopy(full,(y+start)*pixels.width()+start,crop,y*size,size);
+            double pitch=pixels.projectionUnitsPerViewPixel()/6;
+            var raster=new LiveBPreviewService.VisibleRaster(size,size,crop,pixels.minimumEast()+start*pitch,pixels.maximumNorth()-(start+size)*pitch,pixels.minimumEast()+(start+size)*pitch,pixels.maximumNorth()-start*pitch,pixels.projectionUnitsPerViewPixel(),pixels.groundMetersPerViewPixel(),pixels.nativePitchMeters(),pixels.sourceIdentity(),pixels.projectionCode(),epoch.captureStable());
             var capture=new LiveBPreviewService.Captured[1];
             SwingUtilities.invokeAndWait(()->capture[0]=service.capture(fixture.dataSet(),fixture.selection(),raster,config,true));
             var computed=service.compute(capture[0],CancellationProbe.NONE);
@@ -41,6 +46,8 @@ class ModernRefinementBootstrapTest {
                     assertEquals(engine,prepared.root().stage().engine());
                     assertEquals("ROOT_NATIVE",prepared.root().stage().kind().name());
                     assertSame(capture[0].originalReceipt().orElseThrow(),prepared.root().receipt());
+                    assertTrue(prepared.memory().retainIfAbsent(capture[0]).bytes()>=(long)size*size*4,"Original native raster owner must be admitted");
+                    assertDoesNotThrow(()->prepared.memory().retainIfAbsent(computed),"Actual native owner must be admitted");
                     var selected=prepared.root().stage().candidates().stream().filter(c->c.id().equals(prepared.root().stage().selected())).findFirst().orElseThrow();
                     assertEquals(choices.get(choices.size()-1).localRouteIndex(),selected.payload().rootReviewState().orElseThrow().fullRouteIndex().orElseThrow());
                     assertEquals(mode,prepared.root().authority().request().geometryMode());
