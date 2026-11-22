@@ -39,7 +39,9 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     private NativeEntry activeEntry;
     public CompletionStage<NativeEntry> firstNativeEntry(){return firstNativeEntry.minimalCompletionStage();}
     public boolean ownsNativeEntry(NativeEntry entry){return busy&&ownsPublication()&&activeEntry==entry&&Objects.equals(active,entry.ticket());}
-    public record Display(AlignmentResult result,CenterlineCandidate candidate,Optional<RefinementPayload.NativeReview> nativeReview) { }
+    public record Display(AlignmentResult result,CenterlineCandidate candidate,Optional<RefinementPayload.NativeReview> nativeReview,Optional<RefinementPayload.RootNoChangeReview> noChange) {
+        public Display(AlignmentResult result,CenterlineCandidate candidate,Optional<RefinementPayload.NativeReview> nativeReview){this(result,candidate,nativeReview,Optional.empty());}
+    }
     private final RefinementReviewRoot review;
     private final TileFetchCoordinator coordinator;
     private final VisibleRefinementCapture.Port visibleCapture;
@@ -200,7 +202,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     }
     public boolean handlesRuntimeDiagnostics(){return diagnosticOwner!=null;}
     public void diagnosticsChanged(String state) {
-        if(!Set.of("preview-open","review-confirmed","review-confirmation-failed","cancelled","applied","apply-failed").contains(state))throw new IllegalArgumentException("Fixed diagnostic state required");
+        if(!Set.of("preview-open","review-confirmed","review-confirmation-failed","cancelled","applied","apply-failed","no-change").contains(state))throw new IllegalArgumentException("Fixed diagnostic state required");
         diagnosticState=state;if(diagnosticOwner!=null)DiagnosticsRegistry.invalidateRefinement(diagnosticOwner);
     }
     private record PendingLegacyReview(String choice,String fingerprint) { }
@@ -318,6 +320,9 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             var bundle=RuntimeRefinementDiagnostics.capture(root.authority(),session.history(),session.current(),session.id(),initialDiagnosticChoice,
                 latest,result,availability,diagnosticState,reviewed,applied,context);
             var artifacts=new LinkedHashMap<>(bundle.artifacts());
+            if(nativeOriginalWorkSupplier!=null)try {
+                var originalWork=nativeOriginalWorkSupplier.get();if(originalWork!=null&&originalWork.name().equals("original-native-work.json")&&originalWork.bytes().length<=65536)artifacts.put(originalWork.name(),originalWork);
+            }catch(RuntimeException unavailable){PluginLog.verbose("Original retained native work unavailable: %s",unavailable.getClass().getSimpleName());}
             var smoothing=latestSmoothingReceipt;var protocol=latestSmoothingProtocol;
             if(terminal&&busy&&activeProgress!=null&&activeEntry!=null&&activeEntry.workerReturned) {smoothing=activeProgress.smoothingReceipt;protocol=activeProgress.smoothingProtocol;}
             if(latest.isPresent()&&smoothing.isPresent()) {
@@ -570,6 +575,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     public Optional<RefinementPayload.NativeReview> currentNative() {
         if(!nativeSelected())return Optional.empty();return selected().payload().nativeReview();
     }
+    public Optional<RefinementPayload.RootNoChangeReview> currentNoChangeRoot(){return nativeSelected()?selected().payload().rootNoChangeReview():Optional.empty();}
     private Candidate selected(){var stage=session.current();return stage.candidates().stream().filter(c->c.id().equals(stage.selected())).findFirst().orElseThrow();}
     private void select(String id) {
         if(busy||closed||!ownsPublication())return;
@@ -608,7 +614,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             presentedNative=null;presentedRootChoice=null;
             var candidate=stage.candidates().stream().filter(c->c.id().equals(stage.selected())).findFirst().orElseThrow();
             var result=candidate.result();var actual=result.candidates().stream().filter(c->c.id().equals(candidate.nativeCandidateId())).findFirst().orElseThrow();
-            try{display.accept(new Display(result,actual,candidate.payload().nativeReview()));}
+            try{display.accept(new Display(result,actual,candidate.payload().nativeReview(),candidate.payload().rootNoChangeReview()));}
             catch(RuntimeException|Error failed){throw new PresentationFailed();}
             presentedNative=new Presentation(stage.id(),candidate.id(),candidate.immutableIdentity());
         }
@@ -744,7 +750,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                                     var metadata=new IdentityHashMap<Object,Long>();
                                     for(var candidate:child.candidates()) {
                                         candidate.payload().retainSmoothingSources(publication);
-                                        candidate.payload().nativeReview().ifPresent(value->value.retainedSources().values().forEach(RetainedSmoothingSource::requireCurrent));
+                                        candidate.payload().nativeSourceBindings().values().forEach(RetainedSmoothingSource::requireCurrent);
                                         candidate.payload().publicationCharges().forEach((identity,bytes)->metadata.merge(identity,bytes,Math::max));
                                     }
                                     long bytes=0;for(long value:metadata.values())bytes=Math.addExact(bytes,value);
@@ -806,7 +812,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         var input=ticket.smoothingInput().orElseThrow();
         var parentStage=session.history().stream().filter(s->s.id().equals(input.unsmoothedParent())).findFirst().orElseThrow();
         var parent=parentStage.candidates().stream().filter(c->c.id().equals(input.unsmoothedChoice())).findFirst().orElseThrow();
-        var source=parent.payload().nativeReview().flatMap(n->n.sources().stream().map(n.retainedSources()::get).filter(Objects::nonNull).findFirst()).orElse(root.originalConversion());
+        var source=parent.payload().nativeSourceBindings().values().stream().findFirst().orElse(root.originalConversion());
         if(source==null)throw new SmoothingParentBinder.Unavailable(SmoothingParentBinder.Reason.SELECTED_SOURCE_NOT_RETAINED);
         var reference=new ParentReferenceBinder().bind(root.authority(),parentStage.id(),parent);
         clearDiagnostics();long available=session.availablePayloadBytes();diagnosticsSlot=RefinementAttemptDiagnostics.Slot.open(rootMemory,available).orElse(null);
@@ -1037,14 +1043,31 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     private static RuntimeException unwrap(Throwable failure){while(failure instanceof CompletionException&&failure.getCause()!=null)failure=failure.getCause();return failure instanceof RuntimeException runtime?runtime:new IllegalStateException("Refinement failed",failure);}
     public void confirm() {
         review.requireOriginalAttemptCurrent();
+        if(currentNoChangeRoot().isPresent())throw new IllegalStateException("A no-change acceptance does not require edit confirmation");
         if(busy||closed||!ownsPublication()||!nativeSelected()||!hasCurrentPresentation()||!originalSourceCurrent())throw new IllegalStateException("The exact current preview is unavailable or stale");
         var plan=currentNative().orElseThrow().plan();
         confirmation=PreviewReviewState.fromEditPlan(selected().id().value(),plan).confirm();reviewedSelection=currentDiagnosticKey();diagnosticState="review-confirmed";present();
     }
-    public boolean canApplyNative(){return !busy&&!closed&&ownsPublication()&&!review.invalidated()&&originalSourceCurrent()&&hasCurrentPresentation()&&session!=null&&session.canApply()&&currentNative().map(n->PreviewReviewState.fromEditPlan(selected().id().value(),n.plan()).canApply()||confirmation!=null&&confirmation.matches(PreviewReviewState.fromEditPlan(selected().id().value(),n.plan()))).orElse(false);}
+    public boolean canApplyNative(){
+        if(busy||closed||!ownsPublication()||review.invalidated()||!originalSourceCurrent()||!hasCurrentPresentation()||session==null||!session.canApply())return false;
+        if(currentNoChangeRoot().isPresent())return currentNoChangeRoot().orElseThrow().validation().applicable();
+        return currentNative().map(n->PreviewReviewState.fromEditPlan(selected().id().value(),n.plan()).canApply()||confirmation!=null&&confirmation.matches(PreviewReviewState.fromEditPlan(selected().id().value(),n.plan()))).orElse(false);
+    }
+    /** Accepts a proven original no-op without entering Command.execute or changing host history. */
+    public void acceptNoChangeRoot(){
+        review.requireOriginalAttemptCurrent();if(!canApplyNative())throw new IllegalStateException("No-change result is unavailable or stale");
+        var noChange=currentNoChangeRoot().orElseThrow(()->new IllegalStateException("An actual unchanged original root is required"));
+        sourceContext.requireCurrent();noChange.requireMatches(root.authority());
+        var owner=noChange.owner();
+        try{var current=root.receipt().requireCurrent(review.dataSet());noChange.proof().requireMatches(owner.request(),owner.evidence(),owner.captured().network(),owner.options(),owner.pipeline(),noChange.routeIndex(),current);}
+        catch(IllegalArgumentException|IllegalStateException stale){originalSourceStale=true;throw new IllegalStateException("No-change source graph changed after capture",stale);}
+        if(!session.terminalizeForApply())throw new IllegalStateException("No-change review is no longer idle");
+        diagnosticsChanged("no-change");freezeDiagnostics(true,false);
+    }
     public Command command() {
         review.requireOriginalAttemptCurrent();
         if(!canApplyNative())throw new IllegalStateException("Refinement candidate requires review or is busy");
+        if(currentNoChangeRoot().isPresent())throw new IllegalStateException("No-change acceptance does not create an edit command");
         var plan=currentNative().orElseThrow().plan();
         var sourceGuard=new CommandGeneration(sourceContext.detachedCommandGeneration(),commandContext);
         var validator=new LiveNetworkSnapshotValidator(root.receipt(),plan,sourceGuard);
@@ -1061,7 +1084,10 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         if(session==null){choices=review.choices().stream().map(c->new RefinementControls.Choice(c.id(),review.engine()+" / "+c.candidate().displayName())).toList();selected=review.choiceId(review.selectedCandidate());stage=review.engine()+" — stage 1";}
         else{var current=session.current();String label=current.kind()==StageKind.SMOOTH?"Smoothen ("+current.smoothingInput().orElseThrow().preset()+")":current.engine().toString();choices=current.candidates().stream().map(c->new RefinementControls.Choice(c.id().value(),label+" / "+c.sourcePalette())).toList();selected=current.selected().value();int cursor=session.history().indexOf(current);undo=cursor>0;redo=cursor+1<session.history().size();stage=label+" — stage "+(cursor+1);}
         String quality=message;
-        if(nativeSelected()){
+        if(currentNoChangeRoot().isPresent()) {
+            var noChange=currentNoChangeRoot().orElseThrow();quality="No edit is needed; this result exactly matches the original captured occurrences.\n"+noChange.validation().findingCodes();
+            if(!message.isEmpty())quality=message+"\n"+quality;
+        } else if(nativeSelected()){
             var actual=currentNative().orElseThrow();
             quality=actual.plan().validation().disposition()+"\n"+actual.quality().findings()+"\n"
                 +actual.operation().map(RefinementOperationReceipt::description).orElse("Operation work unavailable")

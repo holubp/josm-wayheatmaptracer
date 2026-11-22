@@ -57,7 +57,7 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
         selected=candidates.get(0);
         choices=java.util.stream.IntStream.range(0,candidates.size()).mapToObj(i->new LegacyReviewOwner.Choice(interval==null?"native-choice-"+i:intervalChoiceId(interval),candidates.get(i))).toList();
         if(interval!=null)intervalSelections.put(choices.get(0).id(),interval);
-        var source=owner.captured().sourceGeographic().stream().map(p->projection.latlon2eastNorth(new LatLon(p.latitudeDegrees(),p.longitudeDegrees()))).toList();
+        var source=boundOriginalView(data,selection,owner.captured());
         var attempts=new ArrayList<DetectorAttempt>();
         for(int i=0;i<candidates.size();i++) {
             var run=interval==null?this.nativeChoices.get(i).owner():owner;
@@ -68,7 +68,31 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
         sourceIdentity=owner.evidence().sourceIdentity();
         settings=RefinementSourcePlanner.Settings.capture(owner.captured().managedRaster()!=null,config.heatmap(),owner.captured().alternativeMappings());
         observer=LegacyReviewOwner.observeNative(data,selection,config);
-        try{observer.captured(original,null,null);requireAuthorityCurrent();}catch(RuntimeException failure){observer.close();throw failure;}
+        try{
+            observer.captured(original,null,null);
+            // Close the validation/listener-installation window. Subsequent publication checks use
+            // this observer's monotonic dataset stamp plus the original source/configuration guard.
+            owner.captured().originalReceipt().orElseThrow().requireCurrent(data);requireAuthorityCurrent();
+        }catch(RuntimeException failure){observer.close();throw failure;}
+    }
+    private static List<org.openstreetmap.josm.data.coor.EastNorth> boundOriginalView(DataSet data,SelectionContext selection,LiveBPreviewService.Captured captured) {
+        var receipt=captured.originalReceipt().orElseThrow(()->new IllegalArgumentException("Original native receipt unavailable"));
+        if(receipt.snapshot()!=captured.network()||!receipt.specification().equals(captured.specification())
+                ||!org.openstreetmap.josm.data.projection.ProjectionRegistry.getProjection().toCode().equals(captured.projectionCode())
+                ||selection.way().getDataSet()!=data||selection.way().getUniqueId()!=captured.specification().selectedWayKey().id()
+                ||selection.startIndex()!=captured.specification().selectedRange().firstIndex()||selection.endIndex()!=captured.specification().selectedRange().lastIndex())
+            throw new IllegalArgumentException("Original native view differs from its exact captured selection/projection");
+        receipt.requireCurrent(data);
+        var live=selection.way().getNodes();var source=captured.sourceGeographic();
+        if(source.size()!=selection.segmentNodes().size())throw new IllegalArgumentException("Original native occurrence count changed");
+        for(int i=0;i<source.size();i++) {
+            var node=selection.segmentNodes().get(i);
+            if(live.get(selection.startIndex()+i)!=node||!source.get(i).equals(new GeographicPoint(node.lat(),node.lon())))
+                throw new IllegalArgumentException("Original native occurrence/coordinate changed");
+        }
+        // Cached EN is an observed view representation. Only exact original geographic authority
+        // above permits retaining it; no tolerance or renewed OSM snapshot is introduced.
+        return selection.segmentNodes().stream().map(org.openstreetmap.josm.data.osm.Node::getEastNorth).toList();
     }
     public static ModernReviewRoot fromFullChoices(DataSet data,SelectionContext selection,AlignmentConfig config,
             List<LiveBPreviewService.PreviewChoice> choices,TileFetchCoordinator coordinator,Runnable hostCurrent) {
@@ -208,19 +232,23 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
             for(int index=0;index<choices.size();index++) {
                 work.visit(GeometryWorkContext.Kind.BIND,1);
                 var choice=choices.get(index);var run=interval==null?nativeChoices.get(index).owner():interval.owner();
-                var plan=interval==null?new ModernSingleWayEditPlanAdapter().assess(run,nativeChoices.get(index).localRouteIndex()).plan().orElseThrow(()->new IllegalStateException("Native root plan unavailable")):interval.assessment().plan().orElseThrow(()->new IllegalStateException("Native interval plan unavailable"));
+                var assessment=interval==null?new ModernSingleWayEditPlanAdapter().assess(run,nativeChoices.get(index).localRouteIndex()):null;
+                var plan=interval==null?assessment.plan().orElse(null):interval.assessment().plan().orElseThrow(()->new IllegalStateException("Native interval plan unavailable"));
+                if(plan==null&&assessment.availability()!=ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE)throw new IllegalStateException("Native root plan/proof unavailable");
                 var quality=interval==null?run.pipeline().routes().get(nativeChoices.get(index).localRouteIndex()).quality():NativeRefinementSourceContext.intervalQuality(run,interval.assessment(),work);
                 var source=retainedSources.computeIfAbsent(run,r->NativeRefinementSourceContext.retain(r,settings,context,work,memory,hashes));
                 var request=source.source();
                 var ids=interval==null?run.pipeline().routes().get(nativeChoices.get(index).localRouteIndex()).pointIds():NativeRefinementSourceContext.intervalPointIds(interval.assessment());
-                var nativeReview=new RefinementPayload.NativeReview(plan,quality,Optional.empty(),List.of(request),OptionalInt.empty(),Map.of(request,source),List.of(),Optional.of(ids));
-                var single=new AlignmentResult(original.selection(),null,List.of(choice.candidate()),original.sourcePolyline(),choice.candidate().finalPreviewPoints(),List.of(),null,null,original.detectorAttempts().stream().filter(a->a.candidateIds().contains(choice.candidate().id())).toList(),List.of(choice.candidate()));
+                var noChange=plan==null?new RefinementPayload.RootNoChangeReview(run,nativeChoices.get(index).localRouteIndex(),assessment,source):null;
+                var finalCandidate=noChange==null?choice.candidate():noChange.finalCandidate(choice.candidate());
+                var single=new AlignmentResult(original.selection(),null,List.of(finalCandidate),original.sourcePolyline(),finalCandidate.finalPreviewPoints(),List.of(),null,null,original.detectorAttempts().stream().filter(a->a.candidateIds().contains(choice.candidate().id())).toList(),List.of(finalCandidate));
                 String identity=interval==null?nativeChoices.get(index).reviewIdentity():ownerIdentity(run)+":"+plan.routeIdentity();
-                var rootState=new RefinementPayload.RootReviewState(ownerIdentity(run),interval==null?OptionalInt.of(nativeChoices.get(index).localRouteIndex()):OptionalInt.empty(),interval==null?Map.of():interval.routeChoices(),plan.routeIdentity(),Optional.ofNullable(interval==null?null:interval.assessment()));
-                var payload=RefinementPayload.captureNative(single,originalPayload,nativeReview,RefinementLimits.defaults().maxPayloadBytes()).withRootReviewState(rootState);
-                var points=choice.candidate().finalPreviewPoints().stream().map(p->{var ll=Projections.getProjectionByCode(capture.projectionCode()).eastNorth2latlon(p);return capture.outputGrid().coordinateFrame().toMetric(new GeographicPoint(ll.lat(),ll.lon()));}).toList();
-                var arcs=LegacyRefinementBootstrap.correspondence(capture.network(),run.request().selectedWayKey(),run.request().selectedRange(),capture.sourceMetric(),capture.projectionCode(),capture.outputGrid().coordinateFrame(),choice.candidate(),points);
-                candidates.add(new Candidate(new CandidateId(choice.id()),payload,arcs,identity,choice.candidate().id(),capture.palette()));
+                var rootState=new RefinementPayload.RootReviewState(ownerIdentity(run),interval==null?OptionalInt.of(nativeChoices.get(index).localRouteIndex()):OptionalInt.empty(),interval==null?Map.of():interval.routeChoices(),plan==null?"no-change:"+finalCandidate.id():plan.routeIdentity(),Optional.ofNullable(interval==null?null:interval.assessment()));
+                var payload=(noChange==null?RefinementPayload.captureNative(single,originalPayload,new RefinementPayload.NativeReview(plan,quality,Optional.empty(),List.of(request),OptionalInt.empty(),Map.of(request,source),List.of(),Optional.of(ids)),RefinementLimits.defaults().maxPayloadBytes())
+                    :RefinementPayload.captureRootNoChange(single,originalPayload,noChange,RefinementLimits.defaults().maxPayloadBytes())).withRootReviewState(rootState);
+                var points=finalCandidate.finalPreviewPoints().stream().map(p->{var ll=Projections.getProjectionByCode(capture.projectionCode()).eastNorth2latlon(p);return capture.outputGrid().coordinateFrame().toMetric(new GeographicPoint(ll.lat(),ll.lon()));}).toList();
+                var arcs=LegacyRefinementBootstrap.correspondence(capture.network(),run.request().selectedWayKey(),run.request().selectedRange(),capture.sourceMetric(),capture.projectionCode(),capture.outputGrid().coordinateFrame(),finalCandidate,points);
+                candidates.add(new Candidate(new CandidateId(choice.id()),payload,arcs,identity,finalCandidate.id(),capture.palette()));
                 for(var charge:payload.publicationCharges().entrySet())admit(memory,work,charge.getKey(),charge.getValue());
             }
             var stage=Stage.root(engine(),candidates,new CandidateId(selectedId[0]));

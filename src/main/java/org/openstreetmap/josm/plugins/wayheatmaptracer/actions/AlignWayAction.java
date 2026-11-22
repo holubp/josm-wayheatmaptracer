@@ -1406,10 +1406,7 @@ public class AlignWayAction extends JosmAction {
                 refinement[0]=new LegacyRefinementWorkflow(refinementRoot[0],previewSourceOwner,candidate->{
                     state.restoreSelection(refinementRoot[0].retainedIntervalSelection(refinementRoot[0].choiceId(candidate)));refresh.run();
                 },displayed->{
-                    var plan=displayed.nativeReview().orElseThrow().plan();var projected=new LinkedHashMap<PrimitiveKey,List<EastNorth>>();
-                    plan.finalPreviewWays().forEach((key,points)->projected.put(key,points.stream().map(AlignWayAction::projectGeographic).toList()));
-                    overlay.setDisconnectionLocations(disconnectionLocations(plan));
-                    overlay.show(selection,displayed.result(),displayed.candidate(),CandidateAssessment.Disposition.valueOf(plan.validation().disposition().name()),false,PluginPreferences.isDebugEnabled(),projected);
+                    showNativeRefinementDisplay(selection,displayed,computed.captured().projectionCode());
                 },message->{
                     if(refinement[0]==null)return;
                     if(refinement[0].busy()) {sourceChoices.setEnabled(false);choices.forEach(choice->choice.setEnabled(false));apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);}
@@ -2154,11 +2151,8 @@ public class AlignWayAction extends JosmAction {
                 refinement[0]=new LegacyRefinementWorkflow(refinementRoot[0],previewSourceOwner,
                     candidate->{for(int i=0;i<previewChoices.size();i++)if(previewChoices.get(i).candidate()==candidate){choices.setSelectedIndex(i);return;}throw new IllegalArgumentException("Foreign native root choice");},
                     displayed->{
-                        var nativeReview=displayed.nativeReview().orElseThrow();plan[0]=nativeReview.plan();
-                        var projected=new LinkedHashMap<PrimitiveKey,List<EastNorth>>();
-                        var projection=Projections.getProjectionByCode(computed.captured().projectionCode());
-                        plan[0].finalPreviewWays().forEach((key,points)->projected.put(key,points.stream().map(g->projection.latlon2eastNorth(new LatLon(g.latitudeDegrees(),g.longitudeDegrees()))).toList()));
-                        overlay.show(selection,displayed.result(),displayed.candidate(),CandidateAssessment.Disposition.valueOf(plan[0].validation().disposition().name()),false,PluginPreferences.isDebugEnabled(),projected);
+                        plan[0]=displayed.nativeReview().map(RefinementPayload.NativeReview::plan).orElse(null);
+                        showNativeRefinementDisplay(selection,displayed,computed.captured().projectionCode());
                     },message->{
                         if(refinement[0]==null)return;
                         boolean nativeStage=refinement[0].nativeSelected(),busy=refinement[0].busy();
@@ -2166,8 +2160,8 @@ public class AlignWayAction extends JosmAction {
                         choices.setVisible(!nativeStage&&candidates.size()>1);
                         if(nativeStage) {
                             quality.setText(message);quality.setCaretPosition(0);
-                            var actual=refinement[0].currentNative().orElseThrow().plan();
-                            confirm.setEnabled(!busy&&actual.validation().disposition()==ValidationReport.Disposition.REVIEW_REQUIRED&&!refinement[0].canApplyNative());
+                            if(refinement[0].currentNoChangeRoot().isPresent())confirm.setEnabled(false);
+                            else {var actual=refinement[0].currentNative().orElseThrow().plan();confirm.setEnabled(!busy&&actual.validation().disposition()==ValidationReport.Disposition.REVIEW_REQUIRED&&!refinement[0].canApplyNative());}
                             apply.setEnabled(!busy&&!applying[0]&&refinement[0].canApplyNative());
                             disconnect.setEnabled(false);preciseRerun.setVisible(false);
                         } else if(busy){apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);preciseRerun.setEnabled(false);}
@@ -2437,6 +2431,11 @@ public class AlignWayAction extends JosmAction {
         var matching=root.productionRuns().stream().filter(owner->(owner.options().sourceTier()+":"+owner.request().evidenceContentHash()).equals(state.sourceOwnerIdentity())).toList();
         if(matching.size()!=1)throw new IllegalArgumentException("Native root context source owner differs");
         var selected=matching.get(0);
+        if(candidate.payload().rootNoChangeReview().isPresent()) {
+            var metadata=Format15ProductionBundleFactory.createUnavailableLive(LastSlideDebugBundle.buildIdentity(),"preview-open",selected.captured().managedRaster()==null?"visible-layer":"managed-tiles","original-native-no-change-context",null);
+            var artifacts=new LinkedHashMap<>(metadata.artifacts());var status=Format15Artifact.text("original-native-no-change-context.txt","factual-original-no-change-root\nno-edit-plan-exists\nfrozen-native-inputs-unavailable-in-bounded-context\n");artifacts.put(status.name(),status);
+            return withSourceChoices(new Format15Bundle(metadata.buildIdentity(),metadata.sourceIdentityHash(),metadata.parameterHash(),artifacts),root,selected);
+        }
         if(metadataOnly) {
             var fallback=Format15ProductionBundleFactory.createUnavailableLive(LastSlideDebugBundle.buildIdentity(),"resource-limited",selected.captured().managedRaster()==null?"visible-layer":"managed-tiles","original-native-root-context",null);
             return withSourceChoices(withFailureSummary(fallback,"ORIGINAL_ROOT_DIAGNOSTICS","native-frozen-inputs-unavailable",selected),root,selected);
@@ -3826,10 +3825,22 @@ public class AlignWayAction extends JosmAction {
             noRefinement, noRefinement, noSmoothing));
     }
 
+    private void showNativeRefinementDisplay(SelectionContext selection,LegacyRefinementWorkflow.Display displayed,String projectionCode) {
+        var plan=displayed.nativeReview().map(RefinementPayload.NativeReview::plan);
+        var geometry=plan.map(AlignmentEditPlan::finalPreviewWays).orElseGet(()->displayed.noChange().orElseThrow().finalSelection().finalPreviewWays());
+        var validation=plan.map(AlignmentEditPlan::validation).orElseGet(()->displayed.noChange().orElseThrow().validation());
+        var projection=Projections.getProjectionByCode(projectionCode);var projected=new LinkedHashMap<PrimitiveKey,List<EastNorth>>();
+        geometry.forEach((key,points)->projected.put(key,points.stream().map(point->projection.latlon2eastNorth(new LatLon(point.latitudeDegrees(),point.longitudeDegrees()))).toList()));
+        overlay.setDisconnectionLocations(disconnectionLocations(plan.orElse(null)));
+        overlay.show(selection,displayed.result(),displayed.candidate(),CandidateAssessment.Disposition.valueOf(validation.disposition().name()),false,PluginPreferences.isDebugEnabled(),projected);
+    }
     /** Once the edit commits, diagnostic/presentation failures cannot turn it into a rejected edit. */
     private boolean applyRefinementReview(LegacyRefinementWorkflow workflow,DataSet data,AlignmentConfig config,Runnable committed,Runnable close) {
         boolean applied=false,commandAttempted=false;
         try {
+            if(workflow.currentNoChangeRoot().isPresent()) {
+                workflow.acceptNoChangeRoot();applied=true;committed.run();close.run();return true;
+            }
             if(!config.heatmap().allowUndownloadedAlignment())requirePreviewWithinDownloadedArea(workflow.selectedGeometry(),data);
             var command=workflow.command();commandAttempted=true;
             var publication=addReviewedCommand(UndoRedoHandler.getInstance(),command);applied=true;

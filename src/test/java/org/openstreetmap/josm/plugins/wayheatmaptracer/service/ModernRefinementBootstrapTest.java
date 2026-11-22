@@ -206,7 +206,7 @@ class ModernRefinementBootstrapTest {
         var fixture=V022LiveBPreviewServiceTest.fiveNodeFixture();var config=V022LiveBPreviewServiceTest.config(TrackerMode.PROBABILISTIC);
         // Purpose-owned ordinary OSM error makes the first native plan a real edit. The measured
         // primary, fixed endpoints, acquisition policy and budgets remain the same public input.
-        SwingUtilities.invokeAndWait(()->{for(int i=1;i<4;i++){var node=fixture.selection().segmentNodes().get(i);var point=node.getEastNorth();node.setEastNorth(new org.openstreetmap.josm.data.coor.EastNorth(point.east(),point.north()+1));}});
+        SwingUtilities.invokeAndWait(()->{for(int i=1;i<4;i++){var node=fixture.selection().segmentNodes().get(i);var point=node.getEastNorth();node.setCoor(ProjectionRegistry.getProjection().eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth(point.east(),point.north()+1)));}});
         var epoch=new VisibleSourceEpoch();int width=320,height=160;var pixels=new int[width*height];
         for(int y=0;y<height;y++)for(int x=0;x<width;x++){int gray=compactGray(-width/12.+x/6.,height/12.-y/6.);pixels[y*width+x]=0xff000000|gray<<16|gray<<8|gray;}
         var raster=new LiveBPreviewService.VisibleRaster(width,height,pixels,-width/12.,-height/12.,width/12.,height/12.,1,1,OptionalDouble.of(1),"compact-native-recapture","EPSG:3857",epoch.captureStable());
@@ -286,6 +286,91 @@ class ModernRefinementBootstrapTest {
         double branch=east> -8&&east<8?3*Math.pow(Math.sin(Math.PI*(east+8)/16),2):0;
         double primary=Math.exp(-.5*north*north/.25),secondary=Math.exp(-.5*Math.pow(north-branch,2)/.25);
         return (int)Math.round(255*(.02+.8*Math.max(primary,secondary)));
+    }
+    @Test void unchangedNativeRootsKeepExactFinalOccurrencesAndAllowOptionalEntryWithoutAnIdentityCommand() throws Exception {
+        Config.setPreferencesInstance(new MemoryPreferences());ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+        for(var mode:AlignmentMode.values()) {
+            var fixture=V022LiveBPreviewServiceTest.fiveNodeFixture();var base=V022LiveBPreviewServiceTest.config(TrackerMode.PROBABILISTIC);
+            var config=new AlignmentConfig(base.heatmap().withAlignmentMode(mode),base.cleanup());var epoch=new VisibleSourceEpoch();
+            int width=320,height=160;var pixels=new int[width*height];
+            for(int y=0;y<height;y++)for(int x=0;x<width;x++){int gray=compactGray(-width/12.+x/6.,height/12.-y/6.);pixels[y*width+x]=0xff000000|gray<<16|gray<<8|gray;}
+            var raster=new LiveBPreviewService.VisibleRaster(width,height,pixels,-width/12.,-height/12.,width/12.,height/12.,1,1,OptionalDouble.of(1),"unchanged-native-root","EPSG:3857",epoch.captureStable());
+            var service=new LiveBPreviewService();var capture=new LiveBPreviewService.Captured[1];
+            SwingUtilities.invokeAndWait(()->capture[0]=service.capture(fixture.dataSet(),fixture.selection(),raster,config,true));
+            var computed=service.compute(capture[0],CancellationProbe.NONE);
+            var choices=service.adaptChoices(computed,g->ProjectionRegistry.getProjection().latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(g.latitudeDegrees(),g.longitudeDegrees())));
+            var selected=choices.stream().filter(c->new ModernSingleWayEditPlanAdapter().assess(c.owner(),c.localRouteIndex()).availability()==ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE).findFirst().orElseThrow(()->new AssertionError("Actual native no-change proof required in "+mode));
+            var assessment=new ModernSingleWayEditPlanAdapter().assess(selected.owner(),selected.localRouteIndex());
+            var expected=assessment.noChangeProof().orElseThrow().finalSelection().selectedGeometry().stream().map(g->ProjectionRegistry.getProjection().latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(g.latitudeDegrees(),g.longitudeDegrees()))).toList();
+            var original=fixture.selection().way().getNodes().stream().map(org.openstreetmap.josm.data.osm.Node::getCoor).toList();
+            var originalNodes=List.copyOf(fixture.selection().way().getNodes());var flags=fixture.dataSet().allPrimitives().stream().collect(java.util.stream.Collectors.toMap(p->p.getUniqueId(),p->List.of(p.isModified(),p.isDeleted())));
+            var host=org.openstreetmap.josm.data.UndoRedoHandler.getInstance();var undo=List.copyOf(host.getUndoCommands());var redo=List.copyOf(host.getRedoCommands());
+            var review=new ModernReviewRoot[1];var workflow=new LegacyRefinementWorkflow[1];var workers=new java.util.concurrent.LinkedBlockingQueue<Runnable>();var publications=new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+            var renderer=new VisibleRefinementCapture.Renderer(){
+                public void requireCurrent(VisibleRefinementCapture.Request request){epoch.requireCurrent(raster.sourceReceipt());}
+                public VisibleRefinementCapture.Viewport snapshot(){return new VisibleRefinementCapture.Viewport(0,0,1,54,27);}
+                public void restore(VisibleRefinementCapture.Viewport saved){}
+                public VisibleRefinementCapture.RenderedChunk render(VisibleRefinementCapture.Request request,VisibleRefinementCapture.Chunk chunk){
+                    var image=new java.awt.image.BufferedImage(chunk.viewWidth()*6,chunk.viewHeight()*6,java.awt.image.BufferedImage.TYPE_INT_ARGB);
+                    for(int y=0;y<image.getHeight();y++)for(int x=0;x<image.getWidth();x++){int gray=compactGray(chunk.bounds().minimumEast()+x/6.,chunk.bounds().maximumNorth()-y/6.);image.setRGB(x,y,0xff000000|gray<<16|gray<<8|gray);}
+                    return new VisibleRefinementCapture.RenderedChunk(image,chunk.bounds(),-1,OptionalDouble.of(1),1);
+                }
+            };
+            var port=new VisibleRefinementCapture(renderer,SwingUtilities::invokeLater,java.util.concurrent.ForkJoinPool.commonPool(),320,320).port();
+            SwingUtilities.invokeAndWait(()->{
+                review[0]=ModernReviewRoot.fromFullChoices(fixture.dataSet(),fixture.selection(),config,choices,null,()->{});review[0].select(selected.candidate());review[0].bindDisplayedSelection(selected,assessment);
+                assertSame(selected.candidate(),review[0].selectedCandidate(),"The original selector keeps its actual candidate pointer");assertEquals(expected,review[0].selectedFinalGeometry());
+                workflow[0]=new LegacyRefinementWorkflow(review[0],null,review[0]::select,d->{assertTrue(d.nativeReview().isPresent()!=d.noChange().isPresent());},s->{},workers::add,publications::add,port);
+                workflow[0].enableNativeRuntimeDiagnostics(c->null,c->null);assertEquals(expected,workflow[0].selectedGeometry());workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.MEDIUM);
+            });
+            try {
+                VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
+                SwingUtilities.invokeAndWait(()->{
+                    assertEquals(RefinementModels.StageKind.SMOOTH,workflow[0].latestAttemptDiagnostics().orElseThrow().binding().ticket().kind());
+                    try {
+                        var path=diagnosticsDirectory.resolve("no-change-smoothing-"+mode.name()+".zip");org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.writeLatest(path.toFile());
+                        var archive=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader.read(path);
+                        var actual=new String(archive.artifact("latest-smoothing-attempt.json").orElseThrow().bytes(),java.nio.charset.StandardCharsets.UTF_8);
+                        assertTrue(actual.contains("\"method\":\"existing-gaussian-capture-reference-v1\""));assertTrue(actual.contains("\"nativeCalls\":0"));
+                    }catch(Exception unavailable){throw new AssertionError("Factual no-change-root smoothing receipt required",unavailable);}
+                    if(!workflow[0].atRoot()){assertEquals(RefinementModels.StageKind.SMOOTH,workflow[0].currentStage().kind());((javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"undo")).doClick();}
+                    assertTrue(workflow[0].currentNoChangeRoot().isPresent(),workflow[0].computationEvidence());assertTrue(workflow[0].currentNative().isEmpty());
+                    assertEquals(expected,workflow[0].selectedGeometry());assertEquals(5,workflow[0].currentNoChangeRoot().orElseThrow().finalSelection().pointIds().size());assertEquals(0,workflow[0].actualNativeCalls());
+                });
+                for(var engine:List.of(TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC)) {
+                    int calls=workflow[0].actualNativeCalls();SwingUtilities.invokeAndWait(()->workflow[0].refine(engine));VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
+                    SwingUtilities.invokeAndWait(()->{
+                        assertTrue(workflow[0].actualNativeCalls()>calls,workflow[0].computationEvidence());
+                        if(!workflow[0].atRoot())((javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"undo")).doClick();
+                        assertTrue(workflow[0].currentNoChangeRoot().isPresent());assertEquals(expected,workflow[0].selectedGeometry());
+                    });
+                }
+                SwingUtilities.invokeAndWait(()->{
+                    assertTrue(workflow[0].canApplyNative());assertThrows(IllegalStateException.class,workflow[0]::command);
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.begin();
+                    try{workflow[0].acceptNoChangeRoot();assertFalse(org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.snapshot().containsKey("apply.commandExecutions"));}
+                    finally{org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.end();}
+                    assertEquals(originalNodes,fixture.selection().way().getNodes());assertEquals(original,originalNodes.stream().map(org.openstreetmap.josm.data.osm.Node::getCoor).toList());
+                    assertEquals(flags,fixture.dataSet().allPrimitives().stream().collect(java.util.stream.Collectors.toMap(p->p.getUniqueId(),p->List.of(p.isModified(),p.isDeleted()))));assertEquals(undo,List.copyOf(host.getUndoCommands()));assertEquals(redo,List.copyOf(host.getRedoCommands()));
+                });
+            }finally{SwingUtilities.invokeAndWait(()->{workflow[0].close();review[0].close();});}
+        }
+    }
+    @Test void nativeOriginalViewRetainsCachedProjectionOnlyUnderExactOriginalGeographicAuthority() throws Exception {
+        Config.setPreferencesInstance(new MemoryPreferences());ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+        var fixture=V022LiveBPreviewServiceTest.fiveNodeFixture();var config=V022LiveBPreviewServiceTest.config(TrackerMode.PROBABILISTIC);
+        SwingUtilities.invokeAndWait(()->{for(int i=1;i<4;i++){var node=fixture.selection().segmentNodes().get(i);var point=node.getEastNorth();node.setEastNorth(new org.openstreetmap.josm.data.coor.EastNorth(point.east(),point.north()+1));}});
+        var observed=fixture.selection().segmentNodes().stream().map(org.openstreetmap.josm.data.osm.Node::getEastNorth).toList();
+        var service=new LiveBPreviewService();var captured=new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(()->captured[0]=service.capture(fixture.dataSet(),fixture.selection(),V022LiveBPreviewServiceTest.raster(),config,true));
+        var computed=service.compute(captured[0],CancellationProbe.NONE);var choices=service.adaptChoices(computed,g->ProjectionRegistry.getProjection().latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(g.latitudeDegrees(),g.longitudeDegrees())));
+        var reconstructed=captured[0].sourceGeographic().stream().map(g->ProjectionRegistry.getProjection().latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(g.latitudeDegrees(),g.longitudeDegrees()))).toList();
+        assertNotEquals(observed,reconstructed,"This regression requires the factual setEastNorth cache roundtrip difference");
+        SwingUtilities.invokeAndWait(()->{
+            try(var root=ModernReviewRoot.fromFullChoices(fixture.dataSet(),fixture.selection(),config,choices,null,()->{})){assertEquals(observed,root.originalResult().sourcePolyline());root.requireAuthorityCurrent();}
+            var node=fixture.selection().segmentNodes().get(2);var old=node.getCoor();node.setCoor(new org.openstreetmap.josm.data.coor.LatLon(Math.nextUp(old.lat()),old.lon()));
+            assertThrows(IllegalStateException.class,()->ModernReviewRoot.fromFullChoices(fixture.dataSet(),fixture.selection(),config,choices,null,()->{}),"Even a one-ulp geographic change cannot borrow the original projected view stamp");
+        });
     }
     private static String originalRouteFacts(IntervalTraceBatch batch,IntervalTraceBatch.IntervalRun run,ModernTracePipeline.Route route) {
         var way=(DetachedWay)batch.network().primitives().get(batch.fullRequest().selectedWayKey());

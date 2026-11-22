@@ -338,7 +338,12 @@ public final class RefinementLineageCodec {
         var disposition=diagnostic.publication();var cause=diagnostic.cause();
         if(disposition==RefinementAttemptDiagnostics.Publication.PUBLISHED) {
             StageId newest=null;for(var retainedStage:retained.keySet())newest=retainedStage;
-            if(ticket.kind()==StageKind.SMOOTH) {
+            var publishedStage=retained.get(state.resultingSelection().stage());
+            boolean gaussianPublication=ticket.kind()==StageKind.SMOOTH&&publishedStage.candidates().stream()
+                .filter(c->c.id().equals(state.resultingSelection().candidate())).anyMatch(c->c.smoothingPublication().isPresent());
+            // Historical generic operation metadata stays readable; absence never supplies a
+            // Gaussian ticket/receipt. Current Gaussian writers always supply the typed publication.
+            if(gaussianPublication) {
                 if(!diagnostic.materializationComplete()||latest.isPresent()||cause!=RefinementAttemptDiagnostics.Cause.NONE
                         ||diagnostic.phase()!=RefinementAttemptDiagnostics.Phase.PUBLICATION||ticket.sequence()!=lastSequence
                         ||!state.resultingSelection().stage().equals(newest))throw invalid();

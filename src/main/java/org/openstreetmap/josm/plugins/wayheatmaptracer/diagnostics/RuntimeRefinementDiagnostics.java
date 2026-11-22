@@ -27,7 +27,7 @@ public final class RuntimeRefinementDiagnostics {
             var stage=history.get(s);
             for(int c=0;c<stage.candidates().size();c++) {
                 var candidate=stage.candidates().get(c);
-                var artifact=Format15Artifact.text("geometry/stage-"+s+"-choice-"+c+".csv",projectedGeometry(authority.projectionCode(),candidate.payload().finalPreviewGeometry()));
+                var artifact=Format15Artifact.text("geometry/stage-"+s+"-choice-"+c+".csv",candidate.payload().rootNoChangeReview().map(noChange->geographicGeometry(noChange.finalSelection().selectedGeometry())).orElseGet(()->projectedGeometry(authority.projectionCode(),candidate.payload().finalPreviewGeometry())));
                 geometry.put(new RefinementLineageCodec.CandidateKey(stage.id(),candidate.id()),artifact);artifacts.put(artifact.name(),artifact);
                 var rootState=candidate.payload().rootReviewState();
                 if(rootState.isPresent()) {
@@ -43,6 +43,14 @@ public final class RuntimeRefinementDiagnostics {
                     if(review.smoothingReceipt().isPresent()) {
                         var metadata=Format15Artifact.text("smoothing/stage-"+s+"-choice-"+c+".json",smoothingJson(stage,candidate.id(),artifact,review.smoothingReceipt().orElseThrow(),review));artifacts.put(metadata.name(),metadata);
                     }
+                }
+                if(candidate.payload().rootNoChangeReview().isPresent()) {
+                    var noChange=candidate.payload().rootNoChangeReview().orElseThrow();var watch=noChange.assessment().noChangeWatch().orElseThrow();
+                    var metadata=Format15Artifact.text("no-change/stage-"+s+"-choice-"+c+".json","{\"schema\":1,"+selectionFields(stage,candidate.id(),artifact)
+                        +",\"disposition\":\"NO_CHANGE\",\"hasEditPlan\":false,\"acceptance\":\"no-change-no-command\",\"networkHash\":"+quote(watch.networkContentHash())
+                        +",\"sourceEvidenceHash\":"+quote(noChange.owner().request().evidenceContentHash())+",\"routeIndex\":"+noChange.routeIndex()
+                        +",\"finalOccurrenceCount\":"+noChange.finalSelection().pointIds().size()+",\"validation\":"+quote(noChange.validation().disposition().name())+"}\n");
+                    artifacts.put(metadata.name(),metadata);
                 }
             }
         }

@@ -234,6 +234,14 @@ public final class NetworkSnapshotCapture {
         public NetworkSnapshot snapshot() {
             return snapshot;
         }
+        /** Revalidates this exact dataset/closure receipt; the returned view grants no new authority. */
+        public NetworkSnapshot requireCurrent(DataSet actual) {
+            var current=recapture(actual);
+            if(!current.canonicalHash().equals(snapshot.canonicalHash())
+                    ||!org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness.sameKnownFacts(snapshot.semanticWitness(),current.semanticWitness()))
+                throw new IllegalStateException("Original captured network closure changed");
+            return current;
+        }
 
         boolean belongsTo(DataSet candidate) {
             return dataSet == candidate;

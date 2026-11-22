@@ -38,16 +38,13 @@ public final class SmoothingParentBinder {
         var reference=new ParentReferenceBinder().bind(root,input.unsmoothedParent(),candidate);
         reference.requireComplete();
         var request=source.source();
-        boolean recordedAlias=candidate.payload().nativeReview().filter(review->review.sources().contains(request)&&review.retainedSources().get(request)==source).isPresent();
-        if(candidate.payload().nativeReview().isPresent()&&!recordedAlias)throw new Unavailable(Reason.SELECTED_SOURCE_NOT_RETAINED);
+        boolean recordedAlias=candidate.payload().nativeSourceBindings().get(request)==source;
+        if((candidate.payload().nativeReview().isPresent()||candidate.payload().rootNoChangeReview().isPresent())&&!recordedAlias)throw new Unavailable(Reason.SELECTED_SOURCE_NOT_RETAINED);
         var mappings=candidate.payload().detectorAttempts().stream().filter(a->RefinementPayload.detectorContains(a,candidate.nativeCandidateId(),work)
             &&a.sourcePalette().equals(request.palette())).map(DetectorAttempt::mappingName).distinct().toList();
         try{if(recordedAlias)root.requireSelectedAcquisitionEvidence(candidate,source);else root.requireAcquisitionEvidence(source.evidence());}catch(IllegalArgumentException mismatch){throw new Unavailable(Reason.SOURCE_MISMATCH);}
         if(!recordedAlias&&!request.palette().equals(reference.parentPalette())||!mappings.contains(request.mapping()))
             throw new Unavailable(Reason.SOURCE_MISMATCH);
-        candidate.payload().nativeReview().ifPresent(review->{
-            if(review.retainedSources().get(request)!=source)throw new Unavailable(Reason.SELECTED_SOURCE_NOT_RETAINED);
-        });
         var proof=root.frozenGeometryProof().orElseThrow(()->new Unavailable(Reason.FROZEN_PARTITION_UNAVAILABLE));
             try{source.retainInto(bindingOwner);}catch(IllegalArgumentException missing){throw new Unavailable(Reason.SELECTED_SOURCE_NOT_RETAINED);}
             var facts=candidate.payload().smoothingFacts(candidate.nativeCandidateId(),source,work);
@@ -82,8 +79,8 @@ public final class SmoothingParentBinder {
                     throw new Unavailable(Reason.SOURCE_COVERAGE_UNAVAILABLE);
             }
             // Keep the published composed identities; native interval IDs remain separate provenance.
-            if(candidate.payload().nativeReview().isPresent()) {
-                var factual=candidate.payload().nativeReview().get().finalPointIds().orElseThrow(()->new Unavailable(Reason.FINAL_SLOT_IDENTITY_UNAVAILABLE));
+            if(candidate.payload().nativeReview().isPresent()||candidate.payload().rootNoChangeReview().isPresent()) {
+                var factual=candidate.payload().nativeFinalPointIds().orElseThrow(()->new Unavailable(Reason.FINAL_SLOT_IDENTITY_UNAVAILABLE));
                 if(factual.size()!=n||new HashSet<>(factual).size()!=n)throw new Unavailable(Reason.FINAL_SLOT_IDENTITY_UNAVAILABLE);
                 ids.clear();ids.addAll(factual);
                 for(int i=0;i<n;i++)if(ids.get(i) instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing) {

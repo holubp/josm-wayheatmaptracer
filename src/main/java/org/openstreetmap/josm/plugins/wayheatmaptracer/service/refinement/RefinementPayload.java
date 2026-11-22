@@ -75,6 +75,40 @@ public final class RefinementPayload {
     }
     private final Optional<NativeReview> nativeReview;
     public Optional<NativeReview> nativeReview() { return nativeReview; }
+    /** A factual unchanged original native result has no identity edit plan. */
+    public record RootNoChangeReview(org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService.Computed owner,int routeIndex,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter.Assessment assessment,RetainedSmoothingSource source) {
+        public RootNoChangeReview {
+            Objects.requireNonNull(owner);Objects.requireNonNull(assessment);Objects.requireNonNull(source);
+            if(owner.partitioned()||routeIndex<0||routeIndex>=owner.pipeline().routes().size()||source.evidence()!=owner.evidence()
+                    ||assessment.plan().isPresent()||assessment.availability()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE)
+                throw new IllegalArgumentException("Actual full native no-change proof required");
+            var proof=assessment.noChangeProof().orElseThrow(()->new IllegalArgumentException("No-change assessment lacks its producer proof"));
+            proof.requireOwner(owner);proof.requireMatches(owner.request(),owner.evidence(),owner.captured().network(),owner.options(),owner.pipeline(),routeIndex,owner.captured().network());
+            source.requireCurrent();
+        }
+        public org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter.NoChangeProof proof(){return assessment.noChangeProof().orElseThrow();}
+        public org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter.FinalSelection finalSelection(){return proof().finalSelection();}
+        public org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality(){return owner.pipeline().routes().get(routeIndex).quality();}
+        public ValidationReport validation(){return finalSelection().validation();}
+        public CenterlineCandidate finalCandidate(CenterlineCandidate raw){
+            if(!raw.id().equals(owner.pipeline().routes().get(routeIndex).hypothesis().id()))throw new IllegalArgumentException("No-change final selection belongs to another native route");
+            var projection=org.openstreetmap.josm.data.projection.Projections.getProjectionByCode(owner.captured().projectionCode());
+            var points=finalSelection().selectedGeometry().stream().map(point->projection.latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(point.latitudeDegrees(),point.longitudeDegrees()))).toList();
+            var positions=new LinkedHashMap<Long,org.openstreetmap.josm.data.coor.EastNorth>();
+            finalSelection().assignments().forEach((id,point)->positions.put(id,projection.latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(point.latitudeDegrees(),point.longitudeDegrees()))));
+            return raw.withFinalPreviewGeometry(points,positions);
+        }
+        public void requireMatches(RefinementRootAuthority root){
+            if(owner.captured().network()!=root.network()||owner.request().geometryMode()!=root.request().geometryMode()
+                    ||!owner.request().permissions().equals(root.request().permissions()))throw new IllegalArgumentException("No-change owner differs from original root authority");
+            proof().requireOwner(owner);proof().requireMatches(owner.request(),owner.evidence(),owner.captured().network(),owner.options(),owner.pipeline(),routeIndex,root.network());source.requireCurrent();
+        }
+    }
+    private final Optional<RootNoChangeReview> rootNoChangeReview;
+    public Optional<RootNoChangeReview> rootNoChangeReview(){return rootNoChangeReview;}
+    Map<RefinementSourcePlanner.SourceRequest,RetainedSmoothingSource> nativeSourceBindings(){return nativeReview.map(NativeReview::retainedSources).orElseGet(()->rootNoChangeReview.map(r->Map.of(r.source().source(),r.source())).orElse(Map.of()));}
+    Optional<List<FinalRoutePointId>> nativeFinalPointIds(){return nativeReview.flatMap(NativeReview::finalPointIds).or(()->rootNoChangeReview.map(r->r.finalSelection().pointIds()));}
     private final AlignmentResult result;
     private final Optional<SourceSelection> sourceSelection;
     private final List<SourceNode> sourceNodes;
@@ -86,6 +120,11 @@ public final class RefinementPayload {
         this(result,nodes,selection,nativeReview,Optional.empty());
     }
     private RefinementPayload(AlignmentResult result,List<SourceNode> nodes,Optional<SourceSelection> selection,Optional<NativeReview> nativeReview,Optional<RootReviewState> rootState) {
+        this(result,nodes,selection,nativeReview,rootState,Optional.empty());
+    }
+    private RefinementPayload(AlignmentResult result,List<SourceNode> nodes,Optional<SourceSelection> selection,Optional<NativeReview> nativeReview,Optional<RootReviewState> rootState,Optional<RootNoChangeReview> noChange) {
+        if(nativeReview.isPresent()&&noChange.isPresent())throw new IllegalArgumentException("Native plans and no-change proofs are distinct result variants");
+        rootNoChangeReview=noChange;
         rootReviewState=rootState;
         this.nativeReview=nativeReview;
         sourceSelection=selection;
@@ -93,14 +132,15 @@ public final class RefinementPayload {
         sourceNodes = List.copyOf(nodes);
         charges = measure(result);
         nativeReview.ifPresent(review->charges.putAll(nativeReviewCharges(review)));
+        noChange.ifPresent(review->charges.putAll(noChangeReviewCharges(review)));
         rootState.ifPresent(state->charges.putAll(RefinementRootAuthority.detachedCharges(state)));
         // Root payload also owns its bounded choice/selection registry entries in the live review.
         charges.put(this,rootState.isPresent()?1120L:96L);
         charges.put(selection.<Object>map(value->value).orElse(sourceNodes),sourceCharge(nodes.size(),selection.map(v->v.selectedNodeIds().size()).orElse(0)));
     }
     public RefinementPayload withRootReviewState(RootReviewState state) {
-        if(nativeReview.isEmpty())throw new IllegalStateException("Native root state requires a stored native plan");
-        return new RefinementPayload(result,sourceNodes,sourceSelection,nativeReview,Optional.of(state));
+        if(nativeReview.isEmpty()&&rootNoChangeReview.isEmpty())throw new IllegalStateException("Native root state requires its actual plan or no-change proof");
+        return new RefinementPayload(result,sourceNodes,sourceSelection,nativeReview,Optional.of(state),rootNoChangeReview);
     }
     CenterlineCandidate retainedProjectedCandidate() {
         if(result.capturedHeatmap()!=null||result.tileMosaics()!=null||result.candidates().size()!=1||!result.candidates().get(0).screenPoints().isEmpty())
@@ -167,6 +207,11 @@ public final class RefinementPayload {
             sourceCharge(original.sourceNodes.size(),original.sourceSelection.map(v->v.selectedNodeIds().size()).orElse(0))+96L);
         if(maximumBytes<1||bytes>maximumBytes)throw new RefinementSession.Refused(RefusalReason.PAYLOAD_LIMIT);
         return new RefinementPayload(copy(result),original.sourceNodes,original.sourceSelection,Optional.of(review));
+    }
+    static RefinementPayload captureRootNoChange(AlignmentResult result,RefinementPayload original,RootNoChangeReview review,long maximumBytes){
+        long bytes=add(add(sum(measure(result)),sum(noChangeReviewCharges(review))),sourceCharge(original.sourceNodes.size(),original.sourceSelection.map(v->v.selectedNodeIds().size()).orElse(0))+96L);
+        if(maximumBytes<1||bytes>maximumBytes)throw new RefinementSession.Refused(RefusalReason.PAYLOAD_LIMIT);
+        return new RefinementPayload(copy(result),original.sourceNodes,original.sourceSelection,Optional.empty(),Optional.empty(),Optional.of(review));
     }
     /** Native materialization only: pre-admit fresh wrappers and the marginal union of factual borrowed groups. */
     static RefinementPayload captureNative(AlignmentResult result,RefinementPayload original,NativeReview review,
@@ -254,9 +299,9 @@ public final class RefinementPayload {
         if(attempts.isEmpty())throw new IllegalArgumentException("Selected source has no actual detector finding");
         return new SmoothingModels.NativeFacts(source,selected.evidence(),selected.geometryCleanup(),selected.safetyWarnings(),selected.junctionSafetyFindings(),
             source.legacyDisposition().filter(d->d.nativeCandidateId().equals(id)).map(RetainedSmoothingSource.LegacyDisposition::applicable)
-                .orElseGet(()->{boolean applicable=false;for(var candidate:result.applicableCandidates()){metadataVisit(work);if(candidate.id().equals(id))applicable=true;}return applicable;}),attempts,nativeReview.map(NativeReview::quality),
-            nativeReview.map(r->r.plan().validation().disposition()),nativeReview.map(NativeReview::sourceSpans).orElse(List.of()),
-            nativeReview.map(NativeReview::plan).map(AlignmentEditPlan::validation));
+                .orElseGet(()->{boolean applicable=false;for(var candidate:result.applicableCandidates()){metadataVisit(work);if(candidate.id().equals(id))applicable=true;}return applicable;}),attempts,nativeReview.map(NativeReview::quality).or(()->rootNoChangeReview.map(RootNoChangeReview::quality)),
+            nativeReview.map(r->r.plan().validation().disposition()).or(()->rootNoChangeReview.map(r->r.validation().disposition())),nativeReview.map(NativeReview::sourceSpans).orElse(List.of()),
+            nativeReview.map(NativeReview::plan).map(AlignmentEditPlan::validation).or(()->rootNoChangeReview.map(RootNoChangeReview::validation)));
     }
     public long retainedBytes() { return sum(charges); }
     /** Frozen original full-way coordinate/occurrence values, independent of the retained live handles. */
@@ -284,9 +329,14 @@ public final class RefinementPayload {
         }
         return values;
     }
+    private static Map<Object,Long> noChangeReviewCharges(RootNoChangeReview review){
+        var selection=review.finalSelection();var values=new IdentityHashMap<Object,Long>();
+        values.putAll(RefinementRootAuthority.detachedCharges(selection.selectedGeometry(),selection.pointIds(),selection.assignments(),selection.finalPreviewWays(),selection.validation(),review.quality(),review.assessment().noChangeWatch()));
+        values.put(review,256L);values.put(review.proof(),256L);values.put(selection,128L);values.putAll(review.source().charges());return values;
+    }
     /** Acquire already-admitted raster/descriptor identities before worker ownership settles. */
     void retainSmoothingSources( org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner destination) {
-        nativeReview.ifPresent(review->review.retainedSources().values().forEach(source->source.retainInto(destination)));
+        nativeSourceBindings().values().forEach(source->source.retainInto(destination));
     }
     /** Newly published metadata excludes the separately co-owned acquisition identities. */
     long publicationBytes() {
@@ -294,7 +344,7 @@ public final class RefinementPayload {
     }
     Map<Object,Long> publicationCharges() {
         var borrowed=new IdentityHashMap<Object,Long>();
-        nativeReview.ifPresent(review->review.retainedSources().values().forEach(source->borrowed.putAll(source.charges())));
+        nativeSourceBindings().values().forEach(source->borrowed.putAll(source.charges()));
         var allocated=new IdentityHashMap<Object,Long>(charges);
         borrowed.keySet().forEach(allocated::remove);return Collections.unmodifiableMap(allocated);
     }

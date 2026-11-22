@@ -147,9 +147,10 @@ public final class RefinementRootAuthority {
     }
     /** Selected-source alias is checked before exact original registration or fresh acquisition authority. */
     public void requireSelectedAcquisitionEvidence(RefinementModels.Candidate candidate,RetainedSmoothingSource source){
-        var selected=candidate.payload().nativeReview().orElseThrow(()->new IllegalArgumentException("Native source selection unavailable"));
-        if(selected.retainedSources().get(source.source())!=source||!selected.sources().contains(source.source()))
+        var selected=candidate.payload().nativeSourceBindings();
+        if(selected.get(source.source())!=source)
             throw new IllegalArgumentException("Source is not the selected candidate's exact retained alias");
+        candidate.payload().rootNoChangeReview().ifPresent(noChange->noChange.requireMatches(this));
         if(candidate.payload().rootReviewState().isPresent()) {
             var registered=nativeAcquisitions.get(source.evidence());
             if(registered==null||registered.source()!=source)throw new IllegalArgumentException("Original native source was not registered by its producer");
