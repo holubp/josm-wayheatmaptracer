@@ -108,18 +108,61 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     private ExportUnavailable exportUnavailable=ExportUnavailable.NONE;
     private String legacyContextAvailability="unavailable-not-retained";
     private boolean preparingExport,diagnosticSealed;
+    private record BootstrapDiagnostic(UUID attempt,TrackerMode requestedEngine,String operation,String strength,String cause,OptionalLong workVisits) { }
+    private BootstrapDiagnostic bootstrapDiagnostic;
+    private AttemptMemoryLedger.Owner bootstrapDiagnosticMemory;
+    private void beginBootstrapDiagnostics(TrackerMode engine,RefinementControls.Strength strength) {
+        if(legacyContextSupplier==null)return;
+        if(bootstrapDiagnosticMemory!=null)bootstrapDiagnosticMemory.close();
+        bootstrapDiagnostic=new BootstrapDiagnostic(UUID.randomUUID(),engine,strength==null?"REFINE":"SMOOTH",strength==null?"unavailable":strength.name(),"RUNNING",OptionalLong.empty());
+        bootstrapDiagnosticMemory=rootMemory.child("bootstrap-diagnostic-slot");
+        try{bootstrapDiagnosticMemory.reserve(4096).adopt(bootstrapDiagnostic);}catch(AttemptMemoryLedger.ResourceLimitException limited){bootstrapDiagnosticMemory.close();bootstrapDiagnosticMemory=null;}
+        if(diagnosticOwner==null)diagnosticOwner=DiagnosticsRegistry.claimRefinement(this);
+        DiagnosticsRegistry.invalidateRefinement(diagnosticOwner);
+    }
+    private void bootstrapFailed(RuntimeException failure,boolean workerReturned) {
+        if(bootstrapDiagnostic==null)return;
+        String cause=cancellation!=null&&cancellation.isCancelled()?"CANCELLED":review.invalidated()?"STALE":
+            failure instanceof java.util.concurrent.RejectedExecutionException?"EXECUTOR_REJECTED":
+            failure instanceof AttemptMemoryLedger.ResourceLimitException||failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached?"RESOURCE_LIMIT":"FAILED";
+        var visits=workerReturned&&initialVisibleWork!=null?OptionalLong.of(initialVisibleWork.visits()):OptionalLong.empty();
+        var old=bootstrapDiagnostic;bootstrapDiagnostic=new BootstrapDiagnostic(old.attempt(),old.requestedEngine(),old.operation(),old.strength(),cause,visits);
+        if(diagnosticOwner!=null)DiagnosticsRegistry.invalidateRefinement(diagnosticOwner);
+    }
+    private Format15Bundle bootstrapBundle(boolean terminal) {
+        var attempt=Objects.requireNonNull(bootstrapDiagnostic);
+        if(bootstrapDiagnosticMemory==null)throw new ExportBudgetRefused();
+        var original=review.originalResult().sourcePolyline();if(original.size()>2048)throw new ExportBudgetRefused();
+        var projection=Projections.getProjectionByCode(review.projectionCode());
+        var csv=new StringBuilder("selectedOccurrence,latitudeDegrees,longitudeDegrees\n");
+        for(int i=0;i<original.size();i++){var point=projection.eastNorth2latlon(original.get(i));csv.append(i).append(',').append(point.lat()).append(',').append(point.lon()).append('\n');}
+        var geometry=Format15Artifact.text("original-osm-geographic.csv",csv.toString());
+        var settings=Format15Artifact.text("original-review-settings.json","{\"scope\":\"original-review-settings-only\",\"heatmap\":"+review.originalConfig().heatmap().toRedactedJson()+",\"cleanup\":"+review.originalConfig().cleanup().toRedactedJson()+"}\n");
+        String cause=terminal&&busy?"CANCELLED":attempt.cause();
+        String json="{\"schema\":1,\"attempt\":\""+attempt.attempt()+"\",\"phase\":\"BOOTSTRAP\",\"cause\":\""+cause
+            +"\",\"operation\":\""+attempt.operation()+"\",\"requestedEngine\":"+(attempt.requestedEngine()==null?"null":"\""+attempt.requestedEngine().name()+"\"")
+            +",\"strength\":\""+attempt.strength()+"\",\"publication\":\"NO_PREPARED_ROOT\",\"nativeCalls\":0,\"nativeFrozenInputs\":\"unavailable\",\"originalNativeWork\":\"unavailable\",\"chainReplay\":\"unavailable\",\"originalGeometryScope\":\"immutable-original-selected-segment\",\"auxiliaryWorkVisits\":"+(attempt.workVisits().isPresent()?attempt.workVisits().getAsLong():"null")+"}\n";
+        var status=Format15Artifact.text("latest-operation.json",json);
+        // This fallback deliberately has no authority receipt, generated geometry or lineage.
+        return new Format15Bundle("runtime-stepwise-preparation-v1",bootstrapSourceHash(review.sourceIdentity()),settings.sha256(),Map.of(geometry.name(),geometry,settings.name(),settings,status.name(),status));
+    }
+    private static String bootstrapSourceHash(String source) {
+        try{return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(source.getBytes(java.nio.charset.StandardCharsets.UTF_8)));}
+        catch(java.security.NoSuchAlgorithmException unavailable){throw new IllegalStateException("Required SHA-256 unavailable");}
+    }
     private static final class ExportBudgetRefused extends IllegalStateException { }
     private String exportUnavailableMessage(){return switch(exportUnavailable){case NONE->"";case BUDGET->"Refinement diagnostics unavailable: memory budget reached";case BINDING->"Refinement diagnostics unavailable: retained binding could not be verified";case ENCODING->"Refinement diagnostics unavailable: archive encoding failed";};}
     public long workflowOwnedBytes(){return diagnosticMemory.workflowOwnedBytes();}
     public long registryOwnedBytes(){return diagnosticMemory.registryOwnedBytes();}
-    @Override public boolean isCurrent(){return !closed&&ownsPublication()&&session!=null&&diagnosticOwner!=null&&!diagnosticSealed;}
+    @Override public boolean isCurrent(){return !closed&&ownsPublication()&&(session!=null||bootstrapDiagnostic!=null)&&diagnosticOwner!=null&&!diagnosticSealed;}
     private void startDiagnostics() {
-        if(closed||!ownsPublication()||legacyContextSupplier==null||diagnosticOwner!=null)return;
+        if(closed||!ownsPublication()||legacyContextSupplier==null)return;
+        bootstrapDiagnostic=null;if(bootstrapDiagnosticMemory!=null)bootstrapDiagnosticMemory.close();bootstrapDiagnosticMemory=null;
         if(review instanceof ModernReviewRoot) {
             var initial=root.stage().candidates().stream().filter(c->c.id().value().equals(initialDiagnosticChoice)).findFirst();
             if(initial.isEmpty())initialDiagnosticChoice=root.stage().selected().value();
             originalNativeContextChoice=root.stage().candidates().stream().filter(c->c.id().value().equals(initialDiagnosticChoice)).findFirst().orElseThrow();
-            legacyContextSupplier=null;diagnosticOwner=DiagnosticsRegistry.claimRefinement(this);return;
+            legacyContextSupplier=null;if(diagnosticOwner==null)diagnosticOwner=DiagnosticsRegistry.claimRefinement(this);return;
         }
         // Conversion is admitted only after explicit refinement. Root imagery is factual retained Legacy context.
         var owner=rootMemory.child("legacy-export-context");
@@ -135,7 +178,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             }
         } catch(RuntimeException unavailable){owner.close();legacyContextAvailability=unavailable instanceof AttemptMemoryLedger.ResourceLimitException||unavailable instanceof ExportBudgetRefused?"unavailable-budget":"unavailable-construction";}
         finally{conversion.close();}
-        legacyContextSupplier=null;if(!closed&&ownsPublication())diagnosticOwner=DiagnosticsRegistry.claimRefinement(this);
+        legacyContextSupplier=null;if(!closed&&ownsPublication()&&diagnosticOwner==null)diagnosticOwner=DiagnosticsRegistry.claimRefinement(this);
     }
     public boolean handlesRuntimeDiagnostics(){return diagnosticOwner!=null;}
     public void diagnosticsChanged(String state) {
@@ -202,6 +245,11 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         if(!isCurrent()||preparingExport)return;preparingExport=true;
         java.nio.file.Path encoded=null,legacy=null;
         try(var admission=diagnosticMemory.reserveExport(32L*1024*1024)) {
+            if(session==null) {
+                encoded=java.nio.file.Files.createTempFile("refinement-preparation-",".zip");Format15BundleWriter.write(bootstrapBundle(terminal),encoded);
+                if(isCurrent()&&DiagnosticsRegistry.publishRefinement(diagnosticOwner,admission.read(encoded),terminal)){diagnosticSealed=terminal;exportUnavailable=ExportUnavailable.NONE;}
+                return;
+            }
             Optional<RefinementAttemptDiagnostics> latest=Optional.ofNullable(latestDiagnostics);
             Optional<RefinementLineageCodec.CandidateKey> result=Optional.ofNullable(diagnosticSelection);
             var availability=diagnosticsAvailability;
@@ -552,6 +600,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         if(busy||closed||!ownsPublication())return;
         AttemptProgress preparing=null;
         try {
+            if(session==null)beginBootstrapDiagnostics(engine,smoothing);
             review.requireOriginalAttemptCurrent();confirmation=null;message="";
             if(session==null) {
                 var work=beginOwnedWork();
@@ -595,7 +644,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                             if(review instanceof LegacyReviewOwner)bindLegacyReview();
                             else showCurrent();
                             startDiagnostics();continueRefinement=true;
-                        }catch(RuntimeException refused){bootstrapMemory.close();seed=null;message=cancellation!=null&&cancellation.isCancelled()?"Operation cancelled; retained the selected parent.":"Original result preparation failed; retained the selected parent.";}
+                        }catch(RuntimeException refused){bootstrapFailed(refused,true);bootstrapMemory.close();seed=null;message=cancellation!=null&&cancellation.isCancelled()?"Operation cancelled; retained the selected parent.":"Original result preparation failed; retained the selected parent.";}
                         finally {
                             busy=false;if(closed)releaseClosed();
                             settleWork(work);
@@ -711,6 +760,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                     }
                 });});
         }catch(RuntimeException refused){
+            if(session==null)bootstrapFailed(refused,true);
             if(active!=null&&!busy){
                 if(preparing!=null)publishDiagnostics(active,preparing,RefinementAttemptDiagnostics.Publication.REFUSED,
                     refused instanceof AttemptMemoryLedger.ResourceLimitException||refused instanceof RefinementSession.Refused?RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT:RefinementAttemptDiagnostics.Cause.FAILED);
@@ -997,6 +1047,6 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             &&metadata.paintedFrame().filter(LegacyVisibleSource.PaintedFrame::commonResolution).isPresent()
             &&review.originalResult().capturedHeatmap()!=null&&(intensity==null||intensity.usesColorMapping())&&!review.originalConfig().heatmap().aggregateAllColorSchemes();
     }
-    private void releaseClosed(){latestDiagnostics=null;latestSmoothingReceipt=Optional.empty();latestSmoothingProtocol=Optional.empty();diagnosticsSlot=null;diagnosticsAvailability=RefinementAttemptDiagnostics.Availability.NONE;rootCompositionOwners.values().forEach(AttemptMemoryLedger.Owner::close);rootCompositionOwners.clear();diagnosticMemory.closeWorkflow();legacyDiagnosticContext=null;legacyContextSupplier=null;nativeDiagnosticContext=null;nativeContextSupplier=null;nativeContextFallback=null;originalNativeContextChoice=null;ratingSupplier=null;pendingLegacyReview=null;pendingLegacyReviewMemory=null;retainedStages.clear();seed=null;root=null;preparedRoot=null;sourceContext=null;preparingSourceCurrent=()->{};session=null;confirmation=null;}
+    private void releaseClosed(){bootstrapDiagnostic=null;if(bootstrapDiagnosticMemory!=null)bootstrapDiagnosticMemory.close();bootstrapDiagnosticMemory=null;latestDiagnostics=null;latestSmoothingReceipt=Optional.empty();latestSmoothingProtocol=Optional.empty();diagnosticsSlot=null;diagnosticsAvailability=RefinementAttemptDiagnostics.Availability.NONE;rootCompositionOwners.values().forEach(AttemptMemoryLedger.Owner::close);rootCompositionOwners.clear();diagnosticMemory.closeWorkflow();legacyDiagnosticContext=null;legacyContextSupplier=null;nativeDiagnosticContext=null;nativeContextSupplier=null;nativeContextFallback=null;originalNativeContextChoice=null;ratingSupplier=null;pendingLegacyReview=null;pendingLegacyReviewMemory=null;retainedStages.clear();seed=null;root=null;preparedRoot=null;sourceContext=null;preparingSourceCurrent=()->{};session=null;confirmation=null;}
     @Override public void close(){if(closed)return;if(isCurrent()&&!diagnosticSealed){if(!diagnosticState.equals("apply-failed"))diagnosticsChanged("cancelled");freezeDiagnostics(true,false);}closed=true;if(lifecycle!=null)lifecycle.close();workGate.release(this);if(cancellation!=null)cancellation.cancel();if(session!=null)session.close();if(!busy)releaseClosed();}
 }

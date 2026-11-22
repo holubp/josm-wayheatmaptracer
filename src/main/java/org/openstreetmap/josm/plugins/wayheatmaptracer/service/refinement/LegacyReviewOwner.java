@@ -133,6 +133,7 @@ public final class LegacyReviewOwner implements RefinementReviewRoot {
     }
     public DataSet dataSet() { requireOpen(); return dataSet; }
     public String sourceIdentity() { requireOpen(); return sourceIdentity; }
+    public String projectionCode() { requireOpen(); return projectionCode; }
     /** Thread-safe invalidation probe; never traverses live dataset primitives. */
     public boolean invalidated() { return changed.get() || settingsChanged.get(); }
     public AlignmentConfig originalConfig() { requireOpen(); return config; }

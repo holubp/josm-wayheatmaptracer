@@ -137,6 +137,7 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
     public void requireAuthorityCurrent(){requireOriginalAttemptCurrent();source().requireCurrent();}
     public boolean invalidated(){return observer.invalidated();}
     public String sourceIdentity(){return sourceIdentity;}
+    public String projectionCode(){return observer.projectionCode();}
     public void close(){observer.close();}
     private LiveBPreviewService.Computed firstOwner(){return interval==null?nativeChoices.get(0).owner():interval.owner();}
     NativeRefinementSourceContext source(){return new NativeRefinementSourceContext(firstOwner().captured(),config,coordinator);}

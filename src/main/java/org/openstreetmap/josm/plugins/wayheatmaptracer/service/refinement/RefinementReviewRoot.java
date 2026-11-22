@@ -20,5 +20,7 @@ public interface RefinementReviewRoot extends AutoCloseable {
     void requireAuthorityCurrent();
     boolean invalidated();
     String sourceIdentity();
+    /** Projection recorded by the original review owner, including before lazy preparation. */
+    String projectionCode();
     @Override void close();
 }
