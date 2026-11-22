@@ -830,9 +830,11 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             var outcome=RefinementAttemptDiagnostics.Publication.FAILED;var cause=RefinementAttemptDiagnostics.Cause.FAILED;
             try {
                 if(closed||!ownsPublication()||!Objects.equals(active,ticket))return;
-                if(failure!=null)throw unwrap(failure);probe.checkpoint();review.requireOriginalAttemptCurrent();source.requireCurrent();
+                if(failure!=null)throw unwrap(failure);
+                var workerPhase=progress.phase;progress.phase=RefinementAttemptDiagnostics.Phase.PUBLICATION;
+                probe.checkpoint();review.requireOriginalAttemptCurrent();source.requireCurrent();
                 cause=computed.cause();
-                if(computed.stage().isEmpty()){session.fail(ticket,cause==RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT?Outcome.RESOURCE_LIMIT:Outcome.NO_USABLE_RESULT);outcome=RefinementAttemptDiagnostics.Publication.NO_CHILD;message="Smoothen retained the selected parent: "+cause.name().toLowerCase(Locale.ROOT)+".";}
+                if(computed.stage().isEmpty()){progress.phase=workerPhase;session.fail(ticket,cause==RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT?Outcome.RESOURCE_LIMIT:Outcome.NO_USABLE_RESULT);outcome=RefinementAttemptDiagnostics.Publication.NO_CHILD;message="Smoothen retained the selected parent: "+cause.name().toLowerCase(Locale.ROOT)+".";}
                 else {
                     var child=computed.stage().orElseThrow();
                     if(session.publish(ticket,child,()->{
