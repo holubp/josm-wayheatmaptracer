@@ -928,6 +928,19 @@ public final class PublicGuiSmokeMain {
         view.prepareToDraw();
         var size=view.getSize();var center=view.getCenter();double scale=view.getScale();var snapper=view.getNativeScaleLayer();int zoom=((org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer)layer).getZoomLevel();
         if(snapper!=layer)throw new IllegalStateException("Actual visible managed source must own the non-null native scale grid in this contract");
+        try{
+            view.setNativeScaleLayer(null);
+            for(var dimensions:List.of(new java.awt.Dimension(322,118),new java.awt.Dimension(323,117)))for(double phase:new double[]{-.5,.5}){
+                double working=.389;view.setSize(dimensions);view.prepareToDraw();
+                var desired=new org.openstreetmap.josm.data.coor.EastNorth((dimensions.width/2.-(-2700+phase))*working,((2800+phase)-dimensions.height/2.)*working);
+                view.zoomTo(desired,working,false);var actual=view.getCenter();
+                double rounding=4*Math.ulp(Math.max(Math.abs(desired.east()),Math.abs(desired.north())));
+                if(Math.abs(actual.east()-desired.east())>.501*working+rounding||Math.abs(actual.north()-desired.north())>.501*working+rounding)throw new IllegalStateException("Public native origin-lattice centering exceeded its pinned19555 bound");
+                var clip=view.getProjectionBounds(new java.awt.Rectangle(0,0,dimensions.width,dimensions.height));
+                double halfWidth=(dimensions.width-2)*working/2,halfHeight=(dimensions.height-2)*working/2;
+                if(clip.minEast>desired.east()-halfWidth||clip.maxEast<desired.east()+halfWidth||clip.minNorth>desired.north()-halfHeight||clip.maxNorth<desired.north()+halfHeight)throw new IllegalStateException("Native acquisition padding failed complete odd/even translated-origin coverage");
+            }
+        }finally{restorePublicViewport(view,size,center,scale,snapper);}
         var nodes=fixture.selectedWay().getNodes();var selection=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext(fixture.selectedWay(),0,nodes.size()-1,nodes,java.util.Set.of(nodes.get(0),nodes.get(nodes.size()-1)));
         var service=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService();
         var config=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig(PluginPreferences.load(),GeometryCleanupConfig.disabled());

@@ -95,9 +95,10 @@ public final class VisibleEvidencePlan {
         // A full input sample on every side supports the legacy visible interpolation convention.
         double pad=painted.projectionUnitsPerViewPixel()/6;
         var requested=new Bounds(bounds.minimumX()-pad,-bounds.maximumY()-pad,bounds.maximumX()+pad,-bounds.minimumY()+pad);
-        // One extra view pixel admits JOSM's integer-origin centering; decision radius/engine grid stay exact.
-        int width=Math.max(checkedDimension(painted.width()/6.0),Math.addExact(checkedDimension((requested.maximumEast()-requested.minimumEast())/painted.projectionUnitsPerViewPixel()),1));
-        int height=Math.max(checkedDimension(painted.height()/6.0),Math.addExact(checkedDimension((requested.maximumNorth()-requested.minimumNorth())/painted.projectionUnitsPerViewPixel()),1));
+        // One view pixel per side covers JOSM's <=.501px origin-lattice centering.
+        // This is acquisition canvas only; decision radius and the certified engine grid stay exact.
+        int width=Math.max(checkedDimension(painted.width()/6.0),Math.addExact(checkedDimension((requested.maximumEast()-requested.minimumEast())/painted.projectionUnitsPerViewPixel()),2));
+        int height=Math.max(checkedDimension(painted.height()/6.0),Math.addExact(checkedDimension((requested.maximumNorth()-requested.minimumNorth())/painted.projectionUnitsPerViewPixel()),2));
         if(Math.multiplyExact((long)width,height)>3_300_000)throw new IllegalArgumentException("visible-view-area-limit");
         Math.multiplyExact(Math.multiplyExact(width,6),Math.multiplyExact(height,6));
         var points=source.parent().points().stream().map(frame::toGeographic).map(g->{var p=transform.toRasterCenter(g);return new ProjectedPoint(p.x(),-p.y());}).toList();

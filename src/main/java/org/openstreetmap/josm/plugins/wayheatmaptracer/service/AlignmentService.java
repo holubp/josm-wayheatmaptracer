@@ -3032,8 +3032,10 @@ public final class AlignmentService {
         var bounds=chunk.bounds();double scale=request.evidencePlan().projectedScale();
         view.setSize(chunk.viewWidth(),chunk.viewHeight());
         view.prepareToDraw();
-        view.zoomTo(new EastNorth((bounds.minimumEast()+bounds.maximumEast())/2,(bounds.minimumNorth()+bounds.maximumNorth())/2),scale,false);
-        requireNativePaintFrame(view,chunk.viewWidth(),chunk.viewHeight(),new ProjectionBounds(bounds.minimumEast(),bounds.minimumNorth(),bounds.maximumEast(),bounds.maximumNorth()),scale);
+        var desired=new EastNorth((bounds.minimumEast()+bounds.maximumEast())/2,(bounds.minimumNorth()+bounds.maximumNorth())/2);
+        var canonical=canonicalNativeCenter(view,desired,scale);
+        view.zoomTo(desired,scale,false);
+        requireNativePaintFrame(view,chunk.viewWidth(),chunk.viewHeight(),captureBoundsForSize(canonical,view.getSize(),scale),scale);
         var actual=view.getProjectionBounds();
         var raster=sampler.captureLayer(layer,view);
         var zoom=capturedTileZoom(layer);
@@ -3064,17 +3066,27 @@ public final class AlignmentService {
         ProjectionBounds requestedBounds = expandedBounds(sourcePolyline, visibleCaptureMarginProjectionUnits(visibleHalfWidthPx));
         double targetScale = REFERENCE_CAPTURE_PROJECTION_UNITS_PER_VIEW_PIXEL;
         Dimension captureSize = requiredCaptureSize(requestedBounds, targetScale);
+        if(nativeViewport)captureSize=new Dimension(Math.addExact(captureSize.width,2),Math.addExact(captureSize.height,2));
         ProjectionBounds captureBounds = captureBoundsForSize(requestedBounds.getCenter(), captureSize, targetScale);
         VisibleCaptureState captureState = new VisibleCaptureState(originalCenter, originalScale, originalBounds,
             originalSize, requestedBounds, captureBounds, captureSize, targetScale, false, 1);
         List<LegacyVisibleSource.PaintedChunk> paintedChunks=new ArrayList<>();
         try(var nativeState=nativeViewport?new NativeViewportScope(mapView):null) {
+            if(nativeViewport) {
+                // Geometry only: establish the public zoomTo origin lattice before any chunk
+                // allocation/paint. One view pixel on each side covers its <=.501px centering.
+                mapView.setSize(captureSize);mapView.prepareToDraw();
+                var desired=captureBounds.getCenter();var canonical=canonicalNativeCenter(mapView,desired,targetScale);
+                mapView.zoomTo(desired,targetScale,false);
+                requireNativePaintFrame(mapView,captureSize.width,captureSize.height,captureBoundsForSize(canonical,captureSize,targetScale),targetScale);
+                captureBounds=mapView.getProjectionBounds(new java.awt.Rectangle(0,0,captureSize.width,captureSize.height));
+                requireNativeCoverage(captureBounds,requestedBounds);
+                captureState=new VisibleCaptureState(originalCenter,originalScale,originalBounds,originalSize,requestedBounds,captureBounds,captureSize,targetScale,false,1);
+            }
             BufferedImage raster;
             if (captureSize.width <= MAX_CAPTURE_VIEW_DIMENSION_PX && captureSize.height <= MAX_CAPTURE_VIEW_DIMENSION_PX) {
                 captureState = captureState.withCapturePlan(false, 1);
-                mapView.setSize(captureSize);
-                if(nativeViewport)mapView.prepareToDraw();
-                mapView.zoomTo(captureBounds.getCenter(), targetScale, false);
+                if(!nativeViewport){mapView.setSize(captureSize);mapView.zoomTo(captureBounds.getCenter(), targetScale, false);}
                 if(nativeViewport)requireNativePaintFrame(mapView,captureSize.width,captureSize.height,captureBounds,targetScale);
                 if(nativeViewport){captureBounds=mapView.getProjectionBounds(new java.awt.Rectangle(0,0,captureSize.width,captureSize.height));captureState=new VisibleCaptureState(originalCenter,originalScale,originalBounds,originalSize,requestedBounds,captureBounds,captureSize,targetScale,false,1);}
                 PaintObservation observation=observePaintGeometry(mapView,captureSize.width,captureSize.height);
@@ -3172,6 +3184,7 @@ public final class AlignmentService {
             if(!javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Native viewport ownership requires EDT");
             this.view=view;center=view.getCenter();scale=view.getScale();size=view.getSize();snapper=view.getNativeScaleLayer();
             if(view.scaleRound(scale)!=scale)throw new IllegalStateException("Original visible viewport scale cannot be restored exactly under its source snapper");
+            requireNativePaintFrame(view,size.width,size.height,captureBoundsForSize(canonicalNativeCenter(view,center,scale),size,scale),scale);
             try{view.setNativeScaleLayer(null);}catch(RuntimeException|Error failed){try{close();}catch(RuntimeException|Error restore){failed.addSuppressed(restore);}throw failed;}
         }
         public void close(){
@@ -3181,6 +3194,17 @@ public final class AlignmentService {
             try{requireNativePaintFrame(view,size.width,size.height,captureBoundsForSize(center,size,scale),scale);if(view.getNativeScaleLayer()!=snapper)throw new IllegalStateException("Original visible viewport source snapper was not restored");}catch(RuntimeException|Error restore){if(failed==null)failed=restore;else if(failed!=restore)failed.addSuppressed(restore);}
             if(failed!=null)throw new IllegalStateException("Native visible viewport restoration failed",failed);
         }
+    }
+    /** Reproduce JOSM19555 public zoomTo's projected-origin lattice, including its .001px phase. */
+    private static EastNorth canonicalNativeCenter(MapView view,EastNorth desired,double scale) {
+        var state=view.getState().usingScale(scale);state=state.movedTo(state.getCenter(),desired);
+        var origin=state.getPointFor(new EastNorth(0,0)).getInView();
+        var displacement=state.getForView(Math.round(origin.getX())+.001,Math.round(origin.getY())+.001).getEastNorth();
+        return desired.subtract(displacement);
+    }
+    private static void requireNativeCoverage(ProjectionBounds actual,ProjectionBounds required) {
+        if(actual.minEast>required.minEast||actual.minNorth>required.minNorth||actual.maxEast<required.maxEast||actual.maxNorth<required.maxNorth)
+            throw new IllegalStateException("Actual native visible frame misses required source coverage");
     }
     /** Native viewport checks permit only arithmetic round-off, never a source-domain extension. */
     private static void requireNativePaintFrame(MapView view,int width,int height,ProjectionBounds expected,double scale) {
