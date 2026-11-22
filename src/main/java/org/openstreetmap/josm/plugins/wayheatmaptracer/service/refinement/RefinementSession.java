@@ -142,6 +142,23 @@ public final class RefinementSession implements AutoCloseable {
         if (!current().selected().equals(id)) confirmed = false;
         history.set(cursor, updated);
     }
+    /** Adds a validated root composition without rewriting a retained child's factual parent choice. */
+    public void selectRootComposition(Candidate candidate) {
+        requireIdle();Objects.requireNonNull(candidate);
+        if(cursor!=0||!current().kind().root())throw new IllegalStateException("Root composition selection requires the root cursor");
+        var root=current();var candidates=new ArrayList<>(root.candidates());
+        var existing=candidates.stream().filter(c->c.id().equals(candidate.id())).findFirst();
+        if(existing.isPresent()) {
+            var old=existing.get();
+            if(!old.immutableIdentity().equals(candidate.immutableIdentity())||!old.nativeCandidateId().equals(candidate.nativeCandidateId())
+                    ||!old.sourcePalette().equals(candidate.sourcePalette())||!old.payload().rootReviewState().equals(candidate.payload().rootReviewState()))
+                throw new IllegalArgumentException("Root candidate identity belongs to a different composition");
+        } else candidates.add(candidate);
+        var updated=new Stage(root.id(),root.parent(),root.parentChoice(),root.kind(),root.engine(),candidates,candidate.id(),root.smoothingInput());
+        var proposed=new ArrayList<>(history);proposed.set(0,updated);
+        var refusal=retentionRefusal(proposed);if(refusal!=null)throw new Refused(refusal);
+        history.set(0,updated);confirmed=false;
+    }
     public Optional<Stage> back() {
         requireIdle();
         if (cursor == 0) return Optional.empty();

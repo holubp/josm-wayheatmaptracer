@@ -119,6 +119,19 @@ public final class RefinementRootAuthority {
     public String projectionCode(){return projectionCode;}
     public String sourceIdentity(){return sourceIdentity;}
     public long retainedBytes(){return retainedBytes;}
+    /** Includes already admitted native owner/input identities in the same retained-history limit. */
+    RefinementRootAuthority withRetainedFacts(Map<Object,Long> additional) {
+        return new RefinementRootAuthority(this,additional);
+    }
+    private RefinementRootAuthority(RefinementRootAuthority original,Map<Object,Long> additional) {
+        network=original.network;request=original.request;evidence=original.evidence;effectiveConfig=original.effectiveConfig;
+        projectionCode=original.projectionCode;sourceIdentity=original.sourceIdentity;frozenGeometryProof=original.frozenGeometryProof;
+        var inventory=new IdentityHashMap<Object,Long>(original.charges);
+        additional.forEach((identity,bytes)->{if(identity==null||bytes==null||bytes<0)throw new IllegalArgumentException("Invalid admitted native ownership");inventory.merge(identity,bytes,Math::max);});
+        inventory.put(this,256L);long total=0;for(long value:inventory.values())total=Math.addExact(total,value);
+        if(total>RefinementLimits.defaults().maxPayloadBytes())throw new RefinementSession.Refused(RefinementModels.RefusalReason.PAYLOAD_LIMIT);
+        charges=Collections.unmodifiableMap(inventory);retainedBytes=total;
+    }
     public Optional<FrozenGeometryProof> frozenGeometryProof(){return frozenGeometryProof;}
     public String frozenGeometryIdentity(){return frozenGeometryProof.map(FrozenGeometryProof::identity).orElse("frozen-geometry-unavailable");}
     private static Optional<FrozenGeometryProof> geometryProof(NetworkSnapshot network,TraceRequest request,AlignmentConfig config,

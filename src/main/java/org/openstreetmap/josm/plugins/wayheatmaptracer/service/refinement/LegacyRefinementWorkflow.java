@@ -58,6 +58,22 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     private final SourcePreparationControl sourcePreparationControl;
     private PreviewWorkGate workGate;
     private PreviewWorkGate.Work activeWork;
+    private RefinementReviewLifecycle lifecycle;
+    public void attachLifecycle(RefinementReviewLifecycle lifecycle) {
+        if(!SwingUtilities.isEventDispatchThread()||busy||closed||!ownsPublication())throw new IllegalStateException("Review lifecycle requires the current idle owner");
+        if(this.lifecycle!=null)throw new IllegalStateException("Review lifecycle is already attached");
+        this.lifecycle=Objects.requireNonNull(lifecycle);
+    }
+    public void cancel(){cancelOperation();}
+    private PreviewWorkGate.Work beginOwnedWork() {
+        var work=workGate.beginWork(this);activeWork=work;
+        try{if(lifecycle!=null)lifecycle.begin(this,work);return work;}
+        catch(RuntimeException failed){activeWork=null;workGate.workerSettled(work);throw failed;}
+    }
+    private void completeLifecycle(PreviewWorkGate.Work work,boolean published) {
+        if(lifecycle==null)return;
+        try{lifecycle.complete(work,published,message);}catch(RuntimeException failed){message="The retained result could not be displayed.";}
+    }
     /** Installs the actual retained Legacy context lazily; ordinary Legacy review does no export conversion. */
     public void enableRuntimeDiagnostics(java.util.function.Supplier<LastSlideDebugBundle> rootContext) {
         enableRuntimeDiagnostics(rootContext,Map::of);
@@ -418,6 +434,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         try {
             review.requireOriginalAttemptCurrent();confirmation=null;message="";
             if(session==null) {
+                var work=beginOwnedWork();
                 var bootstrapMemory=rootMemory.child("lazy-original-root");
                 try {
                     if(review instanceof ModernReviewRoot modern) {
@@ -434,9 +451,9 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                         var original=seed.originalSource();preparingSourceCurrent=()->original.requireCurrent(coordinator);
                     }
                 }
-                catch(RuntimeException refused){bootstrapMemory.close();throw refused;}
-                busy=true;if(initialVisibleWork==null)cancellation=new CancellationToken();present();
-                var work=workGate.beginWork(this);activeWork=work;
+                catch(RuntimeException refused){bootstrapMemory.close();settleWork(work);completeLifecycle(work,false);throw refused;}
+                busy=true;if(initialVisibleWork==null)cancellation=new CancellationToken();
+                try{present();}catch(RuntimeException failed){busy=false;bootstrapMemory.close();settleWork(work);completeLifecycle(work,false);throw failed;}
                 var captured=seed;var probe=probe(cancellation);
                 var bootstrapWork=initialVisibleWork;
                 CompletableFuture<PreparedRefinementRoot> bootstrap;
@@ -457,11 +474,11 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                             if(review instanceof LegacyReviewOwner)bindLegacyReview();
                             else {retainedStages.put(root.stage().id(),new RetainedStage(completed.memory(),root.stage()));showCurrent();}
                             startDiagnostics();continueRefinement=true;
-                        }catch(RuntimeException refused){bootstrapMemory.close();seed=null;message=refused.getMessage();}
+                        }catch(RuntimeException refused){bootstrapMemory.close();seed=null;message=cancellation!=null&&cancellation.isCancelled()?"Operation cancelled; retained the selected parent.":"Original result preparation failed; retained the selected parent.";}
                         finally {
                             busy=false;if(closed)releaseClosed();
                             settleWork(work);
-                            if(!closed){if(continueRefinement)operate(engine,smoothing);else present();}
+                            if(!closed){if(continueRefinement){operate(engine,smoothing);if(!busy)completeLifecycle(work,false);}else{try{present();}finally{completeLifecycle(work,false);}}}
                         }
                     }));
                 return;
@@ -495,8 +512,10 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             var publishedParent=nativeSelected()?retainedStages.get(session.current().id()).metadata:root.stage();
             var inheritedWork=initialVisibleWork;var inheritedBudget=initialVisibleBudget;initialVisibleWork=null;initialVisibleBudget=null;
             var entry=new NativeEntry(ticket);activeEntry=entry;
-            if(inheritedWork==null)cancellation=new CancellationToken();var probe=probe(cancellation,entry);busy=true;present();
-            var work=workGate.beginWork(this);activeWork=work;
+            if(inheritedWork==null)cancellation=new CancellationToken();var probe=probe(cancellation,entry);busy=true;
+            PreviewWorkGate.Work work;
+            try{present();work=beginOwnedWork();if(lifecycle!=null)lifecycle.attachTicket(work,ticket);}
+            catch(RuntimeException failed){busy=false;operation.close();publication.close();baseline.clear();throw failed;}
             CompletableFuture<Computed> computation;
             try {computation=CompletableFuture.supplyAsync(()->compute(ticket,parent,plan,credentials,operation,publication,sourcePayload,original,allowance,probe,entry,progress,baseline,publishedParent,inheritedWork,inheritedBudget),executor);}
             catch(RuntimeException rejected){computation=CompletableFuture.failedFuture(rejected);}
@@ -558,7 +577,12 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                             presentationFailed?RefinementAttemptDiagnostics.Cause.PRESENTATION_FAILED:limited?RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT:RefinementAttemptDiagnostics.Cause.FAILED;
                         message=cancelled?"Refinement cancelled.":stale?"Refinement source changed.":"Refinement failed.";
                     }
-                    finally{publishDiagnostics(ticket,progress,publicationOutcome,diagnosticCause);operation.close();if(retainedStages.values().stream().noneMatch(value->value.owner==publication))publication.close();session.workerSettled(ticket);active=null;activeProgress=null;busy=false;if(closed)releaseClosed();activeEntry=null;settleWork(work);if(!closed)present();entry.settlement.complete(null);}
+                    finally{
+                        try{publishDiagnostics(ticket,progress,publicationOutcome,diagnosticCause);}finally{
+                            operation.close();if(retainedStages.values().stream().noneMatch(value->value.owner==publication))publication.close();session.workerSettled(ticket);active=null;activeProgress=null;busy=false;if(closed)releaseClosed();activeEntry=null;settleWork(work);
+                            try{if(!closed)present();}finally{completeLifecycle(work,publicationOutcome==RefinementAttemptDiagnostics.Publication.PUBLISHED);entry.settlement.complete(null);}
+                        }
+                    }
                 });});
         }catch(RuntimeException refused){
             if(active!=null&&!busy){
@@ -589,7 +613,9 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         var budget=initialVisibleBudget!=null?initialVisibleBudget:RefinementPipeline.OperationBudget.production(root.authority().request().budgets());
         var inherited=initialVisibleWork;initialVisibleWork=null;initialVisibleBudget=null;
         var workContext=inherited!=null?inherited:new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(sourcePreparationControl.visits(),sourcePreparationControl.bytes(),budget.finalDeadlineNanos(),probe,operation);
-        busy=true;message="";present();var work=workGate.beginWork(this);activeWork=work;
+        busy=true;message="";PreviewWorkGate.Work work;
+        try{present();work=beginOwnedWork();if(lifecycle!=null)lifecycle.attachTicket(work,ticket);}
+        catch(RuntimeException failed){operation.close();publication.close();baseline.clear();busy=false;throw failed;}
         CompletableFuture<Computed> computation;
         try{computation=CompletableFuture.supplyAsync(()->computeSmoothing(ticket,parent,source,strength,workContext,probe,progress,publication,allowance,baseline),executor);}
         catch(RuntimeException rejected){computation=CompletableFuture.failedFuture(rejected);}
@@ -627,7 +653,8 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                 try{publishDiagnostics(ticket,progress,outcome,cause);}finally{
                     operation.close();if(retainedStages.values().stream().noneMatch(value->value.owner==publication))publication.close();
                     session.workerSettled(ticket);active=null;activeProgress=null;activeEntry=null;busy=false;
-                    if(closed)releaseClosed();settleWork(work);entry.settlement.complete(null);if(!closed)present();
+                    if(closed)releaseClosed();settleWork(work);
+                    try{if(!closed)present();}finally{completeLifecycle(work,outcome==RefinementAttemptDiagnostics.Publication.PUBLISHED);entry.settlement.complete(null);}
                 }
             }
         });});
@@ -834,5 +861,5 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             &&review.originalResult().capturedHeatmap()!=null&&(intensity==null||intensity.usesColorMapping())&&!review.originalConfig().heatmap().aggregateAllColorSchemes();
     }
     private void releaseClosed(){latestDiagnostics=null;diagnosticsSlot=null;diagnosticsAvailability=RefinementAttemptDiagnostics.Availability.NONE;diagnosticMemory.closeWorkflow();legacyDiagnosticContext=null;legacyContextSupplier=null;ratingSupplier=null;pendingLegacyReview=null;pendingLegacyReviewMemory=null;retainedStages.clear();seed=null;root=null;preparedRoot=null;sourceContext=null;preparingSourceCurrent=()->{};session=null;confirmation=null;}
-    @Override public void close(){if(closed)return;if(isCurrent()&&!diagnosticSealed){if(!diagnosticState.equals("apply-failed"))diagnosticsChanged("cancelled");freezeDiagnostics(true,false);}closed=true;workGate.release(this);if(cancellation!=null)cancellation.cancel();if(session!=null)session.close();if(!busy)releaseClosed();}
+    @Override public void close(){if(closed)return;if(isCurrent()&&!diagnosticSealed){if(!diagnosticState.equals("apply-failed"))diagnosticsChanged("cancelled");freezeDiagnostics(true,false);}closed=true;if(lifecycle!=null)lifecycle.close();workGate.release(this);if(cancellation!=null)cancellation.cancel();if(session!=null)session.close();if(!busy)releaseClosed();}
 }

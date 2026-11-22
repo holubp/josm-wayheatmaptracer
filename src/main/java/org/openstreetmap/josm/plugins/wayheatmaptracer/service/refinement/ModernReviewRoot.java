@@ -109,7 +109,17 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
             var context=source();
             var retainedSources=new IdentityHashMap<LiveBPreviewService.Computed,RetainedSmoothingSource>();
             var primarySource=NativeRefinementSourceContext.retain(primary,settings,context,work,memory);retainedSources.put(primary,primarySource);
-            var authority=new RefinementRootAuthority(capture.network(),primary.request(),primary.evidence(),config,capture.projectionCode(),sourceIdentity,capture.intervalPartition(),primarySource,work,memory);
+            var nativeFacts=new IdentityHashMap<Object,Long>();
+            var owners=Collections.newSetFromMap(new IdentityHashMap<LiveBPreviewService.Computed,Boolean>());
+            if(interval!=null)owners.add(interval.owner());else nativeChoices.forEach(c->owners.add(c.owner()));
+            for(var owner:owners) {
+                nativeFacts.putAll(RefinementRootAuthority.detachedCharges(owner.request(),owner.pipeline(),owner.options(),owner.counters(),owner.intervalBatch(),owner.settingsResolutionJson()));
+                nativeFacts.put(owner,512L);
+                owner.corridorReceipt().ifPresent(receipt->nativeFacts.put(receipt,nativeReceiptBytes(receipt)));
+            }
+            nativeFacts.putAll(RefinementRootAuthority.detachedCharges(capture.specification(),capture.disconnectionSource(),capture.sourceGeographic(),capture.sourceMetric(),capture.outputGrid(),capture.alternativeMappings()));
+            nativeFacts.put(capture,capturedBytes(capture));
+            var authority=new RefinementRootAuthority(capture.network(),primary.request(),primary.evidence(),config,capture.projectionCode(),sourceIdentity,capture.intervalPartition(),primarySource,work,memory).withRetainedFacts(nativeFacts);
             for(var item:authority.charges().entrySet())admit(memory,work,item.getKey(),item.getValue());
             var way=(DetachedWay)capture.network().primitives().get(primary.request().selectedWayKey());
             var nodes=way.nodeKeys().stream().map(k->{var p=((DetachedNode)capture.network().primitives().get(k)).coordinate();return new RefinementPayload.SourceNode(k.id(),p.latitudeDegrees(),p.longitudeDegrees());}).toList();
@@ -147,6 +157,25 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
     private static void admit(AttemptMemoryLedger.Owner owner,GeometryWorkContext work,Object identity,long bytes) {
         work.visit(GeometryWorkContext.Kind.BIND,1);
         try{owner.retainIfAbsent(identity);}catch(IllegalArgumentException absent){work.reserveOn(owner,"native-root-metadata",bytes).adopt(identity);}
+    }
+    private static long capturedBytes(LiveBPreviewService.Captured capture) {
+        long bytes=8192;
+        if(capture.raster()!=null)return Math.addExact(bytes,4L*capture.raster().width()*capture.raster().height());
+        var rasters=capture.sourceRasters()==null?List.of(capture.managedRaster()):capture.sourceRasters().palettes().values();
+        var images=Collections.newSetFromMap(new IdentityHashMap<java.awt.image.BufferedImage,Boolean>());
+        for(var raster:rasters) {
+            long pixels=(long)raster.image().getWidth()*raster.image().getHeight();
+            bytes=Math.addExact(bytes,Math.addExact(4096L,pixels));
+            if(images.add(raster.image()))bytes=Math.addExact(bytes,4*pixels);
+        }
+        return bytes;
+    }
+    private static long nativeReceiptBytes(CorridorExecutionReceipt receipt) {
+        var values=RefinementRootAuthority.detachedCharges(receipt.requestHash(),receipt.evidenceHash(),receipt.networkHash(),receipt.resultHash(),receipt.networkSnapshotId(),receipt.settingsHash(),receipt.certificateStatus(),receipt.certificateIdentity(),receipt.sampling(),receipt.tracks(),receipt.totals());
+        long bytes=4096;for(long value:values.values())bytes=Math.addExact(bytes,value);
+        for(var provenance:receipt.candidates().values())bytes=Math.addExact(bytes,Math.addExact(1024L,8L*(provenance.hypothesisId().length()+provenance.trackId().length())));
+        if(receipt.originalCostPolicies().isPresent())bytes=Math.addExact(bytes,receipt.originalCostPolicyMetadataBytes().orElseThrow(()->new IllegalArgumentException("Native original cost ownership unavailable")));
+        return bytes;
     }
     private static void onEdt(Runnable action) {
         if(SwingUtilities.isEventDispatchThread()){action.run();return;}
