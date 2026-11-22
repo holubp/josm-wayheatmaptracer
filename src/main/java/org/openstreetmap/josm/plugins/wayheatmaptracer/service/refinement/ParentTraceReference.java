@@ -269,8 +269,7 @@ public final class ParentTraceReference {
         if(remaining.maximumStatesPerProfile()!=maximum.maximumStatesPerProfile()||remaining.maximumPairVisits()>maximum.maximumPairVisits()
                 ||remaining.maximumTransitions()>maximum.maximumTransitions()||remaining.maximumRawAlternatives()>maximum.maximumRawAlternatives()
                 ||remaining.maximumDistinctAlternatives()>maximum.maximumDistinctAlternatives())throw new IllegalArgumentException("Remaining work exceeds root policy");
-        if(!evidence.coordinateFrame().equals(root.evidence().coordinateFrame()))
-            throw new IllegalArgumentException("Parent source/frame differs from original capture");
+        root.requireAcquisitionEvidence(evidence);
         if(evidence.resolution().spatialPitchSamples().size()!=1)throw new UnavailableException(Unavailable.SPATIAL_RESOLUTION_UNAVAILABLE);
         var corridor=MetricCorridorRegion.aroundPolyline(points,original.permissions().ordinaryRadiusMeters());
         if(!evidence.decisionRegion().containsRegion(corridor)||!evidence.evidenceRegion().containsRegion(corridor))

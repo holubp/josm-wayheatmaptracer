@@ -93,6 +93,15 @@ public record LocalMetricFrame(String projectionId, GeographicPoint origin,
 
     /** Converts a metric coordinate back to a geographic coordinate inside the certified domain. */
     public GeographicPoint toGeographic(MetricPoint point) {
+        GeographicPoint result=inverse(point);
+        if (!contains(distortionCertificate, result)) {
+            throw new IllegalArgumentException("Metric coordinate lies outside the certified frame domain");
+        }
+        return result;
+    }
+
+    // Used only by checked public conversion and to propose a freshly certified domain.
+    private GeographicPoint inverse(MetricPoint point) {
         double latitude;
         double longitude;
         if (hasCompleteNumericalIdentity()) {
@@ -107,11 +116,49 @@ public record LocalMetricFrame(String projectionId, GeographicPoint origin,
             longitude = normalize(origin.longitudeDegrees() + Math.toDegrees(
                 point.xMeters() / distortionCertificate.eastMetersPerRadian()));
         }
-        GeographicPoint result = new GeographicPoint(latitude, longitude);
-        if (!contains(distortionCertificate, result)) {
-            throw new IllegalArgumentException("Metric coordinate lies outside the certified frame domain");
+        return new GeographicPoint(latitude, longitude);
+    }
+
+    /** Certifies additional acquisition support while retaining the exact original numerical transform. */
+    public LocalMetricFrame certifiedExtension(MetricRegion requiredFootprint) {
+        if(!hasCompleteNumericalIdentity()||requiredFootprint==null)throw new IllegalArgumentException("Acquisition extension requires a strict certified frame and footprint");
+        var certificate=distortionCertificate;
+        double south=certificate.southWest().latitudeDegrees(),north=certificate.northEast().latitudeDegrees();
+        double west=origin.longitudeDegrees()+normalizeDelta(certificate.southWest().longitudeDegrees()-origin.longitudeDegrees());
+        double east=west+positiveLongitudeSpan(certificate.southWest().longitudeDegrees(),certificate.northEast().longitudeDegrees());
+        if(west>origin.longitudeDegrees()||east<origin.longitudeDegrees())throw new IllegalArgumentException("Acquisition longitude branch is unproved");
+        boolean covered=true;
+        for(var polygon:requiredFootprint.polygons())for(var point:polygon) {
+            double delta=StrictFrameArithmetic.toDegrees(point.xMeters()/certificate.eastMetersPerRadian());
+            if(!Double.isFinite(delta)||delta<=-180||delta>=180)throw new IllegalArgumentException("Acquisition footprint crosses an unproved longitude branch");
+            var geographic=inverse(point);covered&=containsStrict(certificate,geographic);
+            south=Math.min(south,geographic.latitudeDegrees());north=Math.max(north,geographic.latitudeDegrees());
+            west=Math.min(west,origin.longitudeDegrees()+delta);east=Math.max(east,origin.longitudeDegrees()+delta);
         }
+        if(covered)return this;
+        if(east-west>=180)throw new IllegalArgumentException("Acquisition footprint exceeds a local longitude domain");
+        var result=certifiedEquirectangular(origin,new GeographicPoint(Math.nextDown(south),normalize(Math.nextDown(west))),
+            new GeographicPoint(Math.nextUp(north),normalize(Math.nextUp(east))));
+        if(!result.isCertifiedExtensionOf(this))throw new IllegalArgumentException("Acquisition certification changed the numerical transform");
+        for(var polygon:requiredFootprint.polygons())for(var point:polygon)
+            if(!containsStrict(result.distortionCertificate,result.inverse(point)))throw new IllegalArgumentException("Certified acquisition domain misses the complete footprint");
         return result;
+    }
+
+    /** Exact transform identity plus independently certified containment of the original domain. */
+    public boolean isCertifiedExtensionOf(LocalMetricFrame authority) {
+        if(authority==null||!hasCompleteNumericalIdentity()||!authority.hasCompleteNumericalIdentity()
+                ||!projectionId.equals(authority.projectionId)||!origin.equals(authority.origin)
+                ||Double.doubleToLongBits(distortionCertificate.eastMetersPerRadian())!=Double.doubleToLongBits(authority.distortionCertificate.eastMetersPerRadian())
+                ||Double.doubleToLongBits(distortionCertificate.northMetersPerRadian())!=Double.doubleToLongBits(authority.distortionCertificate.northMetersPerRadian()))return false;
+        var original=authority.distortionCertificate;
+        return distortionCertificate.acceptable()&&containsStrict(distortionCertificate,original.southWest())&&containsStrict(distortionCertificate,original.northEast());
+    }
+    private static boolean containsStrict(DistortionCertificate certificate,GeographicPoint point) {
+        double offset=normalizeDelta(point.longitudeDegrees()-certificate.southWest().longitudeDegrees());
+        double span=positiveLongitudeSpan(certificate.southWest().longitudeDegrees(),certificate.northEast().longitudeDegrees());
+        return point.latitudeDegrees()>=certificate.southWest().latitudeDegrees()&&point.latitudeDegrees()<=certificate.northEast().latitudeDegrees()
+            &&offset>=0&&offset<=span;
     }
 
     private static boolean contains(DistortionCertificate certificate, GeographicPoint point) {

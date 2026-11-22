@@ -138,8 +138,7 @@ public final class ParentBackedComposer {
     }
     public Assessed assess(ParentTraceReference parent,Composed candidate,EvidenceSnapshot evidence,String field,CancellationProbe cancellation) {
         cancellation.checkpoint();var root=parent.root();
-        if(!evidence.coordinateFrame().equals(root.evidence().coordinateFrame())||!evidence.sourceIdentity().equals(root.sourceIdentity()))
-            throw new IllegalArgumentException("Final assessment source differs from root");
+        root.requireAcquisitionEvidence(evidence);
         return assessInternal(parent,candidate,evidence,ImageCostField.fromEvidence(evidence,field),cancellation,null);
     }
     /** Postprocessing reuses the exact admitted selected-source image; no second raster copy. */
@@ -159,8 +158,7 @@ public final class ParentBackedComposer {
     private Assessed assessInternal(ParentTraceReference parent,Composed candidate,EvidenceSnapshot evidence,ImageCostField image,CancellationProbe cancellation,
             ImageCostField.SegmentSupportBudget sourceCells) {
         cancellation.checkpoint();var root=parent.root();
-        if(!evidence.coordinateFrame().equals(root.evidence().coordinateFrame())||!evidence.sourceIdentity().equals(root.sourceIdentity()))
-            throw new IllegalArgumentException("Final assessment source differs from root");
+        root.requireAcquisitionEvidence(evidence);
         var protectedAssignments=new LinkedHashMap<Integer,MetricPoint>();
         var extra=new ArrayList<FinalGeometryEvaluator.Finding>();
         if(root.frozenGeometryProof().isEmpty())extra.add(new FinalGeometryEvaluator.Finding(FinalGeometryEvaluator.FindingCode.CONTEXT_PROOF_UNAVAILABLE,

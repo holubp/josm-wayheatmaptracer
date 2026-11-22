@@ -745,8 +745,8 @@ public final class ModernSingleWayEditPlanAdapter {
             EvidenceSnapshot evidence,boolean postprocessing,Optional<ValidationReport> inheritedValidation) {
         org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.requireFrozenGeometryPreserved(parent,assessed.candidate());
         var root=parent.root();var request=root.request();var before=root.network();
-        if(!evidence.coordinateFrame().equals(root.evidence().coordinateFrame())
-                ||assessed.quality().disposition()==FinalGeometryEvaluator.Disposition.HARD_BLOCKED
+        root.requireAcquisitionEvidence(evidence);
+        if(assessed.quality().disposition()==FinalGeometryEvaluator.Disposition.HARD_BLOCKED
                 ||!assessed.topologyFindings().isEmpty()
                 ||inheritedValidation.filter(v->v.disposition()==ValidationReport.Disposition.HARD_BLOCKED).isPresent())throw new IllegalArgumentException("Refinement final geometry is blocked");
         if(!assessed.copies().isEmpty())throw new IllegalArgumentException("Refinement copy destinations need a qualified plan adapter");
@@ -2305,10 +2305,10 @@ public final class ModernSingleWayEditPlanAdapter {
                 || !request.evidenceSnapshotId().equals(authorityEvidence.snapshotId())
                 || !request.evidenceContentHash().equals(postprocessingEvidenceHash(authorityEvidence))
                 || !request.evidenceResolution().equals(authorityEvidence.resolution())
-                || !authorityEvidence.coordinateFrame().equals(evidence.coordinateFrame())
                 || !authorityEvidence.sourceIdentity().equals(evidence.sourceIdentity())) {
             throw new IllegalArgumentException("Graph topology request differs from its frozen source");
         }
+        org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementRootAuthority.requireAcquisitionEvidence(authorityEvidence,evidence);
         var authority = SharedNodeDisconnectionPlanner.forRequest(request, before);
         return assessFinalTopology(before, after, request.selectedWayKey(), request.selectedRange(),
                 evidence, searchHalfWidthMeters, authority.replacements(), authority.proposedPortReplacements());

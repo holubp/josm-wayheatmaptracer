@@ -161,6 +161,11 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
             nativeFacts.put(hashes,8192L);
             var owners=Collections.newSetFromMap(new IdentityHashMap<LiveBPreviewService.Computed,Boolean>());
             if(interval!=null)owners.addAll(intervalSources);else nativeChoices.forEach(c->owners.add(c.owner()));
+            // Admit each existing scalar backing as one group before the native result graph
+            // inventories its individual components. Later source selection co-owns that group.
+            for(var owner:owners)if(!retainedSources.containsKey(owner))
+                retainedSources.put(owner,NativeRefinementSourceContext.retain(owner,settings,context,work,memory,hashes));
+            retainedSources.values().forEach(source->nativeFacts.putAll(source.charges()));
             for(var owner:owners) {
                 nativeFacts.putAll(RefinementRootAuthority.detachedCharges(owner.request(),owner.pipeline(),owner.options(),owner.counters(),owner.intervalBatch(),owner.settingsResolutionJson()));
                 nativeFacts.put(owner,512L);

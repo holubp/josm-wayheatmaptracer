@@ -56,8 +56,10 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
             NativeRefinementSourceContext context,GeometryWorkContext work,AttemptMemoryLedger.Owner memory,IdentityHashMap<Object,String> hashes) {
         context.requireCurrent();var capture=run.captured();var evidence=run.evidence();
         long bytes=0;for(long charge:RefinementRootAuthority.detachedCharges(evidence).values())bytes=Math.addExact(bytes,charge);
-        try{if(memory.retainIfAbsent(evidence).bytes()!=bytes)throw new IllegalArgumentException("Native evidence group differs");}
-        catch(IllegalArgumentException absent){work.reserveOn(memory,"native-original-evidence",bytes).adopt(evidence);}
+        AttemptMemoryLedger.MemoryLease backing;
+        try{backing=memory.retainIfAbsent(evidence);}
+        catch(IllegalArgumentException absent){backing=work.reserveOn(memory,"native-original-evidence",bytes).adopt(evidence);}
+        if(backing.bytes()!=bytes)throw new IllegalStateException("Native evidence group differs from original admission");
         String mapping=ModernReviewRoot.mapping(run);
         var request=new RefinementSourcePlanner.SourceRequest(capture.palette(),mapping,mapping.equals("all-colors-combined"),"");
         SupportedInputRasterTransform transform;int width,height;String hash;

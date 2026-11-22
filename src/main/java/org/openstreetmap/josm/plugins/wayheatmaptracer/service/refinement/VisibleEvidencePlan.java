@@ -87,6 +87,9 @@ public final class VisibleEvidencePlan {
         int gw=checkedDimension((right-left)/pitch),gh=checkedDimension((top-bottom)/pitch);
         var frame=source.parent().root().evidence().coordinateFrame();
         var grid=new MetricRasterGrid(frame,new MetricPoint(left+pitch/2,top-pitch/2),1,0,0,-1,pitch,gw,gh);
+        // Certify the complete ceil-rounded footprint before any checked geographic conversion.
+        frame=frame.certifiedExtension(grid.footprint());
+        grid=new MetricRasterGrid(frame,new MetricPoint(left+pitch/2,top-pitch/2),1,0,0,-1,pitch,gw,gh);
         var transform=SupportedInputRasterTransform.visibleWebMercator(0,0,1,1);
         var bounds=transform.boundsForMetricCell(frame,grid.footprint().polygons().get(0));
         // A full input sample on every side supports the legacy visible interpolation convention.

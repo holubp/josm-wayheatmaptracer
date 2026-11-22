@@ -115,6 +115,13 @@ public final class RefinementRootAuthority {
     public NetworkSnapshot network(){return network;}
     public TraceRequest request(){return request;}
     public EvidenceSnapshot evidence(){return evidence;}
+    /** Acquisition may add certified image support without replacing original network/edit authority. */
+    public void requireAcquisitionEvidence(EvidenceSnapshot actual){requireAcquisitionEvidence(evidence,actual);}
+    public static void requireAcquisitionEvidence(EvidenceSnapshot authority,EvidenceSnapshot actual) {
+        if(authority==null||actual==null||!authority.sourceIdentity().equals(actual.sourceIdentity())
+                ||!actual.coordinateFrame().equals(authority.coordinateFrame())&&!actual.coordinateFrame().isCertifiedExtensionOf(authority.coordinateFrame()))
+            throw new IllegalArgumentException("Acquisition evidence differs from the original source or certified numerical frame");
+    }
     public AlignmentConfig effectiveConfig(){return effectiveConfig;}
     public String projectionCode(){return projectionCode;}
     public String sourceIdentity(){return sourceIdentity;}
