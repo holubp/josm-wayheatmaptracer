@@ -96,7 +96,8 @@ public final class SmoothingParentBinder {
                 source.evidence().resampling().inputCoordinateConvention(),affine(source));}
             catch(IllegalArgumentException missing){throw new Unavailable(Reason.SOURCE_FRAME_UNAVAILABLE);}
             var image=ImageCostField.fromEvidence(source.evidence(),source.fieldName(),work,bindingOwner);
-            String evidenceHash=source.evidence().canonicalHash(work);
+            String evidenceHash=(recordedAlias?root.registeredOriginalEvidenceHash(candidate,source,work):Optional.<String>empty())
+                .orElseGet(()->source.evidence().canonicalHash(work));
             String identity=identity(reference,frame,ids,fixed,evidenceHash,facts,work);
             var bases=facts.sourceSpans().stream().filter(s->s.source().equals(source.source())&&!s.span().parentRetained()&&s.span().firstVertex()==0&&s.span().lastVertex()==n-1)
                 .flatMap(s->s.nativeProvenance().stream()).flatMap(p->p.nativeBasis().stream()).distinct().toList();

@@ -157,6 +157,16 @@ public final class RefinementRootAuthority {
         }
         requireAcquisitionEvidence(source.evidence());source.requireCurrent();
     }
+    /** Reuse only the actual producer-validated hash of an exact retained original acquisition. */
+    Optional<String> registeredOriginalEvidenceHash(RefinementModels.Candidate candidate,RetainedSmoothingSource source,GeometryWorkContext work) {
+        work.visit(GeometryWorkContext.Kind.BIND,8);
+        requireSelectedAcquisitionEvidence(candidate,source);
+        var registered=nativeAcquisitions.get(source.evidence());
+        if(registered==null)return Optional.empty();
+        if(registered.source()!=source)throw new IllegalArgumentException("Registered original evidence belongs to another retained descriptor");
+        registered.requireCurrent();
+        return Optional.of(registered.request().evidenceContentHash());
+    }
     public static void requireAcquisitionEvidence(EvidenceSnapshot authority,EvidenceSnapshot actual) {
         if(authority==null||actual==null||!authority.sourceIdentity().equals(actual.sourceIdentity())
                 ||!actual.coordinateFrame().equals(authority.coordinateFrame())&&!actual.coordinateFrame().isCertifiedExtensionOf(authority.coordinateFrame()))

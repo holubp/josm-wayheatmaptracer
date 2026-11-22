@@ -38,7 +38,8 @@ class SmoothingParentBinderTest {
         var root=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);var candidate=RefinementParentFixtures.parent(root,"blue");
         try(var owner=AttemptMemoryLedger.production().rootOwner()) {
             var source=source(root,"blue",owner,()->{});var ticket=ticket(candidate,root.request().geometryMode());
-            var parent=new SmoothingParentBinder().bind(root,ticket,candidate,source,work(owner));
+            var bindingWork=work(owner);var parent=new SmoothingParentBinder().bind(root,ticket,candidate,source,bindingWork);
+            assertTrue(bindingWork.counters().get(GeometryWorkContext.Kind.HASH)>0,"Unregistered Legacy evidence keeps its actual metered canonical traversal");
             assertEquals("blue",parent.frame().palette());assertEquals("blue",parent.frame().mappingIdentity());
             assertEquals("blue-native",parent.reference().nativeCandidateId());assertEquals(53,parent.reference().points().get(2).yMeters(),1e-7);
             assertSame(source.evidence(),parent.evidence());assertNotSame(root.evidence(),parent.evidence());
