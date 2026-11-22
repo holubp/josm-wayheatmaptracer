@@ -309,6 +309,27 @@ class LegacyVisibleRefinementBootstrapTest {
                 var newCandidate=newRoot.stage().candidates().stream().filter(c->c.id().equals(newRoot.stage().selected())).findFirst().orElseThrow();
                 assertEquals(oldCandidate.payload().finalPreviewGeometry(),newCandidate.payload().finalPreviewGeometry());
                 assertEquals(independentInput(newSeed.get().original().tileMosaics().require(newSeed.get().factualSeed().selectedSource().palette()).image()),newRoot.originalConversion().inputByteHash());
+                assertNull(oldRoot.originalConversion(),"This regression preserves the historical managed root without a smoothing descriptor");
+                assertNull(oldSeed.get().factualSeed());var authority=oldRoot.authority();var request=authority.request();var frozen=authority.frozenGeometryProof().orElseThrow();
+                var laterWork=new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,owner);
+                var later=new AtomicReference<LegacyRefinementBootstrap.SmoothingSeed>();
+                SwingUtilities.invokeAndWait(()->later.set(new LegacyRefinementBootstrap().captureForSmoothingFromOriginal(review.get(),coordinator,laterWork,oldSeed.get())));
+                assertSame(oldSeed.get().facts(),later.get().facts());assertSame(oldSeed.get().facts().network(),later.get().facts().network());assertSame(oldRoot.receipt(),later.get().facts().receipt());
+                var bound=new LegacyRefinementBootstrap().completeForSmoothing(later.get(),coordinator,laterWork,oldRoot);
+                assertSame(oldRoot,bound.root());assertSame(authority,bound.root().authority());assertSame(request,bound.root().authority().request());assertSame(frozen,bound.root().authority().frozenGeometryProof().orElseThrow());
+                assertEquals(oldCandidate.nativeCandidateId(),bound.source().legacyDisposition().orElseThrow().nativeCandidateId());assertEquals(before,calls.get());
+                var alternativeWork=new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,owner);var alternative=new AtomicReference<LegacyRefinementBootstrap.SmoothingSeed>();
+                SwingUtilities.invokeAndWait(()->{
+                    var current=review.get();var selectedSource=later.get().selectedSource();var other=current.originalResult().candidates().stream().filter(candidate->candidate.finalPreviewPoints().size()>=2&&current.originalResult().detectorAttempts().stream().anyMatch(attempt->attempt.candidateIds().contains(candidate.id())&&(!attempt.mappingName().equals(selectedSource.mapping())||!attempt.sourcePalette().equals(selectedSource.palette())))).findFirst().orElseThrow();
+                    current.select(other);alternative.set(new LegacyRefinementBootstrap().captureForSmoothingFromOriginal(current,coordinator,alternativeWork,oldSeed.get()));
+                });
+                assertSame(oldSeed.get().facts(),alternative.get().facts());assertNotEquals(later.get().selectedSource(),alternative.get().selectedSource());
+                var alternativeBound=new LegacyRefinementBootstrap().completeForSmoothing(alternative.get(),coordinator,alternativeWork,oldRoot);
+                assertSame(oldRoot,alternativeBound.root());assertEquals(alternative.get().selectedSource(),alternativeBound.source().source());assertEquals(before,calls.get());
+                coordinator.updateActiveGeneration(new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(coordinator.activeGenerationValue()+1));
+                assertThrows(IllegalStateException.class,alternativeBound.source()::requireCurrent);
+                SwingUtilities.invokeAndWait(()->assertThrows(IllegalStateException.class,()->new LegacyRefinementBootstrap().captureForSmoothingFromOriginal(review.get(),coordinator,alternativeWork,oldSeed.get())));
+                assertSame(request,oldRoot.authority().request());assertSame(frozen,oldRoot.authority().frozenGeometryProof().orElseThrow());
             }finally{if(review.get()!=null)SwingUtilities.invokeAndWait(review.get()::close);}
         }
     }
