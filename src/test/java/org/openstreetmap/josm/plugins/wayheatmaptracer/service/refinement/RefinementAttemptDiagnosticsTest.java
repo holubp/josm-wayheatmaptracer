@@ -8,6 +8,14 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.Refine
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 
 class RefinementAttemptDiagnosticsTest {
+    @Test void acquisitionFailureKeepsWorkWithoutInventingAnAttemptedDetector() {
+        var counters=new EnumMap<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind,Long>(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.class);
+        for(var kind:org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values())counters.put(kind,0L);
+        var work=new RefinementAttemptDiagnostics.SourcePreparationWork(RefinementAttemptDiagnostics.Cause.FAILED,0,counters,Optional.empty(),Optional.empty());
+        assertEquals(RefinementAttemptDiagnostics.Cause.FAILED,work.cause());assertTrue(work.failedSource().isEmpty());assertTrue(work.nativeWork().isEmpty());
+        var source=new RefinementSourcePlanner.SourceRequest("hot","hot",false,"");
+        assertThrows(IllegalArgumentException.class,()->new RefinementAttemptDiagnostics.SourcePreparationWork(RefinementAttemptDiagnostics.Cause.NONE,0,counters,Optional.of(source),Optional.empty()));
+    }
     @Test void sourceFactsRequireExactUtf8Sha256Binding() {
         var ticket=new OperationTicket(new SessionId(UUID.randomUUID()),1,new StageId(UUID.randomUUID()),new CandidateId("parent"),TrackerMode.PROBABILISTIC,AlignmentMode.MOVE_EXISTING_NODES);
         String hash="12ea3684bf5746acdebbfc2de080fbbe8afefec7130a8b32f43b0b9504962d63";

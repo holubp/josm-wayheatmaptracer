@@ -146,7 +146,9 @@ class ModernRefinementBootstrapTest {
                 VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
                 SwingUtilities.invokeAndWait(()->{
                     assertEquals(1,recaptures.get(),"A must attempt one bounded same-source capture when the original B image lacks its halo");
-                    assertEquals(RefinementAttemptDiagnostics.Coverage.RECAPTURED,workflow[0].latestAttemptDiagnostics().orElseThrow().sourcePreparation().orElseThrow().sourceFacts().orElseThrow().coverage());
+                    var diagnostic=workflow[0].latestAttemptDiagnostics().orElseThrow(()->new AssertionError("Latest diagnostics "+workflow[0].attemptDiagnosticsAvailability()+"; "+workflow[0].computationEvidence()));
+                    var sourceWork=diagnostic.sourcePreparation().orElseThrow(()->new AssertionError("Source work unavailable: "+diagnostic.phase()+"/"+diagnostic.cause()+"; "+workflow[0].computationEvidence()));
+                    assertEquals(RefinementAttemptDiagnostics.Coverage.RECAPTURED,sourceWork.sourceFacts().orElseThrow().coverage());
                     assertTrue(workflow[0].currentStage().kind().name().startsWith("REFINE"),workflow[0].computationEvidence());
                     assertSame(computed.evidence().coordinateFrame(),workflow[0].currentNative().orElseThrow().plan().metricFrame());
                     assertSame(capture[0].network(),workflow[0].currentNative().orElseThrow().plan().before());

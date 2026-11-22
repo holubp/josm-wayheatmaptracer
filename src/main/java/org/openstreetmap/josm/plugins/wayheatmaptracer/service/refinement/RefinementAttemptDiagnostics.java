@@ -30,7 +30,8 @@ public record RefinementAttemptDiagnostics(Binding binding, Optional<RefinementO
             Objects.requireNonNull(cause);Objects.requireNonNull(failedSource);Objects.requireNonNull(nativeWork);Objects.requireNonNull(sourceFacts);counters=Map.copyOf(counters);
             if(!Set.of(Cause.NONE,Cause.RESOURCE_LIMIT,Cause.CANCELLED,Cause.STALE,Cause.FAILED).contains(cause)||visits<0||visits>8_000_000L
                     ||counters.size()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values().length
-                    ||(cause==Cause.NONE)!=failedSource.isEmpty())throw new IllegalArgumentException("Invalid auxiliary source work");
+                    // Acquisition can fail before any detector source is attempted; keep it unavailable.
+                    ||cause==Cause.NONE&&failedSource.isPresent())throw new IllegalArgumentException("Invalid auxiliary source work");
             long sum=0;for(var kind:org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values()) {var count=counters.get(kind);if(count==null||count<0)throw new IllegalArgumentException("Invalid auxiliary counter");sum=Math.addExact(sum,count);}if(sum!=visits)throw new IllegalArgumentException("Auxiliary counter sum differs");
         }
     }
