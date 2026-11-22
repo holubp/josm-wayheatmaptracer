@@ -157,7 +157,7 @@ class ModernRefinementBootstrapTest {
                     var diagnostic=workflow[0].latestAttemptDiagnostics().orElseThrow(()->new AssertionError("Latest diagnostics "+workflow[0].attemptDiagnosticsAvailability()+"; "+workflow[0].computationEvidence()));
                     var sourceWork=diagnostic.sourcePreparation().orElseThrow(()->new AssertionError("Source work unavailable: "+diagnostic.phase()+"/"+diagnostic.cause()+"; "+workflow[0].computationEvidence()));
                     assertEquals(RefinementAttemptDiagnostics.Coverage.RECAPTURED,sourceWork.sourceFacts().orElseThrow().coverage(),()->diagnostic.phase()+"/"+diagnostic.cause()+"; auxiliary="+sourceWork.visits()+"; "+workflow[0].computationEvidence());
-                    assertTrue(workflow[0].currentStage().kind().name().startsWith("REFINE"),workflow[0].computationEvidence());
+                    assertTrue(workflow[0].currentStage().kind().name().startsWith("REFINE"),workflow[0].computationEvidence()+";actualSourceWork="+sourceWork);
                     assertSame(computed.evidence().coordinateFrame(),workflow[0].currentNative().orElseThrow().plan().metricFrame());
                     assertSame(capture[0].network(),workflow[0].currentNative().orElseThrow().plan().before());
                     ((javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"undo")).doClick();
