@@ -52,7 +52,7 @@ public final class RuntimeRefinementDiagnostics {
             if(review.isPresent()&&review.get().smoothingTicket().isPresent()) {
                 var receipt=review.get().smoothingReceipt().orElseThrow();var actual=artifacts.get("smoothing/stage-"+s+"-choice-"+c+".json");
                 smoothingPublications.put(new RefinementLineageCodec.CandidateKey(stage.id(),candidate.id()),new RefinementLineageCodec.SmoothingPublication(
-                    review.get().smoothingTicket().orElseThrow(),new RefinementLineageCodec.GeometryRef(actual.name(),actual.sha256()),receipt.parentIdentity()));
+                    review.get().smoothingTicket().orElseThrow(),new RefinementLineageCodec.GeometryRef(actual.name(),actual.sha256()),review.get().smoothingParentReferenceIdentity().orElseThrow()));
             }
         }
         var currentKey=new RefinementLineageCodec.CandidateKey(current.id(),current.selected());
@@ -148,7 +148,8 @@ public final class RuntimeRefinementDiagnostics {
     }
     private static String smoothingJson(Stage stage,CandidateId choice,Format15Artifact geometry,RefinementSmoothingAdapter.Receipt receipt,RefinementPayload.NativeReview review) {
         var protocol=review.retainedSources().values().stream().filter(source->source.inputByteHash().equals(receipt.inputHash())).map(RetainedSmoothingSource::inputHashProtocol).findFirst();
-        return "{\"schema\":1,"+selectionFields(stage,choice,geometry)+",\"operationTicket\":"+review.smoothingTicket().map(RefinementLineageCodec::operationTicketJson).orElse("null")+","+smoothingReceiptFields(receipt,protocol)+"}\n";
+        return "{\"schema\":1,"+selectionFields(stage,choice,geometry)+",\"operationTicket\":"+review.smoothingTicket().map(RefinementLineageCodec::operationTicketJson).orElse("null")
+            +",\"parentReferenceIdentity\":"+review.smoothingParentReferenceIdentity().map(RuntimeRefinementDiagnostics::quote).orElse("null")+","+smoothingReceiptFields(receipt,protocol)+"}\n";
     }
     public static Format15Artifact smoothingAttemptArtifact(RefinementAttemptDiagnostics diagnostic,RefinementSmoothingAdapter.Receipt receipt,Optional<String> inputProtocol) {
         var ticket=diagnostic.binding().ticket();

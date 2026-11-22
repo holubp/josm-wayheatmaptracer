@@ -36,12 +36,12 @@ public final class RefinementPayload {
             Optional<RefinementOperationReceipt> operation,List<RefinementSourcePlanner.SourceRequest> sources,
             OptionalInt retainedParentSections,Map<RefinementSourcePlanner.SourceRequest,RetainedSmoothingSource> retainedSources,
             List<RefinementPipeline.SourceSpan> sourceSpans,Optional<List<FinalRoutePointId>> finalPointIds,
-            Optional<RefinementSmoothingAdapter.Receipt> smoothingReceipt,Optional<RefinementModels.OperationTicket> smoothingTicket) {
+            Optional<RefinementSmoothingAdapter.Receipt> smoothingReceipt,Optional<RefinementModels.OperationTicket> smoothingTicket,Optional<String> smoothingParentReferenceIdentity) {
         public NativeReview(AlignmentEditPlan plan,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality,
                 Optional<RefinementOperationReceipt> operation,List<RefinementSourcePlanner.SourceRequest> sources,OptionalInt retainedParentSections,
                 Map<RefinementSourcePlanner.SourceRequest,RetainedSmoothingSource> retainedSources,List<RefinementPipeline.SourceSpan> sourceSpans,
                 Optional<List<FinalRoutePointId>> finalPointIds,Optional<RefinementSmoothingAdapter.Receipt> smoothingReceipt) {
-            this(plan,quality,operation,sources,retainedParentSections,retainedSources,sourceSpans,finalPointIds,smoothingReceipt,Optional.empty());
+            this(plan,quality,operation,sources,retainedParentSections,retainedSources,sourceSpans,finalPointIds,smoothingReceipt,Optional.empty(),Optional.empty());
         }
         public NativeReview(AlignmentEditPlan plan,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality,
                 Optional<RefinementOperationReceipt> operation,List<RefinementSourcePlanner.SourceRequest> sources,OptionalInt retainedParentSections,
@@ -51,6 +51,9 @@ public final class RefinementPayload {
         public NativeReview {sources=List.copyOf(sources);retainedSources=Map.copyOf(retainedSources);sourceSpans=List.copyOf(sourceSpans);
             Objects.requireNonNull(smoothingReceipt);
             Objects.requireNonNull(smoothingTicket);
+            Objects.requireNonNull(smoothingParentReferenceIdentity);
+            if(smoothingTicket.isPresent()!=smoothingParentReferenceIdentity.isPresent()||smoothingParentReferenceIdentity.filter(String::isBlank).isPresent())
+                throw new IllegalArgumentException("Actual Gaussian parent reference identity required");
             smoothingTicket.ifPresent(ticket->{if(ticket.kind()!=RefinementModels.StageKind.SMOOTH||smoothingReceipt.isEmpty()||operation.isPresent()
                 ||ticket.mode()!=smoothingReceipt.orElseThrow().mode())throw new IllegalArgumentException("Actual Gaussian publication ticket/receipt required");});
             finalPointIds=finalPointIds.map(List::copyOf);
@@ -262,7 +265,7 @@ public final class RefinementPayload {
     /** Borrowed evidence keeps its acquisition's grouped scalar/mask charge, never a second array inventory. */
     private static Map<Object,Long> nativeReviewCharges(NativeReview review) {
         var values=new IdentityHashMap<Object,Long>();
-        values.putAll(RefinementRootAuthority.detachedCharges(review.plan(),review.quality(),review.operation(),review.sources(),review.retainedParentSections(),review.finalPointIds(),review.smoothingReceipt(),review.smoothingTicket()));
+        values.putAll(RefinementRootAuthority.detachedCharges(review.plan(),review.quality(),review.operation(),review.sources(),review.retainedParentSections(),review.finalPointIds(),review.smoothingReceipt(),review.smoothingTicket(),review.smoothingParentReferenceIdentity()));
         values.put(review,512L);values.put(review.retainedSources(),128L+128L*review.retainedSources().size());
         values.put(review.sourceSpans(),128L+32L*review.sourceSpans().size());
         review.retainedSources().values().forEach(source->values.putAll(source.charges()));

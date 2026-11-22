@@ -335,7 +335,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             if(published){diagnosticSealed=terminal;exportUnavailable=ExportUnavailable.NONE;}
         } catch(Exception unavailable){exportUnavailable=unavailable instanceof AttemptMemoryLedger.ResourceLimitException||unavailable instanceof ExportBudgetRefused?ExportUnavailable.BUDGET:unavailable instanceof java.io.IOException?ExportUnavailable.ENCODING:ExportUnavailable.BINDING;
             computationEvidence+="; failed="+unavailable.getClass().getSimpleName()+"; phase=EXPORT";
-            for(var frame:unavailable.getStackTrace())if(frame.getClassName().startsWith("org.openstreetmap.josm.plugins.wayheatmaptracer.")) {
+            for(var frame:unavailable.getStackTrace())if(frame.getClassName().startsWith("org.openstreetmap.josm.plugins.wayheatmaptracer.")&&!frame.getMethodName().equals("invalid")) {
                 computationEvidence+="; boundary="+frame.getClassName().substring(frame.getClassName().lastIndexOf('.')+1)+"."+frame.getMethodName()+":"+frame.getLineNumber();break;
             }
             if(terminal&&isCurrent())diagnosticSealed=DiagnosticsRegistry.sealRefinementUnavailable(diagnosticOwner,DiagnosticsRegistry.RefinementUnavailable.valueOf(exportUnavailable.name()));
@@ -895,7 +895,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                     String nativeId=assessed.candidate().id();var candidate=new CenterlineCandidate(nativeId,0,List.of(),List.of(),points,points,assignments,List.of(),0,null,null,null,List.of());
                     var detector=new DetectorAttempt(source.source().palette(),source.source().mapping(),ticket.engine(),edit.validation().disposition()==ValidationReport.Disposition.APPLICABLE?DetectorAttemptStatus.APPLICABLE:DetectorAttemptStatus.REVIEW_REQUIRED,List.of(nativeId),"smoothing-final","Guarded Gaussian output");
                     var alignment=new AlignmentResult(parent.payload().originalSelectionContext(),null,List.of(candidate),parent.payload().originalSourcePolyline(),points,List.of(),null,null,List.of(detector),List.of(candidate));
-                    var nativeReview=new RefinementPayload.NativeReview(edit,assessed.quality(),Optional.empty(),List.of(source.source()),OptionalInt.empty(),Map.of(source.source(),source),List.of(),Optional.of(assessed.candidate().pointIds()),Optional.of(result.receipt()),Optional.of(ticket));
+                    var nativeReview=new RefinementPayload.NativeReview(edit,assessed.quality(),Optional.empty(),List.of(source.source()),OptionalInt.empty(),Map.of(source.source(),source),List.of(),Optional.of(assessed.candidate().pointIds()),Optional.of(result.receipt()),Optional.of(ticket),Optional.of(bound.reference().canonicalIdentity()));
                     var id=new CandidateId("smoothing-"+ticket.sequence());String identity=edit.canonicalHash();
                     var admission=new MarginalPayloadAdmission(baseline,allowance,probe);
                     long header=RefinementSession.stageMetadataBytes(1)+RefinementSession.candidateMetadataBytes(id,identity,nativeId,source.source().palette(),assessed.candidate().correspondence().size());

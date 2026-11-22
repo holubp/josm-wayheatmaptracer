@@ -232,7 +232,7 @@ public final class RefinementLineageCodec {
             var ticket=publication.ticket();var preset=ticket.smoothingInput().orElseThrow().preset();
             if(number(receipt.get("schema"))!=1||!stage.id().equals(stage(receipt.get("stage")))||!candidate.id().equals(candidate(receipt.get("choice")))
                     ||!candidate.geometry().artifact().equals(string(receipt.get("geometryArtifact")))||!candidate.geometry().sha256().equals(string(receipt.get("geometrySha256")))
-                    ||!ticket.equals(readTicket(receipt.get("operationTicket")))||!publication.parentIdentity().equals(string(receipt.get("parentIdentity")))
+                    ||!ticket.equals(readTicket(receipt.get("operationTicket")))||!publication.parentIdentity().equals(string(receipt.get("parentReferenceIdentity")))
                     ||!ticket.mode().name().equals(string(receipt.get("mode")))||!"existing-gaussian-capture-reference-v1".equals(string(receipt.get("method")))
                     ||!"CHANGED".equals(string(receipt.get("outcome")))||number(receipt.get("nativeCalls"))!=0
                     ||!Objects.equals(preset.equals("Medium")?"MEDIUM_1PX":preset.equals("Strong")?"STRONG_2PX":null,string(receipt.get("strength")))
