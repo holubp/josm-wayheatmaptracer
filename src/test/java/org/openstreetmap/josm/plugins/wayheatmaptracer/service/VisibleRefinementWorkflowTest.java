@@ -18,6 +18,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoc
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Artifact;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle;
 
 /** Four predeclared public small stripe cells exercise actual scalar/native/assessment/publication. */
 class VisibleRefinementWorkflowTest {
@@ -95,6 +98,25 @@ class VisibleRefinementWorkflowTest {
         changed.put(artifact.name(),org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Artifact.text(artifact.name(),"{}"));
         var corrupt=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle(bundle.buildIdentity(),bundle.sourceIdentityHash(),bundle.parameterHash(),changed);
         assertThrows(IllegalArgumentException.class,()->org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.readBound(corrupt,stage.id(),stage.selected()),"Gaussian receipt checksum is bound to the actual publication");
+        var json=new String(artifact.bytes(),java.nio.charset.StandardCharsets.UTF_8);
+        var preset=actual.ticket().smoothingInput().orElseThrow().preset().equals("Medium")?"MEDIUM_1PX":"STRONG_2PX";
+        var wrongPreset=Format15Artifact.text(artifact.name(),json.replace("\"strength\":\""+preset+"\"","\"strength\":\""+(preset.equals("MEDIUM_1PX")?"STRONG_2PX":"MEDIUM_1PX")+"\""));
+        var wrongPublication=new RefinementLineageCodec.SmoothingPublication(actual.ticket(),new RefinementLineageCodec.GeometryRef(wrongPreset.name(),wrongPreset.sha256()),actual.parentIdentity());
+        var wrongDocument=replaceSmoothingPublication(codec,stage.id(),stage.selected(),Optional.of(wrongPublication),true);
+        var presetArtifacts=new LinkedHashMap<>(bundle.artifacts());presetArtifacts.remove("refinement-lineage.json");presetArtifacts.put(wrongPreset.name(),wrongPreset);
+        var presetBundle=new Format15Bundle(bundle.buildIdentity(),bundle.sourceIdentityHash(),bundle.parameterHash(),presetArtifacts);
+        assertThrows(IllegalArgumentException.class,()->RefinementLineageCodec.attach(presetBundle,wrongDocument),"Even a self-consistent receipt checksum cannot change the actual ticket preset");
+        var t=actual.ticket();var forgedTicket=new RefinementModels.OperationTicket(t.session(),t.sequence()+1,t.parent(),t.choice(),t.engine(),t.mode(),t.kind(),t.smoothingInput());
+        assertThrows(IllegalArgumentException.class,()->replaceSmoothingPublication(codec,stage.id(),stage.selected(),Optional.of(new RefinementLineageCodec.SmoothingPublication(forgedTicket,actual.receipt(),actual.parentIdentity())),true));
+        var historical=replaceSmoothingPublication(codec,stage.id(),stage.selected(),Optional.empty(),false);
+        var old=RefinementLineageCodec.read(RefinementLineageCodec.artifact(historical));
+        assertTrue(old.stages().stream().flatMap(s->s.candidates().stream()).allMatch(c->c.smoothingPublication().isEmpty()),"Absent historical Gaussian publication stays unavailable");
+    }
+    private static RefinementLineageCodec.Document replaceSmoothingPublication(RefinementLineageCodec.Document source,RefinementModels.StageId stage,
+            RefinementModels.CandidateId choice,Optional<RefinementLineageCodec.SmoothingPublication> publication,boolean keepLatest) {
+        var stages=source.stages().stream().map(s->new RefinementLineageCodec.StageEntry(s.id(),s.parent(),s.parentChoice(),s.kind(),s.engine(),s.selected(),s.smoothingInput(),
+            s.candidates().stream().map(c->s.id().equals(stage)&&c.id().equals(choice)?new RefinementLineageCodec.CandidateEntry(c.id(),c.immutableIdentity(),c.nativeCandidateId(),c.sourcePalette(),c.geometry(),c.operation(),publication):c).toList())).toList();
+        return new RefinementLineageCodec.Document(source.binding(),source.originalOsm(),stages,source.latestAttempt(),keepLatest?source.latestPublication():Optional.empty());
     }
     @ParameterizedTest @MethodSource("cells")
     void visibleABPreciseAndMove(AlignmentMode mode,TrackerMode engine) throws Exception {
