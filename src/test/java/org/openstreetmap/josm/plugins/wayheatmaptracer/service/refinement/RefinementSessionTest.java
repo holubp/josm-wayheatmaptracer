@@ -57,6 +57,21 @@ class RefinementSessionTest {
             assertEquals(forward,session.redo().orElseThrow());
         });
     }
+    @Test void selectingAnotherAdmittedRootCompositionPreservesForwardLineageAndReusesIdentity() throws Exception {
+        edt(()->{
+            try(var session=session(AlignmentMode.PRECISE_SHAPE)) {
+                var rootId=session.current().id();var originalChoice=session.current().selected();
+                var ticket=session.begin(TrackerMode.CORRIDOR_AWARE);var forward=child(ticket,"native-child");
+                assertTrue(publishReserved(session,ticket,forward));session.workerSettled(ticket);session.back();
+                var composition=candidate("selected-root-composition");session.selectRootComposition(composition);
+                assertEquals(rootId,session.current().id());assertEquals(composition.id(),session.current().selected());assertEquals(3,session.current().candidates().size());
+                session.selectRootComposition(composition);assertEquals(3,session.current().candidates().size());
+                assertEquals(forward.id(),session.redo().orElseThrow().id());assertEquals(originalChoice,session.current().parentChoice().orElseThrow());
+                assertThrows(IllegalStateException.class,()->session.selectRootComposition(candidate("foreign-stage")));
+                session.back();assertEquals(composition.id(),session.current().selected());
+            }
+        });
+    }
     @Test void cancelledPublicationPreparationCannotCommitAfterReturningNormally() throws Exception {
         edt(()->{
             var session=session(AlignmentMode.PRECISE_SHAPE);var parent=session.current();var ticket=session.begin(TrackerMode.CORRIDOR_AWARE);
