@@ -106,6 +106,7 @@ jobs:
           python3 - <<'PY'
           import os
           from pathlib import Path
+          import xml.etree.ElementTree as ET
 
           names = {
               "refs/heads/codex/g004-stepwise-20261119": [
@@ -124,10 +125,18 @@ jobs:
           }
           selected = names[os.environ["FOCUSED_REF"]]
           results = Path("build/test-results/test")
-          found = [results / name for name in selected if (results / name).is_file()]
-          if not found:
-              raise SystemExit("No selected JUnit XML was produced")
-          missing = sorted(set(selected) - {path.name for path in found})
+          expected = {name.removeprefix("TEST-").removesuffix(".xml") for name in selected}
+          found = {}
+          for path in results.glob("TEST-*.xml"):
+              suite = ET.parse(path).getroot()
+              name = suite.get("name")
+              if name in expected:
+                  if name in found:
+                      raise SystemExit("Duplicate selected JUnit suite: " + name)
+                  if int(suite.get("tests", "0")) < 1 or any(int(suite.get(key, "0")) for key in ("failures", "errors", "skipped")):
+                      raise SystemExit("Selected JUnit suite did not execute cleanly: " + name)
+                  found[name] = path
+          missing = sorted(expected - set(found))
           if missing:
               raise SystemExit("Missing selected JUnit XML: " + ", ".join(missing))
           PY
