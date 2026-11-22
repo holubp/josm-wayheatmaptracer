@@ -158,7 +158,7 @@ public final class PublicGuiSmokeMain {
                 if (ready == null || ready.state() != AlignmentJob.State.PREVIEW_READY) {
                     throw new IllegalStateException("Production preview attempt is not ready");
                 }
-                if(intervalGui){runNativeIntervalGui(report,fixture,preview,session,original,originalUndo);System.exit(0);return;}
+                if(intervalGui){runNativeIntervalGui(report,fixture,preview,session,original,originalUndo,action);System.exit(0);return;}
                 String initialStatus = artifactText(latestArchive(report.getParent()),
                         "attempt-status.json");
                 if (!initialStatus.contains("\"routeIndex\":0")) {
@@ -287,7 +287,39 @@ public final class PublicGuiSmokeMain {
         fixture.dataSet().allPrimitives().forEach(value->value.setModified(false));
     }
     private static volatile String intervalEvidence;
-    private static void runNativeIntervalGui(Path report,PublicGuiSmokeFixture fixture,JDialog preview,PreviewSessionController<?> session,List<String> original,int originalUndo) throws Exception {
+    private static void runNativeIntervalGui(Path report,PublicGuiSmokeFixture fixture,JDialog preview,PreviewSessionController<?> session,List<String> original,int originalUndo,AlignWayAction action) throws Exception {
+        var sparseOwner=onEventThread(()->(LegacyRefinementWorkflow)preview.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner"));
+        var sparseChoice=onEventThread(sparseOwner::selectedChoiceIdentity);
+        clickAndAwaitStage(report,preview,sparseOwner,"refineA",StageKind.ROOT_NATIVE);
+        onEventThread(()->{
+            var diagnostic=sparseOwner.latestAttemptDiagnostics().orElseThrow();
+            if(diagnostic.publication()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Publication.NO_CHILD
+                    ||diagnostic.binding().ticket().kind()!=StageKind.REFINE_A||sparseOwner.actualNativeCalls()!=0
+                    ||!sparseChoice.equals(sparseOwner.selectedChoiceIdentity())||!preview.isShowing())
+                throw new IllegalStateException("Sparse native interval refusal did not retain its exact visible parent");
+            preview.dispatchEvent(new WindowEvent(preview,WindowEvent.WINDOW_CLOSING));return null;
+        });
+        requireUnchanged(fixture,original,originalUndo);
+        // Same original piecewise-linear geometry and protected nodes, with one midpoint
+        // per edge. The8m exterior intervals now have three original occurrences,
+        // satisfying the production planner's unchanged >2-occurrence requirement.
+        onEventThread(()->{
+            var previous=fixture.selectedWay().getNodes();var dense=new ArrayList<Node>();
+            for(int i=0;i<previous.size()-1;i++) {
+                dense.add(previous.get(i));var a=previous.get(i).getEastNorth();var b=previous.get(i+1).getEastNorth();
+                var coordinate=org.openstreetmap.josm.data.projection.ProjectionRegistry.getProjection().eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth((a.east()+b.east())/2,(a.north()+b.north())/2));
+                var midpoint=new Node(coordinate);midpoint.setOsmId(9100+i,1);fixture.dataSet().addPrimitive(midpoint);dense.add(midpoint);
+            }
+            dense.add(previous.get(previous.size()-1));fixture.selectedWay().setNodes(dense);
+            fixture.dataSet().allPrimitives().forEach(value->value.setModified(false));fixture.dataSet().setSelected(fixture.selectedWay());return null;
+        });
+        var opened=new CompletableFuture<JDialog>();
+        AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog dialog&&isPreview(dialog))opened.complete(dialog);};
+        Toolkit.getDefaultToolkit().addAWTEventListener(listener,AWTEvent.WINDOW_EVENT_MASK);
+        try{onEventThread(()->{action.actionPerformed(null);return null;});runNativeIntervalPositiveGui(report,fixture,opened.get(180,TimeUnit.SECONDS),session,wayState(fixture),originalUndo);}
+        finally{Toolkit.getDefaultToolkit().removeAWTEventListener(listener);}
+    }
+    private static void runNativeIntervalPositiveGui(Path report,PublicGuiSmokeFixture fixture,JDialog preview,PreviewSessionController<?> session,List<String> original,int originalUndo) throws Exception {
         var owner=onEventThread(()->{
             var attempt=session.currentAttempt();if(attempt==null||!(attempt.result() instanceof LiveBPreviewService.Computed computed)||!computed.partitioned()
                     ||computed.intervalBatch().runs().stream().noneMatch(run->run.usage().transitions()>0))throw new IllegalStateException("Actual native interval inference unavailable");
@@ -314,7 +346,7 @@ public final class PublicGuiSmokeMain {
         requireUnchanged(fixture,original,originalUndo);
         onEventThread(()->{if(owner.actualNativeCalls()!=calls)throw new IllegalStateException("Cached interval navigation performed inference");preview.dispatchEvent(new WindowEvent(preview,WindowEvent.WINDOW_CLOSING));return null;});
         requireUnchanged(fixture,original,originalUndo);
-        writeSummary(report,"{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\",\"status\":\"PASS\",\"engine\":\"PROBABILISTIC\",\"nativeInterval\":true,\"modeless\":true,\"cachedUndoRedo\":true,\"rootSourceChoice\":\""+rootChoice+"\",\"actualNativeCalls\":"+calls+"}\n");
+        writeSummary(report,"{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\",\"status\":\"PASS\",\"engine\":\"PROBABILISTIC\",\"nativeInterval\":true,\"sparseNoChildRetained\":true,\"modeless\":true,\"cachedUndoRedo\":true,\"rootSourceChoice\":\""+rootChoice+"\",\"actualNativeCalls\":"+calls+"}\n");
     }
     private static void awaitIntervalSelection(JDialog dialog,LegacyRefinementWorkflow owner,Runnable choose) throws Exception {
         var ready=new CompletableFuture<Void>();var observed=new AtomicBoolean();
