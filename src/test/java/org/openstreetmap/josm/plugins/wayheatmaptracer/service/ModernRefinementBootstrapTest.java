@@ -20,7 +20,7 @@ class ModernRefinementBootstrapTest {
         var data=new org.openstreetmap.josm.data.osm.DataSet();
         var nodes=new ArrayList<org.openstreetmap.josm.data.osm.Node>();
         for(int i=0;i<=30;i++) {
-            var node=new org.openstreetmap.josm.data.osm.Node(projection.eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth((i-15)*10,0)));
+            var node=new org.openstreetmap.josm.data.osm.Node(projection.eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth((i-15)*10,2)));
             data.addPrimitive(node);nodes.add(node);
         }
         var way=new org.openstreetmap.josm.data.osm.Way();way.setNodes(nodes);way.put("highway","path");data.addPrimitive(way);

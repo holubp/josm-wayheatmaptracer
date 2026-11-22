@@ -384,6 +384,13 @@ public class AlignWayAction extends JosmAction {
         public Map<Integer, Integer> routeChoices() { return routeChoices; }
         /** Returns the current complete selected and affected-way assessment. */
         public FixedIntervalEditPlanComposer.Assessment assessment() { return assessment; }
+        /** Restores one already validated cached history composition without inference or recomposition. */
+        public void restoreSelection(ModernReviewRoot.IntervalSelection stored) {
+            int found=-1;for(int i=0;i<sourceRuns.size();i++)if(sourceRuns.get(i)==stored.owner()){found=i;break;}
+            if(found<0)throw new IllegalArgumentException("Stored interval source owner unavailable");
+            sourceIndex=found;batch=stored.owner().intervalBatch();routeChoices=stored.routeChoices();assessment=stored.assessment();review=unconfirmedReview(assessment);
+        }
+        public int sourceIndex(){return sourceIndex;}
         /** Returns the exact current plan review, or null when no plan can Apply. */
         public PreviewReviewState review() { return review; }
 
@@ -1080,9 +1087,13 @@ public class AlignWayAction extends JosmAction {
             TracingSettings tracingAtCapture, LiveBPreviewService.Computed computed,
             String diagnosticAttemptIdentity, TileFetchCoordinator previewSourceOwner) {
         IntervalPreviewState state = new IntervalPreviewState(computed);
+        ModernReviewRoot[] refinementRoot={null};LegacyRefinementWorkflow[] refinement={null};
+        boolean[] rebuildingChoices={false};
         JDialog dialog = new JDialog(MainApplication.getMainFrame(),
                 tr("Interval Alignment Preview"), false);
-        JPanel panel = new JPanel();
+        JPanel panel = new JPanel(new BorderLayout(4,4));
+        JPanel body=new JPanel();body.setLayout(new javax.swing.BoxLayout(body,javax.swing.BoxLayout.Y_AXIS));
+        JPanel footer=new JPanel(new BorderLayout(4,4));JPanel buttons=new JPanel();
         JPanel intervalControls = new JPanel(new java.awt.GridLayout(0, 2));
         List<JComboBox<String>> choices = new java.util.ArrayList<>();
         JComboBox<String> sourceChoices = new JComboBox<>(state.sourceRuns().stream()
@@ -1093,11 +1104,13 @@ public class AlignWayAction extends JosmAction {
                                 : tr("Selected raster: {0}", run.options().sourceTier()
                                         .substring("selected-mapping-".length())))
                 .toArray(String[]::new));
+        sourceChoices.setName("refinement-root-source");
         for (int index = 0; index < state.batch().runs().size(); index++) {
             IntervalTraceBatch.IntervalRun run = state.batch().runs().get(index);
             intervalControls.add(new JLabel(tr("Interval {0} ({1}–{2})", index + 1,
                     run.interval().range().firstIndex(), run.interval().range().lastIndex())));
             JComboBox<String> choice = new JComboBox<>();
+            choice.setName("refinement-root-interval-"+index);
             populateIntervalRouteChoices(choice, run.routes());
             intervalControls.add(choice);
             choices.add(choice);
@@ -1121,15 +1134,13 @@ public class AlignWayAction extends JosmAction {
         intervalScroll.setPreferredSize(new Dimension(680, 180));
         String settingsNotice = modernSettingsNotice(persistedSlideConfig, slideConfig);
         if (!settingsNotice.isEmpty()) {
-            panel.add(settingsNoticeComponent(settingsNotice));
+            body.add(settingsNoticeComponent(settingsNotice));
         }
-        if (sourceChoices.getItemCount() > 1) panel.add(sourceChoices);
-        panel.add(intervalScroll);
-        panel.add(qualityScroll);
-        panel.add(disconnect);
-        panel.add(confirm);
-        panel.add(apply);
-        panel.add(close);
+        if (sourceChoices.getItemCount() > 1) body.add(sourceChoices);
+        body.add(intervalScroll);body.add(qualityScroll);
+        buttons.add(disconnect);buttons.add(confirm);buttons.add(apply);buttons.add(close);
+        footer.add(buttons,BorderLayout.SOUTH);panel.add(footer,BorderLayout.SOUTH);
+        var reviewScroll=new JScrollPane(body);reviewScroll.setPreferredSize(new Dimension(710,380));panel.add(reviewScroll,BorderLayout.CENTER);
         dialog.setContentPane(panel);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
         dialog.pack();
@@ -1141,6 +1152,23 @@ public class AlignWayAction extends JosmAction {
             if (!livePreviewSession.isCurrentWindow(owner, dialog, activePreviewDialog,
                     dialog.isDisplayable())) {
                 throw new IllegalStateException("The interval preview no longer owns this attempt");
+            }
+            if(refinement[0]!=null&&refinement[0].nativeSelected()) {
+                var workflow=refinement[0];boolean root=workflow.atRoot(),busy=workflow.busy();
+                if(root) {
+                    rebuildingChoices[0]=true;
+                    try {
+                        state.restoreSelection(refinementRoot[0].retainedIntervalSelection(workflow.selectedChoiceIdentity()));
+                        sourceChoices.setSelectedIndex(state.sourceIndex());
+                        for(int i=0;i<choices.size();i++) {populateIntervalRouteChoices(choices.get(i),state.batch().runs().get(i).routes());choices.get(i).setSelectedIndex(state.routeChoices().getOrDefault(i,0));}
+                    }finally{rebuildingChoices[0]=false;}
+                }
+                sourceChoices.setVisible(root&&sourceChoices.getItemCount()>1);intervalScroll.setVisible(root);qualityScroll.setVisible(root);
+                sourceChoices.setEnabled(root&&!busy);for(int i=0;i<choices.size();i++)choices.get(i).setEnabled(root&&!busy&&!state.batch().runs().get(i).routes().isEmpty());
+                workflow.controls().externalRootSelection(root);
+                var plan=workflow.currentNative().orElseThrow().plan();quality.setText(intervalPreviewSummary(state));
+                confirm.setEnabled(!busy&&plan.validation().disposition()==ValidationReport.Disposition.REVIEW_REQUIRED&&!workflow.canApplyNative());
+                apply.setEnabled(!busy&&!applying[0]&&workflow.canApplyNative());disconnect.setEnabled(false);return;
             }
             FixedIntervalEditPlanComposer.Assessment assessment = state.assessment();
             List<EastNorth> selectedPreview = assessment.selectedWayPreview().stream()
@@ -1190,8 +1218,20 @@ public class AlignWayAction extends JosmAction {
                     && state.review().disposition() == ValidationReport.Disposition.REVIEW_REQUIRED);
             apply.setEnabled(preflight == ModernApplyPreflight.READY && sourceApply
                     && state.applyAvailable() && !applying[0]);
+            if(refinement[0]!=null&&!refinement[0].currentSourceAvailable()){apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);}
         };
         Runnable staleFailure = () -> {
+            if(refinement[0]!=null) {
+                if(refinement[0].atRoot()) {
+                    rebuildingChoices[0]=true;
+                    try {
+                        state.restoreSelection(refinementRoot[0].retainedIntervalSelection(refinementRoot[0].choiceId(refinementRoot[0].selectedCandidate())));
+                        sourceChoices.setSelectedIndex(state.sourceIndex());
+                        for(int i=0;i<choices.size();i++){populateIntervalRouteChoices(choices.get(i),state.batch().runs().get(i).routes());choices.get(i).setSelectedIndex(state.routeChoices().getOrDefault(i,0));}
+                    }finally{rebuildingChoices[0]=false;}
+                }
+                refinement[0].refresh();refresh.run();quality.setText(tr("Root selection unavailable; the previous composition is retained. Run alignment again if its source changed.")+"\n"+intervalPreviewSummary(state));return;
+            }
             boolean closed = closeAndPublishIfCurrent(livePreviewSession, owner, () ->
                     recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.FAILED,
                             diagnosticAttemptIdentity));
@@ -1202,10 +1242,10 @@ public class AlignWayAction extends JosmAction {
                 showError(tr("Interval preview became stale; run alignment again."));
             }
         };
-        boolean[] rebuildingChoices = {false};
         sourceChoices.addActionListener(event -> {
+            if(rebuildingChoices[0])return;
             try {
-                requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
+                if(refinementRoot[0]!=null)refinementRoot[0].requireAuthorityCurrent();else requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
                         persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
                 state.chooseSource(sourceChoices.getSelectedIndex());
                 rebuildingChoices[0] = true;
@@ -1217,6 +1257,9 @@ public class AlignWayAction extends JosmAction {
                     }
                 } finally {
                     rebuildingChoices[0] = false;
+                }
+                if(refinement[0]!=null) {
+                    refinement[0].selectIntervalComposition(new ModernReviewRoot.IntervalSelection(state.selectedRun(),state.routeChoices(),state.assessment()));return;
                 }
                 refresh.run();
                 recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.PREVIEW,
@@ -1230,9 +1273,10 @@ public class AlignWayAction extends JosmAction {
             choices.get(index).addActionListener(event -> {
                 if (rebuildingChoices[0]) return;
                 try {
-                    requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
+                    if(refinementRoot[0]!=null)refinementRoot[0].requireAuthorityCurrent();else requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
                             persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
                     state.choose(intervalIndex, choices.get(intervalIndex).getSelectedIndex());
+                    if(refinement[0]!=null) {refinement[0].selectIntervalComposition(new ModernReviewRoot.IntervalSelection(state.selectedRun(),state.routeChoices(),state.assessment()));return;}
                     refresh.run();
                     recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.PREVIEW,
                             diagnosticAttemptIdentity);
@@ -1243,6 +1287,7 @@ public class AlignWayAction extends JosmAction {
         }
         confirm.addActionListener(event -> {
             try {
+                if(refinement[0]!=null&&refinement[0].nativeSelected()){refinement[0].confirm();refresh.run();return;}
                 requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
                         persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
                 state.confirmReview();
@@ -1257,6 +1302,10 @@ public class AlignWayAction extends JosmAction {
             if (applying[0]) return;
             applying[0] = true;
             apply.setEnabled(false);
+            if(refinement[0]!=null&&refinement[0].nativeSelected()) {
+                boolean applied=applyRefinementReview(refinement[0],dataSet,slideConfig,()->completed[0]=true,()->{dialog.dispose();overlay.hide();PluginLog.endSlideSession();});
+                applying[0]=false;if(!applied&&dialog.isDisplayable())refresh.run();return;
+            }
             try {
                 if (!livePreviewSession.isCurrentWindow(owner, dialog, activePreviewDialog,
                         dialog.isDisplayable())) {
@@ -1320,6 +1369,7 @@ public class AlignWayAction extends JosmAction {
             @Override public void windowClosing(WindowEvent event) {
                 if (closeAndPublishIfCurrent(livePreviewSession, owner, () -> {
                     if (!completed[0]) {
+                        if(refinement[0]!=null&&refinement[0].nativeSelected())return;
                         recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.CANCELLED,
                                 diagnosticAttemptIdentity);
                     }
@@ -1329,11 +1379,43 @@ public class AlignWayAction extends JosmAction {
                 }
             }
             @Override public void windowClosed(WindowEvent event) {
+                if(refinement[0]!=null)refinement[0].close();if(refinementRoot[0]!=null)refinementRoot[0].close();
                 if (activePreviewDialog == dialog) activePreviewDialog = null;
             }
         });
         close.addActionListener(event -> dialog.dispatchEvent(
                 new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING)));
+        if(slideConfig.heatmap().trackerMode()==TrackerMode.CORRIDOR_AWARE||slideConfig.heatmap().trackerMode()==TrackerMode.PROBABILISTIC) {
+            try {
+                var initial=new ModernReviewRoot.IntervalSelection(state.selectedRun(),state.routeChoices(),state.assessment());
+                refinementRoot[0]=ModernReviewRoot.fromIntervalSelection(dataSet,selection,slideConfig,initial,state.sourceRuns(),previewSourceOwner,
+                    ()->requireLiveBSourceOwnerCurrent(dataSet,imageryLayer,slideConfig,persistedSlideConfig,tracingAtCapture,computed.captured(),previewSourceOwner));
+                refinement[0]=new LegacyRefinementWorkflow(refinementRoot[0],previewSourceOwner,candidate->{
+                    state.restoreSelection(refinementRoot[0].retainedIntervalSelection(refinementRoot[0].choiceId(candidate)));refresh.run();
+                },displayed->{
+                    var plan=displayed.nativeReview().orElseThrow().plan();var projected=new LinkedHashMap<PrimitiveKey,List<EastNorth>>();
+                    plan.finalPreviewWays().forEach((key,points)->projected.put(key,points.stream().map(AlignWayAction::projectGeographic).toList()));
+                    overlay.setDisconnectionLocations(disconnectionLocations(plan));
+                    overlay.show(selection,displayed.result(),displayed.candidate(),CandidateAssessment.Disposition.valueOf(plan.validation().disposition().name()),false,PluginPreferences.isDebugEnabled(),projected);
+                },message->{
+                    if(refinement[0]==null)return;
+                    if(refinement[0].busy()) {sourceChoices.setEnabled(false);choices.forEach(choice->choice.setEnabled(false));apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);}
+                    else refresh.run();
+                });
+                refinement[0].controls().externalRootSelection(true);refinement[0].enableRuntimeDiagnostics(()->null);
+                refinement[0].attachCommandContext(detachedCommandContext(dataSet,computed.captured().managedRaster()==null?imageryLayer:null,computed.captured().managedRaster()!=null?previewSourceOwner:null));
+                footer.add(refinement[0].controls(),BorderLayout.CENTER);
+                dialog.getRootPane().putClientProperty("wayheatmaptracer.refinementOwner",refinement[0]);
+                livePreviewSession.replaceWindow(owner,()->{refinement[0].close();dialog.dispose();overlay.hide();});
+                refinement[0].attachOwnership(livePreviewSession.workGate(),owner,()->{livePreviewSession.close(owner);dialog.dispose();overlay.hide();});
+                attachRefinementLifecycle(dialog,refinement[0]);dialog.pack();
+            }catch(RuntimeException unavailable) {
+                if(refinement[0]!=null){footer.remove(refinement[0].controls());refinement[0].close();}if(refinementRoot[0]!=null)refinementRoot[0].close();refinement[0]=null;refinementRoot[0]=null;
+                if(livePreviewSession.isCurrent(owner))livePreviewSession.replaceWindow(owner,dialog::dispose);
+                body.add(new JLabel(tr("Optional refinement preparation is unavailable for this capture.")));
+                PluginLog.verbose("Native interval refinement attachment unavailable: %s",unavailable.getClass().getSimpleName());
+            }
+        }
         try {
             refresh.run();
             recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.PREVIEW,
@@ -1969,10 +2051,8 @@ public class AlignWayAction extends JosmAction {
             apply.setEnabled(false);
             try {
                 if(refinement[0]!=null&&refinement[0].nativeSelected()) {
-                    if(!slideConfig.heatmap().allowUndownloadedAlignment())requirePreviewWithinDownloadedArea(refinement[0].selectedGeometry(),dataSet);
-                    var publication=addReviewedCommand(UndoRedoHandler.getInstance(),refinement[0].command());
-                    refinement[0].appliedDiagnostics(publication==CommandPublication.COMMITTED_NOTIFICATION_FAILED);completed[0]=true;
-                    dialog.dispose();overlay.hide();PluginLog.endSlideSession();return;
+                    boolean applied=applyRefinementReview(refinement[0],dataSet,slideConfig,()->completed[0]=true,()->{dialog.dispose();overlay.hide();PluginLog.endSlideSession();});
+                    applying[0]=false;if(!applied&&dialog.isDisplayable())refresh.run();return;
                 }
                 int index = Math.max(0, choices.getSelectedIndex());
                 LiveBPreviewService.PreviewChoice choice = previewChoices.get(index);
@@ -2063,7 +2143,7 @@ public class AlignWayAction extends JosmAction {
                             apply.setEnabled(!busy&&!applying[0]&&refinement[0].canApplyNative());
                             disconnect.setEnabled(false);preciseRerun.setVisible(false);
                         } else if(busy){apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);preciseRerun.setEnabled(false);}
-                        else {disconnect.setEnabled(true);refresh.run();}
+                        else {disconnect.setEnabled(true);refresh.run();if(!refinement[0].currentSourceAvailable()){apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);preciseRerun.setEnabled(false);}}
                     });
                 refinement[0].controls().externalRootSelection(true);
                 refinement[0].attachCommandContext(detachedCommandContext(dataSet,computed.captured().managedRaster()==null?imageryLayer:null,computed.captured().managedRaster()!=null?previewSourceOwner:null));
@@ -3595,6 +3675,26 @@ public class AlignWayAction extends JosmAction {
             noRefinement, noRefinement, noSmoothing));
     }
 
+    /** Once the edit commits, diagnostic/presentation failures cannot turn it into a rejected edit. */
+    private boolean applyRefinementReview(LegacyRefinementWorkflow workflow,DataSet data,AlignmentConfig config,Runnable committed,Runnable close) {
+        boolean applied=false;
+        try {
+            if(!config.heatmap().allowUndownloadedAlignment())requirePreviewWithinDownloadedArea(workflow.selectedGeometry(),data);
+            var publication=addReviewedCommand(UndoRedoHandler.getInstance(),workflow.command());applied=true;
+            committed.run();
+            try{workflow.appliedDiagnostics(publication==CommandPublication.COMMITTED_NOTIFICATION_FAILED);}
+            catch(Exception failed){PluginLog.verbose("Committed refinement diagnostics unavailable: %s",failed.getClass().getSimpleName());}
+            try{close.run();}catch(Exception failed){PluginLog.verbose("Committed refinement review close unavailable: %s",failed.getClass().getSimpleName());}
+        }catch(Exception failed) {
+            if(applied)PluginLog.verbose("Committed refinement notification unavailable: %s",failed.getClass().getSimpleName());
+            else {
+                try{workflow.diagnosticsChanged("apply-failed");workflow.refresh();}
+                catch(Exception unavailable){PluginLog.verbose("Refinement failure presentation unavailable: %s",unavailable.getClass().getSimpleName());}
+                showError(tr("The selected refinement could not be applied. Inspect the retained preview and run alignment again if its source changed."));
+            }
+        }
+        return applied;
+    }
     private void attachRefinementLifecycle(JDialog review,LegacyRefinementWorkflow owner) {
         var progress=new JDialog(MainApplication.getMainFrame(),tr("Updating heatmap result"),false);
         progress.setName("refinement-progress");
@@ -3878,9 +3978,7 @@ public class AlignWayAction extends JosmAction {
             try {
                 if(!livePreviewSession.isCurrent(rootOwner))throw new IllegalStateException("The preview owner was superseded");
                 if(workflow[0].nativeSelected()) {
-                    if(!config.allowUndownloadedAlignment()) requirePreviewWithinDownloadedArea(current[0].result().previewPolyline(), dataSet);
-                    var publication=addReviewedCommand(UndoRedoHandler.getInstance(),workflow[0].command());
-                    if(livePreviewSession.isCurrent(rootOwner))workflow[0].appliedDiagnostics(publication==CommandPublication.COMMITTED_NOTIFICATION_FAILED);
+                    applyRefinementReview(workflow[0],dataSet,slideConfig,()->{},()->{dialog.dispose();overlay.hide();PluginLog.endSlideSession();});return;
                 } else {
                     if(workflow[0].busy())throw new IllegalStateException(tr("Refinement is still running."));
                     applyPreview(dataSet, selection, current[0], config, candidateRatings, reviewConfirmation[0],legacyReview,workflow[0]);

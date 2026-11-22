@@ -370,6 +370,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     public void refresh(){present();}
     public String selectedChoiceIdentity(){return session==null?review.choiceId(review.selectedCandidate()):session.current().selected().value();}
     public boolean atRoot(){return session==null||session.current().kind().root();}
+    public boolean currentSourceAvailable(){return !closed&&!review.invalidated()&&originalSourceCurrent();}
     /** Materializes one factual original interval composition, preserving a saved forward branch. */
     public void selectIntervalComposition(ModernReviewRoot.IntervalSelection selection) {
         if(!SwingUtilities.isEventDispatchThread()||busy||closed||!ownsPublication()||!(review instanceof ModernReviewRoot modern)||!modern.partitionedRoot()||!atRoot())

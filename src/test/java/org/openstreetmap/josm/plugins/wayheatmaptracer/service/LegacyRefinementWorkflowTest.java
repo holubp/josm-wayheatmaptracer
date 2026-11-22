@@ -84,6 +84,17 @@ class LegacyRefinementWorkflowTest {
                     field.set(workflow[0],new LegacyRefinementBootstrap.Seed(seed.facts(),seed.original(),seed.config(),seed.receipt(),scoped,seed.selectedChoice(),seed.memory(),seed.payloadLimit()));
                 }catch(ReflectiveOperationException failure){throw new AssertionError(failure);}});
                 work.remove().run();SwingUtilities.invokeAndWait(publication.remove());
+                // The queued bootstrap owns its immutable original seed. Scope a new idle operation,
+                // rather than expecting a later reflective seed replacement to rewrite that snapshot.
+                SwingUtilities.invokeAndWait(workflow[0]::cancel);
+                work.remove().run();SwingUtilities.invokeAndWait(publication.remove());
+                SwingUtilities.invokeAndWait(()->{try {
+                    var preparedField=LegacyRefinementWorkflow.class.getDeclaredField("preparedRoot");preparedField.setAccessible(true);
+                    var prepared=(PreparedRefinementRoot)preparedField.get(workflow[0]);
+                    var seedField=LegacyRefinementWorkflow.class.getDeclaredField("seed");seedField.setAccessible(true);var scopedSeed=(LegacyRefinementBootstrap.Seed)seedField.get(workflow[0]);
+                    preparedField.set(workflow[0],new PreparedRefinementRoot(prepared.root(),scopedSeed.settings(),prepared.original(),prepared.source(),prepared.memory(),prepared.payloadLimit()));
+                    workflow[0].refine(TrackerMode.CORRIDOR_AWARE);
+                }catch(ReflectiveOperationException failure){throw new AssertionError(failure);}});
                 SwingUtilities.invokeAndWait(()->{try {
                     var rootField=LegacyRefinementWorkflow.class.getDeclaredField("root");rootField.setAccessible(true);root[0]=(LegacyRefinementBootstrap.Root)rootField.get(workflow[0]);
                     var seedField=LegacyRefinementWorkflow.class.getDeclaredField("seed");seedField.setAccessible(true);var seed=(LegacyRefinementBootstrap.Seed)seedField.get(workflow[0]);
