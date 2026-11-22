@@ -3892,6 +3892,7 @@ public class AlignWayAction extends JosmAction {
         }catch(Exception failed) {
             if(applied)PluginLog.verbose("Committed refinement notification unavailable: %s",failed.getClass().getSimpleName());
             else {
+                try{recordRefinementApplyFailure(failed,commandAttempted);}catch(RuntimeException unavailable){ /* Failure diagnostics cannot change transaction handling. */ }
                 try{workflow.diagnosticsChanged("apply-failed");workflow.refresh();}
                 catch(Exception unavailable){PluginLog.verbose("Refinement failure presentation unavailable: %s",unavailable.getClass().getSimpleName());}
                 if(commandAttempted) {
@@ -3901,6 +3902,21 @@ public class AlignWayAction extends JosmAction {
             }
         }
         return applied;
+    }
+    /** Bounded actual failure facts; exception text, coordinates and arbitrary server data are excluded. */
+    private static void recordRefinementApplyFailure(Throwable failure,boolean commandAttempted) {
+        var prefix="org.openstreetmap.josm.plugins.wayheatmaptracer.";
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add("apply.refinementFailure.phase."+(commandAttempted?"COMMAND":"PREFLIGHT"),1);
+        for(int cause=0;failure!=null&&cause<8;cause++,failure=failure.getCause()) {
+            String kind=failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached?"WORK_LIMIT"
+                :failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.ResourceLimitException?"MEMORY_LIMIT"
+                :failure instanceof java.util.concurrent.CancellationException?"CANCELLED"
+                :failure instanceof IllegalArgumentException?"ILLEGAL_ARGUMENT":failure instanceof IllegalStateException?"ILLEGAL_STATE":"OTHER";
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add("apply.refinementFailure.cause"+cause+"."+kind,1);
+            String boundary="unavailable";
+            for(var frame:failure.getStackTrace())if(frame.getClassName().startsWith(prefix)) {boundary=frame.getClassName().substring(prefix.length())+"."+frame.getMethodName()+":"+frame.getLineNumber();break;}
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add("apply.refinementFailure.boundary"+cause+"."+boundary,1);
+        }
     }
     private org.openstreetmap.josm.plugins.wayheatmaptracer.service.VisibleRefinementCapture.Port nativeVisibleCapturePort(
             LiveBPreviewService.Captured captured,ImageryLayer layer,MapView view,Runnable sourceGuard) {
