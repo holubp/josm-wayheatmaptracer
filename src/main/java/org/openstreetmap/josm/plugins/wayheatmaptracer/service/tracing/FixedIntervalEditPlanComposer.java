@@ -32,15 +32,52 @@ public final class FixedIntervalEditPlanComposer {
     public record IntervalAssessment(int intervalIndex, int routeIndex, String routeIdentity,
             Disposition disposition, String reason) { }
 
+    /** Producer-only authority for an actually usable, validated unchanged interval graph. */
+    public static final class CompositeNoChangeProof {
+        private final IntervalTraceBatch batch;
+        private final Map<Integer,Integer> choices;
+        private final List<ModernTracePipeline.Route> routes;
+        private final ModernSingleWayEditPlanAdapter.NoChangeWatch watch;
+        private final ModernSingleWayEditPlanAdapter.FinalSelection selection;
+        private final String identity;
+        private CompositeNoChangeProof(IntervalTraceBatch batch,Map<Integer,Integer> choices,
+                ModernSingleWayEditPlanAdapter.FinalSelection selection,String identity) {
+            this.batch=batch;this.choices=normalizedChoices(batch,choices);this.selection=selection;this.identity=identity;
+            routes=java.util.stream.IntStream.range(0,batch.runs().size()).mapToObj(i->batch.runs().get(i).routes().get(this.choices.get(i))).toList();
+            var request=batch.fullRequest();var network=batch.network();
+            watch=new ModernSingleWayEditPlanAdapter.NoChangeWatch(request.selectedWayKey(),request.selectedRange(),network.snapshotId(),network.datasetIdentity(),network.sourceGeneration(),network.canonicalHash());
+        }
+        public ModernSingleWayEditPlanAdapter.FinalSelection finalSelection(){return selection;}
+        public ModernSingleWayEditPlanAdapter.NoChangeWatch watch(){return watch;}
+        public String compositionIdentity(){return identity;}
+        public void requireMatches(IntervalTraceBatch actual,Map<Integer,Integer> selected,org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot current) {
+            if(actual!=batch||!choices.equals(normalizedChoices(actual,selected))||current==null
+                    ||!watch.snapshotId().equals(current.snapshotId())||!watch.datasetIdentity().equals(current.datasetIdentity())
+                    ||watch.sourceGeneration()!=current.sourceGeneration()||!watch.networkContentHash().equals(current.canonicalHash()))
+                throw new IllegalArgumentException("Unchanged composition differs from its exact batch, routes or current network");
+            for(int i=0;i<routes.size();i++)if(batch.runs().get(i).routes().get(choices.get(i))!=routes.get(i))throw new IllegalArgumentException("Selected native interval route changed");
+        }
+        @Override public boolean equals(Object other){return other instanceof CompositeNoChangeProof proof&&batch==proof.batch&&choices.equals(proof.choices)&&identity.equals(proof.identity)&&watch.equals(proof.watch)&&selection.selectedGeometry().equals(proof.selection.selectedGeometry())&&selection.pointIds().equals(proof.selection.pointIds())&&selection.assignments().equals(proof.selection.assignments())&&selection.finalPreviewWays().equals(proof.selection.finalPreviewWays())&&selection.validation().equals(proof.selection.validation());}
+        @Override public int hashCode(){return java.util.Objects.hash(System.identityHashCode(batch),choices,identity,watch,selection.selectedGeometry(),selection.pointIds(),selection.validation());}
+    }
+    private static Map<Integer,Integer> normalizedChoices(IntervalTraceBatch batch,Map<Integer,Integer> choices){
+        if(batch==null||choices==null)throw new IllegalArgumentException("Actual batch and choices required");
+        var normalized=new LinkedHashMap<Integer,Integer>();for(int i=0;i<batch.runs().size();i++)normalized.put(i,choices.getOrDefault(i,0));
+        if(choices.keySet().stream().anyMatch(i->i==null||i<0||i>=batch.runs().size()))throw new IllegalArgumentException("Foreign interval choice");
+        return Map.copyOf(normalized);
+    }
+
     /** One immutable complete preview and its final validation result. */
     public record Assessment(Optional<AlignmentEditPlan> plan,
             List<GeographicPoint> selectedWayPreview,
             Map<FinalRoutePointId, MetricPoint> assignments,
-            List<IntervalAssessment> intervals, List<Integer> unownedDisconnectionOccurrences) {
+            List<IntervalAssessment> intervals, List<Integer> unownedDisconnectionOccurrences,
+            Optional<CompositeNoChangeProof> noChangeProof) {
+        public Assessment(Optional<AlignmentEditPlan> plan,List<GeographicPoint> preview,Map<FinalRoutePointId,MetricPoint> assignments,List<IntervalAssessment> intervals,List<Integer> unowned){this(plan,preview,assignments,intervals,unowned,Optional.empty());}
         /** Historical/no-intent assessments have no missing disconnection owners. */
         public Assessment(Optional<AlignmentEditPlan> plan, List<GeographicPoint> selectedWayPreview,
                 Map<FinalRoutePointId, MetricPoint> assignments, List<IntervalAssessment> intervals) {
-            this(plan, selectedWayPreview, assignments, intervals, List.of());
+            this(plan, selectedWayPreview, assignments, intervals, List.of(),Optional.empty());
         }
         public Assessment {
             plan = Optional.ofNullable(plan).orElseThrow();
@@ -48,6 +85,8 @@ public final class FixedIntervalEditPlanComposer {
             assignments = Map.copyOf(assignments);
             intervals = List.copyOf(intervals);
             unownedDisconnectionOccurrences = List.copyOf(unownedDisconnectionOccurrences);
+            noChangeProof=java.util.Objects.requireNonNull(noChangeProof);
+            if(noChangeProof.isPresent()&&(plan.isPresent()||!unownedDisconnectionOccurrences.isEmpty()))throw new IllegalArgumentException("Unchanged proof cannot coexist with a plan or missing owner");
             if (!unownedDisconnectionOccurrences.isEmpty() && plan.isPresent()) {
                 throw new IllegalArgumentException("A disconnected plan requires every production occurrence owner");
             }
@@ -145,8 +184,18 @@ public final class FixedIntervalEditPlanComposer {
             }
             if (candidate.changedIntervals().isEmpty()
                     && batch.fullRequest().permissions().sharedNodeDisconnectionIntent().isEmpty()) {
-                return assessment(batch, selected, routeChoices, frozen, reasons, Set.of(),
+                var unchanged=assessment(batch, selected, routeChoices, frozen, reasons, Set.of(),
                         Optional.empty(), candidate.assignments(), originalPreview(batch, selected));
+                if(usableUnchanged(batch,selected,routeChoices)) {
+                    // Retain every selected route's actual findings through the existing complete
+                    // graph/topology validator; frozen assembly intentionally omits those findings.
+                    var actual=assemble(batch,selected,routeChoices,Set.of());
+                    try {
+                        var finalSelection=adapter.unchangedComposite(batch,actual.ids(),actual.assignments(),actual.identity(),actual.findings(),routeChoices);
+                        return new Assessment(unchanged.plan(),unchanged.selectedWayPreview(),unchanged.assignments(),unchanged.intervals(),unchanged.unownedDisconnectionOccurrences(),Optional.of(new CompositeNoChangeProof(batch,routeChoices,finalSelection,actual.identity())));
+                    }catch(IllegalArgumentException refused){return unchanged;}
+                }
+                return unchanged;
             }
             try {
                 AlignmentEditPlan plan = adapter.adaptComposite(batch, candidate.ids(),
@@ -186,6 +235,19 @@ public final class FixedIntervalEditPlanComposer {
             }
         }
         throw new IllegalStateException("Interval freeze recomputation exceeded its bound");
+    }
+
+    private static boolean usableUnchanged(IntervalTraceBatch batch,DetachedWay selected,Map<Integer,Integer> choices) {
+        if(batch.runs().isEmpty())return false;
+        for(int i=0;i<batch.runs().size();i++) {
+            var run=batch.runs().get(i);var status=run.result().inference().status();
+            if(status!=TraceHypothesisSet.Status.COMPLETE&&status!=TraceHypothesisSet.Status.AMBIGUOUS||run.routes().isEmpty())return false;
+            var route=run.routes().get(choices.getOrDefault(i,0));var quality=route.quality();
+            if(routeChangesOriginal(batch,selected,run,route)||quality.disposition()==FinalGeometryEvaluator.Disposition.HARD_BLOCKED
+                    ||!Double.isFinite(quality.directlySupportedLengthMeters())||quality.directlySupportedLengthMeters()<=0
+                    ||quality.has(FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY))return false;
+        }
+        return true;
     }
 
     /** A fixed/failing interval cannot turn an explicit request into a stand-alone unglue command. */

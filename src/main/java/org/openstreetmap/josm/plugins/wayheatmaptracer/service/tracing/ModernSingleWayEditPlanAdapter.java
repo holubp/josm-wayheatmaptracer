@@ -103,7 +103,10 @@ public final class ModernSingleWayEditPlanAdapter {
         private final Map<PrimitiveKey,List<GeographicPoint>> finalPreviewWays;
         private final ValidationReport validation;
         private FinalSelection(LiveBPreviewService.Computed owner,ValidationReport validation) {
-            var request=owner.request();var network=owner.captured().network();var way=(DetachedWay)network.primitives().get(request.selectedWayKey());
+            this(owner.request(),owner.captured().network(),validation);
+        }
+        private FinalSelection(TraceRequest request,NetworkSnapshot network,ValidationReport validation) {
+            var way=(DetachedWay)network.primitives().get(request.selectedWayKey());
             var all=new ArrayList<GeographicPoint>();for(var key:way.nodeKeys()){PostprocessingValidationWork.visit();all.add(((DetachedNode)network.primitives().get(key)).coordinate());}
             var ids=new ArrayList<FinalRoutePointId>();var positions=new LinkedHashMap<Long,GeographicPoint>();
             for(int occurrence=request.selectedRange().firstIndex();occurrence<=request.selectedRange().lastIndex();occurrence++) {
@@ -814,6 +817,21 @@ public final class ModernSingleWayEditPlanAdapter {
     AlignmentEditPlan adaptComposite(IntervalTraceBatch batch, List<FinalRoutePointId> ids,
             Map<FinalRoutePointId, MetricPoint> assignments, String identity,
             List<String> routeFindings, Map<Integer, Integer> routeChoices) {
+        return draftComposite(batch,ids,assignments,identity,routeFindings,routeChoices).toPlan();
+    }
+
+    /** Validates the complete unchanged interval graph without manufacturing an identity plan. */
+    FinalSelection unchangedComposite(IntervalTraceBatch batch,List<FinalRoutePointId> ids,
+            Map<FinalRoutePointId,MetricPoint> assignments,String identity,List<String> findings,Map<Integer,Integer> choices) {
+        var draft=draftComposite(batch,ids,assignments,identity,findings,choices);
+        if(!draft.exactPrimitiveValuesUnchanged()||!draft.preview().isEmpty()||!draft.validation().applicable()
+                ||!draft.after().proposedPortReplacements().isEmpty()||!draft.request().permissions().sharedNodeDisconnectionIntent().isEmpty())
+            throw new IllegalArgumentException("Interval graph is not a validated unchanged selection");
+        return new FinalSelection(draft.request(),draft.before(),draft.validation());
+    }
+
+    private SingleWayDraft draftComposite(IntervalTraceBatch batch,List<FinalRoutePointId> ids,
+            Map<FinalRoutePointId,MetricPoint> assignments,String identity,List<String> routeFindings,Map<Integer,Integer> routeChoices) {
         TraceRequest request = batch.fullRequest();
         EvidenceSnapshot evidence = batch.evidence();
         NetworkSnapshot before = batch.network();
@@ -903,12 +921,8 @@ public final class ModernSingleWayEditPlanAdapter {
             disposition = ValidationReport.Disposition.REVIEW_REQUIRED;
             findings.add("network-review-required");
         }
-        return new AlignmentEditPlan(request.selectedWayKey(), request.selectedRange(),
-                before, after, evidence.coordinateFrame(), request.permissions(),
-                request.settingsHash(), evidence.canonicalHash(), request.parameterHash(),
-                identity, finalPreviewWays(before, afterValues),
-                withDisconnectionReview(new ValidationReport(disposition, findings), request), request.disconnectionSource(),
-                disconnected, disconnectionMode(request));
+        return new SingleWayDraft(request,evidence,before,after,finalPreviewWays(before,afterValues),
+                withDisconnectionReview(new ValidationReport(disposition,findings),request),identity);
     }
 
     private static ValidationReport withDisconnectionReview(ValidationReport validation, TraceRequest request) {
