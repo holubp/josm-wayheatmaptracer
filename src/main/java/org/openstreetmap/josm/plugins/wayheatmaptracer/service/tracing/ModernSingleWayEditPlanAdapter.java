@@ -743,7 +743,7 @@ public final class ModernSingleWayEditPlanAdapter {
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference parent,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.Assessed assessed,
             EvidenceSnapshot evidence,boolean postprocessing,Optional<ValidationReport> inheritedValidation) {
-        if(postprocessing)parent.requireComplete();else parent.requireRefinementGeometryAuthority();
+        org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.requireFrozenGeometryPreserved(parent,assessed.candidate());
         var root=parent.root();var request=root.request();var before=root.network();
         if(!evidence.coordinateFrame().equals(root.evidence().coordinateFrame())
                 ||assessed.quality().disposition()==FinalGeometryEvaluator.Disposition.HARD_BLOCKED

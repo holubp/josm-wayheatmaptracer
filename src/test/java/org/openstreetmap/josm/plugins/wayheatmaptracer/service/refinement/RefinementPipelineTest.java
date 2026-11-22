@@ -15,6 +15,29 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneratio
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 
 class RefinementPipelineTest {
+    @Test void finalCompositionRetainsFrozenInteriorWhileWholeParentInferenceRemainsBlocked() {
+        var parent=RefinementIntervalPlannerTest.capturedTopologyParent(List.of(new OccurrenceRange(0,18)),Set.of(),Set.of());
+        assertThrows(ParentTraceReference.UnavailableException.class,parent::requireRefinementGeometryAuthority);
+        assertThrows(ParentTraceReference.UnavailableException.class,()->parent.request(TrackerMode.PROBABILISTIC,parent.root().evidence(),parent.root().request().budgets(),1));
+        var composer=new ParentBackedComposer();
+        var composed=composer.compose("frozen-safe-composition",parent,List.of(ParentBackedComposerTest.choice(parent,new OccurrenceRange(0,4),50.2)));
+        var assessed=composer.assess(parent,composed,parent.root().evidence(),"native",CancellationProbe.NONE);
+        assertNotEquals(FinalGeometryEvaluator.Disposition.HARD_BLOCKED,assessed.quality().disposition(),assessed.quality().findings().toString());
+        var adapter=new ModernSingleWayEditPlanAdapter();
+        var plan=assertDoesNotThrow(()->adapter.adaptRefinement(parent,assessed,parent.root().evidence()));
+        var way=(DetachedWay)plan.before().primitives().get(plan.selectedWayKey());
+        for(var range:parent.root().frozenGeometryProof().orElseThrow().ranges())for(int i=range.firstIndex();i<=range.lastIndex();i++) {
+            var key=way.nodeKeys().get(i);assertEquals(plan.before().primitives().get(key),plan.after().primitives().get(key));
+        }
+        // Keep frozen endpoints exact and change only its interior. Even a forged passing
+        // quality record must not let that curve or its occurrence assignments reach a plan.
+        var points=new ArrayList<>(composed.points());int changed=5;
+        var old=points.get(changed);points.set(changed,new MetricPoint(old.xMeters(),old.yMeters()+1));
+        var assignments=new LinkedHashMap<>(composed.assignments());assignments.put(composed.pointIds().get(changed),points.get(changed));
+        var corrupt=new ParentBackedComposer.Composed(composed.id(),points,composed.pointIds(),assignments,composed.correspondence(),composed.spans());
+        var forged=new ParentBackedComposer.Assessed(corrupt,assessed.quality(),List.of());
+        assertThrows(IllegalArgumentException.class,()->adapter.adaptRefinement(parent,forged,parent.root().evidence()));
+    }
     @ParameterizedTest @ValueSource(ints={0,1})
     void sourcePreparationDeadlineKeepsResourceOutcomeAndPriorNativeCandidates(int failingSource) {
         var parent=ParentBackedComposerTest.copyParent();var ticket=ticket(parent,TrackerMode.PROBABILISTIC);var plan=plan(ticket,parent,true);

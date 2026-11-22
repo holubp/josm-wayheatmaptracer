@@ -263,6 +263,29 @@ public final class ParentBackedComposer {
         }
         return best;
     }
+    /** Final assembly proof, distinct from permission to run inference over a reference. */
+    public static void requireFrozenGeometryPreserved(ParentTraceReference parent,Composed candidate) {
+        parent.requireComplete();
+        var proof=parent.root().frozenGeometryProof().orElseThrow(()->new IllegalArgumentException("Frozen composition authority is unavailable"));
+        var way=(DetachedWay)parent.root().network().primitives().get(parent.root().request().selectedWayKey());
+        for(var range:proof.ranges()) {
+            int first=Math.max(range.firstIndex(),parent.originalRange().firstIndex()),last=Math.min(range.lastIndex(),parent.originalRange().lastIndex());
+            if(first>last)continue;
+            var expected=cutGeometry(parent.points(),parent.correspondence(),first,last);
+            if(!expected.equals(cutGeometry(candidate.points(),candidate.correspondence(),first,last)))
+                throw new IllegalArgumentException("Final composition changed a frozen parent curve");
+            for(int occurrence=first;occurrence<=last;occurrence++) {
+                PostprocessingValidationWork.visit();final int current=occurrence;
+                var arcs=candidate.correspondence().stream().peek(value->PostprocessingValidationWork.visit()).filter(a->a.originalOccurrence()==current).toList();
+                if(arcs.size()!=1)throw new IllegalArgumentException("Frozen occurrence correspondence is unavailable");
+                var arc=arcs.get(0);int vertex=arc.fraction()==0?arc.parentEdge():arc.fraction()==1?arc.parentEdge()+1:-1;
+                var id=new FinalRoutePointId.ExistingWayNodeOccurrence(way.key(),way.nodeKeys().get(occurrence),occurrence);
+                if(vertex<0||vertex>=candidate.pointIds().size()||!id.equals(candidate.pointIds().get(vertex))
+                        ||!parent.occurrencePosition(occurrence).equals(candidate.assignments().get(id)))
+                    throw new IllegalArgumentException("Final composition changed a frozen occurrence assignment");
+            }
+        }
+    }
     private static List<MetricPoint> cutGeometry(List<MetricPoint> points,List<ParentArc> correspondence,int first,int last) {
         var starts=correspondence.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).filter(a->a.originalOccurrence()==first).toList();
         var ends=correspondence.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).filter(a->a.originalOccurrence()==last).toList();
