@@ -75,7 +75,9 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
             // the pipeline. A later source refusal must not preclude an earlier useful run.
             LiveBPreviewService.VisibleRaster actualRaster=raster;
             if(frame!=null){var copied=frame.value().copyRaster(work);copied.owner().transferTo(owner);actualRaster=copied.value();}
-            var input=actualRaster;requireCurrent();
+            var input=actualRaster;
+            var originalReceipt=input==captured.raster()?captured.visibleInputReceipt():Optional.<org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService.VisibleInputReceipt>empty();
+            requireCurrent();
             return new RefinementPipeline.Sources(){
                 public void requireCurrent(){NativeRefinementSourceContext.this.requireCurrent();evidencePlan.requireCurrent();}
                 public Optional<RefinementSourcePlanner.Plan> binding(){return Optional.of(plan);}
@@ -83,7 +85,7 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
                     probe.checkpoint();requireCurrent();
                     if(!plan.requests().contains(request)||request.aggregate()||!request.unavailableReason().isEmpty()||!request.palette().equals(plan.settings().selectedPalette()))throw new RefinementPipeline.SourceUnavailable();
                     var existing=mappings.get(request.mapping());
-                    if(existing==null){var converted=RefinementAcquisition.captureVisible(plan,evidencePlan,input,request.mapping(),work);converted.owner().transferTo(owner);existing=converted.value();mappings.put(request.mapping(),existing);}
+                    if(existing==null){var converted=RefinementAcquisition.captureVisible(plan,evidencePlan,input,request.mapping(),work,originalReceipt);converted.owner().transferTo(owner);existing=converted.value();mappings.put(request.mapping(),existing);}
                     probe.checkpoint();requireCurrent();return existing.evidence();
                 }
                 public Optional<RetainedSmoothingSource> retentionDescriptor(RefinementSourcePlanner.SourceRequest request,EvidenceSnapshot evidence){

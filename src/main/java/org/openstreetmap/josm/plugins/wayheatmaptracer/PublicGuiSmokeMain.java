@@ -996,9 +996,14 @@ public final class PublicGuiSmokeMain {
         try{authoritative.receipt().requireRaster(clone);throw new AssertionError("Reconstructed pixels cannot borrow a producer-only visible receipt");}catch(IllegalArgumentException expected){}
         var authority=authoritative.receipt().commandAuthority(0);var before=wayState(fixture);int undo=UndoRedoHandler.getInstance().getUndoCommands().size();
         try(var memory=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production().rootOwner()){
+            var proofWork=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(256,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE,memory);
+            if(!authoritative.receipt().inputArgbHash().equals(provedVisibleInputHash(actual,authoritative.receipt(),proofWork))||proofWork.visits()!=8||proofWork.counters().get(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.HASH)!=0)throw new IllegalStateException("Exact producer input hash reuse must retain charged metadata and no duplicate pixel traversal");
+            try{provedVisibleInputHash(clone,authoritative.receipt(),proofWork);throw new AssertionError("A copied original raster cannot reuse a producer hash");}catch(IllegalArgumentException expected){}
             var exhausted=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(0,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE,memory);
+            try{provedVisibleInputHash(actual,authoritative.receipt(),exhausted);throw new AssertionError("Original input proof reuse must debit its work bound");}catch(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached expected){}
             try{authority.prepareExecution(false,exhausted);throw new AssertionError("Visible preparation must retain its work bound");}catch(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached expected){}
             var cancelled=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(8_000_000,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,()->{throw new java.util.concurrent.CancellationException();},memory);
+            try{provedVisibleInputHash(actual,authoritative.receipt(),cancelled);throw new AssertionError("Original input proof reuse must honor cancellation");}catch(java.util.concurrent.CancellationException expected){}
             try{authority.prepareExecution(false,cancelled);throw new AssertionError("Visible preparation must honor cancellation before painting");}catch(java.util.concurrent.CancellationException expected){}
         }
         authority.prepareExecution(false).run();requireUnchanged(fixture,before,undo);
@@ -1016,6 +1021,10 @@ public final class PublicGuiSmokeMain {
         try{gamma.setGamma(previousGamma+.1);try{prepared.run();throw new AssertionError("A direct policy mutation between preflight and transaction must reject");}catch(IllegalStateException expected){}}
         finally{gamma.setGamma(previousGamma);}
         try{authority.getAsLong();throw new AssertionError("Observed stale input authority cannot be revived by resetting a processor");}catch(IllegalStateException expected){}
+        try(var memory=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production().rootOwner()){
+            var staleWork=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(256,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE,memory);
+            try{provedVisibleInputHash(actual,authoritative.receipt(),staleWork);throw new AssertionError("Stale source proof cannot provide original input authority");}catch(IllegalStateException expected){}
+        }
         requireUnchanged(fixture,before,undo);
         try{
             view.setNativeScaleLayer(null);var withoutSnapper=service.captureLiveBVisibleRaster(selection,layer,view,config,"public-static-visible-null-snapper");
@@ -1057,6 +1066,10 @@ public final class PublicGuiSmokeMain {
         System.err.println("GUI_SMOKE_VISIBLE_CONTRACT source=static-public-z15-png epoch=actual-managed-layer signal="+signal+" background="+background+" chunks="+chunks.size()+" maximumGrayDifference="+maximumDifference+" viewportRestored=true");
     }
     private static void restorePublicViewport(org.openstreetmap.josm.gui.MapView view,java.awt.Dimension size,org.openstreetmap.josm.data.coor.EastNorth center,double scale,org.openstreetmap.josm.gui.layer.NativeScaleLayer snapper){view.setNativeScaleLayer(null);view.setSize(size);view.prepareToDraw();view.zoomTo(center,scale,false);view.setNativeScaleLayer(snapper);}
+    private static String provedVisibleInputHash(LiveBPreviewService.VisibleRaster raster,org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService.VisibleInputReceipt receipt,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) throws Exception {
+        var method=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAcquisition.class.getDeclaredMethod("provedOriginalVisibleInputHash",LiveBPreviewService.VisibleRaster.class,org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService.VisibleInputReceipt.class,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.class);method.setAccessible(true);
+        try{return (String)method.invoke(null,raster,receipt,work);}catch(java.lang.reflect.InvocationTargetException failure){if(failure.getCause() instanceof RuntimeException actual)throw actual;throw failure;}
+    }
     private static int publicVisibleSample(LiveBPreviewService.VisibleRaster raster,int[] pixels,double east,double north){
         var geographic=PublicGuiSmokeOracle.point(east,north);var projected=ProjectionRegistry.getProjection().latlon2eastNorth(new LatLon(geographic.latitudeDegrees(),geographic.longitudeDegrees()));
         int x=(int)Math.round((projected.east()-raster.minimumEast())/raster.projectionUnitsPerViewPixel()*6),y=(int)Math.round((raster.maximumNorth()-projected.north())/raster.projectionUnitsPerViewPixel()*6);

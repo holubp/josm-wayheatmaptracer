@@ -29,12 +29,19 @@ public final class RefinementAcquisition {
     }
     public static Accounted<VisibleCapture> captureVisible(RefinementSourcePlanner.Plan sourcePlan,
             VisibleEvidencePlan evidencePlan,LiveBPreviewService.VisibleRaster raster,String mapping,GeometryWorkContext work) {
+        return captureVisible(sourcePlan,evidencePlan,raster,mapping,work,Optional.empty());
+    }
+    /** Only the exact original producer raster may reuse its already measured ARGB hash. */
+    public static Accounted<VisibleCapture> captureVisible(RefinementSourcePlanner.Plan sourcePlan,
+            VisibleEvidencePlan evidencePlan,LiveBPreviewService.VisibleRaster raster,String mapping,GeometryWorkContext work,
+            Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService.VisibleInputReceipt> originalReceipt) {
         evidencePlan.requireWork(work);
         if(evidencePlan.sourcePlan()!=sourcePlan)throw new IllegalArgumentException("Visible plan identity differs");
         if(visibleSupport(evidencePlan,raster)!=VisibleEvidencePlan.Support.COVERED)throw new IllegalStateException("Actual visible frame lacks engine support");
         evidencePlan.requireActualSourcePitch(raster.nativePitchMeters().orElse(raster.groundMetersPerViewPixel()/6));
         if(javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Visible evidence copies require worker thread");
         var request=sourcePlan.requests().stream().filter(r->r.palette().equals(sourcePlan.settings().selectedPalette())&&r.mapping().equals(mapping)&&!r.aggregate()&&r.unavailableReason().isEmpty()).findFirst().orElseThrow(()->new IllegalArgumentException("Visible mapping not requested"));
+        var provedHash=Objects.requireNonNull(originalReceipt).map(receipt->provedOriginalVisibleInputHash(raster,receipt,work));
         var memory=work.owner().child("frozen-visible-conversion");
         try {
             long count=Math.multiplyExact((long)raster.width(),raster.height());
@@ -47,7 +54,7 @@ public final class RefinementAcquisition {
                     int length=Math.min(256,raster.width()-x);work.visit(GeometryWorkContext.Kind.COPY,length);
                     image.setRGB(x,y,length,1,argb,y*raster.width()+x,raster.width());Arrays.fill(valid,y*raster.width()+x,y*raster.width()+x+length,true);
                 }
-                String inputHash=RasterEvidenceCapture.hashOriginalArgb(image,work,memory);
+                String inputHash=provedHash.orElseGet(()->RasterEvidenceCapture.hashOriginalArgb(image,work,memory));
                 var grid=evidencePlan.grid();var transform=org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform.visibleWebMercator(raster.minimumEast(),raster.maximumNorth(),raster.projectionUnitsPerViewPixel(),6);
                 double inputPitch=raster.groundMetersPerViewPixel()/6;
                 var resolution=raster.nativePitchMeters().isPresent()?EvidenceResolution.nativeSource(raster.nativePitchMeters().getAsDouble(),inputPitch):EvidenceResolution.renderedOnly(inputPitch);
@@ -61,6 +68,10 @@ public final class RefinementAcquisition {
                 return new Accounted<>(new VisibleCapture(sourcePlan,converted.evidence(),receipt,memory,descriptor),memory);
             }
         }catch(RuntimeException|Error failure){memory.close();throw failure;}
+    }
+    static String provedOriginalVisibleInputHash(LiveBPreviewService.VisibleRaster raster,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService.VisibleInputReceipt receipt,GeometryWorkContext work) {
+        work.visit(GeometryWorkContext.Kind.BIND,8);receipt.requireRaster(raster);return receipt.inputArgbHash();
     }
     private final ManagedModernPreviewSource source;
     private final TileFetchCoordinator coordinator;
