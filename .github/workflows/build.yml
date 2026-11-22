@@ -82,7 +82,7 @@ jobs:
         run: |
           case "$GITHUB_REF" in
             refs/heads/codex/g004-stepwise-20261119)
-              filters=(--tests '*VisibleRefinementWorkflowTest' --tests '*RefinementAttemptDiagnosticsTest' --tests '*RefinementLineageCodecTest' --tests '*RefinementSessionTest' --tests '*PluginPreferencesTest' --tests '*RefinementRootAuthorityTest' --tests '*HeatmapSettingsDialogTest' --tests '*V022LiveBPreviewServiceTest.distantCompleteReceiverKeepsInteriorJunctionFixedDuringCapture' --tests '*V022LiveBPreviewServiceTest.managedCompleteSourceSetRunsNativeAndAggregateSeparately' --tests '*RefinementSmoothingAdapterTest' --tests '*SmoothingParentBinderTest' --tests '*SmoothingWorkContextTest' --tests '*RetainedSmoothingRootTest' --tests '*ModernRefinementBootstrapTest' --tests '*RefinementControlsTest' --tests '*RefinementReviewLifecycleTest' --tests '*StepwiseRefinementApplyTest' --tests '*StepwiseRefinementOwnershipTest' --tests '*LegacyRefinementWorkflowTest' --tests '*LegacyVisibleRefinementBootstrapTest' --tests '*RuntimeRefinementDiagnosticsTest' --tests '*RefinementPipelineTest' --tests '*RefinementIntervalPlannerTest')
+              filters=(--tests '*VisibleRefinementWorkflowTest' --tests '*RefinementAttemptDiagnosticsTest' --tests '*RefinementLineageCodecTest' --tests '*RefinementSessionTest' --tests '*PluginPreferencesTest' --tests '*RefinementRootAuthorityTest' --tests '*HeatmapSettingsDialogTest' --tests '*V022LiveBPreviewServiceTest.distantCompleteReceiverKeepsInteriorJunctionFixedDuringCapture' --tests '*V022LiveBPreviewServiceTest.managedCompleteSourceSetRunsNativeAndAggregateSeparately' --tests '*RefinementSmoothingAdapterTest' --tests '*SmoothingParentBinderTest' --tests '*SmoothingWorkContextTest' --tests '*RetainedSmoothingRootTest' --tests '*ModernRefinementBootstrapTest' --tests '*RefinementControlsTest' --tests '*RefinementReviewLifecycleTest' --tests '*StepwiseRefinementApplyTest' --tests '*StepwiseRefinementOwnershipTest' --tests '*LegacyRefinementWorkflowTest' --tests '*LegacyVisibleRefinementBootstrapTest' --tests '*RuntimeRefinementDiagnosticsTest' --tests '*RefinementPipelineTest' --tests '*RefinementIntervalPlannerTest' --tests '*OrdinaryModernApplyPreparationTest.originalCaptureReceiptSurvivesPlanPreparation')
               ;;
             refs/heads/codex/g004-smoothing-adapter-20261121)
               filters=(
@@ -168,7 +168,7 @@ jobs:
           from pathlib import Path
 
           classes = {
-              "refs/heads/codex/g004-stepwise-20261119": ["VisibleRefinementWorkflowTest", "RefinementAttemptDiagnosticsTest", "RefinementLineageCodecTest", "RefinementSessionTest", "PluginPreferencesTest", "RefinementRootAuthorityTest", "HeatmapSettingsDialogTest", "V022LiveBPreviewServiceTest", "RefinementSmoothingAdapterTest", "SmoothingParentBinderTest", "SmoothingWorkContextTest", "RetainedSmoothingRootTest", "ModernRefinementBootstrapTest", "RefinementControlsTest", "RefinementReviewLifecycleTest", "StepwiseRefinementApplyTest", "StepwiseRefinementOwnershipTest", "LegacyRefinementWorkflowTest", "LegacyVisibleRefinementBootstrapTest", "RuntimeRefinementDiagnosticsTest", "RefinementPipelineTest", "RefinementIntervalPlannerTest"],
+              "refs/heads/codex/g004-stepwise-20261119": ["VisibleRefinementWorkflowTest", "RefinementAttemptDiagnosticsTest", "RefinementLineageCodecTest", "RefinementSessionTest", "PluginPreferencesTest", "RefinementRootAuthorityTest", "HeatmapSettingsDialogTest", "V022LiveBPreviewServiceTest", "RefinementSmoothingAdapterTest", "SmoothingParentBinderTest", "SmoothingWorkContextTest", "RetainedSmoothingRootTest", "ModernRefinementBootstrapTest", "RefinementControlsTest", "RefinementReviewLifecycleTest", "StepwiseRefinementApplyTest", "StepwiseRefinementOwnershipTest", "LegacyRefinementWorkflowTest", "LegacyVisibleRefinementBootstrapTest", "RuntimeRefinementDiagnosticsTest", "RefinementPipelineTest", "RefinementIntervalPlannerTest", "OrdinaryModernApplyPreparationTest"],
               "refs/heads/codex/g004-smoothing-adapter-20261121": [
                   "RefinementSmoothingAdapterTest",
                   "PostprocessingValidationWorkTest",
@@ -220,6 +220,7 @@ jobs:
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RuntimeRefinementDiagnosticsTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RefinementPipelineTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RefinementIntervalPlannerTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/actions/OrdinaryModernApplyPreparationTest.java",
               ],
               "refs/heads/codex/g004-smoothing-adapter-20261121": [
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RefinementSmoothingAdapterTest.java",

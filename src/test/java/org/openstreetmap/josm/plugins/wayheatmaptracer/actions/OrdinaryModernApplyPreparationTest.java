@@ -107,6 +107,24 @@ class OrdinaryModernApplyPreparationTest {
     @BeforeEach void clearUndo() { UndoRedoHandler.getInstance().clean(); }
     @AfterEach void leaveUndoClean() { UndoRedoHandler.getInstance().clean(); }
 
+    @Test void originalCaptureReceiptSurvivesPlanPreparation() throws Exception {
+        Fixture fixture=fixture(false,true);
+        try(Attempt attempt=publish(fixture)) {
+            var assessment=new ModernSingleWayEditPlanAdapter().assess(attempt.computed,0);
+            assertTrue(assessment.applyAvailable(),assessment.detail());
+            var original=attempt.computed.captured().originalReceipt().orElseThrow();
+            var before=state(fixture.dataSet());
+            var prepared=edt(()->AlignWayAction.prepareModernApply(fixture.dataSet(),attempt.computed,0,"ordinary-route",review(assessment.plan().orElseThrow()),
+                ()->{attempt.receipt.requireCurrent();attempt.service.requireCurrent(fixture.dataSet(),attempt.computed.captured());},attempt.source::activeGenerationValue,
+                (network,plan)->{
+                    try{var field=LiveNetworkSnapshotValidator.class.getDeclaredField("captured");field.setAccessible(true);assertSame(original,field.get(network),"Plan preparation must retain the original pre-inference receipt");}
+                    catch(ReflectiveOperationException unavailable){throw new AssertionError(unavailable);}
+                    return network;
+                }));
+            assertNotNull(prepared.command());assertEquals(before,state(fixture.dataSet()));assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+        }
+    }
+
     @Test
     void completeManagedAggregateChoiceAppliesItsOwnFinalPreviewThroughHostHistory() throws Exception {
         Fixture fixture = fixture(false, true);
