@@ -965,15 +965,17 @@ public final class PublicGuiSmokeMain {
             catch(IllegalStateException refused){if(!refused.getMessage().contains("cannot be restored exactly"))throw refused;}
             if(view.getNativeScaleLayer()!=changingSnapper||!beforeSize.equals(view.getSize())||!beforeCenter.equals(view.getCenter())||beforeScale!=view.getScale()||beforePaints!=visiblePaintCalls.get())throw new IllegalStateException("Off-grid rejection changed the original viewport or painted pixels");
         }finally{shifted.set(false);restorePublicViewport(view,size,center,scale,snapper);}
-        var paintFailure=new IllegalStateException("synthetic-public-visible-paint-failure");visiblePaintFault.set(()->{throw paintFailure;});
+        // JOSM19555 paintLayer reports/swallows IllegalStateException itself. Use an
+        // actually propagated painter failure to qualify our viewport transaction boundary.
+        var paintFailure=new UnsupportedOperationException("synthetic-public-visible-paint-failure");visiblePaintFault.set(()->{throw paintFailure;});
         try{service.captureLiveBVisibleRaster(selection,layer,view,config,"public-static-visible-paint-failure");throw new AssertionError("Actual painter failure must propagate");}
-        catch(IllegalStateException failed){if(failed!=paintFailure||failed.getSuppressed().length!=0)throw new IllegalStateException("Native viewport replaced its primary painter failure",failed);}
+        catch(UnsupportedOperationException failed){if(failed!=paintFailure||failed.getSuppressed().length!=0)throw new IllegalStateException("Native viewport replaced its primary painter failure",failed);}
         if(view.getNativeScaleLayer()!=snapper||!size.equals(view.getSize())||scale!=view.getScale())throw new IllegalStateException("Native paint failure did not restore its user viewport");
-        var primary=new IllegalStateException("synthetic-public-visible-primary-failure");
+        var primary=new UnsupportedOperationException("synthetic-public-visible-primary-failure");
         try{
             view.setNativeScaleLayer(changingSnapper);visiblePaintFault.set(()->{shifted.set(true);throw primary;});
             try{service.captureLiveBVisibleRaster(selection,layer,view,config,"public-static-visible-restore-failure");throw new AssertionError("Combined painter/restoration failure must propagate");}
-            catch(IllegalStateException failed){if(failed!=primary||failed.getSuppressed().length!=1||!failed.getSuppressed()[0].getMessage().contains("restoration failed"))throw new IllegalStateException("Native viewport failed to keep primary and restoration errors distinct",failed);}
+            catch(UnsupportedOperationException failed){if(failed!=primary||failed.getSuppressed().length!=1||!failed.getSuppressed()[0].getMessage().contains("restoration failed"))throw new IllegalStateException("Native viewport failed to keep primary and restoration errors distinct",failed);}
         }finally{visiblePaintFault.set(null);shifted.set(false);restorePublicViewport(view,size,center,scale,snapper);}
         var method=org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService.class.getDeclaredMethod("captureLayerInChunks",org.openstreetmap.josm.gui.layer.ImageryLayer.class,org.openstreetmap.josm.gui.MapView.class,org.openstreetmap.josm.data.ProjectionBounds.class,java.awt.Dimension.class,double.class,java.awt.Dimension.class,List.class,List.class,boolean.class);method.setAccessible(true);
         var bounds=new org.openstreetmap.josm.data.ProjectionBounds(captured.minimumEast(),captured.minimumNorth(),captured.maximumEast(),captured.maximumNorth());

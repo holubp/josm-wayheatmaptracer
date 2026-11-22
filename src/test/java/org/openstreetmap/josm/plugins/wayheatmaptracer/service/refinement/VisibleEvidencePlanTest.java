@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.VisibleRefinementCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.VisibleRefinementCaptureTest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
@@ -64,6 +65,12 @@ public class VisibleEvidencePlanTest {
    var raster=new LiveBPreviewService.VisibleRaster(w*6,h*6,new int[w*6*h*6],actual.minimumEast(),actual.minimumNorth(),actual.maximumEast(),actual.maximumNorth(),p.projectedScale(),1,OptionalDouble.of(1),s.parent().root().sourceIdentity(),"EPSG:3857",original.sourceReceipt());
    assertEquals(VisibleEvidencePlan.Support.COVERED,RefinementAcquisition.visibleSupport(p,raster));
    assertTrue(b.minimumEast()>=actual.minimumEast());assertTrue(b.maximumNorth()<=actual.maximumNorth());
+   for(double x:new double[]{-.501,.501})for(double y:new double[]{-.501,.501}){
+    double dx=x*p.projectedScale(),dy=y*p.projectedScale();
+    var shifted=new VisibleRefinementCapture.Bounds(actual.minimumEast()+dx,actual.minimumNorth()+dy,actual.maximumEast()+dx,actual.maximumNorth()+dy);
+    assertTrue(shifted.minimumEast()<=b.minimumEast()&&shifted.maximumEast()>=b.maximumEast()&&shifted.minimumNorth()<=b.minimumNorth()&&shifted.maximumNorth()>=b.maximumNorth(),"Canvas padding must contain complete required support at JOSM's extreme origin-lattice phase");
+    assertEquals(VisibleEvidencePlan.Support.COVERED,p.supportFrame(shifted,w*6,h*6,p.projectedScale(),raster.sourceIdentity(),raster.projectionCode(),original.sourceReceipt()));
+   }
    var tiny=new LiveBPreviewService.VisibleRaster(6,6,new int[36],original.minimumEast(),original.minimumNorth(),original.minimumEast()+1,original.minimumNorth()+1,1,1,OptionalDouble.of(1),raster.sourceIdentity(),"EPSG:3857",original.sourceReceipt());
    assertEquals(VisibleEvidencePlan.Support.NEEDS_CAPTURE,RefinementAcquisition.visibleSupport(p,tiny));
   }

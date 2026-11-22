@@ -350,6 +350,14 @@ public final class RefinementRootAuthority {
             if(value instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorExecutionReceipt receipt) {
                 put(value,ModernReviewRoot.nativeReceiptBytes(receipt));return;
             }
+            if(value instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer.CompositeNoChangeProof proof) {
+                // Producer-only metadata references the already-owned actual interval batch.
+                // Inventory its immutable proof values explicitly; never reflect into native
+                // owner graphs or treat an arbitrary non-record object as detached authority.
+                proof.retainedMetadataCharges().forEach(this::put);visit(proof.watch());
+                var selection=proof.finalSelection();put(selection,128);visit(selection.selectedGeometry());
+                visit(selection.pointIds());visit(selection.assignments());visit(selection.finalPreviewWays());visit(selection.validation());return;
+            }
             if(value instanceof ScalarEvidenceField field) {
                 // The constructor privately clones all three arrays; aliases to one field share them exactly.
                 long pixels=(long)field.width()*field.height();
