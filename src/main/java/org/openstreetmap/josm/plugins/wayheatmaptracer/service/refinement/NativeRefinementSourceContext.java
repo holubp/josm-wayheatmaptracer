@@ -64,7 +64,11 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
             transform=SupportedInputRasterTransform.visibleWebMercator(raster.minimumEast(),raster.maximumNorth(),raster.projectionUnitsPerViewPixel(),6);
             try(var scratch=work.reserve("native-original-image-hash",Math.addExact(8192,8L*width*height))) {
                 var image=new BufferedImage(width,height,BufferedImage.TYPE_INT_ARGB);
-                work.visit(GeometryWorkContext.Kind.COPY,(long)width*height);image.setRGB(0,0,width,height,raster.argb(),0,width);
+                var pixels=raster.argb();
+                for(int y=0;y<height;y++)for(int x=0;x<width;x+=256) {
+                    int count=Math.min(256,width-x);work.visit(GeometryWorkContext.Kind.COPY,count);
+                    image.setRGB(x,y,count,1,pixels,y*width+x,width);
+                }
                 hash=RasterEvidenceCapture.hashOriginalArgb(image,work,memory);
             }
         } else {
