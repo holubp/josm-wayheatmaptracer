@@ -573,6 +573,8 @@ public final class PublicGuiSmokeMain {
             verifySilentSettingsSave();
             requireUnchanged(fixture, original, originalUndo);
         }
+        if(savedEngine==TrackerMode.LEGACY_V02&&requestedMode==AlignmentMode.PRECISE_SHAPE&&!bFirst)
+            exerciseSmoothThenRefineGui(report,action,session,fixture,original,originalUndo,StageKind.REFINE_B);
         String entryEvidence = savedEngine == TrackerMode.LEGACY_V02 ? "" :
             ",\"keyboardEntry\":\"" + entryActionKey(savedEngine) + "\",\"settingsAcceptedWithoutNotice\":true";
         writeSummary(report,"{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\",\"status\":\"PASS\",\"engine\":\"LEGACY_V02\",\"savedEngine\":\""+savedEngine.name()+"\""+entryEvidence+",\"stepwise\":true,\"order\":\""+(bFirst?"B_A":"A_B")+"\",\"mode\":\""+appliedMode+"\",\"firstOutcome\":\""+firstOutcome+"\",\"secondOutcome\":\""+secondOutcome+"\",\"actualNativeCalls\":"+owner.actualNativeCalls()+",\"modeless\":true,\"cachedUndoRedo\":true,\"panZoomOverlay\":true,\"oneCommandApply\":true,\"commandUndoRedo\":true,\"cancelSettled\":true,\"nativeCancellationEntered\":true,\"nativeCancellationObserved\":true,\"nativePhysicalReturned\":true,\"noninitialLegacyParent\":true,\"allStageFindingsRestored\":true,\"archiveBuild\":\"runtime-stepwise-refinement-v1\",\"appliedArchive\":\"stepwise-applied.zip\",\"cancelledArchive\":\"stepwise-cancelled.zip\",\"appliedArchiveSha256\":\""+appliedArchive+"\",\"cancelledArchiveSha256\":\""+cancelledArchive+"\"}\n");
@@ -1654,7 +1656,7 @@ public final class PublicGuiSmokeMain {
             var parentGeometry=onEventThread(owner::selectedGeometry);var parentChoice=onEventThread(owner::selectedChoiceIdentity);
             int calls=owner.actualNativeCalls();var source=ManagedTileRuntime.initializedCoordinator().stats();
             clickAndAwaitStage(report,dialog,owner,"smooth",StageKind.SMOOTH);
-            var smooth=onEventThread(()->{
+            var medium=onEventThread(()->{
                 var stage=owner.currentStage();
                 if(!stage.parentChoice().orElseThrow().value().equals(parentChoice)||owner.actualNativeCalls()!=calls
                         ||!ManagedTileRuntime.initializedCoordinator().stats().equals(source)
@@ -1663,6 +1665,15 @@ public final class PublicGuiSmokeMain {
                 if(!parentGeometry.equals(owner.selectedGeometry())||!parentChoice.equals(owner.selectedChoiceIdentity()))throw new IllegalStateException("Smoothing Undo lost its exact selected parent");
                 requiredNamed(dialog.getContentPane(),"redo",javax.swing.JButton.class).doClick();
                 if(owner.currentStage()!=stage)throw new IllegalStateException("Smoothing Redo recomputed its stage");return stage;
+            });
+            var smooth=selectStrongAndAwait(dialog,owner,medium);
+            onEventThread(()->{
+                if(!smooth.parent().equals(medium.parent())||!smooth.parentChoice().equals(medium.parentChoice())||owner.actualNativeCalls()!=calls
+                        ||!ManagedTileRuntime.initializedCoordinator().stats().equals(source))throw new IllegalStateException("Strong must replace Medium from the same unsmoothed source/parent without inference or capture");
+                requiredNamed(dialog.getContentPane(),"undo",javax.swing.JButton.class).doClick();
+                if(!parentGeometry.equals(owner.selectedGeometry())||!parentChoice.equals(owner.selectedChoiceIdentity()))throw new IllegalStateException("Strong Undo lost the pinned unsmoothed parent");
+                requiredNamed(dialog.getContentPane(),"redo",javax.swing.JButton.class).doClick();
+                if(owner.currentStage()!=smooth)throw new IllegalStateException("Strong Redo did not restore its exact cached publication");return null;
             });
             requireUnchanged(fixture,original,originalUndo);
             try{Format15ArchiveReader.read(exportThroughActualMenu());}
@@ -1675,8 +1686,9 @@ public final class PublicGuiSmokeMain {
                 return owner.currentNative().orElseThrow().plan();
             });
             requireUnchanged(fixture,original,originalUndo);
-            var confirm=onEventThread(()->labelledButton(dialog.getContentPane(),"Confirm review").isEnabled());
-            if(confirm)confirmStepwiseNative(dialog);
+            boolean legacy="legacy-review".equals(dialog.getName());
+            var confirm=onEventThread(()->{var button=legacy?requiredNamed(dialog.getContentPane(),"legacy-confirm",javax.swing.JButton.class):labelledButton(dialog.getContentPane(),"Confirm review");return button.isVisible()&&button.isEnabled();});
+            if(confirm){if(legacy)confirmStepwise(dialog);else confirmStepwiseNative(dialog);}
             onEventThread(()->{var apply=labelledButton(dialog.getContentPane(),"Apply");if(!apply.isEnabled())throw new IllegalStateException("Post-smoothing native child is not applicable");apply.doClick();return null;});
             if(onEventThread(dialog::isDisplayable)||UndoRedoHandler.getInstance().getUndoCommands().size()!=originalUndo+1)throw new IllegalStateException("Smoothing chain did not publish exactly one command");
             var expected=plan.finalPreviewWays().get(plan.selectedWayKey());
@@ -1685,6 +1697,27 @@ public final class PublicGuiSmokeMain {
             onEventThread(()->{UndoRedoHandler.getInstance().redo();return null;});if(!applied.equals(wayState(fixture)))throw new IllegalStateException("Smoothing chain Redo changed stored geometry");
             onEventThread(()->{UndoRedoHandler.getInstance().undo();return null;});requireUnchanged(fixture,original,originalUndo);
         }finally{Toolkit.getDefaultToolkit().removeAWTEventListener(listener);}
+    }
+    private static org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Stage selectStrongAndAwait(
+            JDialog dialog,LegacyRefinementWorkflow owner,org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Stage medium) throws Exception {
+        var ready=new CompletableFuture<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Stage>();
+        Runnable check=()->{
+            if(owner.busy()){requireComputingView(dialog);return;}
+            var stage=owner.currentStage();
+            if(stage.kind()==StageKind.SMOOTH&&!stage.id().equals(medium.id())&&stage.smoothingInput().orElseThrow().preset().equals("Strong"))ready.complete(stage);
+            else ready.completeExceptionally(new IllegalStateException("Strong replacement retained its prior stage: "+fixedFailureBoundary(owner.computationEvidence())));
+        };
+        java.beans.PropertyChangeListener listener=event->SwingUtilities.invokeLater(check);
+        try {
+            onEventThread(()->{
+                requiredNamed(dialog.getContentPane(),"stage",javax.swing.JLabel.class).addPropertyChangeListener(listener);
+                requiredNamed(dialog.getContentPane(),"refineA",javax.swing.JButton.class).addPropertyChangeListener(listener);
+                var strength=requiredNamed(dialog.getContentPane(),"strength",JComboBox.class);
+                if(!strength.isEnabled())throw new IllegalStateException("Actual smoothing strength control is disabled");
+                strength.setSelectedItem(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.STRONG);
+                if(owner.busy())requireComputingView(dialog);SwingUtilities.invokeLater(check);return null;
+            });return ready.get(180,TimeUnit.SECONDS);
+        }finally{onEventThread(()->{requiredNamed(dialog.getContentPane(),"stage",javax.swing.JLabel.class).removePropertyChangeListener(listener);requiredNamed(dialog.getContentPane(),"refineA",javax.swing.JButton.class).removePropertyChangeListener(listener);return null;});}
     }
     private static void confirmStepwiseNative(JDialog dialog) throws Exception {
         AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog modal&&modal.isModal()){
