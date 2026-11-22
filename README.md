@@ -510,6 +510,9 @@ a previously smoothed result. Choose a detector result after computation; the
 parent palette does not lock the next operation to that palette. Review Undo and
 Redo restore cached geometry, choices and findings without rerunning work.
 
+When the starting A/B result already matches OSM, you can still refine or smooth
+it. Accepting that unchanged result leaves data and Undo history intact.
+
 Medium and Strong smoothing are alternatives from the same unsmoothed selected
 parent. Changing strength does not smooth the Medium result again. Original
 movement permissions, fixed and shared anchors, and whole-preview safety checks
