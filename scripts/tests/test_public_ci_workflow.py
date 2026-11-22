@@ -20,6 +20,32 @@ def _workflow() -> dict[str, object]:
     return loaded
 
 
+def test_focused_xml_gate_uses_suite_identity_and_requires_executed_green_tests(tmp_path, monkeypatch) -> None:
+    job = _workflow()["jobs"]["g004-focused-tests"]
+    gate = next(step for step in job["steps"] if step.get("name") == "Require selected JUnit XML after a passing run")
+    script = gate["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("FOCUSED_REF", "refs/heads/codex/g004-stepwise-20261119")
+    reports = tmp_path / "build/test-results/test"
+    reports.mkdir(parents=True)
+    names = [
+        "service.VisibleRefinementWorkflowTest",
+        "service.refinement.RefinementAttemptDiagnosticsTest",
+        "diagnostics.replay.format15.RefinementLineageCodecTest",
+        "service.refinement.RefinementSessionTest",
+        "config.PluginPreferencesTest",
+    ]
+    for index, name in enumerate(names):
+        (reports / f"TEST-randomized-{index}.xml").write_text(
+            f'<testsuite name="org.openstreetmap.josm.plugins.wayheatmaptracer.{name}" tests="1" failures="0" errors="0" skipped="0"/>')
+    exec(script, {})
+    import pytest
+    (reports / "TEST-randomized-0.xml").write_text(
+        '<testsuite name="org.openstreetmap.josm.plugins.wayheatmaptracer.service.VisibleRefinementWorkflowTest" tests="0" failures="0" errors="0" skipped="0"/>')
+    with pytest.raises(SystemExit):
+        exec(script, {})
+
+
 def test_public_artifact_upload_is_exactly_allowlisted_and_gated() -> None:
     workflow = _workflow()
     assert workflow["permissions"] == {"contents": "read"}
