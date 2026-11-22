@@ -126,6 +126,7 @@ public final class PublicGuiSmokeMain {
                 return null;
             });
             AlignWayAction action = onEventThread(() -> engine == TrackerMode.LEGACY_V02
+                ||engine==TrackerMode.CORRIDOR_AWARE&&requestedMode==AlignmentMode.PRECISE_SHAPE
                 ? registeredOrdinaryAction() : registeredEntryAction(engine));
             PreviewSessionController<?> session = productionSession(plugin);
             List<String> original = wayState(fixture);
