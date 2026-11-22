@@ -26,8 +26,10 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
     private final LegacyReviewOwner observer;
     private final AlignmentConfig config;
     private final List<LiveBPreviewService.PreviewChoice> nativeChoices;
-    private final IntervalSelection interval;
-    private final List<LegacyReviewOwner.Choice> choices;
+    private IntervalSelection interval;
+    private List<LegacyReviewOwner.Choice> choices;
+    private List<LiveBPreviewService.Computed> intervalSources;
+    private final Map<String,IntervalSelection> intervalSelections=new LinkedHashMap<>();
     private final AlignmentResult original;
     private final TileFetchCoordinator coordinator;
     private final Runnable hostCurrent;
@@ -42,6 +44,7 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
         this.config=Objects.requireNonNull(config);this.coordinator=coordinator;this.hostCurrent=Objects.requireNonNull(hostCurrent);
         this.nativeChoices=List.copyOf(nativeChoices);this.interval=interval;
         var owner=interval==null?this.nativeChoices.get(0).owner():interval.owner();
+        intervalSources=interval==null?List.of():owner.productionRuns().stream().filter(LiveBPreviewService.Computed::partitioned).toList();
         if(!Set.of(TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC).contains(owner.request().engine())
                 ||owner.request().engine()!=config.heatmap().trackerMode()||owner.request().geometryMode()!=config.heatmap().alignmentMode())
             throw new IllegalArgumentException("Native root engine or mode differs from original capture");
@@ -52,7 +55,8 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
         var candidates=interval==null?this.nativeChoices.stream().map(LiveBPreviewService.PreviewChoice::candidate).toList():
             List.of(intervalCandidate(interval,projection));
         selected=candidates.get(0);
-        choices=java.util.stream.IntStream.range(0,candidates.size()).mapToObj(i->new LegacyReviewOwner.Choice("native-choice-"+i,candidates.get(i))).toList();
+        choices=java.util.stream.IntStream.range(0,candidates.size()).mapToObj(i->new LegacyReviewOwner.Choice(interval==null?"native-choice-"+i:intervalChoiceId(interval),candidates.get(i))).toList();
+        if(interval!=null)intervalSelections.put(choices.get(0).id(),interval);
         var source=owner.captured().sourceGeographic().stream().map(p->projection.latlon2eastNorth(new LatLon(p.latitudeDegrees(),p.longitudeDegrees()))).toList();
         var attempts=new ArrayList<DetectorAttempt>();
         for(int i=0;i<candidates.size();i++) {
@@ -75,6 +79,46 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
             IntervalSelection interval,TileFetchCoordinator coordinator,Runnable hostCurrent) {
         return new ModernReviewRoot(data,selection,config,List.of(),Objects.requireNonNull(interval),coordinator,hostCurrent);
     }
+    public static ModernReviewRoot fromIntervalSelection(DataSet data,SelectionContext selection,AlignmentConfig config,
+            IntervalSelection interval,List<LiveBPreviewService.Computed> sources,TileFetchCoordinator coordinator,Runnable hostCurrent) {
+        var root=fromIntervalSelection(data,selection,config,interval,coordinator,hostCurrent);
+        try{root.requireIntervalSources(sources);root.intervalSources=List.copyOf(sources);return root;}
+        catch(RuntimeException failed){root.close();throw failed;}
+    }
+    private void requireIntervalSources(List<LiveBPreviewService.Computed> sources) {
+        if(interval==null||sources==null||sources.isEmpty()||sources.stream().noneMatch(run->run==interval.owner()))throw new IllegalArgumentException("Native interval source owner unavailable");
+        for(var run:sources)if(!run.partitioned()||run.captured()!=interval.owner().captured()||run.request().engine()!=engine())throw new IllegalArgumentException("Foreign interval source owner");
+    }
+    static String ownerIdentity(LiveBPreviewService.Computed owner){return owner.options().sourceTier()+":"+owner.request().evidenceContentHash();}
+    static String intervalChoiceId(IntervalSelection selection){return "native-composition-"+selection.assessment().plan().orElseThrow(()->new IllegalArgumentException("Native interval plan unavailable")).canonicalHash();}
+    public boolean partitionedRoot(){return interval!=null;}
+    ModernReviewRoot preparationFor(IntervalSelection selection) {
+        requireAuthorityCurrent();
+        if(interval==null||intervalSources.stream().noneMatch(run->run==selection.owner()))throw new IllegalArgumentException("Foreign interval source selection");
+        return fromIntervalSelection(dataSet(),selection(),config,selection,intervalSources,coordinator,hostCurrent);
+    }
+    void replaceUnpreparedInterval(IntervalSelection selection) {
+        requireAuthorityCurrent();
+        if(interval==null||intervalSources.stream().noneMatch(run->run==selection.owner()))throw new IllegalArgumentException("Foreign interval source selection");
+        var candidate=intervalCandidate(selection,Projections.getProjectionByCode(selection.owner().captured().projectionCode()));
+        interval=selection;selected=candidate;choices=List.of(new LegacyReviewOwner.Choice(intervalChoiceId(selection),candidate));
+        intervalSelections.clear();intervalSelections.put(choices.get(0).id(),selection);
+    }
+    void registerPreparedInterval(IntervalSelection selection,Candidate candidate) {
+        requireAuthorityCurrent();
+        if(interval==null||intervalSources.stream().noneMatch(run->run==selection.owner())||!candidate.id().value().equals(intervalChoiceId(selection)))throw new IllegalArgumentException("Foreign materialized interval choice");
+        var state=candidate.payload().rootReviewState().orElseThrow();
+        if(!state.sourceOwnerIdentity().equals(ownerIdentity(selection.owner()))||!state.routeChoices().equals(selection.routeChoices())||!state.intervalAssessment().equals(Optional.of(selection.assessment())))throw new IllegalArgumentException("Materialized interval state differs");
+        if(intervalSelections.containsKey(candidate.id().value()))return;
+        var next=new ArrayList<>(choices);next.add(new LegacyReviewOwner.Choice(candidate.id().value(),candidate.payload().retainedProjectedCandidate()));choices=List.copyOf(next);
+        intervalSelections.put(candidate.id().value(),selection);
+    }
+    void unregisterPreparedInterval(String choice) {
+        choices=choices.stream().filter(value->!value.id().equals(choice)).toList();intervalSelections.remove(choice);
+    }
+    public IntervalSelection retainedIntervalSelection(String choice) {
+        var selection=intervalSelections.get(choice);if(selection==null)throw new IllegalArgumentException("Stored interval selection unavailable");return selection;
+    }
     static String mapping(LiveBPreviewService.Computed run) {
         String tier=run.options().sourceTier();
         return tier.equals("all-colors-combined")?tier:tier.startsWith("selected-mapping-")?tier.substring("selected-mapping-".length()):run.captured().palette();
@@ -86,7 +130,7 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
     public AlignmentResult originalResult(){return original;}
     public List<LegacyReviewOwner.Choice> choices(){return choices;}
     public CenterlineCandidate selectedCandidate(){return selected;}
-    public void select(CenterlineCandidate candidate){observer.select(candidate);selected=candidate;}
+    public void select(CenterlineCandidate candidate){requireOriginalAttemptCurrent();choiceId(candidate);selected=candidate;}
     public String choiceId(CenterlineCandidate candidate){return choices.stream().filter(c->c.candidate()==candidate).findFirst().orElseThrow(()->new IllegalArgumentException("Foreign native choice")).id();}
     public CenterlineCandidate candidateForChoice(String id){return choices.stream().filter(c->c.id().equals(id)).findFirst().orElseThrow(()->new IllegalArgumentException("Unknown native choice")).candidate();}
     public void requireOriginalAttemptCurrent(){observer.requireOriginalAttemptCurrent();hostCurrent.run();}
@@ -115,7 +159,7 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
             var nativeFacts=new IdentityHashMap<Object,Long>();
             nativeFacts.put(hashes,8192L);
             var owners=Collections.newSetFromMap(new IdentityHashMap<LiveBPreviewService.Computed,Boolean>());
-            if(interval!=null)owners.add(interval.owner());else nativeChoices.forEach(c->owners.add(c.owner()));
+            if(interval!=null)owners.addAll(intervalSources);else nativeChoices.forEach(c->owners.add(c.owner()));
             for(var owner:owners) {
                 nativeFacts.putAll(RefinementRootAuthority.detachedCharges(owner.request(),owner.pipeline(),owner.options(),owner.counters(),owner.intervalBatch(),owner.settingsResolutionJson()));
                 nativeFacts.put(owner,512L);
@@ -141,8 +185,8 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
                 var ids=interval==null?run.pipeline().routes().get(nativeChoices.get(index).localRouteIndex()).pointIds():NativeRefinementSourceContext.intervalPointIds(interval.assessment());
                 var nativeReview=new RefinementPayload.NativeReview(plan,quality,Optional.empty(),List.of(request),OptionalInt.empty(),Map.of(request,source),List.of(),Optional.of(ids));
                 var single=new AlignmentResult(original.selection(),null,List.of(choice.candidate()),original.sourcePolyline(),choice.candidate().finalPreviewPoints(),List.of(),null,null,original.detectorAttempts().stream().filter(a->a.candidateIds().contains(choice.candidate().id())).toList(),List.of(choice.candidate()));
-                String identity=interval==null?nativeChoices.get(index).reviewIdentity():run.options().sourceTier()+":"+run.request().evidenceContentHash()+":"+plan.routeIdentity();
-                var rootState=new RefinementPayload.RootReviewState(identity,interval==null?OptionalInt.of(nativeChoices.get(index).localRouteIndex()):OptionalInt.empty(),interval==null?Map.of():interval.routeChoices(),plan.routeIdentity(),Optional.ofNullable(interval==null?null:interval.assessment()));
+                String identity=interval==null?nativeChoices.get(index).reviewIdentity():ownerIdentity(run)+":"+plan.routeIdentity();
+                var rootState=new RefinementPayload.RootReviewState(interval==null?identity:ownerIdentity(run),interval==null?OptionalInt.of(nativeChoices.get(index).localRouteIndex()):OptionalInt.empty(),interval==null?Map.of():interval.routeChoices(),plan.routeIdentity(),Optional.ofNullable(interval==null?null:interval.assessment()));
                 var payload=RefinementPayload.captureNative(single,originalPayload,nativeReview,RefinementLimits.defaults().maxPayloadBytes()).withRootReviewState(rootState);
                 var points=choice.candidate().finalPreviewPoints().stream().map(p->{var ll=Projections.getProjectionByCode(capture.projectionCode()).eastNorth2latlon(p);return capture.outputGrid().coordinateFrame().toMetric(new GeographicPoint(ll.lat(),ll.lon()));}).toList();
                 var arcs=LegacyRefinementBootstrap.correspondence(capture.network(),run.request().selectedWayKey(),run.request().selectedRange(),capture.sourceMetric(),capture.projectionCode(),capture.outputGrid().coordinateFrame(),choice.candidate(),points);

@@ -254,6 +254,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         void close(){if(selection!=null)selection.owner().close();owner.close();}
     }
     private final Map<StageId,RetainedStage> retainedStages=new HashMap<>();
+    private final Map<CandidateId,AttemptMemoryLedger.Owner> rootCompositionOwners=new HashMap<>();
     private volatile RefinementAttemptDiagnostics latestDiagnostics;
     private RefinementAttemptDiagnostics.Slot diagnosticsSlot;
     private volatile RefinementAttemptDiagnostics.Availability diagnosticsAvailability=RefinementAttemptDiagnostics.Availability.NONE;
@@ -368,6 +369,74 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     }
     public void refresh(){present();}
     public String selectedChoiceIdentity(){return session==null?review.choiceId(review.selectedCandidate()):session.current().selected().value();}
+    public boolean atRoot(){return session==null||session.current().kind().root();}
+    /** Materializes one factual original interval composition, preserving a saved forward branch. */
+    public void selectIntervalComposition(ModernReviewRoot.IntervalSelection selection) {
+        if(!SwingUtilities.isEventDispatchThread()||busy||closed||!ownsPublication()||!(review instanceof ModernReviewRoot modern)||!modern.partitionedRoot()||!atRoot())
+            throw new IllegalStateException("Interval selection requires the current idle native root");
+        modern.requireAuthorityCurrent();
+        if(session==null){modern.replaceUnpreparedInterval(selection);rootSelection.accept(modern.selectedCandidate());present();return;}
+        String id=ModernReviewRoot.intervalChoiceId(selection);
+        var cached=session.current().candidates().stream().filter(c->c.id().value().equals(id)).findFirst();
+        if(cached.isPresent()) {publishRootComposition(modern,selection,cached.orElseThrow(),null);present();return;}
+        var preparation=modern.preparationFor(selection);
+        var operation=rootMemory.child("interval-root-preparation");
+        var publication=rootMemory.child("interval-root-publication");
+        cancellation=new CancellationToken();var probe=probe(cancellation);
+        var budget=RefinementPipeline.OperationBudget.production(TraceBudgets.defaults());
+        var workContext=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(sourcePreparationControl.visits(),sourcePreparationControl.bytes(),budget.finalDeadlineNanos(),probe,operation);
+        busy=true;message="";PreviewWorkGate.Work work;
+        try{work=beginOwnedWork();present();}
+        catch(RuntimeException failed){busy=false;operation.close();publication.close();preparation.close();throw failed;}
+        CompletableFuture<PreparedRefinementRoot> computation;
+        try{computation=CompletableFuture.supplyAsync(()->new ModernRefinementBootstrap().complete(preparation,workContext),executor);}
+        catch(RuntimeException rejected){computation=CompletableFuture.failedFuture(rejected);}
+        computation.whenComplete((prepared,failure)->dispatchCompletion(()->{
+            boolean published=false;
+            try {
+                if(closed||!ownsPublication())return;
+                if(failure!=null)throw unwrap(failure);probe.checkpoint();modern.requireAuthorityCurrent();
+                var stage=prepared.root().stage();var candidate=stage.candidates().stream().filter(c->c.id().equals(stage.selected())).findFirst().orElseThrow();
+                candidate.payload().retainSmoothingSources(publication);
+                for(var charge:candidate.payload().publicationCharges().entrySet()) {
+                    try{publication.retainIfAbsent(charge.getKey());}
+                    catch(IllegalArgumentException absent){publication.reserve(charge.getValue()).adopt(charge.getKey());}
+                }
+                publishRootComposition(modern,selection,candidate,publication);published=true;message="";
+            }catch(RuntimeException failed) {
+                message=cancellation.isCancelled()?"Root selection cancelled; retained the previous composition.":"Root selection unavailable; retained the previous composition.";
+                if(!closed)restoreCurrentPresentation();
+            }finally {
+                if(prepared!=null)prepared.close();preparation.close();operation.close();if(!published)publication.close();
+                busy=false;settleWork(work);
+                if(closed)releaseClosed();
+                else try{present();}finally{completeLifecycle(work,published);}
+            }
+        }));
+    }
+    private void publishRootComposition(ModernReviewRoot modern,ModernReviewRoot.IntervalSelection selection,Candidate candidate,AttemptMemoryLedger.Owner owner) {
+        var previous=session.current();boolean registered=previous.candidates().stream().noneMatch(c->c.id().equals(candidate.id()));
+        var metadataOwner=rootMemory.child("root-selection-wrapper");
+        try {
+            var metadataReservation=metadataOwner.reserve(Math.addExact(256L,Math.multiplyExact(8L,previous.candidates().size()+(registered?1:0))));
+            if(registered)modern.registerPreparedInterval(selection,candidate);
+            session.selectRootComposition(candidate,()->{
+                var candidates=new ArrayList<>(previous.candidates());if(registered)candidates.add(candidate);
+                showStage(new Stage(previous.id(),previous.parent(),previous.parentChoice(),previous.kind(),previous.engine(),candidates,candidate.id(),previous.smoothingInput()));
+                modern.requireAuthorityCurrent();
+            });
+            metadataReservation.adopt(session.current());
+            var retained=retainedStages.get(previous.id());var old=retained.selection;
+            retained.selection=new SelectionMetadata(session.current(),metadataOwner);if(old!=null)old.owner().close();
+            confirmation=null;
+            if(owner!=null)rootCompositionOwners.put(candidate.id(),owner);
+            diagnosticState="root-selection";
+        }catch(RuntimeException failed) {
+            metadataOwner.close();
+            if(registered)modern.unregisterPreparedInterval(candidate.id().value());
+            restoreCurrentPresentation();throw failed;
+        }
+    }
     public List<org.openstreetmap.josm.data.coor.EastNorth> selectedGeometry(){
         if(!nativeSelected())return review.selectedCandidate().finalPreviewPoints();
         var selected=selected();return selected.payload().nativeGeometry().stream().filter(c->c.id().equals(selected.nativeCandidateId())).findFirst().orElseThrow().finalPreviewPoints();
@@ -517,7 +586,8 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             try(var snapshot=operation.reserve(session.admissionInventoryReferenceBytes())){baseline=session.admissionInventories();snapshot.adopt(baseline);}
             catch(RuntimeException refused){operation.close();throw refused;}
             var publication=rootMemory.child("publication-"+ticket.sequence());
-            var publishedParent=nativeSelected()?retainedStages.get(session.current().id()).metadata:root.stage();
+            retainSelectionMetadata(session.current());
+            var publishedParent=session.current();
             var inheritedWork=initialVisibleWork;var inheritedBudget=initialVisibleBudget;initialVisibleWork=null;initialVisibleBudget=null;
             var entry=new NativeEntry(ticket);activeEntry=entry;
             if(inheritedWork==null)cancellation=new CancellationToken();var probe=probe(cancellation,entry);busy=true;
@@ -878,6 +948,6 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             &&metadata.paintedFrame().filter(LegacyVisibleSource.PaintedFrame::commonResolution).isPresent()
             &&review.originalResult().capturedHeatmap()!=null&&(intensity==null||intensity.usesColorMapping())&&!review.originalConfig().heatmap().aggregateAllColorSchemes();
     }
-    private void releaseClosed(){latestDiagnostics=null;diagnosticsSlot=null;diagnosticsAvailability=RefinementAttemptDiagnostics.Availability.NONE;diagnosticMemory.closeWorkflow();legacyDiagnosticContext=null;legacyContextSupplier=null;ratingSupplier=null;pendingLegacyReview=null;pendingLegacyReviewMemory=null;retainedStages.clear();seed=null;root=null;preparedRoot=null;sourceContext=null;preparingSourceCurrent=()->{};session=null;confirmation=null;}
+    private void releaseClosed(){latestDiagnostics=null;diagnosticsSlot=null;diagnosticsAvailability=RefinementAttemptDiagnostics.Availability.NONE;rootCompositionOwners.values().forEach(AttemptMemoryLedger.Owner::close);rootCompositionOwners.clear();diagnosticMemory.closeWorkflow();legacyDiagnosticContext=null;legacyContextSupplier=null;ratingSupplier=null;pendingLegacyReview=null;pendingLegacyReviewMemory=null;retainedStages.clear();seed=null;root=null;preparedRoot=null;sourceContext=null;preparingSourceCurrent=()->{};session=null;confirmation=null;}
     @Override public void close(){if(closed)return;if(isCurrent()&&!diagnosticSealed){if(!diagnosticState.equals("apply-failed"))diagnosticsChanged("cancelled");freezeDiagnostics(true,false);}closed=true;if(lifecycle!=null)lifecycle.close();workGate.release(this);if(cancellation!=null)cancellation.cancel();if(session!=null)session.close();if(!busy)releaseClosed();}
 }

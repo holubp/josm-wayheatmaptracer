@@ -82,12 +82,18 @@ public final class RefinementPayload {
         charges = measure(result);
         nativeReview.ifPresent(review->charges.putAll(nativeReviewCharges(review)));
         rootState.ifPresent(state->charges.putAll(RefinementRootAuthority.detachedCharges(state)));
-        charges.put(this,96L);
+        // Root payload also owns its bounded choice/selection registry entries in the live review.
+        charges.put(this,rootState.isPresent()?1120L:96L);
         charges.put(selection.<Object>map(value->value).orElse(sourceNodes),sourceCharge(nodes.size(),selection.map(v->v.selectedNodeIds().size()).orElse(0)));
     }
     public RefinementPayload withRootReviewState(RootReviewState state) {
         if(nativeReview.isEmpty())throw new IllegalStateException("Native root state requires a stored native plan");
         return new RefinementPayload(result,sourceNodes,sourceSelection,nativeReview,Optional.of(state));
+    }
+    CenterlineCandidate retainedProjectedCandidate() {
+        if(result.capturedHeatmap()!=null||result.tileMosaics()!=null||result.candidates().size()!=1||!result.candidates().get(0).screenPoints().isEmpty())
+            throw new IllegalStateException("A retained projected root candidate is required");
+        return result.candidates().get(0);
     }
     /**
      * Checks a conservative, overflow-safe bound before copying any raster, point, map or node list.
