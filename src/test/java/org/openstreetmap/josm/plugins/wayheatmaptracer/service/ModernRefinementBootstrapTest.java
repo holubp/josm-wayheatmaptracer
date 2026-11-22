@@ -392,6 +392,9 @@ class ModernRefinementBootstrapTest {
         var projection=ProjectionRegistry.getProjection();var data=new org.openstreetmap.josm.data.osm.DataSet();var nodes=new ArrayList<org.openstreetmap.josm.data.osm.Node>();
         for(int i=0;i<11;i++){var node=new org.openstreetmap.josm.data.osm.Node(projection.eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth((i-5)*4,0)));data.addPrimitive(node);nodes.add(node);}
         var way=new org.openstreetmap.josm.data.osm.Way();way.setNodes(nodes);way.put("highway","path");data.addPrimitive(way);nodes.get(5).put("note","protected original island");
+        // Partition capture is owned by actual shared topology, not a tagged node alone.
+        var remote=new org.openstreetmap.josm.data.osm.Node(projection.eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth(0,30)));data.addPrimitive(remote);
+        var branch=new org.openstreetmap.josm.data.osm.Way();branch.setNodes(List.of(nodes.get(5),remote));branch.put("highway","path");data.addPrimitive(branch);
         var selection=new SelectionContext(way,1,9,nodes.subList(1,10),Set.of(nodes.get(1),nodes.get(9)));var base=V022LiveBPreviewServiceTest.config(TrackerMode.PROBABILISTIC);
         var config=new AlignmentConfig(base.heatmap().withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES),base.cleanup());var epoch=new VisibleSourceEpoch();int width=600,height=160;var pixels=new int[width*height];
         for(int y=0;y<height;y++){double north=(height/2.-y)/6;int gray=(int)Math.round(255*(.02+.8*Math.exp(-.5*north*north/1.44)));java.util.Arrays.fill(pixels,y*width,(y+1)*width,0xff000000|gray<<16|gray<<8|gray);}
