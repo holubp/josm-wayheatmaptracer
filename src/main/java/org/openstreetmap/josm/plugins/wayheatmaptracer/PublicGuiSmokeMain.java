@@ -1905,7 +1905,9 @@ public final class PublicGuiSmokeMain {
         if(confirm){if(legacy)confirmStepwise(dialog);else confirmStepwiseNative(dialog);}
         var rejected=new AtomicBoolean();
         AWTEventListener dismiss=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog warning&&warning.isModal()){
-            rejected.set(true);printSafeStartupFrames("stored-apply-modal",Thread.currentThread(),16);SwingUtilities.invokeLater(warning::dispose);
+            rejected.set(true);System.err.println("GUI_SMOKE_STORED_APPLY_REFUSAL "+storedApplyFailureCode(warning));
+            int count=0;for(var frame:Thread.currentThread().getStackTrace())if(frame.getClassName().startsWith("org.openstreetmap.josm.plugins.wayheatmaptracer.")&&count++<16)System.err.println("GUI_SMOKE_STORED_APPLY_FRAME class="+safeSymbol(frame.getClassName())+" method="+safeSymbol(frame.getMethodName()));
+            SwingUtilities.invokeLater(warning::dispose);
         }};
         Toolkit.getDefaultToolkit().addAWTEventListener(dismiss,AWTEvent.WINDOW_EVENT_MASK);
         try{onEventThread(()->{
@@ -1920,6 +1922,25 @@ public final class PublicGuiSmokeMain {
         var applied=wayState(fixture);onEventThread(()->{UndoRedoHandler.getInstance().undo();return null;});requireUnchanged(fixture,original,undo);
         onEventThread(()->{UndoRedoHandler.getInstance().redo();return null;});if(!applied.equals(wayState(fixture)))throw new IllegalStateException("Visible interval Redo changed stored geometry");
         onEventThread(()->{UndoRedoHandler.getInstance().undo();return null;});requireUnchanged(fixture,original,undo);
+    }
+    /** Classify fixed internal guards; never print arbitrary exception text or coordinates. */
+    private static String storedApplyFailureCode(JDialog warning) {
+        var panes=new ArrayList<javax.swing.JOptionPane>();collectOptionPanes(warning.getContentPane(),panes);
+        var codes=java.util.Map.ofEntries(
+            java.util.Map.entry("The command dataset, source or settings changed","COMMAND_CONTEXT"),
+            java.util.Map.entry("geometry-work-limit","PREPARATION_WORK_LIMIT"),
+            java.util.Map.entry("Visible rendering policy changed after capture","RENDER_POLICY"),
+            java.util.Map.entry("Visible input authority is stale","INPUT_STALE"),
+            java.util.Map.entry("Visible repeat pixels differ","PIXELS"),java.util.Map.entry("Visible repeat source resolution differs","RESOLUTION"),
+            java.util.Map.entry("Visible repeat frame differs","FRAME"),java.util.Map.entry("Native visible paint clip differs","FRAME_CLIP"),
+            java.util.Map.entry("Original visible viewport scale cannot be restored exactly","SNAPPER"),
+            java.util.Map.entry("Native visible viewport restoration failed","VIEWPORT_RESTORE"),
+            java.util.Map.entry("Alignment plan, dataset, or source generation is stale","PLAN_SOURCE_GENERATION"),
+            java.util.Map.entry("Live network closure changed before Apply","ORIGINAL_NETWORK"),
+            java.util.Map.entry("Stale before-state:","BEFORE_STATE"),java.util.Map.entry("Wrong after-state:","AFTER_STATE"),
+            java.util.Map.entry("Alignment edit failed; all mutations were rolled back","ROLLED_BACK"));
+        for(var pane:panes)if(pane.getMessage() instanceof String message)for(var code:codes.entrySet())if(message.contains(code.getKey()))return code.getValue();
+        return "UNCLASSIFIED";
     }
     private static void exerciseOriginalNativeStaleInspection(AlignWayAction action,PreviewSessionController<?> session,PublicGuiSmokeFixture fixture,List<String> original,int originalUndo) throws Exception {
         var opened=new CompletableFuture<JDialog>();var modal=new AtomicBoolean();
