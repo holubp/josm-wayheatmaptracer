@@ -50,7 +50,7 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
         hostCurrent.run();
         var projection=Projections.getProjectionByCode(owner.captured().projectionCode());
         var candidates=interval==null?this.nativeChoices.stream().map(LiveBPreviewService.PreviewChoice::candidate).toList():
-            List.of(new CenterlineCandidate("native-interval-root",1,List.of(),List.of()).withFinalPreviewPoints(interval.assessment().selectedWayPreview().stream().map(p->projection.latlon2eastNorth(new LatLon(p.latitudeDegrees(),p.longitudeDegrees()))).toList()));
+            List.of(intervalCandidate(interval,projection));
         selected=candidates.get(0);
         choices=java.util.stream.IntStream.range(0,candidates.size()).mapToObj(i->new LegacyReviewOwner.Choice("native-choice-"+i,candidates.get(i))).toList();
         var source=owner.captured().sourceGeographic().stream().map(p->projection.latlon2eastNorth(new LatLon(p.latitudeDegrees(),p.longitudeDegrees()))).toList();
@@ -102,7 +102,8 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
         if(SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Native root preparation requires worker thread");
         final String[] selectedId=new String[1];onEdt(()->{requireAuthorityCurrent();selectedId[0]=choiceId(selected);});
         var memory=work.owner().child("original-native-root");
-        try(var scratch=work.reserve("native-root-preparation-scratch",RefinementLimits.defaults().maxPayloadBytes())) {
+        try(var scope=org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.open(work);
+                var scratch=work.reserve("native-root-preparation-scratch",RefinementLimits.defaults().maxPayloadBytes())) {
             work.visit(GeometryWorkContext.Kind.BIND,1);
             var primary=firstOwner();var capture=primary.captured();
             var receipt=capture.originalReceipt().orElseThrow(()->new IllegalStateException("Original native capture receipt unavailable"));
@@ -134,13 +135,13 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
                 work.visit(GeometryWorkContext.Kind.BIND,1);
                 var choice=choices.get(index);var run=interval==null?nativeChoices.get(index).owner():interval.owner();
                 var plan=interval==null?new ModernSingleWayEditPlanAdapter().assess(run,nativeChoices.get(index).localRouteIndex()).plan().orElseThrow(()->new IllegalStateException("Native root plan unavailable")):interval.assessment().plan().orElseThrow(()->new IllegalStateException("Native interval plan unavailable"));
-                var quality=interval==null?run.pipeline().routes().get(nativeChoices.get(index).localRouteIndex()).quality():NativeRefinementSourceContext.intervalQuality(run,interval.assessment());
+                var quality=interval==null?run.pipeline().routes().get(nativeChoices.get(index).localRouteIndex()).quality():NativeRefinementSourceContext.intervalQuality(run,interval.assessment(),work);
                 var source=retainedSources.computeIfAbsent(run,r->NativeRefinementSourceContext.retain(r,settings,context,work,memory,hashes));
                 var request=source.source();
-                var ids=interval==null?run.pipeline().routes().get(nativeChoices.get(index).localRouteIndex()).pointIds():List.copyOf(interval.assessment().assignments().keySet());
+                var ids=interval==null?run.pipeline().routes().get(nativeChoices.get(index).localRouteIndex()).pointIds():NativeRefinementSourceContext.intervalPointIds(interval.assessment());
                 var nativeReview=new RefinementPayload.NativeReview(plan,quality,Optional.empty(),List.of(request),OptionalInt.empty(),Map.of(request,source),List.of(),Optional.of(ids));
                 var single=new AlignmentResult(original.selection(),null,List.of(choice.candidate()),original.sourcePolyline(),choice.candidate().finalPreviewPoints(),List.of(),null,null,original.detectorAttempts().stream().filter(a->a.candidateIds().contains(choice.candidate().id())).toList(),List.of(choice.candidate()));
-                String identity=interval==null?nativeChoices.get(index).reviewIdentity():plan.routeIdentity();
+                String identity=interval==null?nativeChoices.get(index).reviewIdentity():run.options().sourceTier()+":"+run.request().evidenceContentHash()+":"+plan.routeIdentity();
                 var rootState=new RefinementPayload.RootReviewState(identity,interval==null?OptionalInt.of(nativeChoices.get(index).localRouteIndex()):OptionalInt.empty(),interval==null?Map.of():interval.routeChoices(),plan.routeIdentity(),Optional.ofNullable(interval==null?null:interval.assessment()));
                 var payload=RefinementPayload.captureNative(single,originalPayload,nativeReview,RefinementLimits.defaults().maxPayloadBytes()).withRootReviewState(rootState);
                 var points=choice.candidate().finalPreviewPoints().stream().map(p->{var ll=Projections.getProjectionByCode(capture.projectionCode()).eastNorth2latlon(p);return capture.outputGrid().coordinateFrame().toMetric(new GeographicPoint(ll.lat(),ll.lon()));}).toList();
@@ -173,12 +174,24 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
         }
         return bytes;
     }
-    private static long nativeReceiptBytes(CorridorExecutionReceipt receipt) {
+    static long nativeReceiptBytes(CorridorExecutionReceipt receipt) {
         var values=RefinementRootAuthority.detachedCharges(receipt.requestHash(),receipt.evidenceHash(),receipt.networkHash(),receipt.resultHash(),receipt.networkSnapshotId(),receipt.settingsHash(),receipt.certificateStatus(),receipt.certificateIdentity(),receipt.sampling(),receipt.tracks(),receipt.totals());
         long bytes=4096;for(long value:values.values())bytes=Math.addExact(bytes,value);
         for(var provenance:receipt.candidates().values())bytes=Math.addExact(bytes,Math.addExact(1024L,8L*(provenance.hypothesisId().length()+provenance.trackId().length())));
         if(receipt.originalCostPolicies().isPresent())bytes=Math.addExact(bytes,receipt.originalCostPolicyMetadataBytes().orElseThrow(()->new IllegalArgumentException("Native original cost ownership unavailable")));
         return bytes;
+    }
+    private static CenterlineCandidate intervalCandidate(IntervalSelection selection,org.openstreetmap.josm.data.projection.Projection projection) {
+        var plan=selection.assessment().plan().orElseThrow(()->new IllegalArgumentException("Native interval plan unavailable"));
+        var ids=NativeRefinementSourceContext.intervalPointIds(selection.assessment());
+        var points=new ArrayList<org.openstreetmap.josm.data.coor.EastNorth>();
+        var assignments=new LinkedHashMap<Long,org.openstreetmap.josm.data.coor.EastNorth>();
+        for(var id:ids) {
+            var geographic=plan.metricFrame().toGeographic(selection.assessment().assignments().get(id));
+            var point=projection.latlon2eastNorth(new LatLon(geographic.latitudeDegrees(),geographic.longitudeDegrees()));points.add(point);
+            if(id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing)assignments.put(existing.nodeKey().id(),point);
+        }
+        return new CenterlineCandidate("native-interval-root",1,List.of(),List.of()).withFinalPreviewGeometry(points,assignments);
     }
     private static void onEdt(Runnable action) {
         if(SwingUtilities.isEventDispatchThread()){action.run();return;}

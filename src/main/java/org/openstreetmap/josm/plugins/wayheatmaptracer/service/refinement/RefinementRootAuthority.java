@@ -246,6 +246,9 @@ public final class RefinementRootAuthority {
             if(value instanceof Number||value instanceof Boolean||value instanceof Character){put(value,64);return;}
             if(value instanceof Optional<?> optional){put(value,64);optional.ifPresent(this::visit);return;}
             if(value instanceof OptionalDouble||value instanceof OptionalInt||value instanceof OptionalLong){put(value,64);return;}
+            if(value instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorExecutionReceipt receipt) {
+                put(value,ModernReviewRoot.nativeReceiptBytes(receipt));return;
+            }
             if(value instanceof ScalarEvidenceField field) {
                 // The constructor privately clones all three arrays; aliases to one field share them exactly.
                 long pixels=(long)field.width()*field.height();

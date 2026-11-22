@@ -97,7 +97,37 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
             evidence.sourceIdentity()+"/native-original/"+mapping,hash,capture.managedRaster()==null?OptionalLong.empty():OptionalLong.of(capture.managedRaster().generation().value()),
             capture.raster()==null?Optional.empty():Optional.of(capture.raster().sourceReceipt()),Optional.empty(),hashProtocol,work,memory);
     }
-    static FinalGeometryEvaluator.Result intervalQuality(LiveBPreviewService.Computed run,FixedIntervalEditPlanComposer.Assessment assessment) {
-        throw new UnsupportedOperationException("Native interval final quality binding unavailable");
+    static List<FinalRoutePointId> intervalPointIds(FixedIntervalEditPlanComposer.Assessment assessment) {
+        var plan=assessment.plan().orElseThrow();
+        var before=(DetachedWay)plan.before().primitives().get(plan.selectedWayKey());
+        var after=(DetachedWay)plan.after().primitives().get(plan.selectedWayKey());
+        int first=plan.selectedRange().firstIndex();
+        int end=after.nodeKeys().size()-(before.nodeKeys().size()-plan.selectedRange().lastIndex()-1);
+        var byKey=new LinkedHashMap<PrimitiveKey,FinalRoutePointId>();
+        for(var id:assessment.assignments().keySet()) {
+            PrimitiveKey key=id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing
+                ?plan.disconnectedOccurrenceReplacements().getOrDefault(existing.originalOccurrenceIndex(),existing.nodeKey())
+                :PrimitiveKey.planned(PrimitiveKey.Type.NODE,((FinalRoutePointId.GeneratedCandidatePoint)id).originalPointIndex());
+            if(byKey.put(key,id)!=null)throw new IllegalArgumentException("Interval point identity is duplicated");
+        }
+        var ids=new ArrayList<FinalRoutePointId>();
+        for(var key:after.nodeKeys().subList(first,end)) {
+            var id=byKey.remove(key);if(id==null)throw new IllegalArgumentException("Interval final point identity unavailable");
+            var actual=((DetachedNode)plan.after().primitives().get(key)).coordinate();
+            if(plan.metricFrame().toMetric(actual).distanceTo(assessment.assignments().get(id))>1e-6)
+                throw new IllegalArgumentException("Interval final assignment differs from plan");
+            ids.add(id);
+        }
+        if(!byKey.isEmpty())throw new IllegalArgumentException("Interval assignments exceed selected range");
+        return List.copyOf(ids);
+    }
+    static FinalGeometryEvaluator.Result intervalQuality(LiveBPreviewService.Computed run,FixedIntervalEditPlanComposer.Assessment assessment,GeometryWorkContext work) {
+        var ids=intervalPointIds(assessment);var points=ids.stream().map(assessment.assignments()::get).toList();
+        var protectedPoints=new LinkedHashMap<Integer,MetricPoint>();
+        for(int i=0;i<ids.size();i++)if(ids.get(i) instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing
+                &&run.captured().network().closure().protectedExistingNodeKeys().contains(existing.nodeKey()))protectedPoints.put(i,points.get(i));
+        var image=ImageCostField.fromEvidence(run.evidence(),run.options().fieldName(),work);
+        return new FinalGeometryEvaluator().evaluate(new FinalGeometryEvaluator.Request(assessment.plan().orElseThrow().routeIdentity(),points,ids,image,
+            run.evidence().resolution().effectivePitchMeters(),protectedPoints,List.of(),false,false,false,false));
     }
 }
