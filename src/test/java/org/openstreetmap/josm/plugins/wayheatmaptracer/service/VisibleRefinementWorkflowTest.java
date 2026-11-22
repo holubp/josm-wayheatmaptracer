@@ -24,6 +24,50 @@ class VisibleRefinementWorkflowTest {
     @TempDir Path temp;
     @BeforeAll static void setup(){Config.setPreferencesInstance(new MemoryPreferences());ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));}
     static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> cells(){return LegacyRefinementWorkflowTest.modes();}
+    @Test void usefulSmoothingStrengthsUseOneUnsmoothedParentAndPermitNativeContinuation() throws Exception {
+        for(var mode:AlignmentMode.values()) {
+            var workers=new LinkedBlockingQueue<Runnable>();var publications=new LinkedBlockingQueue<Runnable>();
+            var owner=new LegacyReviewOwner[1];var workflow=new LegacyRefinementWorkflow[1];
+            SwingUtilities.invokeAndWait(()->{
+                var data=new DataSet();var nodes=new ArrayList<Node>();var projection=ProjectionRegistry.getProjection();
+                for(int i=0;i<5;i++){var node=new Node(projection.eastNorth2latlon(new EastNorth(-60+30*i,0)));data.addPrimitive(node);nodes.add(node);}
+                var way=new Way();way.setNodes(nodes);data.addPrimitive(way);
+                var selection=new SelectionContext(way,0,4,nodes,Set.of(nodes.get(0),nodes.get(4)));
+                var config=AlignmentConfig.withoutCleanup(new ManagedHeatmapConfig("","","","","all","hot","",".*",mode,TrackerMode.LEGACY_V02,false,false,false,false,false,false,false,true,false,false,7,4,3,InferenceMode.RAW_HIGH_RESOLUTION,15,15,7.01,1.56,IntensitySamplingMode.COLOR_MAPPING,7));
+                owner[0]=LegacyReviewOwner.begin(data,selection,config);
+                var original=nodes.stream().map(Node::getEastNorth).toList();var preview=new ArrayList<EastNorth>(original);
+                for(int i=1;i<4;i++)preview.set(i,new EastNorth(original.get(i).east(),3));
+                var image=new BufferedImage(200,100,BufferedImage.TYPE_INT_ARGB);
+                for(int y=0;y<100;y++){int gray=(int)Math.round(255*(.02+.8*Math.exp(-.5*Math.pow((y-50)/1.2,2))));for(int x=0;x<200;x++)image.setRGB(x,y,0xff000000|gray<<16|gray<<8|gray);}
+                var candidate=new CenterlineCandidate("supported-bend",1,List.of(),List.of()).withFinalPreviewPoints(preview);
+                var result=new AlignmentResult(selection,image,List.of(candidate),original,preview,List.of(),null,null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(candidate.id()),"","")),List.of(candidate));
+                var source=new LegacyVisibleSource(-100,-50,100,50,6,6,OptionalDouble.of(2),"EPSG:3857",new VisibleSourceEpoch().captureStable(),OptionalDouble.of(7.01),OptionalDouble.of(1.56));
+                owner[0].captured(result,LegacyVisibleRefinementBootstrapTest.factualFrame(source,200,100,0,0));
+                workflow[0]=new LegacyRefinementWorkflow(owner[0],null,owner[0]::select,d->{},s->{},workers::add,publications::add);
+                workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.MEDIUM);
+            });
+            try {
+                drain(workers,publications,workflow[0]);
+                SwingUtilities.invokeAndWait(()->{
+                    assertEquals("SMOOTH",workflow[0].currentStage().kind().name(),workflow[0].computationEvidence());
+                    assertEquals(0,workflow[0].actualNativeCalls());
+                    assertTrue(workflow[0].currentNative().orElseThrow().smoothingReceipt().isPresent());
+                    workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.STRONG);
+                });
+                drain(workers,publications,workflow[0]);
+                var strong=workflow[0].selectedGeometry();
+                SwingUtilities.invokeAndWait(()->{
+                    assertEquals("Strong",workflow[0].currentStage().smoothingInput().orElseThrow().preset());
+                    ((JButton)find(workflow[0].controls(),"undo")).doClick();
+                    workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.STRONG);
+                });
+                drain(workers,publications,workflow[0]);
+                SwingUtilities.invokeAndWait(()->{assertEquals(strong,workflow[0].selectedGeometry());assertEquals(0,workflow[0].actualNativeCalls());workflow[0].refine(TrackerMode.PROBABILISTIC);});
+                drain(workers,publications,workflow[0]);
+                SwingUtilities.invokeAndWait(()->assertTrue(workflow[0].actualNativeCalls()>0,"A smoothed parent must permit requested native work"));
+            } finally {SwingUtilities.invokeAndWait(()->{workflow[0].close();owner[0].close();});}
+        }
+    }
     @ParameterizedTest @MethodSource("cells")
     void visibleABPreciseAndMove(AlignmentMode mode,TrackerMode engine) throws Exception {
         var decoder=new TileDecoderClassifier();var work=new LinkedBlockingQueue<Runnable>();var publications=new LinkedBlockingQueue<Runnable>();
