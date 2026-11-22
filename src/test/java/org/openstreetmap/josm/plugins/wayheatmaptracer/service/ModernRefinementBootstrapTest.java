@@ -203,6 +203,9 @@ class ModernRefinementBootstrapTest {
     @Test void compactNativeRecaptureKeepsSuccessfulHistoryParentIdentityAndStoredCommand() throws Exception {
         Config.setPreferencesInstance(new MemoryPreferences());ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
         var fixture=V022LiveBPreviewServiceTest.fiveNodeFixture();var config=V022LiveBPreviewServiceTest.config(TrackerMode.PROBABILISTIC);
+        // Purpose-owned ordinary OSM error makes the first native plan a real edit. The measured
+        // primary, fixed endpoints, acquisition policy and budgets remain the same public input.
+        SwingUtilities.invokeAndWait(()->{for(int i=1;i<4;i++){var node=fixture.selection().segmentNodes().get(i);var point=node.getEastNorth();node.setEastNorth(new org.openstreetmap.josm.data.coor.EastNorth(point.east(),point.north()+1));}});
         var epoch=new VisibleSourceEpoch();int width=320,height=160;var pixels=new int[width*height];
         for(int y=0;y<height;y++)for(int x=0;x<width;x++){int gray=compactGray(-width/12.+x/6.,height/12.-y/6.);pixels[y*width+x]=0xff000000|gray<<16|gray<<8|gray;}
         var raster=new LiveBPreviewService.VisibleRaster(width,height,pixels,-width/12.,-height/12.,width/12.,height/12.,1,1,OptionalDouble.of(1),"compact-native-recapture","EPSG:3857",epoch.captureStable());
