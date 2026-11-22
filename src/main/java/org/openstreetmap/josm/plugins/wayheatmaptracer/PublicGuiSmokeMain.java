@@ -930,7 +930,7 @@ public final class PublicGuiSmokeMain {
         if(signal<120||background>60)throw new IllegalStateException("Actual visible source missed the independently predicted public ridge/background: "+signal+"/"+background);
         var method=org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService.class.getDeclaredMethod("captureLayerInChunks",org.openstreetmap.josm.gui.layer.ImageryLayer.class,org.openstreetmap.josm.gui.MapView.class,org.openstreetmap.josm.data.ProjectionBounds.class,java.awt.Dimension.class,double.class,java.awt.Dimension.class,List.class,List.class,boolean.class);method.setAccessible(true);
         var bounds=new org.openstreetmap.josm.data.ProjectionBounds(captured.minimumEast(),captured.minimumNorth(),captured.maximumEast(),captured.maximumNorth());
-        java.awt.image.BufferedImage stitched;var chunks=new ArrayList<org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyVisibleSource.PaintedChunk>();
+        java.awt.image.BufferedImage stitched;var chunks=new ArrayList<org.openstreetmap.josm.plugins.wayheatmaptracer.model.LegacyVisibleSource.PaintedChunk>();
         try{stitched=(java.awt.image.BufferedImage)method.invoke(service,layer,view,bounds,new java.awt.Dimension(captured.width()/6,captured.height()/6),captured.projectionUnitsPerViewPixel(),new java.awt.Dimension(320,240),nodes.stream().map(Node::getEastNorth).toList(),chunks,true);}
         finally{view.setSize(size);view.prepareToDraw();view.zoomTo(center,scale,false);}
         if(chunks.size()<2||stitched.getWidth()!=captured.width()||stitched.getHeight()!=captured.height())throw new IllegalStateException("Actual native chunk contract did not produce the complete same raster extent");
