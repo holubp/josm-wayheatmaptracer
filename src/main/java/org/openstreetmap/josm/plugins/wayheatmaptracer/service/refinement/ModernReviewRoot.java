@@ -130,6 +130,24 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
     public AlignmentResult originalResult(){return original;}
     public List<LegacyReviewOwner.Choice> choices(){return choices;}
     public CenterlineCandidate selectedCandidate(){return selected;}
+    private CenterlineCandidate displayedNoChangeChoice;
+    private List<org.openstreetmap.josm.data.coor.EastNorth> displayedNoChangeGeometry=List.of();
+    /** Called after the ordinary selected assessment and its existing live no-change validation. */
+    public void bindDisplayedSelection(LiveBPreviewService.PreviewChoice choice,ModernSingleWayEditPlanAdapter.Assessment assessment) {
+        requireOriginalAttemptCurrent();
+        if(interval!=null||selected!=choice.candidate()||nativeChoices.stream().noneMatch(retained->retained.owner()==choice.owner()
+                &&retained.localRouteIndex()==choice.localRouteIndex()&&retained.candidate()==choice.candidate()))
+            throw new IllegalArgumentException("Displayed native assessment belongs to another root choice");
+        displayedNoChangeChoice=null;displayedNoChangeGeometry=List.of();
+        if(assessment!=null&&assessment.availability()==ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE) {
+            var proof=assessment.noChangeProof().orElseThrow(()->new IllegalArgumentException("Factual no-change proof unavailable"));var run=choice.owner();
+            proof.requireOwner(run);proof.requireMatches(run.request(),run.evidence(),run.captured().network(),run.options(),run.pipeline(),choice.localRouteIndex(),run.captured().network());
+            var projection=Projections.getProjectionByCode(run.captured().projectionCode());
+            displayedNoChangeGeometry=proof.finalSelection().selectedGeometry().stream().map(point->projection.latlon2eastNorth(new LatLon(point.latitudeDegrees(),point.longitudeDegrees()))).toList();
+            displayedNoChangeChoice=selected;
+        }
+    }
+    @Override public List<org.openstreetmap.josm.data.coor.EastNorth> selectedFinalGeometry(){return displayedNoChangeChoice==selected?displayedNoChangeGeometry:selected.finalPreviewPoints();}
     public void select(CenterlineCandidate candidate){requireOriginalAttemptCurrent();choiceId(candidate);selected=candidate;}
     public String choiceId(CenterlineCandidate candidate){return choices.stream().filter(c->c.candidate()==candidate).findFirst().orElseThrow(()->new IllegalArgumentException("Foreign native choice")).id();}
     public CenterlineCandidate candidateForChoice(String id){return choices.stream().filter(c->c.id().equals(id)).findFirst().orElseThrow(()->new IllegalArgumentException("Unknown native choice")).candidate();}

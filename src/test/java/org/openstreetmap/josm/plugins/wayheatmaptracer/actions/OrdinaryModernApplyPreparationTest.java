@@ -850,6 +850,11 @@ class OrdinaryModernApplyPreparationTest {
             assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE,
                     assessment.availability(), assessment.detail());
             assertTrue(assessment.plan().isEmpty());
+            var finalSelection=assessment.noChangeProof().orElseThrow().finalSelection();
+            assertEquals(attempt.computed.captured().sourceGeographic(),finalSelection.selectedGeometry());
+            assertEquals(attempt.computed.request().selectedRange().size(),finalSelection.pointIds().size());
+            assertEquals(finalSelection.pointIds().size(),finalSelection.assignments().size());
+            assertEquals(finalSelection.finalPreviewWays(),assessment.projectFinalPreviewWays(point->point));
             var current = edt(() -> NetworkSnapshotCapture.capture(fixture.dataSet(),
                     attempt.computed.captured().specification()));
             AlignWayAction.requireNoChangeCurrent(assessment, attempt.computed, current);

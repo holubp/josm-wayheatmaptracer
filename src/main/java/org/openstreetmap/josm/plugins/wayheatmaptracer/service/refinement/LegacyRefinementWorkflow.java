@@ -560,7 +560,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         }
     }
     public List<org.openstreetmap.josm.data.coor.EastNorth> selectedGeometry(){
-        if(!nativeSelected())return review.selectedCandidate().finalPreviewPoints();
+        if(!nativeSelected())return review.selectedFinalGeometry();
         var selected=selected();return selected.payload().nativeGeometry().stream().filter(c->c.id().equals(selected.nativeCandidateId())).findFirst().orElseThrow().finalPreviewPoints();
     }
     public Stage currentStage(){if(session==null)throw new IllegalStateException("Refinement root has not been captured");return session.current();}

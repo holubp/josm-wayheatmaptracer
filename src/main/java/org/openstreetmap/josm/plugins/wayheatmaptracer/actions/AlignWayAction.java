@@ -1841,12 +1841,13 @@ public class AlignWayAction extends JosmAction {
                     review[0] = PreviewReviewState.fromEditPlan(choice.reviewIdentity(), plan[0]);
                 }
             }
+            if(refinementRoot[0]!=null)refinementRoot[0].bindDisplayedSelection(choice,assessment[0]);
             AlignmentResult display = liveBDisplayResult(selection, run, candidates,
-                    candidate, plan[0]);
+                    candidate, plan[0],assessment[0]==null?Optional.empty():assessment[0].noChangeProof());
             ValidationReport.Disposition displayedDisposition = liveBDisplayedDisposition(
                     disposition, assessment[0], plan[0]);
             Map<PrimitiveKey, List<EastNorth>> projectedPreview =
-                    assessment[0] == null || assessment[0].plan().isEmpty()
+                    assessment[0] == null || assessment[0].plan().isEmpty()&&assessment[0].noChangeProof().isEmpty()
                         ? Map.of()
                         : assessment[0].projectFinalPreviewWays(point -> ProjectionRegistry.getProjection()
                                 .latlon2eastNorth(new LatLon(point.latitudeDegrees(),
@@ -2735,11 +2736,17 @@ public class AlignWayAction extends JosmAction {
     private AlignmentResult liveBDisplayResult(SelectionContext selection,
             LiveBPreviewService.Computed computed, List<CenterlineCandidate> candidates,
             CenterlineCandidate selected, AlignmentEditPlan exactPlan) {
+        return liveBDisplayResult(selection,computed,candidates,selected,exactPlan,Optional.empty());
+    }
+    private AlignmentResult liveBDisplayResult(SelectionContext selection,
+            LiveBPreviewService.Computed computed,List<CenterlineCandidate> candidates,CenterlineCandidate selected,
+            AlignmentEditPlan exactPlan,Optional<ModernSingleWayEditPlanAdapter.NoChangeProof> noChange) {
         List<EastNorth> source = computed.captured().sourceGeographic().stream()
                 .map(point -> ProjectionRegistry.getProjection().latlon2eastNorth(
                         new LatLon(point.latitudeDegrees(), point.longitudeDegrees())))
                 .toList();
-        List<EastNorth> preview = exactPlan == null ? selected.finalPreviewPoints()
+        List<EastNorth> preview = exactPlan == null ? noChange.map(proof->proof.finalSelection().selectedGeometry().stream()
+                .map(point->ProjectionRegistry.getProjection().latlon2eastNorth(new LatLon(point.latitudeDegrees(),point.longitudeDegrees()))).toList()).orElseGet(selected::finalPreviewPoints)
                 : exactPlan.finalPreviewWays().get(exactPlan.selectedWayKey()).stream()
                         .map(point -> ProjectionRegistry.getProjection().latlon2eastNorth(
                                 new LatLon(point.latitudeDegrees(), point.longitudeDegrees())))

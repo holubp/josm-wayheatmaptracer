@@ -13,6 +13,7 @@ public interface RefinementReviewRoot extends AutoCloseable {
     AlignmentResult originalResult();
     List<LegacyReviewOwner.Choice> choices();
     CenterlineCandidate selectedCandidate();
+    default List<org.openstreetmap.josm.data.coor.EastNorth> selectedFinalGeometry(){return selectedCandidate().finalPreviewPoints();}
     void select(CenterlineCandidate candidate);
     String choiceId(CenterlineCandidate candidate);
     CenterlineCandidate candidateForChoice(String id);

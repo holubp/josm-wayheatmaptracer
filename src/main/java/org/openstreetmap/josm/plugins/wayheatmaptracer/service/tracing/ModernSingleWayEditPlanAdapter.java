@@ -95,19 +95,47 @@ public final class ModernSingleWayEditPlanAdapter {
     }
 
     /** Adapter-issued proof of an exact no-write assessment for one selected source owner and route. */
+    /** Exact unchanged final occurrence graph; raw inference samples remain separate provenance. */
+    public static final class FinalSelection {
+        private final List<GeographicPoint> selectedGeometry;
+        private final List<FinalRoutePointId> pointIds;
+        private final Map<Long,GeographicPoint> assignments;
+        private final Map<PrimitiveKey,List<GeographicPoint>> finalPreviewWays;
+        private final ValidationReport validation;
+        private FinalSelection(LiveBPreviewService.Computed owner,ValidationReport validation) {
+            var request=owner.request();var network=owner.captured().network();var way=(DetachedWay)network.primitives().get(request.selectedWayKey());
+            var all=new ArrayList<GeographicPoint>();for(var key:way.nodeKeys()){PostprocessingValidationWork.visit();all.add(((DetachedNode)network.primitives().get(key)).coordinate());}
+            var ids=new ArrayList<FinalRoutePointId>();var positions=new LinkedHashMap<Long,GeographicPoint>();
+            for(int occurrence=request.selectedRange().firstIndex();occurrence<=request.selectedRange().lastIndex();occurrence++) {
+                PostprocessingValidationWork.visit();var key=way.nodeKeys().get(occurrence);
+                ids.add(new FinalRoutePointId.ExistingWayNodeOccurrence(way.key(),key,occurrence));
+                if(positions.put(key.id(),all.get(occurrence))!=null)throw new IllegalArgumentException("No-change selection repeats a node occurrence");
+            }
+            selectedGeometry=List.copyOf(all.subList(request.selectedRange().firstIndex(),request.selectedRange().lastIndex()+1));
+            pointIds=List.copyOf(ids);assignments=Map.copyOf(positions);finalPreviewWays=Map.of(way.key(),List.copyOf(all));this.validation=validation;
+        }
+        public List<GeographicPoint> selectedGeometry(){return selectedGeometry;}
+        public List<FinalRoutePointId> pointIds(){return pointIds;}
+        public Map<Long,GeographicPoint> assignments(){return assignments;}
+        public Map<PrimitiveKey,List<GeographicPoint>> finalPreviewWays(){return finalPreviewWays;}
+        public ValidationReport validation(){return validation;}
+    }
     public static final class NoChangeProof {
         private final LiveBPreviewService.Computed owner;
         private final int routeIndex;
         private final ModernTracePipeline.Route route;
         private final NoChangeWatch watch;
+        private final FinalSelection finalSelection;
 
         private NoChangeProof(LiveBPreviewService.Computed owner, int routeIndex,
-                ModernTracePipeline.Route route, NoChangeWatch watch) {
+                ModernTracePipeline.Route route, NoChangeWatch watch,FinalSelection finalSelection) {
             this.owner = owner;
             this.routeIndex = routeIndex;
             this.route = route;
             this.watch = watch;
+            this.finalSelection=finalSelection;
         }
+        public FinalSelection finalSelection(){return finalSelection;}
 
         /** Prevents another computed source choice from borrowing this factual assessment. */
         public void requireOwner(LiveBPreviewService.Computed selected) {
@@ -218,10 +246,9 @@ public final class ModernSingleWayEditPlanAdapter {
             if (projector == null) {
                 throw new IllegalArgumentException("Preview projector must not be null");
             }
-            AlignmentEditPlan exactPlan = plan.orElseThrow(() ->
-                    new IllegalStateException("No exact all-way preview is available"));
             Map<PrimitiveKey, List<T>> projected = new LinkedHashMap<>();
-            exactPlan.finalPreviewWays().forEach((way, points) -> projected.put(way,
+            var geometry=plan.map(AlignmentEditPlan::finalPreviewWays).orElseGet(()->noChangeProof.orElseThrow(()->new IllegalStateException("No exact all-way preview is available")).finalSelection().finalPreviewWays());
+            geometry.forEach((way, points) -> projected.put(way,
                     points.stream().map(projector).toList()));
             return Map.copyOf(projected);
         }
@@ -285,7 +312,7 @@ public final class ModernSingleWayEditPlanAdapter {
                                             + draft.validation().findingCodes()
                                     : "The final candidate already matches captured geometry; "
                                             + "no edit is needed", null, null, Optional.of(watch),
-                            Optional.of(new NoChangeProof(computed, routeIndex, route, watch)));
+                            Optional.of(new NoChangeProof(computed, routeIndex, route, watch,new FinalSelection(computed,draft.validation()))));
                 }
                 return unavailable(ApplyAvailability.PLAN_UNAVAILABLE,
                         "The unchanged final candidate is not applicable: "
