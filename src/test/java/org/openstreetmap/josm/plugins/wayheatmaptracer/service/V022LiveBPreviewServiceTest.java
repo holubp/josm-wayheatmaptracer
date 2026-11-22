@@ -122,6 +122,12 @@ class V022LiveBPreviewServiceTest {
     @Test
     void managedCompleteSourceSetRunsNativeAndAggregateSeparately() throws Exception {
         Fixture fixture = fiveNodeFixture();
+        // A complete actual ridge inside one native tile, with an ordinary displaced interior.
+        // The previous repeating tile-center picture produced two factual NO_ROUTE runs at0/0.
+        for(int i=0;i<fixture.selection().segmentNodes().size();i++) {
+            var node=fixture.selection().segmentNodes().get(i);var p=node.getEastNorth();
+            node.setCoor(ProjectionRegistry.getProjection().eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth(p.east()+100,p.north()+100+(i>0&&i<4?1.5:0))));node.setModified(false);
+        }
         ManagedHeatmapConfig base = managedConfig().heatmap().withTrackerMode(TrackerMode.PROBABILISTIC);
         ManagedHeatmapConfig requested = new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
                 base.signature(), base.sessionToken(), base.activity(), base.color(),
@@ -139,10 +145,9 @@ class V022LiveBPreviewServiceTest {
         SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(fixture.dataSet(),
                 fixture.selection(), new AlignmentConfig(requested, GeometryCleanupConfig.disabled()),
                 sourceIdentity));
-        byte[] tile = colorRoutePng();
         TileDecoderClassifier decoder = new TileDecoderClassifier();
         try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
-                new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png", tile,
+                new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png", originalManagedRidge(request.address()),
                         null, Duration.ZERO, ""),
                 new ManagedTileCache(managedTileCache, decoder), decoder,
                 TileReliabilityPolicy.defaults())) {
@@ -345,6 +350,23 @@ class V022LiveBPreviewServiceTest {
         }
     }
 
+    private static byte[] originalManagedRidge(org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileAddress address) {
+        try {
+            var image=new BufferedImage(512,512,BufferedImage.TYPE_INT_ARGB);
+            int center=switch(address.color()){case "blue"->0xff4ca9ff;case "bluered"->0xffff24b2;case "purple"->0xffbd9cff;case "gray"->0xffe84bea;default->0xfffdfdfd;};
+            double pitch=2*Math.PI*6_378_137.0/(512.0*(1L<<address.zoom()));
+            double target=512.0*(1L<<address.zoom())/2-100/pitch-.5;
+            for(int y=0;y<512;y++)for(int x=0;x<512;x++) {
+                double strength=Math.exp(-.5*Math.pow((address.y()*512.0+y-target)/1.2,2));
+                int background=3+(x*7+y*3)%29;
+                int r=(int)Math.round(background+strength*(((center>>>16)&255)-background));
+                int g=(int)Math.round(background+strength*(((center>>>8)&255)-background));
+                int b=(int)Math.round(background+strength*((center&255)-background));
+                image.setRGB(x,y,0xff000000|r<<16|g<<8|b);
+            }
+            var bytes=new ByteArrayOutputStream();ImageIO.write(image,"png",bytes);return bytes.toByteArray();
+        }catch(java.io.IOException failure){throw new IllegalStateException(failure);}
+    }
     private static byte[] colorRoutePng() throws Exception {
         BufferedImage image = new BufferedImage(512, 512, BufferedImage.TYPE_INT_ARGB);
         for (int y = 0; y < 512; y++) {
