@@ -374,8 +374,10 @@ class ModernRefinementBootstrapTest {
         var fixture=V022LiveBPreviewServiceTest.fiveNodeFixture();var config=V022LiveBPreviewServiceTest.config(TrackerMode.PROBABILISTIC);
         SwingUtilities.invokeAndWait(()->{for(int i=1;i<4;i++){var node=fixture.selection().segmentNodes().get(i);var point=node.getEastNorth();node.setEastNorth(new org.openstreetmap.josm.data.coor.EastNorth(point.east(),point.north()+1));}});
         var observed=fixture.selection().segmentNodes().stream().map(org.openstreetmap.josm.data.osm.Node::getEastNorth).toList();
+        var image=V022LiveBPreviewServiceTest.raster();var epoch=new VisibleSourceEpoch();
+        var raster=new LiveBPreviewService.VisibleRaster(image.width(),image.height(),image.argb(),image.minimumEast(),image.minimumNorth(),image.maximumEast(),image.maximumNorth(),image.projectionUnitsPerViewPixel(),image.groundMetersPerViewPixel(),image.nativePitchMeters(),image.sourceIdentity(),image.projectionCode(),epoch.captureStable());
         var service=new LiveBPreviewService();var captured=new LiveBPreviewService.Captured[1];
-        SwingUtilities.invokeAndWait(()->captured[0]=service.capture(fixture.dataSet(),fixture.selection(),V022LiveBPreviewServiceTest.raster(),config,true));
+        SwingUtilities.invokeAndWait(()->captured[0]=service.capture(fixture.dataSet(),fixture.selection(),raster,config,true));
         var computed=service.compute(captured[0],CancellationProbe.NONE);var choices=service.adaptChoices(computed,g->ProjectionRegistry.getProjection().latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(g.latitudeDegrees(),g.longitudeDegrees())));
         var reconstructed=captured[0].sourceGeographic().stream().map(g->ProjectionRegistry.getProjection().latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(g.latitudeDegrees(),g.longitudeDegrees()))).toList();
         assertNotEquals(observed,reconstructed,"This regression requires the factual setEastNorth cache roundtrip difference");
