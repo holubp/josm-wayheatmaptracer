@@ -45,6 +45,23 @@ class ModernRefinementBootstrapTest {
                     assertEquals(choices.get(choices.size()-1).localRouteIndex(),selected.payload().rootReviewState().orElseThrow().fullRouteIndex().orElseThrow());
                     assertEquals(mode,prepared.root().authority().request().geometryMode());
                     assertSame(capture[0].network(),selected.payload().nativeReview().orElseThrow().plan().before());
+                    var workers=new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+                    var publications=new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+                    var workflow=new LegacyRefinementWorkflow[1];
+                    SwingUtilities.invokeAndWait(()->{
+                        workflow[0]=new LegacyRefinementWorkflow(review[0],null,review[0]::select,display->{},status->{},workers::add,publications::add);
+                        workflow[0].refine(engine==TrackerMode.CORRIDOR_AWARE?TrackerMode.PROBABILISTIC:TrackerMode.CORRIDOR_AWARE);
+                    });
+                    try {
+                        for(int i=0;i<4&&workflow[0].busy();i++) {
+                            var worker=workers.poll();assertNotNull(worker);worker.run();
+                            SwingUtilities.invokeAndWait(()->{var publication=publications.poll();assertNotNull(publication);publication.run();});
+                        }
+                        SwingUtilities.invokeAndWait(()->{
+                            assertFalse(workflow[0].busy());assertNotNull(workflow[0].currentStage());
+                            assertTrue(workflow[0].actualNativeCalls()>0,"Native root refinement must reach actual requested inference");
+                        });
+                    } finally {SwingUtilities.invokeAndWait(workflow[0]::close);}
                     epoch.sourceChanged();assertThrows(IllegalStateException.class,prepared.source()::requireCurrent);
                 }
             } finally {SwingUtilities.invokeAndWait(review[0]::close);}
