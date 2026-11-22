@@ -50,6 +50,7 @@ public final class FixedIntervalEditPlanComposer {
         public ModernSingleWayEditPlanAdapter.FinalSelection finalSelection(){return selection;}
         public ModernSingleWayEditPlanAdapter.NoChangeWatch watch(){return watch;}
         public String compositionIdentity(){return identity;}
+        public Map<Object,Long> retainedMetadataCharges(){var charges=new java.util.IdentityHashMap<Object,Long>();charges.put(this,256L);charges.put(choices,128L+64L*choices.size());charges.put(routes,32L+8L*routes.size());charges.put(identity,48L+2L*identity.length());return java.util.Collections.unmodifiableMap(charges);}
         public void requireMatches(IntervalTraceBatch actual,Map<Integer,Integer> selected,org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot current) {
             if(actual!=batch||!choices.equals(normalizedChoices(actual,selected))||current==null
                     ||!watch.snapshotId().equals(current.snapshotId())||!watch.datasetIdentity().equals(current.datasetIdentity())
@@ -62,7 +63,7 @@ public final class FixedIntervalEditPlanComposer {
     }
     private static Map<Integer,Integer> normalizedChoices(IntervalTraceBatch batch,Map<Integer,Integer> choices){
         if(batch==null||choices==null)throw new IllegalArgumentException("Actual batch and choices required");
-        var normalized=new LinkedHashMap<Integer,Integer>();for(int i=0;i<batch.runs().size();i++)normalized.put(i,choices.getOrDefault(i,0));
+        var normalized=new LinkedHashMap<Integer,Integer>();for(int i=0;i<batch.runs().size();i++){var choice=choices.getOrDefault(i,0);if(choice==null||choice<0||choice>=batch.runs().get(i).routes().size())throw new IllegalArgumentException("Selected interval route unavailable");normalized.put(i,choice);}
         if(choices.keySet().stream().anyMatch(i->i==null||i<0||i>=batch.runs().size()))throw new IllegalArgumentException("Foreign interval choice");
         return Map.copyOf(normalized);
     }

@@ -371,7 +371,9 @@ public final class RefinementPayload {
     private static Map<Object,Long> noChangeReviewCharges(NoChangeReview review){
         var selection=review.finalSelection();var values=new IdentityHashMap<Object,Long>();
         values.putAll(RefinementRootAuthority.detachedCharges(selection.selectedGeometry(),selection.pointIds(),selection.assignments(),selection.finalPreviewWays(),selection.validation(),review.quality(),review.watch()));
-        values.put(review,256L);values.put(review.producerProof(),256L);values.put(selection,128L);values.putAll(review.source().charges());return values;
+        values.put(review,256L);values.put(review.producerProof(),256L);values.put(selection,128L);values.putAll(review.source().charges());
+        if(review instanceof RootIntervalNoChangeReview interval){values.putAll(interval.assessment().noChangeProof().orElseThrow().retainedMetadataCharges());values.putAll(RefinementRootAuthority.detachedCharges(interval.routeChoices(),interval.assessment().intervals(),interval.assessment().assignments()));}
+        return values;
     }
     /** Acquire already-admitted raster/descriptor identities before worker ownership settles. */
     void retainSmoothingSources( org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner destination) {
