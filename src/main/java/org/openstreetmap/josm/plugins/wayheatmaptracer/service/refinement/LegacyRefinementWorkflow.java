@@ -642,6 +642,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                     } else {outcome=RefinementAttemptDiagnostics.Publication.REFUSED;cause=RefinementAttemptDiagnostics.Cause.PUBLICATION_REFUSED;restoreCurrentPresentation();}
                 }
             } catch(RuntimeException failed) {
+                computationEvidence+="; failed="+failed.getClass().getSimpleName()+"; phase="+progress.phase;
                 boolean stale=review.invalidated()||!originalSourceCurrent();
                 boolean cancelled=entry.cancellationRequested&&!stale;
                 if(!closed)session.fail(ticket,stale?Outcome.STALE:cancelled?Outcome.CANCELLED:Outcome.FAILED);
