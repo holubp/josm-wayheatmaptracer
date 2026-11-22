@@ -177,6 +177,8 @@ public final class RefinementPayload {
     private static void fresh(IdentityHashMap<Object,Long> inventory,Object identity){Long bytes=inventory.remove(identity);if(bytes!=null)inventory.put(new Object(),bytes);}
     /** Immutable projected final preview, without copying any retained raster for metadata export. */
     public List<org.openstreetmap.josm.data.coor.EastNorth> finalPreviewGeometry(){return result.previewPolyline();}
+    SelectionContext originalSelectionContext(){return result.selection();}
+    List<org.openstreetmap.josm.data.coor.EastNorth> originalSourcePolyline(){return result.sourcePolyline();}
     public Optional<SourceSelection> sourceSelection(){return sourceSelection;}
     /** Returns a detached mutable-raster/point view; mutation cannot change retained history. */
     public AlignmentResult result() { return copy(result); }

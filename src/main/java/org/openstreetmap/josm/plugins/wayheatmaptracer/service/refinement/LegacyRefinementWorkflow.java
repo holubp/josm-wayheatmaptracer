@@ -764,7 +764,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                     for(int i=0;i<points.size();i++)if(assessed.candidate().pointIds().get(i) instanceof FinalRoutePointId.ExistingWayNodeOccurrence id)assignments.put(id.nodeKey().id(),points.get(i));
                     String nativeId=assessed.candidate().id();var candidate=new CenterlineCandidate(nativeId,0,List.of(),List.of(),points,points,assignments,List.of(),0,null,null,null,List.of());
                     var detector=new DetectorAttempt(source.source().palette(),source.source().mapping(),ticket.engine(),edit.validation().disposition()==ValidationReport.Disposition.APPLICABLE?DetectorAttemptStatus.APPLICABLE:DetectorAttemptStatus.REVIEW_REQUIRED,List.of(nativeId),"smoothing-final","Guarded Gaussian output");
-                    var original=review.originalResult();var alignment=new AlignmentResult(original.selection(),null,List.of(candidate),original.sourcePolyline(),points,List.of(),null,null,List.of(detector),List.of(candidate));
+                    var alignment=new AlignmentResult(parent.payload().originalSelectionContext(),null,List.of(candidate),parent.payload().originalSourcePolyline(),points,List.of(),null,null,List.of(detector),List.of(candidate));
                     var nativeReview=new RefinementPayload.NativeReview(edit,assessed.quality(),Optional.empty(),List.of(source.source()),OptionalInt.empty(),Map.of(source.source(),source),List.of(),Optional.of(assessed.candidate().pointIds()),Optional.of(result.receipt()));
                     var id=new CandidateId("smoothing-"+ticket.sequence());String identity=edit.canonicalHash();
                     var admission=new MarginalPayloadAdmission(baseline,allowance,probe);
