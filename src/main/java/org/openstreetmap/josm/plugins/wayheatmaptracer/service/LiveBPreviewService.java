@@ -156,7 +156,31 @@ public final class LiveBPreviewService {
             IntensitySamplingMode intensityMode,
             ManagedModernPreviewSource.SourceRasters sourceRasters,
             TileFetchCoordinator sourceOwner, List<String> alternativeMappings,
-            NetworkSnapshot disconnectionSource) {
+            NetworkSnapshot disconnectionSource,
+            java.util.Optional<NetworkSnapshotCapture.CapturedSnapshot> originalReceipt) {
+        /** Historical fixtures carry no original authority receipt. */
+        public Captured(VisibleRaster raster,ManagedModernPreviewSource.Raster managedRaster,
+                NetworkSnapshotCapture.Specification specification,NetworkSnapshot network,
+                List<GeographicPoint> sourceGeographic,List<MetricPoint> sourceMetric,MetricRasterGrid outputGrid,
+                String palette,double searchRadiusMeters,double sampleStepMeters,String settingsHash,String parameterHash,
+                GeometryCleanupConfig cleanup,AlignmentMode geometryMode,TrackerMode engine,String projectionCode,
+                ManualJunctionEligibility.Decision junctionDecision,SelectedWayIntervalPartitioner.Partition intervalPartition,
+                IntensitySamplingMode intensityMode,ManagedModernPreviewSource.SourceRasters sourceRasters,
+                TileFetchCoordinator sourceOwner,List<String> alternativeMappings,NetworkSnapshot disconnectionSource) {
+            this(raster,managedRaster,specification,network,sourceGeographic,sourceMetric,outputGrid,palette,searchRadiusMeters,
+                sampleStepMeters,settingsHash,parameterHash,cleanup,geometryMode,engine,projectionCode,junctionDecision,
+                intervalPartition,intensityMode,sourceRasters,sourceOwner,alternativeMappings,disconnectionSource,java.util.Optional.empty());
+        }
+        public Captured withOriginalReceipt(NetworkSnapshotCapture.CapturedSnapshot receipt) {
+            if(receipt==null||receipt.snapshot()!=network||!receipt.specification().equals(specification))
+                throw new IllegalArgumentException("Original native receipt differs from captured facts");
+            return new Captured(raster,managedRaster,specification,network,sourceGeographic,sourceMetric,outputGrid,palette,
+                searchRadiusMeters,sampleStepMeters,settingsHash,parameterHash,cleanup,geometryMode,engine,projectionCode,
+                junctionDecision,intervalPartition,intensityMode,sourceRasters,sourceOwner,alternativeMappings,disconnectionSource,java.util.Optional.of(receipt));
+        }
+        private Captured withOriginalReceipt(java.util.Optional<NetworkSnapshotCapture.CapturedSnapshot> receipt) {
+            return receipt.map(this::withOriginalReceipt).orElse(this);
+        }
         public Captured(VisibleRaster raster, ManagedModernPreviewSource.Raster managedRaster,
                 NetworkSnapshotCapture.Specification specification, NetworkSnapshot network,
                 List<GeographicPoint> sourceGeographic, List<MetricPoint> sourceMetric,
@@ -180,7 +204,7 @@ public final class LiveBPreviewService {
                     sourceMetric, outputGrid, palette, searchRadiusMeters, sampleStepMeters,
                     settingsHash, parameterHash, cleanup, geometryMode, engine, projectionCode,
                     junctionDecision, intervalPartition, intensityMode, sourceRasters, sourceOwner,
-                    alternativeMappings, initial);
+                    alternativeMappings, initial,originalReceipt);
         }
         public Captured(VisibleRaster raster, ManagedModernPreviewSource.Raster managedRaster,
                 NetworkSnapshotCapture.Specification specification, NetworkSnapshot network,
@@ -233,6 +257,9 @@ public final class LiveBPreviewService {
                     parameterHash, cleanup, geometryMode, engine, projectionCode, null);
         }
         public Captured {
+            Objects.requireNonNull(originalReceipt);
+            if(originalReceipt.isPresent()&&(originalReceipt.get().snapshot()!=network||!originalReceipt.get().specification().equals(specification)))
+                throw new IllegalArgumentException("Foreign native capture receipt");
             requireBoundDisconnectionSource(specification, network, disconnectionSource);
             if ((raster == null) == (managedRaster == null)) {
                 throw new IllegalArgumentException("Live preview capture requires exactly one source raster");
@@ -273,7 +300,27 @@ public final class LiveBPreviewService {
             SelectedWayIntervalPartitioner.Partition intervalPartition,
             IntensitySamplingMode intensityMode,
             AlignmentTileSourcePlan sourcePlan, List<String> alternativeMappings,
-            NetworkSnapshot disconnectionSource) {
+            NetworkSnapshot disconnectionSource,
+            java.util.Optional<NetworkSnapshotCapture.CapturedSnapshot> originalReceipt) {
+        /** Historical seeds cannot mint an original receipt after inference. */
+        public ManagedCaptureSeed(NetworkSnapshotCapture.Specification specification,NetworkSnapshot network,
+                List<GeographicPoint> sourceGeographic,List<MetricPoint> sourceMetric,LocalMetricFrame frame,String palette,
+                double searchRadiusMeters,double sampleStepMeters,String settingsHash,String parameterHash,
+                GeometryCleanupConfig cleanup,AlignmentMode geometryMode,TrackerMode engine,String sourceIdentity,
+                String projectionCode,ManualJunctionEligibility.Decision junctionDecision,
+                SelectedWayIntervalPartitioner.Partition intervalPartition,IntensitySamplingMode intensityMode,
+                AlignmentTileSourcePlan sourcePlan,List<String> alternativeMappings,NetworkSnapshot disconnectionSource) {
+            this(specification,network,sourceGeographic,sourceMetric,frame,palette,searchRadiusMeters,sampleStepMeters,
+                settingsHash,parameterHash,cleanup,geometryMode,engine,sourceIdentity,projectionCode,junctionDecision,
+                intervalPartition,intensityMode,sourcePlan,alternativeMappings,disconnectionSource,java.util.Optional.empty());
+        }
+        public ManagedCaptureSeed withOriginalReceipt(NetworkSnapshotCapture.CapturedSnapshot receipt) {
+            if(receipt==null||receipt.snapshot()!=network||!receipt.specification().equals(specification))
+                throw new IllegalArgumentException("Original managed receipt differs from captured facts");
+            return new ManagedCaptureSeed(specification,network,sourceGeographic,sourceMetric,frame,palette,searchRadiusMeters,
+                sampleStepMeters,settingsHash,parameterHash,cleanup,geometryMode,engine,sourceIdentity,projectionCode,
+                junctionDecision,intervalPartition,intensityMode,sourcePlan,alternativeMappings,disconnectionSource,java.util.Optional.of(receipt));
+        }
         public ManagedCaptureSeed(NetworkSnapshotCapture.Specification specification,
                 NetworkSnapshot network, List<GeographicPoint> sourceGeographic,
                 List<MetricPoint> sourceMetric, LocalMetricFrame frame, String palette,
@@ -295,7 +342,7 @@ public final class LiveBPreviewService {
             return new ManagedCaptureSeed(specification, network, sourceGeographic, sourceMetric,
                     frame, palette, searchRadiusMeters, sampleStepMeters, settingsHash, parameterHash,
                     cleanup, geometryMode, engine, sourceIdentity, projectionCode, junctionDecision,
-                    intervalPartition, intensityMode, sourcePlan, alternativeMappings, initial);
+                    intervalPartition, intensityMode, sourcePlan, alternativeMappings, initial,originalReceipt);
         }
         public ManagedCaptureSeed(NetworkSnapshotCapture.Specification specification,
                 NetworkSnapshot network, List<GeographicPoint> sourceGeographic,
@@ -336,6 +383,9 @@ public final class LiveBPreviewService {
                     geometryMode, engine, sourceIdentity, projectionCode, junctionDecision, null);
         }
         public ManagedCaptureSeed {
+            Objects.requireNonNull(originalReceipt);
+            if(originalReceipt.isPresent()&&(originalReceipt.get().snapshot()!=network||!originalReceipt.get().specification().equals(specification)))
+                throw new IllegalArgumentException("Foreign managed capture receipt");
             requireBoundDisconnectionSource(specification, network, disconnectionSource);
             sourceGeographic = List.copyOf(sourceGeographic);
             sourceMetric = List.copyOf(sourceMetric);
@@ -615,15 +665,21 @@ public final class LiveBPreviewService {
                 authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                 true, permissions);
         if (usesFixedReceiverPolicy(engine, permissions)) specification = specification.withFixedReceiverGeometry();
-        NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
+        var originalReceipt=NetworkSnapshotCapture.captureBound(dataSet,specification);
+        NetworkSnapshot network = originalReceipt.snapshot();
         NetworkSnapshot initialSource = network;
         specification = specification.withDisconnectionSource(initialSource);
+        if(!originalReceipt.specification().equals(specification)) {
+            originalReceipt=NetworkSnapshotCapture.captureBound(dataSet,specification);
+            network=originalReceipt.snapshot();
+        }
         SelectedWayIntervalPartitioner.Partition intervalPartition =
                 SelectedWayIntervalPartitioner.partition(network, specification);
         if (usesFixedIntervalBatch(intervalPartition, engine)) {
             if (engine == TrackerMode.LEGACY_THEN_B && !specification.fixedReceiverGeometry()) {
                 specification = specification.withFixedReceiverGeometry();
-                network = NetworkSnapshotCapture.capture(dataSet, specification);
+                originalReceipt=NetworkSnapshotCapture.captureBound(dataSet,specification);
+                network = originalReceipt.snapshot();
                 intervalPartition = SelectedWayIntervalPartitioner.partition(network, specification);
             }
             authority = freezeFixedIslands(authority, network, intervalPartition, way);
@@ -637,7 +693,8 @@ public final class LiveBPreviewService {
             if (engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.LEGACY_THEN_B) {
                 specification = specification.withFixedReceiverGeometry();
             }
-            network = NetworkSnapshotCapture.capture(dataSet, specification);
+            originalReceipt=NetworkSnapshotCapture.captureBound(dataSet,specification);
+            network = originalReceipt.snapshot();
             if (!SelectedWayIntervalPartitioner.verifyFrozenParity(intervalPartition, network)) {
                 throw new ManualJunctionCaptureException(
                         ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE,
@@ -646,7 +703,7 @@ public final class LiveBPreviewService {
             return new Captured(raster, null, specification, network, source, metric, grid,
                     config.heatmap().color(), radius, step, settingsHash, parameterHash,
                     config.cleanup(), config.heatmap().alignmentMode(), engine,
-                    raster.projectionCode(), null, intervalPartition).withInitialSource(initialSource);
+                    raster.projectionCode(), null, intervalPartition).withInitialSource(initialSource).withOriginalReceipt(originalReceipt);
         }
         ManualJunctionEligibility.Decision junction = evaluateCapturedJunction(network,
                 specification);
@@ -660,14 +717,15 @@ public final class LiveBPreviewService {
                     authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                     true, permissions).withDisconnectionSource(initialSource);
             if (usesFixedReceiverPolicy(engine, permissions)) specification = specification.withFixedReceiverGeometry();
-            network = NetworkSnapshotCapture.capture(dataSet, specification);
+            originalReceipt=NetworkSnapshotCapture.captureBound(dataSet,specification);
+            network = originalReceipt.snapshot();
             requireSameJunctionSource(originalNetwork, network, specification.selectedWayKey(),
                     junction);
         }
         return new Captured(raster, null, specification, network, source, metric, grid,
                 config.heatmap().color(), radius, step, settingsHash, parameterHash, config.cleanup(),
                 config.heatmap().alignmentMode(), engine, raster.projectionCode(), junction)
-                .withInitialSource(initialSource);
+                .withInitialSource(initialSource).withOriginalReceipt(originalReceipt);
     }
 
     private static void requireDisconnectionPolicy(RecoveryPermissions permissions) {
@@ -1267,16 +1325,22 @@ public final class LiveBPreviewService {
                 authority.removableNodes(), authority.protectedNodes(), true, permissions);
         if (usesFixedReceiverPolicy(config.heatmap().trackerMode(), permissions))
             specification = specification.withFixedReceiverGeometry();
-        NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
+        var originalReceipt=NetworkSnapshotCapture.captureBound(dataSet,specification);
+        NetworkSnapshot network = originalReceipt.snapshot();
         NetworkSnapshot initialSource = network;
         specification = specification.withDisconnectionSource(initialSource);
+        if(!originalReceipt.specification().equals(specification)) {
+            originalReceipt=NetworkSnapshotCapture.captureBound(dataSet,specification);
+            network=originalReceipt.snapshot();
+        }
         SelectedWayIntervalPartitioner.Partition intervalPartition =
                 SelectedWayIntervalPartitioner.partition(network, specification);
         if (usesFixedIntervalBatch(intervalPartition, config.heatmap().trackerMode())) {
             if (config.heatmap().trackerMode() == TrackerMode.LEGACY_THEN_B
                     && !specification.fixedReceiverGeometry()) {
                 specification = specification.withFixedReceiverGeometry();
-                network = NetworkSnapshotCapture.capture(dataSet, specification);
+                originalReceipt=NetworkSnapshotCapture.captureBound(dataSet,specification);
+                network = originalReceipt.snapshot();
                 intervalPartition = SelectedWayIntervalPartitioner.partition(network, specification);
             }
             authority = freezeFixedIslands(authority, network, intervalPartition, way);
@@ -1290,7 +1354,8 @@ public final class LiveBPreviewService {
             if (config.heatmap().trackerMode() == TrackerMode.PROBABILISTIC
                     || config.heatmap().trackerMode() == TrackerMode.LEGACY_THEN_B)
                 specification = specification.withFixedReceiverGeometry();
-            network = NetworkSnapshotCapture.capture(dataSet, specification);
+            originalReceipt=NetworkSnapshotCapture.captureBound(dataSet,specification);
+            network = originalReceipt.snapshot();
             if (!SelectedWayIntervalPartitioner.verifyFrozenParity(intervalPartition, network)) {
                 throw new ManualJunctionCaptureException(
                         ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE,
@@ -1304,7 +1369,7 @@ public final class LiveBPreviewService {
                     ProjectionRegistry.getProjection().toCode(), null, intervalPartition,
                     config.heatmap().intensitySamplingMode(),
                     AlignmentTileSourcePlan.from(config.heatmap()),
-                    requestedAlternativeMappings(config.heatmap())).withInitialSource(initialSource);
+                    requestedAlternativeMappings(config.heatmap())).withInitialSource(initialSource).withOriginalReceipt(originalReceipt);
         }
         ManualJunctionEligibility.Decision junction = evaluateCapturedJunction(network,
                 specification);
@@ -1319,7 +1384,8 @@ public final class LiveBPreviewService {
                     true, permissions).withDisconnectionSource(initialSource);
             if (usesFixedReceiverPolicy(config.heatmap().trackerMode(), permissions))
                 specification = specification.withFixedReceiverGeometry();
-            network = NetworkSnapshotCapture.capture(dataSet, specification);
+            originalReceipt=NetworkSnapshotCapture.captureBound(dataSet,specification);
+            network = originalReceipt.snapshot();
             requireSameJunctionSource(originalNetwork, network, specification.selectedWayKey(),
                     junction);
         }
@@ -1332,7 +1398,7 @@ public final class LiveBPreviewService {
                 ProjectionRegistry.getProjection().toCode(), junction, null,
                 config.heatmap().intensitySamplingMode(),
                 AlignmentTileSourcePlan.from(config.heatmap()),
-                requestedAlternativeMappings(config.heatmap())).withInitialSource(initialSource);
+                requestedAlternativeMappings(config.heatmap())).withInitialSource(initialSource).withOriginalReceipt(originalReceipt);
     }
 
     private static List<String> requestedAlternativeMappings(
@@ -1358,7 +1424,7 @@ public final class LiveBPreviewService {
                 seed.sampleStepMeters(), seed.settingsHash(), seed.parameterHash(), seed.cleanup(),
                 seed.geometryMode(), seed.engine(),
                 seed.projectionCode(), seed.junctionDecision(), seed.intervalPartition(),
-                seed.intensityMode()).withInitialSource(seed.disconnectionSource());
+                seed.intensityMode()).withInitialSource(seed.disconnectionSource()).withOriginalReceipt(seed.originalReceipt());
     }
 
     /** Attaches the exact coordinator-owned source set and frozen selected-raster detector plan. */
@@ -1381,7 +1447,7 @@ public final class LiveBPreviewService {
                 seed.parameterHash(), seed.cleanup(), seed.geometryMode(), seed.engine(),
                 seed.projectionCode(), seed.junctionDecision(), seed.intervalPartition(),
                 seed.intensityMode(), sources, owner, seed.alternativeMappings())
-                .withInitialSource(seed.disconnectionSource());
+                .withInitialSource(seed.disconnectionSource()).withOriginalReceipt(seed.originalReceipt());
     }
 
     /** Adds image support for a shifted Legacy reference without extending original edit authority. */
