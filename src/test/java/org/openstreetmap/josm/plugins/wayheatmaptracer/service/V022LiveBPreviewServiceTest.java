@@ -167,6 +167,18 @@ class V022LiveBPreviewServiceTest {
                     .map(run -> run.request().evidenceContentHash()).distinct().count());
             assertTrue(computed.productionRuns().stream().allMatch(run ->
                     run.pipeline().inference().engine() == TrackerMode.PROBABILISTIC));
+            var nativeChoices=service.adaptChoices(computed,p->ProjectionRegistry.getProjection().latlon2eastNorth(new LatLon(p.latitudeDegrees(),p.longitudeDegrees())));
+            var root=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ModernReviewRoot[1];
+            SwingUtilities.invokeAndWait(()->root[0]=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ModernReviewRoot.fromFullChoices(fixture.dataSet(),fixture.selection(),new AlignmentConfig(requested,GeometryCleanupConfig.disabled()),nativeChoices,coordinator,()->{}));
+            try(var memory=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production().rootOwner()) {
+                var work=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(8_000_000,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,memory);
+                try(var prepared=new ModernRefinementBootstrap().complete(root[0],work)) {
+                    assertEquals(nativeChoices.size(),prepared.root().stage().candidates().size());
+                    var aggregate=prepared.root().stage().candidates().stream().map(c->c.payload().nativeReview().orElseThrow()).flatMap(n->n.retainedSources().values().stream()).filter(s->s.source().aggregate()).findFirst().orElseThrow();
+                    assertEquals(RasterEvidenceCapture.ORIGINAL_ARGB_SET_PROTOCOL,aggregate.inputHashProtocol());
+                    assertTrue(aggregate.hasFactualInputHash());assertSame(sources,captured.sourceRasters());
+                }
+            } finally {SwingUtilities.invokeAndWait(root[0]::close);}
         }
     }
 

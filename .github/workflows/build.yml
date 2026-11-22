@@ -82,7 +82,7 @@ jobs:
         run: |
           case "$GITHUB_REF" in
             refs/heads/codex/g004-stepwise-20261119)
-              filters=(--tests '*VisibleRefinementWorkflowTest' --tests '*RefinementAttemptDiagnosticsTest' --tests '*RefinementLineageCodecTest' --tests '*RefinementSessionTest' --tests '*PluginPreferencesTest' --tests '*RefinementRootAuthorityTest' --tests '*HeatmapSettingsDialogTest' --tests '*V022LiveBPreviewServiceTest.distantCompleteReceiverKeepsInteriorJunctionFixedDuringCapture' --tests '*RefinementSmoothingAdapterTest' --tests '*SmoothingParentBinderTest' --tests '*SmoothingWorkContextTest' --tests '*RetainedSmoothingRootTest' --tests '*ModernRefinementBootstrapTest' --tests '*RefinementControlsTest' --tests '*RefinementReviewLifecycleTest')
+              filters=(--tests '*VisibleRefinementWorkflowTest' --tests '*RefinementAttemptDiagnosticsTest' --tests '*RefinementLineageCodecTest' --tests '*RefinementSessionTest' --tests '*PluginPreferencesTest' --tests '*RefinementRootAuthorityTest' --tests '*HeatmapSettingsDialogTest' --tests '*V022LiveBPreviewServiceTest.distantCompleteReceiverKeepsInteriorJunctionFixedDuringCapture' --tests '*V022LiveBPreviewServiceTest.managedCompleteSourceSetRunsNativeAndAggregateSeparately' --tests '*RefinementSmoothingAdapterTest' --tests '*SmoothingParentBinderTest' --tests '*SmoothingWorkContextTest' --tests '*RetainedSmoothingRootTest' --tests '*ModernRefinementBootstrapTest' --tests '*RefinementControlsTest' --tests '*RefinementReviewLifecycleTest')
               ;;
             refs/heads/codex/g004-smoothing-adapter-20261121)
               filters=(
