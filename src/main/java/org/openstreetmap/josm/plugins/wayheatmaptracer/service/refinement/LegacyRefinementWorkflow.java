@@ -844,7 +844,16 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         CompletableFuture<Computed> computation;
         try{computation=CompletableFuture.supplyAsync(()->{
             var actual=retainedSource;
-            if(actual==null){progress.phase=RefinementAttemptDiagnostics.Phase.SOURCE_PREPARATION;actual=new LegacyRefinementBootstrap().completeForSmoothing(originalSeed,coordinator,workContext,originalRoot).source();completedSource.set(actual);}
+            if(actual==null){
+                progress.phase=RefinementAttemptDiagnostics.Phase.SOURCE_PREPARATION;
+                try{actual=new LegacyRefinementBootstrap().completeForSmoothing(originalSeed,coordinator,workContext,originalRoot).source();completedSource.set(actual);}
+                catch(RuntimeException failed){
+                    var cause=failed instanceof java.util.concurrent.CancellationException?RefinementAttemptDiagnostics.Cause.CANCELLED:
+                        failed instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached||failed instanceof AttemptMemoryLedger.ResourceLimitException?RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT:RefinementAttemptDiagnostics.Cause.FAILED;
+                    try{sourceContext.requireCurrent();}catch(RuntimeException stale){cause=RefinementAttemptDiagnostics.Cause.STALE;}
+                    progress.sourcePreparation=Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(cause,workContext.visits(),workContext.counters(),Optional.empty(),Optional.empty()));throw failed;
+                }
+            }
             return computeSmoothing(ticket,parent,actual,strength,workContext,probe,progress,publication,allowance,baseline);
         },executor);}
         catch(RuntimeException rejected){computation=CompletableFuture.failedFuture(rejected);}
@@ -879,10 +888,11 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                 }
                 boolean stale=review.invalidated()||!originalSourceCurrent();
                 boolean cancelled=entry.cancellationRequested&&!stale;
-                if(!closed)session.fail(ticket,stale?Outcome.STALE:cancelled?Outcome.CANCELLED:Outcome.FAILED);
+                boolean limited=failed instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached||failed instanceof AttemptMemoryLedger.ResourceLimitException||failed instanceof RefinementSession.Refused;
+                if(!closed)session.fail(ticket,stale?Outcome.STALE:cancelled?Outcome.CANCELLED:limited?Outcome.RESOURCE_LIMIT:Outcome.FAILED);
                 if(progress.presentationAttempted)restoreCurrentPresentation();
                 outcome=stale?RefinementAttemptDiagnostics.Publication.STALE:cancelled?RefinementAttemptDiagnostics.Publication.CANCELLED:RefinementAttemptDiagnostics.Publication.FAILED;
-                cause=stale?RefinementAttemptDiagnostics.Cause.STALE:cancelled?RefinementAttemptDiagnostics.Cause.CANCELLED:RefinementAttemptDiagnostics.Cause.FAILED;
+                cause=stale?RefinementAttemptDiagnostics.Cause.STALE:cancelled?RefinementAttemptDiagnostics.Cause.CANCELLED:limited?RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT:RefinementAttemptDiagnostics.Cause.FAILED;
                 message=stale?"Smoothing source changed.":cancelled?"Smoothen cancelled; retained the selected parent.":"Smoothen failed; retained the selected parent.";
             } finally {
                 try{publishDiagnostics(ticket,progress,outcome,cause);}finally{
