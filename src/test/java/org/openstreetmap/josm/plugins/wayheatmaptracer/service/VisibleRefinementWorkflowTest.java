@@ -44,6 +44,7 @@ class VisibleRefinementWorkflowTest {
                 var source=new LegacyVisibleSource(-100,-50,100,50,6,6,OptionalDouble.of(2),"EPSG:3857",new VisibleSourceEpoch().captureStable(),OptionalDouble.of(7.01),OptionalDouble.of(1.56));
                 owner[0].captured(result,LegacyVisibleRefinementBootstrapTest.factualFrame(source,200,100,0,0));
                 workflow[0]=new LegacyRefinementWorkflow(owner[0],null,owner[0]::select,d->{},s->{},workers::add,publications::add);
+                workflow[0].enableRuntimeDiagnostics(()->null);
                 workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.MEDIUM);
             });
             try {
@@ -52,6 +53,14 @@ class VisibleRefinementWorkflowTest {
                     assertEquals("SMOOTH",workflow[0].currentStage().kind().name(),workflow[0].computationEvidence());
                     assertEquals(0,workflow[0].actualNativeCalls());
                     assertTrue(workflow[0].currentNative().orElseThrow().smoothingReceipt().isPresent());
+                    assertDoesNotThrow(workflow[0]::prepareExport,"Published Gaussian work must export without inventing a native pipeline receipt");
+                    try {
+                        var path=temp.resolve("published-smoothing-"+mode.name()+".zip");
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.writeLatest(path.toFile());
+                        var archive=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader.read(path);
+                        assertTrue(archive.artifactNames().stream().anyMatch(name->name.startsWith("smoothing/stage-")));
+                        assertTrue(workflow[0].latestAttemptDiagnostics().orElseThrow().pipeline().isEmpty());
+                    }catch(Exception unavailable){throw new AssertionError("Actual Gaussian export unavailable",unavailable);}
                     workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.STRONG);
                 });
                 drain(workers,publications,workflow[0]);
