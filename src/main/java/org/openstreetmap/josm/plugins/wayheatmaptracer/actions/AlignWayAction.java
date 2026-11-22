@@ -12,6 +12,8 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Optional;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec;
 import java.util.Map;
 import java.util.Set;
 import java.util.HashSet;

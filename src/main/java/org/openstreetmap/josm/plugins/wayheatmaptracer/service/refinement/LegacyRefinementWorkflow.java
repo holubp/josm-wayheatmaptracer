@@ -224,7 +224,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                     boolean full=facts<=8L*1024*1024;
                     try(var conversion=rootMemory.reserve(32L*1024*1024)) {
                         var bundle=(full?nativeContextSupplier:nativeContextFallback).apply(originalNativeContextChoice);
-                        long bytes=4096;for(var artifact:bundle.artifacts().values())bytes=Math.addExact(bytes,Math.addExact(256,artifact.sizeBytes()));
+                        long bytes=4096;for(var artifact:bundle.artifacts().values())bytes=Math.addExact(bytes,Math.addExact(256,artifact.bytes().length));
                         if(bytes>32L*1024*1024)throw new ExportBudgetRefused();
                         conversion.close();retained.reserve(bytes).adopt(bundle);nativeDiagnosticContext=bundle;
                         legacyContextAvailability=full?"retained-full-native-root-only":"retained-native-root-metadata-only";
