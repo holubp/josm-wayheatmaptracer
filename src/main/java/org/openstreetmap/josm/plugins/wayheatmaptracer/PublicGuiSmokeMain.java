@@ -469,7 +469,10 @@ public final class PublicGuiSmokeMain {
             requireExactLegacyParent(owner,rootReview,rootChoice,rootCandidate,rootGeometry);
             var choices=requiredNamed(preview.getContentPane(),"candidate",JComboBox.class);
             if(savedEngine==TrackerMode.LEGACY_V02&&requestedMode==AlignmentMode.PRECISE_SHAPE&&!bFirst&&choices.getItemCount()<2)throw new IllegalStateException("The designated post-computation non-top detector GUI case requires actual distinct children; actualChildChoices="+choices.getItemCount());
+            var beforeChoice=owner.selectedChoiceIdentity();int beforeCalls=owner.actualNativeCalls();var beforeSources=ManagedTileRuntime.initializedCoordinator().stats();
             if(choices.getItemCount()>1)choices.setSelectedIndex(choices.getItemCount()-1);
+            if(savedEngine==TrackerMode.LEGACY_V02&&requestedMode==AlignmentMode.PRECISE_SHAPE&&!bFirst&&beforeChoice.equals(owner.selectedChoiceIdentity()))throw new IllegalStateException("Actual post-computation detector selection did not change its retained child");
+            if(beforeCalls!=owner.actualNativeCalls()||!beforeSources.equals(ManagedTileRuntime.initializedCoordinator().stats()))throw new IllegalStateException("Post-computation detector selection started extra native or source work");
             return null;
         });
         var firstGeometry=onEventThread(owner::selectedGeometry);
