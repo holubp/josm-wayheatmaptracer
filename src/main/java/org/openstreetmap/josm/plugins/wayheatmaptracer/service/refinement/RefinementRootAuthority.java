@@ -198,6 +198,7 @@ public final class RefinementRootAuthority {
         }
         if(!run.request().evidenceSnapshotId().equals(run.evidence().snapshotId())||!run.request().evidenceContentHash().equals(actual))
             throw new IllegalArgumentException("Original native request differs from its completed evidence traversal");
+        if(!hashCache.containsKey(run.evidence())&&hashCache.size()>=64)throw new IllegalArgumentException("Bounded original evidence hash cache exhausted");
         hashCache.put(run.evidence(),actual);return actual;
     }
     RefinementRootAuthority withNativeAcquisitions(LiveBPreviewService.Captured capture,
