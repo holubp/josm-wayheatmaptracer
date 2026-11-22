@@ -651,6 +651,9 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                 }
             } catch(RuntimeException failed) {
                 computationEvidence+="; failed="+failed.getClass().getSimpleName()+"; phase="+progress.phase;
+                for(var frame:failed.getStackTrace())if(frame.getClassName().startsWith("org.openstreetmap.josm.plugins.wayheatmaptracer.")) {
+                    computationEvidence+="; boundary="+frame.getClassName().substring(frame.getClassName().lastIndexOf('.')+1)+"."+frame.getMethodName()+":"+frame.getLineNumber();break;
+                }
                 boolean stale=review.invalidated()||!originalSourceCurrent();
                 boolean cancelled=entry.cancellationRequested&&!stale;
                 if(!closed)session.fail(ticket,stale?Outcome.STALE:cancelled?Outcome.CANCELLED:Outcome.FAILED);

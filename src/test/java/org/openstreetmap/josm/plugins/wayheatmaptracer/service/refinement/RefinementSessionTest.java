@@ -72,6 +72,17 @@ class RefinementSessionTest {
             }
         });
     }
+    @Test void rootCompositionPresentationFailurePreservesExactHistoryAndForwardBranch() throws Exception {
+        edt(()->{
+            try(var session=session(AlignmentMode.PRECISE_SHAPE)) {
+                var ticket=session.begin(TrackerMode.CORRIDOR_AWARE);var forward=child(ticket,"retained-forward");
+                assertTrue(publishReserved(session,ticket,forward));session.workerSettled(ticket);session.back();
+                var previous=session.history();var current=session.current();
+                assertThrows(IllegalStateException.class,()->session.selectRootComposition(candidate("failed-root"),()->{throw new IllegalStateException("Synthetic presentation failure");}));
+                assertEquals(previous,session.history());assertSame(current,session.current());assertEquals(forward,session.redo().orElseThrow());
+            }
+        });
+    }
     @Test void cancelledPublicationPreparationCannotCommitAfterReturningNormally() throws Exception {
         edt(()->{
             var session=session(AlignmentMode.PRECISE_SHAPE);var parent=session.current();var ticket=session.begin(TrackerMode.CORRIDOR_AWARE);
