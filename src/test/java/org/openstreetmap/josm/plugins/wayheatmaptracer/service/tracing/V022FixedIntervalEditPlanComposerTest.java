@@ -1045,6 +1045,19 @@ class V022FixedIntervalEditPlanComposerTest {
         var selected=(DetachedWay)batch.network().primitives().get(batch.fullRequest().selectedWayKey());
         assertEquals(selected.nodeKeys().subList(batch.fullRequest().selectedRange().firstIndex(),batch.fullRequest().selectedRange().lastIndex()+1),proof.finalSelection().pointIds().stream().map(id->((FinalRoutePointId.ExistingWayNodeOccurrence)id).nodeKey()).toList());
         var foreign=batch();assertThrows(IllegalArgumentException.class,()->proof.requireMatches(foreign,Map.of(),foreign.network()));
+        var exact=batch;assertThrows(IllegalArgumentException.class,()->proof.requireMatches(exact,Map.of(0,999),exact.network()));
+        assertTrue(composer.compose(withoutRoutes(batch,0),Map.of()).noChangeProof().isEmpty());
+        assertTrue(composer.compose(withResourceLimit(batch,0,true),Map.of()).noChangeProof().isEmpty(),"Resource-truncated routes never prove a completed unchanged root");
+        var original=batch.runs().get(0).routes().get(0);var quality=original.quality();
+        for(boolean hard:List.of(false,true)){
+            var refusedQuality=new FinalGeometryEvaluator.Result(quality.id(),hard?FinalGeometryEvaluator.Disposition.HARD_BLOCKED:quality.disposition(),quality.findings(),quality.totalLengthMeters(),hard?quality.directlySupportedLengthMeters():0,quality.worstUnsupportedSpanMeters(),quality.meanImageCenterCost(),quality.bendPreservingRoughness());
+            var refused=new ModernTracePipeline.Route(original.rawHypothesis(),original.hypothesis(),original.pointIds(),original.assignments(),original.sourceOwnership(),refusedQuality,original.cleanupStatus(),false);
+            assertTrue(composer.compose(withRoute(batch,0,refused),Map.of()).noChangeProof().isEmpty(),"Exact positions cannot bypass hard quality or absent direct support");
+        }
+        var runs=new ArrayList<>(batch.runs());var run=runs.get(0);var inference=run.result().inference();
+        var cancelled=new TraceHypothesisSet(inference.engine(),inference.hypotheses(),TraceHypothesisSet.Status.CANCELLED,false,inference.evaluatedStates(),inference.evaluatedTransitions(),"cancelled");
+        runs.set(0,new IntervalTraceBatch.IntervalRun(run.interval(),run.request(),new ModernTracePipeline.Result(cancelled,run.routes()),run.usage()));
+        assertTrue(composer.compose(new IntervalTraceBatch(batch.fullRequest(),batch.evidence(),batch.network(),batch.partition(),runs,batch.options()),Map.of()).noChangeProof().isEmpty());
         assertTrue(composer.compose(noSignalBatch(),Map.of()).noChangeProof().isEmpty(),"An all-frozen/no-signal result cannot mint no-write authority");
     }
 
