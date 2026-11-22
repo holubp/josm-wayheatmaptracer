@@ -122,6 +122,21 @@ public final class LegacyRefinementBootstrap {
     }
 
     /** Maps the exact selected original source lazily, using one admitted operation context. */
+    public SmoothingSeed captureForSmoothingFromOriginal(LegacyReviewOwner review,TileFetchCoordinator coordinator,GeometryWorkContext work,Seed original) {
+        if(original==null||original.facts()==null||original.original()!=review.originalResult()||!original.config().equals(review.originalConfig()))throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
+        SmoothingSeed previous=original.factualSeed();
+        if(previous==null) {
+            if(!(original.originalSource() instanceof ManagedOriginalSource managed))throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
+            var index=Integer.parseInt(original.selectedChoice().substring("legacy-choice-".length()));var candidate=original.original().candidates().get(index);
+            var sources=original.original().detectorAttempts().stream().filter(attempt->attempt.candidateIds().contains(candidate.id())).map(attempt->new RefinementSourcePlanner.SourceRequest(attempt.sourcePalette(),attempt.mappingName(),attempt.mappingName().equals("all-colors-combined"),"")).distinct().toList();
+            if(sources.size()!=1)throw new SmoothingUnavailable(SmoothingUnavailableReason.SOURCE_MAPPING_UNAVAILABLE);
+            previous=new ManagedSeed(original.facts(),original.original(),original.config(),original.selectedChoice(),sources.get(0),original.memory(),original.payloadLimit(),managed.receipt());
+        }
+        var selected=captureForSmoothing(review,coordinator,work,previous);
+        if(selected.facts()!=original.facts()||selected.facts().network()!=original.facts().network()||selected.facts().receipt()!=original.facts().receipt())throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
+        return selected;
+    }
+
     public SmoothingRoot completeForSmoothing(SmoothingSeed seed,TileFetchCoordinator coordinator,GeometryWorkContext work) {
         return completeForSmoothing(seed,coordinator,work,null);
     }

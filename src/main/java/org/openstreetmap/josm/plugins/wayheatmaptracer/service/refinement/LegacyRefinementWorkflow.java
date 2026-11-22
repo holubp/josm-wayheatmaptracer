@@ -819,24 +819,34 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         var parentStage=session.history().stream().filter(s->s.id().equals(input.unsmoothedParent())).findFirst().orElseThrow();
         var parent=parentStage.candidates().stream().filter(c->c.id().equals(input.unsmoothedChoice())).findFirst().orElseThrow();
         var source=parent.payload().nativeSourceBindings().values().stream().findFirst().orElse(root.originalConversion());
-        if(source==null)throw new SmoothingParentBinder.Unavailable(SmoothingParentBinder.Reason.SELECTED_SOURCE_NOT_RETAINED);
+        boolean legacyOriginal=parent.payload().nativeReview().isEmpty()&&parent.payload().rootNoChangeReview().isEmpty()&&review instanceof LegacyReviewOwner;
+        if(legacyOriginal&&source!=null&&!source.legacyDisposition().map(value->value.nativeCandidateId().equals(parent.nativeCandidateId())).orElse(false))source=null;
+        if(source==null&&!legacyOriginal)throw new SmoothingParentBinder.Unavailable(SmoothingParentBinder.Reason.SELECTED_SOURCE_NOT_RETAINED);
         var reference=new ParentReferenceBinder().bind(root.authority(),parentStage.id(),parent);
         clearDiagnostics();long available=session.availablePayloadBytes();diagnosticsSlot=RefinementAttemptDiagnostics.Slot.open(rootMemory,available).orElse(null);
         diagnosticsAvailability=diagnosticsSlot==null?RefinementAttemptDiagnostics.Availability.UNAVAILABLE_BUDGET:RefinementAttemptDiagnostics.Availability.RUNNING;
         long allowance=available-(diagnosticsSlot==null?0:diagnosticsSlot.bytes());session.reserve(ticket,1,allowance);
         var progress=new AttemptProgress(new RefinementAttemptDiagnostics.Binding(ticket,session.history().get(0).id(),root.authority().sourceIdentity(),root.authority().network().canonicalHash(),RuntimeRefinementDiagnostics.frozenSettingsIdentity(root.authority()),root.authority().frozenGeometryIdentity(),reference.canonicalIdentity()),diagnosticsSlot);activeProgress=progress;
         var operation=rootMemory.child("smoothing-"+ticket.sequence());var publication=rootMemory.child("smoothing-publication-"+ticket.sequence());
-        parent.payload().retainSmoothingSources(operation);source.retainInto(operation);
+        parent.payload().retainSmoothingSources(operation);if(source!=null)source.retainInto(operation);
         var baseline=session.admissionInventories();
         cancellation=new CancellationToken();var entry=new NativeEntry(ticket);activeEntry=entry;var probe=probe(cancellation,entry);
         var budget=initialVisibleBudget!=null?initialVisibleBudget:RefinementPipeline.OperationBudget.production(root.authority().request().budgets());
         var inherited=initialVisibleWork;initialVisibleWork=null;initialVisibleBudget=null;
         var workContext=inherited!=null?inherited:new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(sourcePreparationControl.visits(),sourcePreparationControl.bytes(),budget.finalDeadlineNanos(),probe,operation);
+        LegacyRefinementBootstrap.SmoothingSeed originalSeed;
+        try{originalSeed=source==null?new LegacyRefinementBootstrap().captureForSmoothingFromOriginal((LegacyReviewOwner)review,coordinator,workContext,seed):null;}
+        catch(RuntimeException failed){operation.close();publication.close();baseline.clear();activeEntry=null;entry.settlement.complete(null);throw failed;}
+        var retainedSource=source;var originalRoot=root;var completedSource=new java.util.concurrent.atomic.AtomicReference<RetainedSmoothingSource>(source);
         busy=true;message="";PreviewWorkGate.Work work;
         try{present();work=beginOwnedWork();if(lifecycle!=null)lifecycle.attachTicket(work,ticket);}
         catch(RuntimeException failed){operation.close();publication.close();baseline.clear();busy=false;throw failed;}
         CompletableFuture<Computed> computation;
-        try{computation=CompletableFuture.supplyAsync(()->computeSmoothing(ticket,parent,source,strength,workContext,probe,progress,publication,allowance,baseline),executor);}
+        try{computation=CompletableFuture.supplyAsync(()->{
+            var actual=retainedSource;
+            if(actual==null){progress.phase=RefinementAttemptDiagnostics.Phase.SOURCE_PREPARATION;actual=new LegacyRefinementBootstrap().completeForSmoothing(originalSeed,coordinator,workContext,originalRoot).source();completedSource.set(actual);}
+            return computeSmoothing(ticket,parent,actual,strength,workContext,probe,progress,publication,allowance,baseline);
+        },executor);}
         catch(RuntimeException rejected){computation=CompletableFuture.failedFuture(rejected);}
         computation.whenComplete((computed,failure)->{baseline.clear();entry.workerReturned=true;dispatchCompletion(()->{
             var outcome=RefinementAttemptDiagnostics.Publication.FAILED;var cause=RefinementAttemptDiagnostics.Cause.FAILED;
@@ -844,7 +854,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                 if(closed||!ownsPublication()||!Objects.equals(active,ticket))return;
                 if(failure!=null)throw unwrap(failure);
                 var workerPhase=progress.phase;progress.phase=RefinementAttemptDiagnostics.Phase.PUBLICATION;
-                probe.checkpoint();review.requireOriginalAttemptCurrent();source.requireCurrent();
+                probe.checkpoint();review.requireOriginalAttemptCurrent();completedSource.get().requireCurrent();
                 cause=computed.cause();
                 if(computed.stage().isEmpty()){progress.phase=workerPhase;session.fail(ticket,cause==RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT?Outcome.RESOURCE_LIMIT:Outcome.NO_USABLE_RESULT);outcome=RefinementAttemptDiagnostics.Publication.NO_CHILD;message="Smoothen retained the selected parent: "+cause.name().toLowerCase(Locale.ROOT)+".";}
                 else {
