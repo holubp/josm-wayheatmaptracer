@@ -130,7 +130,9 @@ public final class SmoothingParentBinder {
             hash.value(facts.source().visibleReceipt().map(r->r.revision()));hash.value(facts.source().legacyDisposition());
             hash.value(facts.evidence());hash.value(facts.geometryCleanup());hash.value(facts.safetyWarnings());hash.value(facts.parentApplicable());
             hash.value(facts.detectorAttempts());hash.value(facts.quality());hash.value(facts.nativeDisposition());hash.value(facts.junctionFindings());
-            hash.value(facts.sourceSpans());hash.value(ids);hash.value(fixed);return hash.finish();
+            hash.value(facts.sourceSpans());
+            facts.nativeValidation().filter(v->!v.findingCodes().isEmpty()).ifPresent(v->{hash.value("native-plan-findings-v1");hash.value(v);});
+            hash.value(ids);hash.value(fixed);return hash.finish();
         }
     }
 }

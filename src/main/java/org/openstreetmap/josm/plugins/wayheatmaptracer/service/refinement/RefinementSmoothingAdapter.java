@@ -16,21 +16,29 @@ public final class RefinementSmoothingAdapter {
     public record Receipt(String method,String parentIdentity,SmoothingModels.Preset strength,
             SmoothingModels.BaselineReference reference,String inputHash,String representation,Outcome outcome,long workVisits,
             long proposalWorkVisits,int guardTrials,double acceptedScale,String reason,AlignmentMode mode) { }
+    /** Current measured assessment and factual inherited plan reasons remain distinct. */
+    public record Assessment(ParentBackedComposer.Assessed evaluated,Optional<ValidationReport> inheritedValidation) {
+        public Assessment {Objects.requireNonNull(evaluated);Objects.requireNonNull(inheritedValidation);}
+        public ParentBackedComposer.Composed candidate(){return evaluated.candidate();}
+        public FinalGeometryEvaluator.Result quality(){return evaluated.quality();}
+        public List<String> topologyFindings(){return evaluated.topologyFindings();}
+        public List<ParentBackedComposer.CopyAssessment> copies(){return evaluated.copies();}
+    }
     /** Keep open while any geometry/plan/receipt alias is used; the caller's ledger owner must remain open. */
     public static final class Result implements AutoCloseable {
         private final List<MetricPoint> points;private final Optional<AlignmentEditPlan> plan;private final Receipt receipt;
-        private final Optional<ParentBackedComposer.Assessed> assessment;
+        private final Optional<Assessment> assessment;
         private final AttemptMemoryLedger.Owner owner;
         private final LongScaleNormalFairing.OwnedCaptureRequest proposal;
         private final SmoothingModels.NativeFacts inheritedFacts;
         Result(List<MetricPoint> points,Optional<AlignmentEditPlan> plan,Receipt receipt,
-                Optional<ParentBackedComposer.Assessed> assessment,AttemptMemoryLedger.Owner owner,LongScaleNormalFairing.OwnedCaptureRequest proposal,SmoothingModels.NativeFacts inheritedFacts){
+                Optional<Assessment> assessment,AttemptMemoryLedger.Owner owner,LongScaleNormalFairing.OwnedCaptureRequest proposal,SmoothingModels.NativeFacts inheritedFacts){
             this.points=points;this.plan=plan;this.receipt=receipt;this.assessment=assessment;this.owner=owner;this.proposal=proposal;this.inheritedFacts=inheritedFacts;
         }
         public List<MetricPoint> points(){return points;}
         public Optional<AlignmentEditPlan> plan(){return plan;}
         public Receipt receipt(){return receipt;}
-        public Optional<ParentBackedComposer.Assessed> assessment(){return assessment;}
+        public Optional<Assessment> assessment(){return assessment;}
         public SmoothingModels.NativeFacts inheritedFacts(){return inheritedFacts;}
         @Override public void close(){if(proposal!=null)proposal.close();if(owner!=null)owner.close();}
     }
@@ -61,21 +69,23 @@ public final class RefinementSmoothingAdapter {
             owner=work.owner().child("guarded-baseline-smoothing");
             parent.nativeFacts().source().retainInto(owner);owner.retain(parent);owner.retain(parent.image());
             long graphUnits=graphUnits(parent,work);
-            long outputBytes=Math.addExact(16384L,Math.addExact(Math.multiplyExact(8192L,graphUnits),Math.multiplyExact(2048L,parent.pointIds().size())));
+            long inheritedCodes=parent.nativeFacts().nativeValidation().map(v->(long)v.findingCodes().size()).orElse(0L);
+            long outputBytes=Math.addExact(Math.multiplyExact(64L,inheritedCodes),Math.addExact(16384L,Math.addExact(Math.multiplyExact(8192L,graphUnits),Math.multiplyExact(2048L,parent.pointIds().size()))));
             try(var scratch=work.reserve("baseline-smoothing-assessment-scratch",assessmentBytes(parent,requested,graphUnits,work));
                 var retained=work.reserveOn(owner,"baseline-smoothing-plan",outputBytes)) {
+                var sourceCells=new ImageCostField.SegmentSupportBudget(Long.MAX_VALUE);
                 for(double scale:new double[]{1,.5,.25,.125}) {
                     cancellation.checkpoint();PostprocessingValidationWork.visit();current(parent);trials++;
                     var points=scale==1?requested:backtrack(parent.reference().points(),requested,scale,work);
                     if(points.equals(parent.reference().points()))continue;
                     var candidate=composition(parent,points,strength,work);
-                    ParentBackedComposer.Assessed assessed;
+                    Assessment assessed;
                     AlignmentEditPlan plan;
                     try {
-                        assessed=new ParentBackedComposer().assessPostprocessed(parent.reference(),candidate,parent.evidence(),parent.image(),work,cancellation);
-                        if(assessed.quality().disposition()==FinalGeometryEvaluator.Disposition.HARD_BLOCKED)continue;
-                        assessed=inheritReview(parent,assessed);
-                        plan=new ModernSingleWayEditPlanAdapter().adaptPostprocessed(parent.reference(),assessed,parent.evidence(),work);
+                        var evaluated=new ParentBackedComposer().assessPostprocessed(parent.reference(),candidate,parent.evidence(),parent.image(),work,cancellation,sourceCells);
+                        if(evaluated.quality().disposition()==FinalGeometryEvaluator.Disposition.HARD_BLOCKED)continue;
+                        assessed=inheritReview(parent,evaluated);
+                        plan=new ModernSingleWayEditPlanAdapter().adaptPostprocessed(parent.reference(),assessed.evaluated(),parent.evidence(),work,assessed.inheritedValidation());
                     }
                     catch(IllegalArgumentException unsafe){continue;}
                     cancellation.checkpoint();PostprocessingValidationWork.visit();current(parent);
@@ -117,14 +127,14 @@ public final class RefinementSmoothingAdapter {
         return new ParentBackedComposer.Composed(parent.representationIdentity()+"/smooth/"+strength.name(),points,parent.pointIds(),assignments,parent.reference().correspondence(),
             List.of(new ParentBackedComposer.Span(0,points.size()-1,false,parent.reference().nativeCandidateId(),parent.frame().palette())));
     }
-    private static ParentBackedComposer.Assessed inheritReview(SmoothingModels.Parent parent,ParentBackedComposer.Assessed assessed) {
+    private static Assessment inheritReview(SmoothingModels.Parent parent,ParentBackedComposer.Assessed assessed) {
         var facts=parent.nativeFacts();var findings=new ArrayList<>(assessed.quality().findings());
         facts.quality().ifPresent(q->{for(var f:q.findings()){PostprocessingValidationWork.visit();if(f.severity()==FinalGeometryEvaluator.Severity.REVIEW)findings.add(f);}});
         boolean review=facts.nativeDisposition().filter(d->d==ValidationReport.Disposition.REVIEW_REQUIRED).isPresent()||!facts.safetyWarnings().isEmpty()
             ||findings.stream().anyMatch(f->f.severity()==FinalGeometryEvaluator.Severity.REVIEW);
         var q=assessed.quality();
         if(review)q=new FinalGeometryEvaluator.Result(q.id(),FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED,findings,q.totalLengthMeters(),q.directlySupportedLengthMeters(),q.worstUnsupportedSpanMeters(),q.meanImageCenterCost(),q.bendPreservingRoughness());
-        return new ParentBackedComposer.Assessed(assessed.candidate(),q,assessed.topologyFindings(),assessed.copies());
+        return new Assessment(new ParentBackedComposer.Assessed(assessed.candidate(),q,assessed.topologyFindings(),assessed.copies()),facts.nativeValidation());
     }
     private static long graphUnits(SmoothingModels.Parent parent,GeometryWorkContext work) {
         long units=parent.reference().root().network().primitives().size();

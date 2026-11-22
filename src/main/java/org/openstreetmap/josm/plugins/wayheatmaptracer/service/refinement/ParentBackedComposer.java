@@ -140,16 +140,24 @@ public final class ParentBackedComposer {
         cancellation.checkpoint();var root=parent.root();
         if(!evidence.coordinateFrame().equals(root.evidence().coordinateFrame())||!evidence.sourceIdentity().equals(root.sourceIdentity()))
             throw new IllegalArgumentException("Final assessment source differs from root");
-        return assessInternal(parent,candidate,evidence,ImageCostField.fromEvidence(evidence,field),cancellation);
+        return assessInternal(parent,candidate,evidence,ImageCostField.fromEvidence(evidence,field),cancellation,null);
     }
     /** Postprocessing reuses the exact admitted selected-source image; no second raster copy. */
     public Assessed assessPostprocessed(ParentTraceReference parent,Composed candidate,EvidenceSnapshot evidence,
             ImageCostField image,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,CancellationProbe cancellation) {
+        return assessPostprocessed(parent,candidate,evidence,image,work,cancellation,new ImageCostField.SegmentSupportBudget(Long.MAX_VALUE));
+    }
+    /** Exact source-cell work shares one operation counter across every assembled trial. */
+    public Assessed assessPostprocessed(ParentTraceReference parent,Composed candidate,EvidenceSnapshot evidence,
+            ImageCostField image,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,CancellationProbe cancellation,
+            ImageCostField.SegmentSupportBudget sourceCells) {
+        Objects.requireNonNull(sourceCells);
         try(var scope=PostprocessingValidationWork.open(work)) {
-            return assessInternal(parent,candidate,evidence,image,cancellation);
+            return assessInternal(parent,candidate,evidence,image,cancellation,sourceCells);
         }
     }
-    private Assessed assessInternal(ParentTraceReference parent,Composed candidate,EvidenceSnapshot evidence,ImageCostField image,CancellationProbe cancellation) {
+    private Assessed assessInternal(ParentTraceReference parent,Composed candidate,EvidenceSnapshot evidence,ImageCostField image,CancellationProbe cancellation,
+            ImageCostField.SegmentSupportBudget sourceCells) {
         cancellation.checkpoint();var root=parent.root();
         if(!evidence.coordinateFrame().equals(root.evidence().coordinateFrame())||!evidence.sourceIdentity().equals(root.sourceIdentity()))
             throw new IllegalArgumentException("Final assessment source differs from root");
@@ -184,6 +192,14 @@ public final class ParentBackedComposer {
                     ||i>0&&!evidence.evidenceRegion().containsSegment(candidate.points().get(i-1),point)))
                 extra.add(new FinalGeometryEvaluator.Finding(FinalGeometryEvaluator.FindingCode.CONTEXT_PROOF_UNAVAILABLE,
                     FinalGeometryEvaluator.Severity.HARD_BLOCK,i,i,0));
+            if(sourceCells!=null&&i>0) {
+                var coverage=image.certifySegmentSupport(candidate.points().get(i-1),point,sourceCells,cancellation);
+                if(coverage==ImageCostField.SegmentSupport.RESOURCE_LIMIT)
+                    throw new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached();
+                if(coverage!=ImageCostField.SegmentSupport.COMPLETE)
+                    extra.add(new FinalGeometryEvaluator.Finding(FinalGeometryEvaluator.FindingCode.CONTEXT_PROOF_UNAVAILABLE,
+                        FinalGeometryEvaluator.Severity.HARD_BLOCK,i-1,i,0));
+            }
             if(candidate.pointIds().get(i) instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing) {
                 var pinned=parent.frozenAnchors().get(existing.originalOccurrenceIndex());
                 if(pinned!=null)protectedAssignments.put(i,pinned);

@@ -144,6 +144,8 @@ class RefinementSmoothingAdapterTest {
                     assertEquals(result.points().size(),result.assessment().orElseThrow().candidate().assignments().size());
                     assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED,result.plan().orElseThrow().validation().disposition());
                     assertTrue(result.plan().orElseThrow().validation().findingCodes().contains(inheritedReason),"Native plan-only reasons must survive smoothing exactly");
+                    assertEquals(List.of(inheritedReason),result.inheritedFacts().nativeValidation().orElseThrow().findingCodes());
+                    assertEquals(result.inheritedFacts().nativeValidation(),result.assessment().orElseThrow().inheritedValidation());
                 }
             }
         }
