@@ -239,6 +239,7 @@ public final class PublicGuiSmokeMain {
             } finally {
                 Toolkit.getDefaultToolkit().removeAWTEventListener(listener);
             }
+            if(visibleGui)exerciseVisibleIntervalApplyAndDescendant(report,action,session,fixture,original,originalUndo);
             stage = "cancel";
             long cancelledSequence = onEventThread(() -> {
                 action.actionPerformed(null);
@@ -1841,6 +1842,56 @@ public final class PublicGuiSmokeMain {
         onEventThread(()->{UndoRedoHandler.getInstance().redo();return null;});if(!applied.equals(wayState(fixture)))throw new IllegalStateException("Original native Redo changed its stored geometry");
         onEventThread(()->{UndoRedoHandler.getInstance().undo();return null;});requireUnchanged(fixture,original,originalUndo);
     }
+    /** Actual visible source authority must survive interval composition and a native descendant. */
+    private static void exerciseVisibleIntervalApplyAndDescendant(Path report,AlignWayAction action,PreviewSessionController<?> session,
+            PublicGuiSmokeFixture fixture,List<String> original,int originalUndo) throws Exception {
+        var junction=fixture.selectedWay().getNodes().get(fixture.selectedWay().getNodesCount()/2);
+        var remote=new Node();var branch=new org.openstreetmap.josm.data.osm.Way();
+        onEventThread(()->{
+            var point=junction.getEastNorth();remote.setCoor(ProjectionRegistry.getProjection().eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth(point.east(),point.north()+30)));
+            remote.setOsmId(9201,1);branch.setOsmId(9202,1);branch.setNodes(List.of(junction,remote));branch.put("highway","path");
+            fixture.dataSet().addPrimitive(remote);fixture.dataSet().addPrimitive(branch);remote.setModified(false);branch.setModified(false);return null;
+        });
+        var baseline=wayState(fixture);var opened=new CompletableFuture<JDialog>();
+        AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog dialog&&isPreview(dialog))opened.complete(dialog);};
+        Toolkit.getDefaultToolkit().addAWTEventListener(listener,AWTEvent.WINDOW_EVENT_MASK);
+        try {
+            onEventThread(()->{action.actionPerformed(null);return null;});var dialog=opened.get(180,TimeUnit.SECONDS);
+            var computed=onEventThread(()->(LiveBPreviewService.Computed)session.currentAttempt().result());
+            if(!computed.partitioned()||computed.captured().visibleInputReceipt().isEmpty()||computed.intervalBatch().runs().isEmpty())throw new IllegalStateException("Actual producer-backed visible interval source is unavailable");
+            var initial=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer().compose(computed.intervalBatch(),Map.of()).plan().orElseThrow();
+            Format15ArchiveReader.read(exportThroughActualMenu());
+            // Applying the original interval plan exercises its own production source validator.
+            applyStoredNativePlan(dialog,fixture,initial,baseline,originalUndo);
+            var descendantOpened=new CompletableFuture<JDialog>();
+            AWTEventListener descendantListener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog next&&isPreview(next))descendantOpened.complete(next);};
+            Toolkit.getDefaultToolkit().addAWTEventListener(descendantListener,AWTEvent.WINDOW_EVENT_MASK);
+            try {
+                onEventThread(()->{action.actionPerformed(null);return null;});var next=descendantOpened.get(180,TimeUnit.SECONDS);
+                var descendant=onEventThread(()->(LegacyRefinementWorkflow)next.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner"));
+                clickAndAwaitStage(report,next,descendant,"refineA",StageKind.REFINE_A);
+                var plan=onEventThread(()->descendant.currentNative().orElseThrow().plan());
+                if(descendant.actualNativeCalls()==0)throw new IllegalStateException("Visible interval descendant did not enter actual native inference");
+                Format15ArchiveReader.read(exportThroughActualMenu());applyStoredNativePlan(next,fixture,plan,baseline,originalUndo);
+            }finally{Toolkit.getDefaultToolkit().removeAWTEventListener(descendantListener);}
+            System.err.println("GUI_SMOKE_VISIBLE_INTERVAL producer=true originalApplyUndoRedo=true actualNativeDescendant=true descendantApplyUndoRedo=true");
+        } finally {
+            Toolkit.getDefaultToolkit().removeAWTEventListener(listener);
+            onEventThread(()->{for(Window window:Window.getWindows())if(window instanceof JDialog dialog&&isPreview(dialog))dialog.dispatchEvent(new WindowEvent(dialog,WindowEvent.WINDOW_CLOSING));branch.setNodes(List.of());fixture.dataSet().removePrimitive(branch);fixture.dataSet().removePrimitive(remote);return null;});
+        }
+        requireUnchanged(fixture,original,originalUndo);
+    }
+    private static void applyStoredNativePlan(JDialog dialog,PublicGuiSmokeFixture fixture,org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan plan,List<String> original,int undo) throws Exception {
+        boolean legacy="legacy-review".equals(dialog.getName());
+        var confirm=onEventThread(()->{var button=legacy?requiredNamed(dialog.getContentPane(),"legacy-confirm",javax.swing.JButton.class):labelledButton(dialog.getContentPane(),"Confirm review");return button.isVisible()&&button.isEnabled();});
+        if(confirm){if(legacy)confirmStepwise(dialog);else confirmStepwiseNative(dialog);}
+        onEventThread(()->{var apply=labelledButton(dialog.getContentPane(),"Apply");if(!apply.isEnabled())throw new IllegalStateException("Stored visible interval plan is not applicable");apply.doClick();return null;});
+        if(onEventThread(dialog::isDisplayable)||UndoRedoHandler.getInstance().getUndoCommands().size()!=undo+1)throw new IllegalStateException("Visible interval Apply did not publish one command");
+        if(!plan.finalPreviewWays().get(plan.selectedWayKey()).equals(fixture.selectedWay().getNodes().stream().map(node->new GeographicPoint(node.lat(),node.lon())).toList()))throw new IllegalStateException("Visible interval command differs from its stored final plan");
+        var applied=wayState(fixture);onEventThread(()->{UndoRedoHandler.getInstance().undo();return null;});requireUnchanged(fixture,original,undo);
+        onEventThread(()->{UndoRedoHandler.getInstance().redo();return null;});if(!applied.equals(wayState(fixture)))throw new IllegalStateException("Visible interval Redo changed stored geometry");
+        onEventThread(()->{UndoRedoHandler.getInstance().undo();return null;});requireUnchanged(fixture,original,undo);
+    }
     private static void exerciseOriginalNativeStaleInspection(AlignWayAction action,PreviewSessionController<?> session,PublicGuiSmokeFixture fixture,List<String> original,int originalUndo) throws Exception {
         var opened=new CompletableFuture<JDialog>();var modal=new AtomicBoolean();
         AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog dialog){
@@ -1872,7 +1923,7 @@ public final class PublicGuiSmokeMain {
             var dialog=opened.get(180,TimeUnit.SECONDS);
             var owner=onEventThread(()->{
                 if(dialog.isModal())throw new IllegalStateException("Smoothing review must be modeless");
-                var attempt=session.currentAttempt();if(attempt!=null&&attempt.result() instanceof LiveBPreviewService.Computed computed)selectRidgeRoute(dialog,computed);
+                var attempt=session.currentAttempt();if(attempt!=null&&attempt.result() instanceof LiveBPreviewService.Computed computed&&!computed.partitioned())selectRidgeRoute(dialog,computed);
                 var actual=(LegacyRefinementWorkflow)dialog.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner");
                 if(attempt==null) {
                     var originalReview=originalReview(actual);var choices=requiredNamed(dialog.getContentPane(),"candidate",JComboBox.class);int selected=choices.getSelectedIndex();int chosen=-1;

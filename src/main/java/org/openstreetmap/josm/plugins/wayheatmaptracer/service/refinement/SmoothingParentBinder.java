@@ -97,8 +97,8 @@ public final class SmoothingParentBinder {
             catch(IllegalArgumentException missing){throw new Unavailable(Reason.SOURCE_FRAME_UNAVAILABLE);}
             var image=ImageCostField.fromEvidence(source.evidence(),source.fieldName(),work,bindingOwner);
             var hashProof=recordedAlias?root.registeredOriginalEvidenceHashProof(candidate,source,work):Optional.<RefinementRootAuthority.OriginalEvidenceHashProof>empty();
-            hashProof.ifPresent(proof->work.reserveOn(bindingOwner,"smoothing-original-hash-proof",256).adopt(proof));
-            String evidenceHash=hashProof.map(proof->proof.requireMatches(root,source.evidence(),source,work)).orElseGet(()->source.evidence().canonicalHash(work));
+            hashProof.ifPresent(hashAuthority->work.reserveOn(bindingOwner,"smoothing-original-hash-proof",256).adopt(hashAuthority));
+            String evidenceHash=hashProof.map(hashAuthority->hashAuthority.requireMatches(root,source.evidence(),source,work)).orElseGet(()->source.evidence().canonicalHash(work));
             String identity=identity(reference,frame,ids,fixed,evidenceHash,facts,work);
             var bases=facts.sourceSpans().stream().filter(s->s.source().equals(source.source())&&!s.span().parentRetained()&&s.span().firstVertex()==0&&s.span().lastVertex()==n-1)
                 .flatMap(s->s.nativeProvenance().stream()).flatMap(p->p.nativeBasis().stream()).distinct().toList();
