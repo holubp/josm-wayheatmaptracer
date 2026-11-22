@@ -518,6 +518,11 @@ parent. Changing strength does not smooth the Medium result again. Original
 movement permissions, fixed and shared anchors, and whole-preview safety checks
 continue to apply. An unavailable or rejected optional result retains its parent.
 
+Rendered raw high-resolution input can exceed the bounded work available for a
+new refinement capture. That attempt reports a resource refusal and keeps the
+selected stage usable; it does not silently change resolution or run a detector
+with incomplete evidence.
+
 The result review hides while optional work runs. A modeless progress window
 provides Cancel, and the diagnostics menu and shortcut remain available. Returning
 to an earlier stage or selecting another retained root composition keeps its saved
