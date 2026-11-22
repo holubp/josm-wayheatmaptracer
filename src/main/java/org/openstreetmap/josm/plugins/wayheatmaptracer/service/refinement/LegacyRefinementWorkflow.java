@@ -548,8 +548,9 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                             probe.checkpoint();review.requireOriginalAttemptCurrent();
                             preparedRoot=completed;root=completed.root();sourceContext=completed.source();preparingSourceCurrent=sourceContext::requireCurrent;
                             session=new RefinementSession(root.stage(),review.originalConfig(),review.sourceIdentity(),root.authority(),RefinementLimits.defaults());
+                            retainedStages.put(root.stage().id(),new RetainedStage(completed.memory(),root.stage()));
                             if(review instanceof LegacyReviewOwner)bindLegacyReview();
-                            else {retainedStages.put(root.stage().id(),new RetainedStage(completed.memory(),root.stage()));showCurrent();}
+                            else showCurrent();
                             startDiagnostics();continueRefinement=true;
                         }catch(RuntimeException refused){bootstrapMemory.close();seed=null;message=cancellation!=null&&cancellation.isCancelled()?"Operation cancelled; retained the selected parent.":"Original result preparation failed; retained the selected parent.";}
                         finally {

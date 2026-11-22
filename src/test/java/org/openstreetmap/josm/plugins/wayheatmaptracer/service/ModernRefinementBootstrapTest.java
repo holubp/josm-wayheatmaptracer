@@ -31,11 +31,11 @@ class ModernRefinementBootstrapTest {
         }
         var selection=new SelectionContext(way,1,29,nodes.subList(1,30),Set.of(nodes.get(1),nodes.get(29)));
         var config=V022LiveBPreviewServiceTest.config(TrackerMode.PROBABILISTIC);
-        // Exact horizontal crop of the established400m native interval fixture: no changed pixel phase.
+        // Keep the established400m interval frame/phase, with two measured parallel ridges for real route alternatives.
         int width=1200,height=120;var pixels=new int[width*height];var epoch=new VisibleSourceEpoch();
         for(int y=0;y<height;y++) {
-            double distance=(y-60.0)/3.0;
-            int gray=(int)Math.round(255*(.02+.8*Math.exp(-.5*distance*distance/1.44)));
+            double left=(y-54.0)/3.0,right=(y-66.0)/3.0;
+            int gray=(int)Math.round(255*(.02+.8*Math.max(Math.exp(-.5*left*left/1.44),Math.exp(-.5*right*right/1.44))));
             Arrays.fill(pixels,y*width,(y+1)*width,0xff000000|gray<<16|gray<<8|gray);
         }
         var raster=new LiveBPreviewService.VisibleRaster(width,height,pixels,-200,-20,200,20,2,2,OptionalDouble.of(2),"visible-interval-root-test","EPSG:3857",epoch.captureStable());
