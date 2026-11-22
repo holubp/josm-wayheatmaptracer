@@ -338,8 +338,8 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             public void refineA(){refine(TrackerMode.CORRIDOR_AWARE);}
             public void refineB(){refine(TrackerMode.PROBABILISTIC);}
             public void cancel(){cancelOperation();}
-            public void strengthSelected(RefinementControls.Strength value){ }
-            public void smooth(RefinementControls.Strength value){message="Smoothing is not qualified in this build.";present();}
+            public void strengthSelected(RefinementControls.Strength value){if(session!=null&&session.current().kind()==StageKind.SMOOTH)smooth(value);}
+            public void smooth(RefinementControls.Strength value){LegacyRefinementWorkflow.this.smooth(session!=null&&session.current().kind()==StageKind.SMOOTH?value:RefinementControls.Strength.MEDIUM);}
         });present();
     }
     public void refresh(){present();}
@@ -407,6 +407,12 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         }catch(PresentationFailed failed){return false;}
     }
     public void refine(TrackerMode engine) {
+        operate(engine,null);
+    }
+    public void smooth(RefinementControls.Strength strength) {
+        operate(null,Objects.requireNonNull(strength));
+    }
+    private void operate(TrackerMode engine,RefinementControls.Strength smoothing) {
         if(busy||closed||!ownsPublication())return;
         AttemptProgress preparing=null;
         try {
@@ -455,12 +461,13 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                         finally {
                             busy=false;if(closed)releaseClosed();
                             settleWork(work);
-                            if(!closed){if(continueRefinement)refine(engine);else present();}
+                            if(!closed){if(continueRefinement)operate(engine,smoothing);else present();}
                         }
                     }));
                 return;
             }
             sourceContext.requireCurrent();
+            if(smoothing!=null){startSmoothing(smoothing);return;}
             var parent=new ParentReferenceBinder().bind(session.authority(),session.current().id(),selected());
             var ticket=session.begin(engine);active=ticket;
             clearDiagnostics();
@@ -562,6 +569,101 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             }
             message=refused.getMessage();busy=false;present();
         }
+    }
+    private void startSmoothing(RefinementControls.Strength strength) {
+        var ticket=session.beginSmoothing(strength==RefinementControls.Strength.STRONG?"Strong":"Medium");active=ticket;confirmation=null;
+        var input=ticket.smoothingInput().orElseThrow();
+        var parentStage=session.history().stream().filter(s->s.id().equals(input.unsmoothedParent())).findFirst().orElseThrow();
+        var parent=parentStage.candidates().stream().filter(c->c.id().equals(input.unsmoothedChoice())).findFirst().orElseThrow();
+        var source=parent.payload().nativeReview().flatMap(n->n.sources().stream().map(n.retainedSources()::get).filter(Objects::nonNull).findFirst()).orElse(root.originalConversion());
+        if(source==null)throw new SmoothingParentBinder.Unavailable(SmoothingParentBinder.Reason.SELECTED_SOURCE_NOT_RETAINED);
+        var reference=new ParentReferenceBinder().bind(root.authority(),parentStage.id(),parent);
+        clearDiagnostics();long available=session.availablePayloadBytes();diagnosticsSlot=RefinementAttemptDiagnostics.Slot.open(rootMemory,available).orElse(null);
+        diagnosticsAvailability=diagnosticsSlot==null?RefinementAttemptDiagnostics.Availability.UNAVAILABLE_BUDGET:RefinementAttemptDiagnostics.Availability.RUNNING;
+        long allowance=available-(diagnosticsSlot==null?0:diagnosticsSlot.bytes());session.reserve(ticket,1,allowance);
+        var progress=new AttemptProgress(new RefinementAttemptDiagnostics.Binding(ticket,session.history().get(0).id(),root.authority().sourceIdentity(),root.authority().network().canonicalHash(),RuntimeRefinementDiagnostics.frozenSettingsIdentity(root.authority()),root.authority().frozenGeometryIdentity(),reference.canonicalIdentity()),diagnosticsSlot);activeProgress=progress;
+        var operation=rootMemory.child("smoothing-"+ticket.sequence());var publication=rootMemory.child("smoothing-publication-"+ticket.sequence());
+        parent.payload().retainSmoothingSources(operation);source.retainInto(operation);
+        var baseline=session.admissionInventories();
+        cancellation=new CancellationToken();var entry=new NativeEntry(ticket);activeEntry=entry;var probe=probe(cancellation,entry);
+        var budget=initialVisibleBudget!=null?initialVisibleBudget:RefinementPipeline.OperationBudget.production(root.authority().request().budgets());
+        var inherited=initialVisibleWork;initialVisibleWork=null;initialVisibleBudget=null;
+        var workContext=inherited!=null?inherited:new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(sourcePreparationControl.visits(),sourcePreparationControl.bytes(),budget.finalDeadlineNanos(),probe,operation);
+        busy=true;message="";present();var work=workGate.beginWork(this);activeWork=work;
+        CompletableFuture<Computed> computation;
+        try{computation=CompletableFuture.supplyAsync(()->computeSmoothing(ticket,parent,source,strength,workContext,probe,progress,publication,allowance,baseline),executor);}
+        catch(RuntimeException rejected){computation=CompletableFuture.failedFuture(rejected);}
+        computation.whenComplete((computed,failure)->{baseline.clear();entry.workerReturned=true;dispatchCompletion(()->{
+            var outcome=RefinementAttemptDiagnostics.Publication.FAILED;var cause=RefinementAttemptDiagnostics.Cause.FAILED;
+            try {
+                if(closed||!ownsPublication()||!Objects.equals(active,ticket))return;
+                if(failure!=null)throw unwrap(failure);probe.checkpoint();review.requireOriginalAttemptCurrent();source.requireCurrent();
+                cause=computed.cause();
+                if(computed.stage().isEmpty()){session.fail(ticket,cause==RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT?Outcome.RESOURCE_LIMIT:Outcome.NO_USABLE_RESULT);outcome=RefinementAttemptDiagnostics.Publication.NO_CHILD;message="Smoothen retained the selected parent: "+cause.name().toLowerCase(Locale.ROOT)+".";}
+                else {
+                    var child=computed.stage().orElseThrow();
+                    if(session.publish(ticket,child,()->{
+                        var metadata=new IdentityHashMap<Object,Long>();
+                        for(var candidate:child.candidates()){candidate.payload().retainSmoothingSources(publication);metadata.putAll(candidate.payload().publicationCharges());}
+                        long bytes=64;for(long charge:metadata.values())bytes=Math.addExact(bytes,charge);
+                        synchronized(memory){computed.publicationAllowance().orElseThrow().close();publication.reserve(bytes).adopt(child);}
+                        progress.presentationAttempted=true;showStage(child);probe.checkpoint();review.requireOriginalAttemptCurrent();
+                    })) {
+                        retainedStages.put(child.id(),new RetainedStage(publication,child));
+                        var live=session.history().stream().map(Stage::id).collect(java.util.stream.Collectors.toSet());
+                        retainedStages.entrySet().removeIf(item->{if(live.contains(item.getKey()))return false;item.getValue().close();return true;});
+                        outcome=RefinementAttemptDiagnostics.Publication.PUBLISHED;cause=RefinementAttemptDiagnostics.Cause.NONE;message="";
+                    } else {outcome=RefinementAttemptDiagnostics.Publication.REFUSED;cause=RefinementAttemptDiagnostics.Cause.PUBLICATION_REFUSED;restoreCurrentPresentation();}
+                }
+            } catch(RuntimeException failed) {
+                boolean stale=review.invalidated()||!originalSourceCurrent();
+                boolean cancelled=entry.cancellationRequested&&!stale;
+                if(!closed)session.fail(ticket,stale?Outcome.STALE:cancelled?Outcome.CANCELLED:Outcome.FAILED);
+                if(progress.presentationAttempted)restoreCurrentPresentation();
+                outcome=stale?RefinementAttemptDiagnostics.Publication.STALE:cancelled?RefinementAttemptDiagnostics.Publication.CANCELLED:RefinementAttemptDiagnostics.Publication.FAILED;
+                cause=stale?RefinementAttemptDiagnostics.Cause.STALE:cancelled?RefinementAttemptDiagnostics.Cause.CANCELLED:RefinementAttemptDiagnostics.Cause.FAILED;
+                message=stale?"Smoothing source changed.":cancelled?"Smoothen cancelled; retained the selected parent.":"Smoothen failed; retained the selected parent.";
+            } finally {
+                try{publishDiagnostics(ticket,progress,outcome,cause);}finally{
+                    operation.close();if(retainedStages.values().stream().noneMatch(value->value.owner==publication))publication.close();
+                    session.workerSettled(ticket);active=null;activeProgress=null;activeEntry=null;busy=false;
+                    if(closed)releaseClosed();settleWork(work);entry.settlement.complete(null);if(!closed)present();
+                }
+            }
+        });});
+    }
+    private Computed computeSmoothing(OperationTicket ticket,Candidate parent,RetainedSmoothingSource source,RefinementControls.Strength strength,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,CancellationProbe probe,AttemptProgress progress,
+            AttemptMemoryLedger.Owner publication,long allowance,List<Map<Object,Long>> baseline) {
+        progress.phase=RefinementAttemptDiagnostics.Phase.PREPARATION;
+        try {
+            var bound=new SmoothingParentBinder().bind(root.authority(),ticket,parent,source,work);
+            try(var result=new RefinementSmoothingAdapter().smooth(bound,strength==RefinementControls.Strength.STRONG?SmoothingModels.Preset.STRONG_2PX:SmoothingModels.Preset.MEDIUM_1PX,work,probe)) {
+                probe.checkpoint();progress.phase=RefinementAttemptDiagnostics.Phase.MATERIALIZATION;
+                if(result.plan().isEmpty()) {
+                    var cause=result.receipt().outcome()==RefinementSmoothingAdapter.Outcome.RETAINED_RESOURCE?RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT:RefinementAttemptDiagnostics.Cause.PLAN_REFUSED;
+                    progress.pipelineOutcome=Outcome.NO_USABLE_RESULT;return new Computed(Optional.empty(),cause);
+                }
+                var reserve=publication.reserve(allowance);
+                try {
+                    var assessed=result.assessment().orElseThrow();var edit=result.plan().orElseThrow();
+                    var projection=Projections.getProjectionByCode(root.authority().projectionCode());
+                    var points=result.points().stream().map(p->{var g=edit.metricFrame().toGeographic(p);return projection.latlon2eastNorth(new LatLon(g.latitudeDegrees(),g.longitudeDegrees()));}).toList();
+                    var assignments=new LinkedHashMap<Long,org.openstreetmap.josm.data.coor.EastNorth>();
+                    for(int i=0;i<points.size();i++)if(assessed.candidate().pointIds().get(i) instanceof FinalRoutePointId.ExistingWayNodeOccurrence id)assignments.put(id.nodeKey().id(),points.get(i));
+                    String nativeId=assessed.candidate().id();var candidate=new CenterlineCandidate(nativeId,0,List.of(),List.of(),points,points,assignments,List.of(),0,null,null,null,List.of());
+                    var detector=new DetectorAttempt(source.source().palette(),source.source().mapping(),ticket.engine(),edit.validation().disposition()==ValidationReport.Disposition.APPLICABLE?DetectorAttemptStatus.APPLICABLE:DetectorAttemptStatus.REVIEW_REQUIRED,List.of(nativeId),"smoothing-final","Guarded Gaussian output");
+                    var original=review.originalResult();var alignment=new AlignmentResult(original.selection(),null,List.of(candidate),original.sourcePolyline(),points,List.of(),null,null,List.of(detector),List.of(candidate));
+                    var nativeReview=new RefinementPayload.NativeReview(edit,assessed.quality(),Optional.empty(),List.of(source.source()),OptionalInt.empty(),Map.of(source.source(),source),List.of(),Optional.of(assessed.candidate().pointIds()),Optional.of(result.receipt()));
+                    var id=new CandidateId("smoothing-"+ticket.sequence());String identity=edit.canonicalHash();
+                    var admission=new MarginalPayloadAdmission(baseline,allowance,probe);
+                    long header=RefinementSession.stageMetadataBytes(1)+RefinementSession.candidateMetadataBytes(id,identity,nativeId,source.source().palette(),assessed.candidate().correspondence().size());
+                    var payload=RefinementPayload.captureNative(alignment,parent.payload(),nativeReview,admission,header);
+                    var child=Stage.child(ticket,List.of(new Candidate(id,payload,assessed.candidate().correspondence(),identity,nativeId,source.source().palette())),id);
+                    progress.pipelineOutcome=Outcome.COMPLETE;return new Computed(Optional.of(child),RefinementAttemptDiagnostics.Cause.NONE,Optional.of(reserve));
+                }catch(RuntimeException|Error failure){reserve.close();throw failure;}
+            }
+        } finally {progress.sourcePreparation=Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(RefinementAttemptDiagnostics.Cause.NONE,work.visits(),work.counters(),Optional.empty(),Optional.empty()));}
     }
     private Computed compute(OperationTicket ticket,ParentTraceReference parent,RefinementSourcePlanner.Plan plan,
             CredentialSnapshot credentials,AttemptMemoryLedger.Owner operation,AttemptMemoryLedger.Owner publication,RefinementPayload sourcePayload,
@@ -701,7 +803,6 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         if(closed||!ownsPublication())return;
         if(diagnosticOwner!=null&&!diagnosticSealed)DiagnosticsRegistry.invalidateRefinement(diagnosticOwner);
         var yes=new RefinementControls.Availability(!busy,"");
-        var no=new RefinementControls.Availability(false,"Smoothing is not qualified in this build.");
         List<RefinementControls.Choice> choices;String selected;String stage;boolean undo=false,redo=false;
         if(session==null){choices=review.choices().stream().map(c->new RefinementControls.Choice(c.id(),"Legacy / "+c.candidate().displayName())).toList();selected=review.choiceId(review.selectedCandidate());stage="Legacy — stage 1";}
         else{var current=session.current();choices=current.candidates().stream().map(c->new RefinementControls.Choice(c.id().value(),current.engine()+" / "+c.sourcePalette())).toList();selected=current.selected().value();int cursor=session.history().indexOf(current);undo=cursor>0;redo=cursor+1<session.history().size();stage=current.engine()+" — stage "+(cursor+1);}
@@ -718,8 +819,10 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         if(busy)quality="Refinement is running…";status.accept(quality);
         boolean capable=review instanceof ModernReviewRoot||((LegacyReviewOwner)review).managedReceipt()!=null||visibleCapable();
         var refine=new RefinementControls.Availability(!busy&&capable&&originalSourceCurrent(),"Original visible Color Mapping and factual source frame are required.");
-        controls.present(new RefinementControls.ViewState(stage,choices,selected,quality,RefinementControls.Strength.MEDIUM,busy,yes,
-            new RefinementControls.Availability(!busy&&undo,"First preview stage"),new RefinementControls.Availability(!busy&&redo,"No later preview stage"),refine,refine,no));
+        var strength=session!=null&&session.current().smoothingInput().map(s->s.preset().equals("Strong")).orElse(false)?RefinementControls.Strength.STRONG:RefinementControls.Strength.MEDIUM;
+        var smooth=new RefinementControls.Availability(!busy&&capable&&originalSourceCurrent(),"Original selected evidence is required for smoothing.");
+        controls.present(new RefinementControls.ViewState(stage,choices,selected,quality,strength,busy,yes,
+            new RefinementControls.Availability(!busy&&undo,"First preview stage"),new RefinementControls.Availability(!busy&&redo,"No later preview stage"),refine,refine,smooth));
     }
     /** Metadata-only capability; refreshing controls never copies or hashes pixels. */
     private boolean visibleCapable(){

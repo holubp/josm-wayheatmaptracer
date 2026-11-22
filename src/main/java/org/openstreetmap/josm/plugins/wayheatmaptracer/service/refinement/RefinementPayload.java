@@ -35,8 +35,15 @@ public final class RefinementPayload {
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality,
             Optional<RefinementOperationReceipt> operation,List<RefinementSourcePlanner.SourceRequest> sources,
             OptionalInt retainedParentSections,Map<RefinementSourcePlanner.SourceRequest,RetainedSmoothingSource> retainedSources,
-            List<RefinementPipeline.SourceSpan> sourceSpans,Optional<List<FinalRoutePointId>> finalPointIds) {
+            List<RefinementPipeline.SourceSpan> sourceSpans,Optional<List<FinalRoutePointId>> finalPointIds,
+            Optional<RefinementSmoothingAdapter.Receipt> smoothingReceipt) {
+        public NativeReview(AlignmentEditPlan plan,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality,
+                Optional<RefinementOperationReceipt> operation,List<RefinementSourcePlanner.SourceRequest> sources,OptionalInt retainedParentSections,
+                Map<RefinementSourcePlanner.SourceRequest,RetainedSmoothingSource> retainedSources,List<RefinementPipeline.SourceSpan> sourceSpans,Optional<List<FinalRoutePointId>> finalPointIds) {
+            this(plan,quality,operation,sources,retainedParentSections,retainedSources,sourceSpans,finalPointIds,Optional.empty());
+        }
         public NativeReview {sources=List.copyOf(sources);retainedSources=Map.copyOf(retainedSources);sourceSpans=List.copyOf(sourceSpans);
+            Objects.requireNonNull(smoothingReceipt);
             finalPointIds=finalPointIds.map(List::copyOf);
             for(var entry:retainedSources.entrySet())if(!sources.contains(entry.getKey())||!entry.getKey().equals(entry.getValue().source()))
                 throw new IllegalArgumentException("Retained source differs from candidate source ownership");
@@ -238,7 +245,7 @@ public final class RefinementPayload {
     /** Borrowed evidence keeps its acquisition's grouped scalar/mask charge, never a second array inventory. */
     private static Map<Object,Long> nativeReviewCharges(NativeReview review) {
         var values=new IdentityHashMap<Object,Long>();
-        values.putAll(RefinementRootAuthority.detachedCharges(review.plan(),review.quality(),review.operation(),review.sources(),review.retainedParentSections(),review.finalPointIds()));
+        values.putAll(RefinementRootAuthority.detachedCharges(review.plan(),review.quality(),review.operation(),review.sources(),review.retainedParentSections(),review.finalPointIds(),review.smoothingReceipt()));
         values.put(review,512L);values.put(review.retainedSources(),128L+128L*review.retainedSources().size());
         values.put(review.sourceSpans(),128L+32L*review.sourceSpans().size());
         review.retainedSources().values().forEach(source->values.putAll(source.charges()));

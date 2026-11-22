@@ -25,8 +25,8 @@ public final class RefinementControls extends JPanel {
     private final JLabel stage = new JLabel();
     private final JTextArea quality = new JTextArea(3, 25);
     private final JButton undo = button("Undo", "undo"), redo = button("Redo", "redo"),
-            a = button("Refine using corridor-based A", "refineA"), b = button("Refine using B", "refineB"),
-            smooth = button("Smooth", "smooth"), cancel = button("Cancel", "cancel");
+            a = button("Refine using A", "refineA"), b = button("Refine using B", "refineB"),
+            smooth = button("Smoothen", "smooth"), cancel = button("Cancel", "cancel");
     private boolean presenting;
 
     public RefinementControls(Listener listener) {

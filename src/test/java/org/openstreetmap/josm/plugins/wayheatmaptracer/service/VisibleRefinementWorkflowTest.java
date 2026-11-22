@@ -75,6 +75,7 @@ class VisibleRefinementWorkflowTest {
                     var smoothed=workflow[0].currentStage();
                     if(!smoothed.id().equals(firstStage.id())) {
                         assertEquals(RefinementModels.StageKind.SMOOTH,smoothed.kind());
+                        assertTrue(workflow[0].currentNative().orElseThrow().smoothingReceipt().isPresent());
                         assertEquals(firstStage.id(),smoothed.parent().orElseThrow());
                         ((JButton)find(workflow[0].controls(),"undo")).doClick();assertEquals(firstStage.id(),workflow[0].currentStage().id());
                         ((JButton)find(workflow[0].controls(),"redo")).doClick();assertEquals(smoothed.id(),workflow[0].currentStage().id());
