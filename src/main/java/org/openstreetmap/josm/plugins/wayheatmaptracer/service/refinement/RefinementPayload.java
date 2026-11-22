@@ -75,9 +75,29 @@ public final class RefinementPayload {
     }
     private final Optional<NativeReview> nativeReview;
     public Optional<NativeReview> nativeReview() { return nativeReview; }
+    public sealed interface NoChangeReview permits RootNoChangeReview,RootIntervalNoChangeReview {
+        org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService.Computed owner();
+        RetainedSmoothingSource source();
+        org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter.FinalSelection finalSelection();
+        org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter.NoChangeWatch watch();
+        org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality();
+        Object producerProof();
+        void requireMatches(RefinementRootAuthority root);
+        void requireCurrentNetwork(NetworkSnapshot current);
+        default OptionalInt fullRouteIndex(){return OptionalInt.empty();}
+        default ValidationReport validation(){return finalSelection().validation();}
+        default CenterlineCandidate finalCandidate(CenterlineCandidate raw){return normalizedNoChange(raw,this);}
+    }
+    private static CenterlineCandidate normalizedNoChange(CenterlineCandidate raw,NoChangeReview review){
+        var projection=org.openstreetmap.josm.data.projection.Projections.getProjectionByCode(review.owner().captured().projectionCode());
+        var points=review.finalSelection().selectedGeometry().stream().map(point->projection.latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(point.latitudeDegrees(),point.longitudeDegrees()))).toList();
+        var positions=new LinkedHashMap<Long,org.openstreetmap.josm.data.coor.EastNorth>();
+        review.finalSelection().assignments().forEach((id,point)->positions.put(id,projection.latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(point.latitudeDegrees(),point.longitudeDegrees()))));
+        return raw.withFinalPreviewGeometry(points,positions);
+    }
     /** A factual unchanged original native result has no identity edit plan. */
     public record RootNoChangeReview(org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService.Computed owner,int routeIndex,
-            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter.Assessment assessment,RetainedSmoothingSource source) {
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter.Assessment assessment,RetainedSmoothingSource source) implements NoChangeReview {
         public RootNoChangeReview {
             Objects.requireNonNull(owner);Objects.requireNonNull(assessment);Objects.requireNonNull(source);
             if(owner.partitioned()||routeIndex<0||routeIndex>=owner.pipeline().routes().size()||source.evidence()!=owner.evidence()
@@ -88,6 +108,10 @@ public final class RefinementPayload {
             source.requireCurrent();
         }
         public org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter.NoChangeProof proof(){return assessment.noChangeProof().orElseThrow();}
+        public Object producerProof(){return proof();}
+        public org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter.NoChangeWatch watch(){return assessment.noChangeWatch().orElseThrow();}
+        public OptionalInt fullRouteIndex(){return OptionalInt.of(routeIndex);}
+        public void requireCurrentNetwork(NetworkSnapshot current){proof().requireMatches(owner.request(),owner.evidence(),owner.captured().network(),owner.options(),owner.pipeline(),routeIndex,current);}
         public org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter.FinalSelection finalSelection(){return proof().finalSelection();}
         public org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality(){return owner.pipeline().routes().get(routeIndex).quality();}
         public ValidationReport validation(){return finalSelection().validation();}
@@ -105,8 +129,23 @@ public final class RefinementPayload {
             proof().requireOwner(owner);proof().requireMatches(owner.request(),owner.evidence(),owner.captured().network(),owner.options(),owner.pipeline(),routeIndex,root.network());source.requireCurrent();
         }
     }
-    private final Optional<RootNoChangeReview> rootNoChangeReview;
-    public Optional<RootNoChangeReview> rootNoChangeReview(){return rootNoChangeReview;}
+    /** Interval no-write authority remains bound to its actual batch and selected route map. */
+    public record RootIntervalNoChangeReview(org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService.Computed owner,Map<Integer,Integer> routeChoices,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer.Assessment assessment,RetainedSmoothingSource source,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality) implements NoChangeReview {
+        public RootIntervalNoChangeReview {
+            routeChoices=Map.copyOf(routeChoices);Objects.requireNonNull(source);Objects.requireNonNull(quality);
+            if(!owner.partitioned()||source.evidence()!=owner.evidence()||assessment.plan().isPresent())throw new IllegalArgumentException("Actual unchanged interval owner required");
+            assessment.noChangeProof().orElseThrow().requireMatches(owner.intervalBatch(),routeChoices,owner.captured().network());source.requireCurrent();
+        }
+        public Object producerProof(){return assessment.noChangeProof().orElseThrow();}
+        public org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter.NoChangeWatch watch(){return assessment.noChangeProof().orElseThrow().watch();}
+        public org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter.FinalSelection finalSelection(){return assessment.noChangeProof().orElseThrow().finalSelection();}
+        public void requireCurrentNetwork(NetworkSnapshot current){assessment.noChangeProof().orElseThrow().requireMatches(owner.intervalBatch(),routeChoices,current);}
+        public void requireMatches(RefinementRootAuthority root){if(owner.captured().network()!=root.network()||owner.request().geometryMode()!=root.request().geometryMode()||!owner.request().permissions().equals(root.request().permissions()))throw new IllegalArgumentException("Unchanged interval differs from root authority");requireCurrentNetwork(root.network());source.requireCurrent();}
+    }
+    private final Optional<NoChangeReview> rootNoChangeReview;
+    public Optional<NoChangeReview> rootNoChangeReview(){return rootNoChangeReview;}
     Map<RefinementSourcePlanner.SourceRequest,RetainedSmoothingSource> nativeSourceBindings(){return nativeReview.map(NativeReview::retainedSources).orElseGet(()->rootNoChangeReview.map(r->Map.of(r.source().source(),r.source())).orElse(Map.of()));}
     Optional<List<FinalRoutePointId>> nativeFinalPointIds(){return nativeReview.flatMap(NativeReview::finalPointIds).or(()->rootNoChangeReview.map(r->r.finalSelection().pointIds()));}
     private final AlignmentResult result;
@@ -122,7 +161,7 @@ public final class RefinementPayload {
     private RefinementPayload(AlignmentResult result,List<SourceNode> nodes,Optional<SourceSelection> selection,Optional<NativeReview> nativeReview,Optional<RootReviewState> rootState) {
         this(result,nodes,selection,nativeReview,rootState,Optional.empty());
     }
-    private RefinementPayload(AlignmentResult result,List<SourceNode> nodes,Optional<SourceSelection> selection,Optional<NativeReview> nativeReview,Optional<RootReviewState> rootState,Optional<RootNoChangeReview> noChange) {
+    private RefinementPayload(AlignmentResult result,List<SourceNode> nodes,Optional<SourceSelection> selection,Optional<NativeReview> nativeReview,Optional<RootReviewState> rootState,Optional<NoChangeReview> noChange) {
         if(nativeReview.isPresent()&&noChange.isPresent())throw new IllegalArgumentException("Native plans and no-change proofs are distinct result variants");
         rootNoChangeReview=noChange;
         rootReviewState=rootState;
@@ -208,7 +247,7 @@ public final class RefinementPayload {
         if(maximumBytes<1||bytes>maximumBytes)throw new RefinementSession.Refused(RefusalReason.PAYLOAD_LIMIT);
         return new RefinementPayload(copy(result),original.sourceNodes,original.sourceSelection,Optional.of(review));
     }
-    static RefinementPayload captureRootNoChange(AlignmentResult result,RefinementPayload original,RootNoChangeReview review,long maximumBytes){
+    static RefinementPayload captureRootNoChange(AlignmentResult result,RefinementPayload original,NoChangeReview review,long maximumBytes){
         long bytes=add(add(sum(measure(result)),sum(noChangeReviewCharges(review))),sourceCharge(original.sourceNodes.size(),original.sourceSelection.map(v->v.selectedNodeIds().size()).orElse(0))+96L);
         if(maximumBytes<1||bytes>maximumBytes)throw new RefinementSession.Refused(RefusalReason.PAYLOAD_LIMIT);
         return new RefinementPayload(copy(result),original.sourceNodes,original.sourceSelection,Optional.empty(),Optional.empty(),Optional.of(review));
@@ -299,9 +338,9 @@ public final class RefinementPayload {
         if(attempts.isEmpty())throw new IllegalArgumentException("Selected source has no actual detector finding");
         return new SmoothingModels.NativeFacts(source,selected.evidence(),selected.geometryCleanup(),selected.safetyWarnings(),selected.junctionSafetyFindings(),
             source.legacyDisposition().filter(d->d.nativeCandidateId().equals(id)).map(RetainedSmoothingSource.LegacyDisposition::applicable)
-                .orElseGet(()->{boolean applicable=false;for(var candidate:result.applicableCandidates()){metadataVisit(work);if(candidate.id().equals(id))applicable=true;}return applicable;}),attempts,nativeReview.map(NativeReview::quality).or(()->rootNoChangeReview.map(RootNoChangeReview::quality)),
+                .orElseGet(()->{boolean applicable=false;for(var candidate:result.applicableCandidates()){metadataVisit(work);if(candidate.id().equals(id))applicable=true;}return applicable;}),attempts,nativeReview.map(NativeReview::quality).or(()->rootNoChangeReview.map(NoChangeReview::quality)),
             nativeReview.map(r->r.plan().validation().disposition()).or(()->rootNoChangeReview.map(r->r.validation().disposition())),nativeReview.map(NativeReview::sourceSpans).orElse(List.of()),
-            nativeReview.map(NativeReview::plan).map(AlignmentEditPlan::validation).or(()->rootNoChangeReview.map(RootNoChangeReview::validation)));
+            nativeReview.map(NativeReview::plan).map(AlignmentEditPlan::validation).or(()->rootNoChangeReview.map(NoChangeReview::validation)));
     }
     public long retainedBytes() { return sum(charges); }
     /** Frozen original full-way coordinate/occurrence values, independent of the retained live handles. */
@@ -329,10 +368,10 @@ public final class RefinementPayload {
         }
         return values;
     }
-    private static Map<Object,Long> noChangeReviewCharges(RootNoChangeReview review){
+    private static Map<Object,Long> noChangeReviewCharges(NoChangeReview review){
         var selection=review.finalSelection();var values=new IdentityHashMap<Object,Long>();
-        values.putAll(RefinementRootAuthority.detachedCharges(selection.selectedGeometry(),selection.pointIds(),selection.assignments(),selection.finalPreviewWays(),selection.validation(),review.quality(),review.assessment().noChangeWatch()));
-        values.put(review,256L);values.put(review.proof(),256L);values.put(selection,128L);values.putAll(review.source().charges());return values;
+        values.putAll(RefinementRootAuthority.detachedCharges(selection.selectedGeometry(),selection.pointIds(),selection.assignments(),selection.finalPreviewWays(),selection.validation(),review.quality(),review.watch()));
+        values.put(review,256L);values.put(review.producerProof(),256L);values.put(selection,128L);values.putAll(review.source().charges());return values;
     }
     /** Acquire already-admitted raster/descriptor identities before worker ownership settles. */
     void retainSmoothingSources( org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner destination) {

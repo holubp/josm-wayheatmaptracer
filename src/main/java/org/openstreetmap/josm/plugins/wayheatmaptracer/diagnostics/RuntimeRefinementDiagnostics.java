@@ -45,10 +45,10 @@ public final class RuntimeRefinementDiagnostics {
                     }
                 }
                 if(candidate.payload().rootNoChangeReview().isPresent()) {
-                    var noChange=candidate.payload().rootNoChangeReview().orElseThrow();var watch=noChange.assessment().noChangeWatch().orElseThrow();
+                    var noChange=candidate.payload().rootNoChangeReview().orElseThrow();var watch=noChange.watch();
                     var metadata=Format15Artifact.text("no-change/stage-"+s+"-choice-"+c+".json","{\"schema\":1,"+selectionFields(stage,candidate.id(),artifact)
                         +",\"disposition\":\"NO_CHANGE\",\"hasEditPlan\":false,\"acceptance\":\"no-change-no-command\",\"networkHash\":"+quote(watch.networkContentHash())
-                        +",\"sourceEvidenceHash\":"+quote(noChange.owner().request().evidenceContentHash())+",\"routeIndex\":"+noChange.routeIndex()
+                        +",\"sourceEvidenceHash\":"+quote(noChange.owner().request().evidenceContentHash())+",\"fullRouteIndex\":"+(noChange.fullRouteIndex().isPresent()?Integer.toString(noChange.fullRouteIndex().getAsInt()):"null")+",\"intervalComposition\":"+noChange.owner().partitioned()
                         +",\"finalOccurrenceCount\":"+noChange.finalSelection().pointIds().size()+",\"validation\":"+quote(noChange.validation().disposition().name())+"}\n");
                     artifacts.put(metadata.name(),metadata);
                 }

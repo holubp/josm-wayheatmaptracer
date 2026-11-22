@@ -426,7 +426,7 @@ public class AlignWayAction extends JosmAction {
 
         /** Returns whether the composed plan has the review state required for Apply. */
         public boolean applyAvailable() {
-            return assessment.applyAvailable() && review != null && review.canApply();
+            return assessment.noChangeProof().isPresent()||assessment.applyAvailable() && review != null && review.canApply();
         }
 
         /** Revalidates from retained production routes before the command is constructed. */
@@ -1178,8 +1178,8 @@ public class AlignWayAction extends JosmAction {
                 sourceChoices.setVisible(root&&sourceChoices.getItemCount()>1);intervalScroll.setVisible(root);qualityScroll.setVisible(root);
                 sourceChoices.setEnabled(root&&!busy);for(int i=0;i<choices.size();i++)choices.get(i).setEnabled(root&&!busy&&!state.batch().runs().get(i).routes().isEmpty());
                 workflow.controls().externalRootSelection(root);
-                var plan=workflow.currentNative().orElseThrow().plan();quality.setText(intervalPreviewSummary(state));
-                confirm.setEnabled(!busy&&plan.validation().disposition()==ValidationReport.Disposition.REVIEW_REQUIRED&&!workflow.canApplyNative());
+                var plan=workflow.currentNative().map(RefinementPayload.NativeReview::plan);quality.setText(intervalPreviewSummary(state));
+                confirm.setEnabled(!busy&&plan.filter(value->value.validation().disposition()==ValidationReport.Disposition.REVIEW_REQUIRED).isPresent()&&!workflow.canApplyNative());
                 apply.setEnabled(!busy&&!applying[0]&&workflow.canApplyNative());disconnect.setEnabled(false);return;
             }
             FixedIntervalEditPlanComposer.Assessment assessment = state.assessment();
@@ -1201,7 +1201,7 @@ public class AlignWayAction extends JosmAction {
             }
             ValidationReport.Disposition disposition = assessment.plan().isPresent()
                     ? assessment.plan().orElseThrow().validation().disposition()
-                    : ValidationReport.Disposition.HARD_BLOCKED;
+                    : assessment.noChangeProof().map(proof->proof.finalSelection().validation().disposition()).orElse(ValidationReport.Disposition.HARD_BLOCKED);
             overlay.setDisconnectionLocations(disconnectionLocations(assessment.plan().orElse(null)));
             overlay.show(selection, display, carrier, switch (disposition) {
                 case APPLICABLE -> CandidateAssessment.Disposition.APPLICABLE;
@@ -1334,6 +1334,14 @@ public class AlignWayAction extends JosmAction {
                 requireSupportedApplySource(computed.captured(), imageryLayer);
                 requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
                         persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
+                if(state.assessment().noChangeProof().isPresent()) {
+                    var currentAssessment=new FixedIntervalEditPlanComposer().compose(state.batch(),state.routeChoices());
+                    if(!currentAssessment.equals(state.assessment()))throw new IllegalStateException("Unchanged interval composition changed before acceptance");
+                    var current=state.selectedRun().captured().originalReceipt().orElseThrow().requireCurrent(dataSet);
+                    currentAssessment.noChangeProof().orElseThrow().requireMatches(state.batch(),state.routeChoices(),current);
+                    recordIntervalDiagnostics(computed,state,IntervalArtifactStatus.PREVIEW,diagnosticAttemptIdentity);
+                    completed[0]=true;dialog.dispose();overlay.hide();return;
+                }
                 AlignmentEditPlan currentPlan = state.currentPlanForApply();
                 NetworkSnapshotCapture.CapturedSnapshot receipt = computed.captured().originalReceipt().orElseGet(()->NetworkSnapshotCapture.captureBound(
                         dataSet, computed.captured().specification()));
@@ -1632,12 +1640,9 @@ public class AlignWayAction extends JosmAction {
                     .append("; affected ways: ").append(plan.affectedWayKeys().size())
                     .append("; findings: ").append(FindingSummary.summarize(
                             plan.validation().findingCodes())).append('\n');
-        } else if (!state.assessment().intervals().isEmpty()
-                && state.assessment().intervals().stream().allMatch(interval ->
-                        interval.disposition()
-                                == FixedIntervalEditPlanComposer.Disposition.UNCHANGED_NOOP)) {
+        } else if (state.assessment().noChangeProof().isPresent()) {
             summary.append("Already aligned: no changes are proposed; no edit command or history entry "
-                    + "will be created.\n");
+                    + "will be created.\n").append("Validation: ").append(state.assessment().noChangeProof().orElseThrow().finalSelection().validation()).append('\n');
         }
         return summary.toString();
     }

@@ -114,7 +114,7 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
         for(var run:sources)if(!run.partitioned()||run.captured()!=interval.owner().captured()||run.request().engine()!=engine())throw new IllegalArgumentException("Foreign interval source owner");
     }
     static String ownerIdentity(LiveBPreviewService.Computed owner){return owner.options().sourceTier()+":"+owner.request().evidenceContentHash();}
-    static String intervalChoiceId(IntervalSelection selection){return "native-composition-"+selection.assessment().plan().orElseThrow(()->new IllegalArgumentException("Native interval plan unavailable")).canonicalHash();}
+    static String intervalChoiceId(IntervalSelection selection){return "native-composition-"+selection.assessment().plan().map(AlignmentEditPlan::canonicalHash).orElseGet(()->selection.assessment().noChangeProof().orElseThrow(()->new IllegalArgumentException("Native interval plan/proof unavailable")).compositionIdentity());}
     public boolean partitionedRoot(){return interval!=null;}
     ModernReviewRoot preparationFor(IntervalSelection selection) {
         requireAuthorityCurrent();
@@ -233,16 +233,16 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
                 work.visit(GeometryWorkContext.Kind.BIND,1);
                 var choice=choices.get(index);var run=interval==null?nativeChoices.get(index).owner():interval.owner();
                 var assessment=interval==null?new ModernSingleWayEditPlanAdapter().assess(run,nativeChoices.get(index).localRouteIndex()):null;
-                var plan=interval==null?assessment.plan().orElse(null):interval.assessment().plan().orElseThrow(()->new IllegalStateException("Native interval plan unavailable"));
-                if(plan==null&&assessment.availability()!=ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE)throw new IllegalStateException("Native root plan/proof unavailable");
+                var plan=interval==null?assessment.plan().orElse(null):interval.assessment().plan().orElse(null);
+                if(plan==null&&(interval==null?assessment.availability()!=ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE:interval.assessment().noChangeProof().isEmpty()))throw new IllegalStateException("Native root plan/proof unavailable");
                 var quality=interval==null?run.pipeline().routes().get(nativeChoices.get(index).localRouteIndex()).quality():NativeRefinementSourceContext.intervalQuality(run,interval.assessment(),work);
                 var source=retainedSources.computeIfAbsent(run,r->NativeRefinementSourceContext.retain(r,settings,context,work,memory,hashes));
                 var request=source.source();
                 var ids=interval==null?run.pipeline().routes().get(nativeChoices.get(index).localRouteIndex()).pointIds():NativeRefinementSourceContext.intervalPointIds(interval.assessment());
-                var noChange=plan==null?new RefinementPayload.RootNoChangeReview(run,nativeChoices.get(index).localRouteIndex(),assessment,source):null;
+                RefinementPayload.NoChangeReview noChange=plan!=null?null:interval==null?new RefinementPayload.RootNoChangeReview(run,nativeChoices.get(index).localRouteIndex(),assessment,source):new RefinementPayload.RootIntervalNoChangeReview(run,interval.routeChoices(),interval.assessment(),source,quality);
                 var finalCandidate=noChange==null?choice.candidate():noChange.finalCandidate(choice.candidate());
                 var single=new AlignmentResult(original.selection(),null,List.of(finalCandidate),original.sourcePolyline(),finalCandidate.finalPreviewPoints(),List.of(),null,null,original.detectorAttempts().stream().filter(a->a.candidateIds().contains(choice.candidate().id())).toList(),List.of(finalCandidate));
-                String identity=interval==null?nativeChoices.get(index).reviewIdentity():ownerIdentity(run)+":"+plan.routeIdentity();
+                String identity=interval==null?nativeChoices.get(index).reviewIdentity():ownerIdentity(run)+":"+(plan==null?interval.assessment().noChangeProof().orElseThrow().compositionIdentity():plan.routeIdentity());
                 var rootState=new RefinementPayload.RootReviewState(ownerIdentity(run),interval==null?OptionalInt.of(nativeChoices.get(index).localRouteIndex()):OptionalInt.empty(),interval==null?Map.of():interval.routeChoices(),plan==null?"no-change:"+finalCandidate.id():plan.routeIdentity(),Optional.ofNullable(interval==null?null:interval.assessment()));
                 var payload=(noChange==null?RefinementPayload.captureNative(single,originalPayload,new RefinementPayload.NativeReview(plan,quality,Optional.empty(),List.of(request),OptionalInt.empty(),Map.of(request,source),List.of(),Optional.of(ids)),RefinementLimits.defaults().maxPayloadBytes())
                     :RefinementPayload.captureRootNoChange(single,originalPayload,noChange,RefinementLimits.defaults().maxPayloadBytes())).withRootReviewState(rootState);
@@ -284,6 +284,12 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
         return bytes;
     }
     private static CenterlineCandidate intervalCandidate(IntervalSelection selection,org.openstreetmap.josm.data.projection.Projection projection) {
+        if(selection.assessment().noChangeProof().isPresent()) {
+            var proof=selection.assessment().noChangeProof().orElseThrow();proof.requireMatches(selection.owner().intervalBatch(),selection.routeChoices(),selection.owner().captured().network());
+            var points=proof.finalSelection().selectedGeometry().stream().map(g->projection.latlon2eastNorth(new LatLon(g.latitudeDegrees(),g.longitudeDegrees()))).toList();
+            var assignments=new LinkedHashMap<Long,org.openstreetmap.josm.data.coor.EastNorth>();proof.finalSelection().assignments().forEach((id,g)->assignments.put(id,projection.latlon2eastNorth(new LatLon(g.latitudeDegrees(),g.longitudeDegrees()))));
+            return new CenterlineCandidate("native-interval-root",1,List.of(),List.of()).withFinalPreviewGeometry(points,assignments);
+        }
         var plan=selection.assessment().plan().orElseThrow(()->new IllegalArgumentException("Native interval plan unavailable"));
         var ids=NativeRefinementSourceContext.intervalPointIds(selection.assessment());
         var points=new ArrayList<org.openstreetmap.josm.data.coor.EastNorth>();

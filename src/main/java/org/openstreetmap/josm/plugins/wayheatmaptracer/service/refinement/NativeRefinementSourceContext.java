@@ -132,6 +132,7 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
             capture.raster()==null?Optional.empty():Optional.of(capture.raster().sourceReceipt()),Optional.empty(),hashProtocol,work,memory);
     }
     static List<FinalRoutePointId> intervalPointIds(FixedIntervalEditPlanComposer.Assessment assessment) {
+        if(assessment.noChangeProof().isPresent())return assessment.noChangeProof().orElseThrow().finalSelection().pointIds();
         var plan=assessment.plan().orElseThrow();
         var before=(DetachedWay)plan.before().primitives().get(plan.selectedWayKey());
         var after=(DetachedWay)plan.after().primitives().get(plan.selectedWayKey());
@@ -161,7 +162,7 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
         for(int i=0;i<ids.size();i++)if(ids.get(i) instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing
                 &&run.captured().network().closure().protectedExistingNodeKeys().contains(existing.nodeKey()))protectedPoints.put(i,points.get(i));
         var image=ImageCostField.fromEvidence(run.evidence(),run.options().fieldName(),work);
-        return new FinalGeometryEvaluator().evaluate(new FinalGeometryEvaluator.Request(assessment.plan().orElseThrow().routeIdentity(),points,ids,image,
+        return new FinalGeometryEvaluator().evaluate(new FinalGeometryEvaluator.Request(assessment.plan().map(AlignmentEditPlan::routeIdentity).orElseGet(()->assessment.noChangeProof().orElseThrow().compositionIdentity()),points,ids,image,
             run.evidence().resolution().effectivePitchMeters(),protectedPoints,List.of(),false,false,false,false));
     }
 }

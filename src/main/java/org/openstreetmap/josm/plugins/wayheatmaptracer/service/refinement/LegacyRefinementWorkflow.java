@@ -39,7 +39,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     private NativeEntry activeEntry;
     public CompletionStage<NativeEntry> firstNativeEntry(){return firstNativeEntry.minimalCompletionStage();}
     public boolean ownsNativeEntry(NativeEntry entry){return busy&&ownsPublication()&&activeEntry==entry&&Objects.equals(active,entry.ticket());}
-    public record Display(AlignmentResult result,CenterlineCandidate candidate,Optional<RefinementPayload.NativeReview> nativeReview,Optional<RefinementPayload.RootNoChangeReview> noChange) {
+    public record Display(AlignmentResult result,CenterlineCandidate candidate,Optional<RefinementPayload.NativeReview> nativeReview,Optional<RefinementPayload.NoChangeReview> noChange) {
         public Display(AlignmentResult result,CenterlineCandidate candidate,Optional<RefinementPayload.NativeReview> nativeReview){this(result,candidate,nativeReview,Optional.empty());}
     }
     private final RefinementReviewRoot review;
@@ -575,7 +575,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     public Optional<RefinementPayload.NativeReview> currentNative() {
         if(!nativeSelected())return Optional.empty();return selected().payload().nativeReview();
     }
-    public Optional<RefinementPayload.RootNoChangeReview> currentNoChangeRoot(){return nativeSelected()?selected().payload().rootNoChangeReview():Optional.empty();}
+    public Optional<RefinementPayload.NoChangeReview> currentNoChangeRoot(){return nativeSelected()?selected().payload().rootNoChangeReview():Optional.empty();}
     private Candidate selected(){var stage=session.current();return stage.candidates().stream().filter(c->c.id().equals(stage.selected())).findFirst().orElseThrow();}
     private void select(String id) {
         if(busy||closed||!ownsPublication())return;
@@ -1058,8 +1058,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         review.requireOriginalAttemptCurrent();if(!canApplyNative())throw new IllegalStateException("No-change result is unavailable or stale");
         var noChange=currentNoChangeRoot().orElseThrow(()->new IllegalStateException("An actual unchanged original root is required"));
         sourceContext.requireCurrent();noChange.requireMatches(root.authority());
-        var owner=noChange.owner();
-        try{var current=root.receipt().requireCurrent(review.dataSet());noChange.proof().requireMatches(owner.request(),owner.evidence(),owner.captured().network(),owner.options(),owner.pipeline(),noChange.routeIndex(),current);}
+        try{var current=root.receipt().requireCurrent(review.dataSet());noChange.requireCurrentNetwork(current);}
         catch(IllegalArgumentException|IllegalStateException stale){originalSourceStale=true;throw new IllegalStateException("No-change source graph changed after capture",stale);}
         if(!session.terminalizeForApply())throw new IllegalStateException("No-change review is no longer idle");
         diagnosticsChanged("no-change");freezeDiagnostics(true,false);
