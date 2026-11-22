@@ -358,7 +358,7 @@ public final class PublicGuiSmokeMain {
             if(!sources.isShowing()||sources.getItemCount()<2)throw new IllegalStateException("Native interval fixture needs actual source alternatives");sources.setSelectedIndex(1);
         });
         var rootChoice=onEventThread(()->{
-            if(!owner.atRoot()||owner.actualNativeCalls()!=calls||owner.selectedChoiceIdentity().equals(firstParent.value()))throw new IllegalStateException("Root source selection did not retain its exact independent candidate");
+            if(!owner.atRoot()||owner.actualNativeCalls()!=calls||owner.selectedChoiceIdentity().equals(firstParent.value()))throw new IllegalStateException("Root source selection did not retain its exact independent candidate: "+fixedFailureBoundary(owner.computationEvidence()));
             var id=owner.selectedChoiceIdentity();requiredNamed(preview.getContentPane(),"redo",javax.swing.JButton.class).doClick();
             if(!owner.currentStage().parentChoice().orElseThrow().equals(firstParent))throw new IllegalStateException("Root selection rewrote saved descendant lineage");
             requiredNamed(preview.getContentPane(),"undo",javax.swing.JButton.class).doClick();
