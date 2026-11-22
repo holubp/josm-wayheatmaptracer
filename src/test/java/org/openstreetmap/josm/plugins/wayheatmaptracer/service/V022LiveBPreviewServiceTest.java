@@ -364,7 +364,7 @@ class V022LiveBPreviewServiceTest {
                 int b=(int)Math.round(background+strength*((center&255)-background));
                 image.setRGB(x,y,0xff000000|r<<16|g<<8|b);
             }
-            var bytes=new ByteArrayOutputStream();ImageIO.write(image,"png",bytes);return bytes.toByteArray();
+            var bytes=new ByteArrayOutputStream();javax.imageio.ImageIO.write(image,"png",bytes);return bytes.toByteArray();
         }catch(java.io.IOException failure){throw new IllegalStateException(failure);}
     }
     private static byte[] colorRoutePng() throws Exception {
