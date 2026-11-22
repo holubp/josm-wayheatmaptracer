@@ -3190,7 +3190,7 @@ public final class AlignmentService {
         if(view.getScale()!=scale)throw new IllegalStateException("Native visible paint scale differs from its requested scale");
         var actual=view.getProjectionBounds(new java.awt.Rectangle(0,0,width,height));
         double[] observed={actual.minEast,actual.minNorth,actual.maxEast,actual.maxNorth},requested={expected.minEast,expected.minNorth,expected.maxEast,expected.maxNorth};
-        for(int i=0;i<observed.length;i++)if(!Double.isFinite(observed[i])||Math.abs(observed[i]-requested[i])>4*Math.ulp(Math.max(1,Math.abs(requested[i]))))throw new IllegalStateException("Native visible paint clip differs from its requested projected frame");
+        for(int i=0;i<observed.length;i++)if(!Double.isFinite(observed[i])||Math.abs(observed[i]-requested[i])>4*Math.ulp(Math.max(1,Math.abs(requested[i]))))throw new IllegalStateException("Native visible paint clip differs from its requested projected frame: observed="+java.util.Arrays.toString(observed)+", requested="+java.util.Arrays.toString(requested)+", center="+view.getCenter()+", size="+width+"x"+height+", scale="+scale);
     }
     private record PaintObservation(double left,double bottom,double right,double top,double scale,String projection) { }
     /** Observe the clip actually painted, without preparing/recentering the Legacy viewport. */

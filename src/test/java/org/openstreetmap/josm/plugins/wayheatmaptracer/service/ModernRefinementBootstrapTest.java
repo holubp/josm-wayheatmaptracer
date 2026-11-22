@@ -420,9 +420,22 @@ class ModernRefinementBootstrapTest {
             public VisibleRefinementCapture.RenderedChunk render(VisibleRefinementCapture.Request request,VisibleRefinementCapture.Chunk chunk){var image=new java.awt.image.BufferedImage(chunk.viewWidth()*6,chunk.viewHeight()*6,java.awt.image.BufferedImage.TYPE_INT_ARGB);for(int y=0;y<image.getHeight();y++){double north=chunk.bounds().maximumNorth()-y*pitch;int gray=(int)Math.round(255*(.02+.8*Math.exp(-.5*north*north/1.44)));for(int x=0;x<image.getWidth();x++)image.setRGB(x,y,0xff000000|gray<<16|gray<<8|gray);}return new VisibleRefinementCapture.RenderedChunk(image,chunk.bounds(),-1,OptionalDouble.of(1),ground);}
         };
         var port=new VisibleRefinementCapture(renderer,SwingUtilities::invokeLater,java.util.concurrent.ForkJoinPool.commonPool(),320,320).port();
-        SwingUtilities.invokeAndWait(()->{review[0]=ModernReviewRoot.fromIntervalSelection(data,selection,config,new ModernReviewRoot.IntervalSelection(computed,Map.of(),assessment),null,()->{});workflow[0]=new LegacyRefinementWorkflow(review[0],null,review[0]::select,d->{},s->{},workers::add,publications::add,port);workflow[0].enableNativeRuntimeDiagnostics(c->null,c->null);workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.MEDIUM);});
+        SwingUtilities.invokeAndWait(()->review[0]=ModernReviewRoot.fromIntervalSelection(data,selection,config,new ModernReviewRoot.IntervalSelection(computed,Map.of(),assessment),null,()->{}));
+        // Qualify the actual proof-backed bootstrap separately so a preparation failure cannot
+        // be mistaken for a missing Gaussian receipt or an invalid original interval proof.
+        try(var memory=AttemptMemoryLedger.production().rootOwner()) {
+            var work=new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,memory);
+            try(var prepared=new ModernRefinementBootstrap().complete(review[0],work,port)) {
+                assertTrue(prepared.root().stage().candidates().stream().allMatch(c->c.payload().rootNoChangeReview().isPresent()));
+            }
+        }
+        SwingUtilities.invokeAndWait(()->{workflow[0]=new LegacyRefinementWorkflow(review[0],null,review[0]::select,d->{},s->{},workers::add,publications::add,port);workflow[0].enableNativeRuntimeDiagnostics(c->null,c->null);workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.MEDIUM);});
         try {
             VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
+            SwingUtilities.invokeAndWait(()->{
+                assertTrue(workflow[0].latestAttemptDiagnostics().isPresent(),"Actual interval smoothing attempt unavailable: "+workflow[0].computationEvidence());
+                assertTrue(workflow[0].currentNoChangeRoot().isPresent()||workflow[0].currentNative().isPresent(),"Actual interval bootstrap did not publish its proof-backed root: "+workflow[0].computationEvidence());
+            });
             SwingUtilities.invokeAndWait(()->{if(!workflow[0].atRoot())((javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"undo")).doClick();assertTrue(workflow[0].currentNoChangeRoot().orElseThrow() instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementPayload.RootIntervalNoChangeReview);assertTrue(workflow[0].currentNative().isEmpty());assertEquals(RefinementModels.StageKind.SMOOTH,workflow[0].latestAttemptDiagnostics().orElseThrow().binding().ticket().kind());try{var path=diagnosticsDirectory.resolve("unchanged-interval-smoothing.zip");org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.writeLatest(path.toFile());var archive=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader.read(path);var actual=new String(archive.artifact("latest-smoothing-attempt.json").orElseThrow().bytes(),java.nio.charset.StandardCharsets.UTF_8);assertTrue(actual.contains("existing-gaussian-capture-reference-v1"));assertTrue(actual.contains("\"nativeCalls\":0"));}catch(Exception unavailable){throw new AssertionError("Actual interval Gaussian receipt required",unavailable);}});
             for(var engine:List.of(TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC)){
                 int before=workflow[0].actualNativeCalls();SwingUtilities.invokeAndWait(()->workflow[0].refine(engine));VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
