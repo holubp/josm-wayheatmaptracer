@@ -1058,12 +1058,17 @@ public final class PublicGuiSmokeMain {
             + ",\"diagnosticsAvailability\":\"" + owner.attemptDiagnosticsAvailability().name()
             + "\",\"frozenGeometryProof\":\""+diagnostics.map(d->d.binding().frozenGeometryIdentity().equals("frozen-geometry-unavailable")?"UNAVAILABLE":"AVAILABLE").orElse("UNAVAILABLE")
             + "\",\"refusalReasons\":\""+DIAGNOSTIC_REASONS.stream().filter(owner.computationEvidence()::contains).sorted().toList()
+            + "\",\"failureBoundary\":\""+fixedFailureBoundary(owner.computationEvidence())
             + "\",\"operationKind\":\"" + operationKind + "\",\"phase\":\"" + phase + "\",\"cause\":\"" + cause
             + "\",\"publication\":\"" + publication + "\",\"pipelineOutcome\":\"" + outcome
             + "\",\"pipelineAttempts\":" + pipeline.map(p -> Integer.toString(p.attempts().size())).orElse("null")
             + ",\"attemptRows\":" + pipeline.map(p -> diagnosticAttemptRows(p.attempts())).orElse("null")
             + ",\"pipelineAdmission\":" + diagnostics.map(d -> diagnosticAdmission(admissions.latest(d.binding().ticket()),d.binding().ticket())).orElse("null")
             + ",\"attemptRowsTruncated\":" + pipeline.map(p -> Boolean.toString(p.attempts().size() > MAX_DIAGNOSTIC_ATTEMPT_ROWS)).orElse("null") + "}";
+    }
+    private static String fixedFailureBoundary(String evidence) {
+        var match=java.util.regex.Pattern.compile("; failed=([A-Za-z0-9_$]{1,80}); phase=([A-Z_]{1,40}); boundary=([A-Za-z0-9_.$:]{1,160})").matcher(evidence);
+        return match.find()?match.group(1)+":"+match.group(2)+":"+match.group(3):"unavailable";
     }
     private static void checkDialogLayout(JDialog dialog) throws Exception {
         onEventThread(() -> {

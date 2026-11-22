@@ -687,11 +687,15 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                             }
                         }
                     }catch(RuntimeException refused){
+                        computationEvidence+="; failed="+refused.getClass().getSimpleName()+"; phase="+progress.phase;
+                        for(var frame:refused.getStackTrace())if(frame.getClassName().startsWith("org.openstreetmap.josm.plugins.wayheatmaptracer.")) {
+                            computationEvidence+="; boundary="+frame.getClassName().substring(frame.getClassName().lastIndexOf('.')+1)+"."+frame.getMethodName()+":"+frame.getLineNumber();break;
+                        }
                         boolean stale=!originalSourceCurrent()||review.invalidated()||progress.pipelineOutcome==Outcome.STALE;
                         boolean cancelled=entry.cancellationRequested&&!stale;
                         boolean presentationFailed=refused instanceof PresentationFailed;
                         if(progress.presentationAttempted&&!hasCurrentPresentation())presentationFailed|=!restoreCurrentPresentation();
-                        boolean limited=refused instanceof AttemptMemoryLedger.ResourceLimitException||refused instanceof RefinementSession.Refused;
+                        boolean limited=refused instanceof AttemptMemoryLedger.ResourceLimitException||refused instanceof RefinementSession.Refused||refused instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached;
                         var outcome=cancelled?Outcome.CANCELLED:stale?Outcome.STALE:limited?Outcome.RESOURCE_LIMIT:Outcome.FAILED;
                         if(!closed)session.fail(ticket,outcome);
                         publicationOutcome=cancelled?RefinementAttemptDiagnostics.Publication.CANCELLED:stale?RefinementAttemptDiagnostics.Publication.STALE:RefinementAttemptDiagnostics.Publication.FAILED;
