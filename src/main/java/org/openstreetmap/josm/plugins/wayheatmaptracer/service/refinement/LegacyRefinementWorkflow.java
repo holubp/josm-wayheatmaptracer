@@ -647,7 +647,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                         cancellation=new CancellationToken();initialVisibleBudget=RefinementPipeline.OperationBudget.production(TraceBudgets.defaults());
                         preparingSourceCurrent=modern.source()::requireCurrent;
                         initialVisibleWork=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(sourcePreparationControl.visits(),sourcePreparationControl.bytes(),initialVisibleBudget.finalDeadlineNanos(),probe(cancellation),bootstrapMemory);
-                    } else if(((LegacyReviewOwner)review).managedReceipt()==null) {
+                    } else if(((LegacyReviewOwner)review).managedReceipt()==null||smoothing!=null) {
                         cancellation=new CancellationToken();initialVisibleBudget=RefinementPipeline.OperationBudget.production(TraceBudgets.defaults());
                         initialVisibleWork=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(sourcePreparationControl.visits(),sourcePreparationControl.bytes(),initialVisibleBudget.finalDeadlineNanos(),probe(cancellation),bootstrapMemory);
                         seed=new LegacyRefinementBootstrap().capture((LegacyReviewOwner)review,coordinator,initialVisibleWork);
