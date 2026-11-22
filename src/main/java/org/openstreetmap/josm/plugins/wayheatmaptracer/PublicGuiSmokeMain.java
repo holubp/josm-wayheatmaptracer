@@ -1903,8 +1903,19 @@ public final class PublicGuiSmokeMain {
         boolean legacy="legacy-review".equals(dialog.getName());
         var confirm=onEventThread(()->{var button=legacy?requiredNamed(dialog.getContentPane(),"legacy-confirm",javax.swing.JButton.class):labelledButton(dialog.getContentPane(),"Confirm review");return button.isVisible()&&button.isEnabled();});
         if(confirm){if(legacy)confirmStepwise(dialog);else confirmStepwiseNative(dialog);}
-        onEventThread(()->{var apply=labelledButton(dialog.getContentPane(),"Apply");if(!apply.isEnabled())throw new IllegalStateException("Stored visible interval plan is not applicable");apply.doClick();return null;});
-        if(onEventThread(dialog::isDisplayable)||UndoRedoHandler.getInstance().getUndoCommands().size()!=undo+1)throw new IllegalStateException("Visible interval Apply did not publish one command");
+        var rejected=new AtomicBoolean();
+        AWTEventListener dismiss=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog warning&&warning.isModal()){
+            rejected.set(true);printSafeStartupFrames("stored-apply-modal",Thread.currentThread(),16);SwingUtilities.invokeLater(warning::dispose);
+        }};
+        Toolkit.getDefaultToolkit().addAWTEventListener(dismiss,AWTEvent.WINDOW_EVENT_MASK);
+        try{onEventThread(()->{
+            var apply=labelledButton(dialog.getContentPane(),"Apply");if(!apply.isEnabled())throw new IllegalStateException("Stored visible interval plan is not applicable");
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.begin();
+            try{System.err.println("GUI_SMOKE_STORED_APPLY_BEGIN");apply.doClick();}
+            finally{System.err.println("GUI_SMOKE_STORED_APPLY_COUNTERS "+org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.snapshot());org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.end();}
+            return null;
+        });}finally{Toolkit.getDefaultToolkit().removeAWTEventListener(dismiss);}
+        if(rejected.get()||onEventThread(dialog::isDisplayable)||UndoRedoHandler.getInstance().getUndoCommands().size()!=undo+1)throw new IllegalStateException("Stored visible Apply was refused or did not publish one command");
         if(!plan.finalPreviewWays().get(plan.selectedWayKey()).equals(fixture.selectedWay().getNodes().stream().map(node->new GeographicPoint(node.lat(),node.lon())).toList()))throw new IllegalStateException("Visible interval command differs from its stored final plan");
         var applied=wayState(fixture);onEventThread(()->{UndoRedoHandler.getInstance().undo();return null;});requireUnchanged(fixture,original,undo);
         onEventThread(()->{UndoRedoHandler.getInstance().redo();return null;});if(!applied.equals(wayState(fixture)))throw new IllegalStateException("Visible interval Redo changed stored geometry");
