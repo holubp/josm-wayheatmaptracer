@@ -804,7 +804,9 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         public Registration onCancellation(Runnable callback){var registration=token.onCancellation(callback);return registration::close;}
     };}
     private void dispatchCompletion(Runnable completion) {
-        try{publicationDispatcher.dispatch(completion);}catch(RuntimeException rejected){SwingUtilities.invokeLater(completion);}
+        var delivered=new java.util.concurrent.atomic.AtomicBoolean();
+        Runnable once=()->{if(delivered.compareAndSet(false,true))completion.run();};
+        try{publicationDispatcher.dispatch(once);}catch(RuntimeException rejected){SwingUtilities.invokeLater(once);}
     }
     private void settleWork(PreviewWorkGate.Work work){if(activeWork==work)activeWork=null;workGate.workerSettled(work);}
     private static RuntimeException unwrap(Throwable failure){while(failure instanceof CompletionException&&failure.getCause()!=null)failure=failure.getCause();return failure instanceof RuntimeException runtime?runtime:new IllegalStateException("Refinement failed",failure);}
