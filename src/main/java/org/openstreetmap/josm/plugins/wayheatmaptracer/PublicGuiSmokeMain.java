@@ -1467,9 +1467,15 @@ public final class PublicGuiSmokeMain {
         }
         if(progress==null||progress.isModal()||!requiredNamed(progress.getContentPane(),"refinement-cancel",javax.swing.JButton.class).isShowing())
             throw new IllegalStateException("Modeless optional-work progress and Cancel are unavailable");
-        boolean export=false;
-        for(Component component:MainApplication.getMenu().moreToolsMenu.getMenuComponents())if(component instanceof JMenuItem item&&item.getAction() instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.actions.ExportDiagnosticsAction)export=item.isEnabled();
-        if(!export)throw new IllegalStateException("Diagnostics menu is inaccessible during optional work");
+        if(!hasEnabledDiagnosticsExport(MainApplication.getMenu().moreToolsMenu))throw new IllegalStateException("Diagnostics menu is inaccessible during optional work");
+    }
+
+    private static boolean hasEnabledDiagnosticsExport(javax.swing.JMenu menu) {
+        for(Component component:menu.getMenuComponents()) {
+            if(component instanceof javax.swing.JMenu child&&child.isEnabled()&&hasEnabledDiagnosticsExport(child))return true;
+            if(component instanceof JMenuItem item&&item.getAction() instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.actions.ExportDiagnosticsAction&&item.isEnabled())return true;
+        }
+        return false;
     }
 
     private static boolean hasVisiblePreview() throws Exception {
@@ -1571,13 +1577,17 @@ public final class PublicGuiSmokeMain {
         int selected = -1;
         for (int i = 0; i < choices.size(); i++) {
             var choice = choices.get(i);
-            if (choice.owner() != owner || choice.localRouteIndex() != i
-                    || !ids.add(choice.candidate().id())) {
-                throw new IllegalStateException("Expected distinct owned routes from one production run");
+            var routeOwner=choice.owner();
+            int routeIndex=choice.localRouteIndex();
+            if (routeOwner.request().engine()!=owner.request().engine()
+                    || routeIndex<0||routeIndex>=routeOwner.pipeline().routes().size()
+                    || !routeOwner.pipeline().routes().get(routeIndex).hypothesis().id().equals(choice.candidate().id())
+                    || !ids.add(choice.reviewIdentity())) {
+                throw new IllegalStateException("Expected distinct routes bound to their actual production owners");
             }
-            if (engine == TrackerMode.LEGACY_THEN_B && owner.pipeline().routes().get(i).hypothesis()
+            if (engine == TrackerMode.LEGACY_THEN_B && routeOwner.pipeline().routes().get(routeIndex).hypothesis()
                     .diagnostics().getOrDefault("hasBRefinement", 0.0) != 1.0) continue;
-            var assessment = new ModernSingleWayEditPlanAdapter().assess(owner, i);
+            var assessment = new ModernSingleWayEditPlanAdapter().assess(routeOwner, routeIndex);
             if (assessment.plan().isEmpty()) continue;
             var plan = assessment.plan().orElseThrow();
             try {

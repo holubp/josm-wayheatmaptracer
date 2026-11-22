@@ -53,16 +53,31 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
         requireCurrent();return RefinementPipeline.visibleSources(mappings);
     }
     static RetainedSmoothingSource retain(LiveBPreviewService.Computed run,RefinementSourcePlanner.Settings settings,
-            NativeRefinementSourceContext context,GeometryWorkContext work,AttemptMemoryLedger.Owner memory) {
+            NativeRefinementSourceContext context,GeometryWorkContext work,AttemptMemoryLedger.Owner memory,IdentityHashMap<Object,String> hashes) {
         context.requireCurrent();var capture=run.captured();var evidence=run.evidence();
         long bytes=0;for(long charge:RefinementRootAuthority.detachedCharges(evidence).values())bytes=Math.addExact(bytes,charge);
         try{if(memory.retainIfAbsent(evidence).bytes()!=bytes)throw new IllegalArgumentException("Native evidence group differs");}
         catch(IllegalArgumentException absent){work.reserveOn(memory,"native-original-evidence",bytes).adopt(evidence);}
+        String mapping=ModernReviewRoot.mapping(run);
+        var request=new RefinementSourcePlanner.SourceRequest(capture.palette(),mapping,mapping.equals("all-colors-combined"),"");
         SupportedInputRasterTransform transform;int width,height;String hash;
-        if(capture.raster()!=null) {
+        String hashProtocol=RasterEvidenceCapture.ORIGINAL_ARGB_PROTOCOL;
+        if(request.aggregate()) {
+            var sources=capture.sourceRasters();
+            if(sources==null||!sources.provenCompleteAggregate(context.coordinator)||!sources.allRequiredZoomsWereAvailableAtAcquisition())
+                throw new IllegalStateException("Complete original aggregate input unavailable");
+            var selected=sources.selectedRaster();width=selected.image().getWidth();height=selected.image().getHeight();transform=selected.transform();
+            hash=hashes.get(sources);
+            if(hash==null) {
+                var inputs=sources.palettes().entrySet().stream().map(entry->new RasterEvidenceCapture.NamedOriginalRaster(entry.getKey(),entry.getValue().image(),entry.getValue().transform())).toList();
+                hash=RasterEvidenceCapture.hashOriginalArgbSet(inputs,work,memory);hashes.put(sources,hash);
+            }
+            hashProtocol=RasterEvidenceCapture.ORIGINAL_ARGB_SET_PROTOCOL;
+        } else if(capture.raster()!=null) {
             var raster=capture.raster();width=raster.width();height=raster.height();
             transform=SupportedInputRasterTransform.visibleWebMercator(raster.minimumEast(),raster.maximumNorth(),raster.projectionUnitsPerViewPixel(),6);
-            try(var scratch=work.reserve("native-original-image-hash",Math.addExact(8192,8L*width*height))) {
+            hash=hashes.get(raster);
+            if(hash==null)try(var scratch=work.reserve("native-original-image-hash",Math.addExact(8192,8L*width*height))) {
                 var image=new BufferedImage(width,height,BufferedImage.TYPE_INT_ARGB);
                 var pixels=raster.argb();
                 for(int y=0;y<height;y++)for(int x=0;x<width;x+=256) {
@@ -70,19 +85,17 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
                     image.setRGB(x,y,count,1,pixels,y*width+x,width);
                 }
                 hash=RasterEvidenceCapture.hashOriginalArgb(image,work,memory);
+                hashes.put(raster,hash);
             }
         } else {
             var raster=capture.managedRaster();width=raster.image().getWidth();height=raster.image().getHeight();transform=raster.transform();
-            hash=RasterEvidenceCapture.hashOriginalArgb(raster.image(),work,memory);
+            hash=hashes.get(raster.image());
+            if(hash==null){hash=RasterEvidenceCapture.hashOriginalArgb(raster.image(),work,memory);hashes.put(raster.image(),hash);}
         }
-        String mapping=ModernReviewRoot.mapping(run);
-        var request=new RefinementSourcePlanner.SourceRequest(capture.palette(),mapping,mapping.equals("all-colors-combined"),"");
-        // Aggregate input requires its complete original ARGB-set hash, never the selected image's hash.
-        if(request.aggregate())throw new UnsupportedOperationException("Native aggregate original input-set receipt unavailable");
         var guard=context.detachedCommandGeneration();Runnable current=()->guard.getAsLong();
         return RetainedSmoothingSource.fromOriginalConversion(request,settings.intensity(),run.options().fieldName(),evidence,transform,width,height,bytes,current,
             evidence.sourceIdentity()+"/native-original/"+mapping,hash,capture.managedRaster()==null?OptionalLong.empty():OptionalLong.of(capture.managedRaster().generation().value()),
-            capture.raster()==null?Optional.empty():Optional.of(capture.raster().sourceReceipt()),Optional.empty(),RasterEvidenceCapture.ORIGINAL_ARGB_PROTOCOL,work,memory);
+            capture.raster()==null?Optional.empty():Optional.of(capture.raster().sourceReceipt()),Optional.empty(),hashProtocol,work,memory);
     }
     static FinalGeometryEvaluator.Result intervalQuality(LiveBPreviewService.Computed run,FixedIntervalEditPlanComposer.Assessment assessment) {
         throw new UnsupportedOperationException("Native interval final quality binding unavailable");

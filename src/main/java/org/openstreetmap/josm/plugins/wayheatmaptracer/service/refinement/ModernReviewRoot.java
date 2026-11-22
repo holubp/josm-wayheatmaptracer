@@ -108,8 +108,11 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
             var receipt=capture.originalReceipt().orElseThrow(()->new IllegalStateException("Original native capture receipt unavailable"));
             var context=source();
             var retainedSources=new IdentityHashMap<LiveBPreviewService.Computed,RetainedSmoothingSource>();
-            var primarySource=NativeRefinementSourceContext.retain(primary,settings,context,work,memory);retainedSources.put(primary,primarySource);
+            var hashes=new IdentityHashMap<Object,String>();
+            work.reserveOn(memory,"native-original-hash-cache",8192).adopt(hashes);
+            var primarySource=NativeRefinementSourceContext.retain(primary,settings,context,work,memory,hashes);retainedSources.put(primary,primarySource);
             var nativeFacts=new IdentityHashMap<Object,Long>();
+            nativeFacts.put(hashes,8192L);
             var owners=Collections.newSetFromMap(new IdentityHashMap<LiveBPreviewService.Computed,Boolean>());
             if(interval!=null)owners.add(interval.owner());else nativeChoices.forEach(c->owners.add(c.owner()));
             for(var owner:owners) {
@@ -132,7 +135,7 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
                 var choice=choices.get(index);var run=interval==null?nativeChoices.get(index).owner():interval.owner();
                 var plan=interval==null?new ModernSingleWayEditPlanAdapter().assess(run,nativeChoices.get(index).localRouteIndex()).plan().orElseThrow(()->new IllegalStateException("Native root plan unavailable")):interval.assessment().plan().orElseThrow(()->new IllegalStateException("Native interval plan unavailable"));
                 var quality=interval==null?run.pipeline().routes().get(nativeChoices.get(index).localRouteIndex()).quality():NativeRefinementSourceContext.intervalQuality(run,interval.assessment());
-                var source=retainedSources.computeIfAbsent(run,r->NativeRefinementSourceContext.retain(r,settings,context,work,memory));
+                var source=retainedSources.computeIfAbsent(run,r->NativeRefinementSourceContext.retain(r,settings,context,work,memory,hashes));
                 var request=source.source();
                 var ids=interval==null?run.pipeline().routes().get(nativeChoices.get(index).localRouteIndex()).pointIds():List.copyOf(interval.assessment().assignments().keySet());
                 var nativeReview=new RefinementPayload.NativeReview(plan,quality,Optional.empty(),List.of(request),OptionalInt.empty(),Map.of(request,source),List.of(),Optional.of(ids));
