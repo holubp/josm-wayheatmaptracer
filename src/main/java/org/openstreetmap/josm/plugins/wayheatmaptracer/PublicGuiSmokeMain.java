@@ -177,6 +177,8 @@ public final class PublicGuiSmokeMain {
                 String initialStatus = artifactText(latestArchive(report.getParent()),
                         "attempt-status.json");
                 if (!initialStatus.contains("\"routeIndex\":0")) {
+                    if(ready.result() instanceof LiveBPreviewService.Computed actual)System.err.println("GUI_SMOKE_NATIVE_INITIAL partitioned="+actual.partitioned()+" status="+(actual.partitioned()?"interval":actual.pipeline().inference().status())+" routes="+(actual.partitioned()?-1:actual.pipeline().routes().size()));
+                    System.err.println("GUI_SMOKE_NATIVE_INITIAL_STATUS "+initialStatus);
                     throw new IllegalStateException("Initial production route diagnostics are missing");
                 }
                 // Choose an actual ridge-following production route. A correct

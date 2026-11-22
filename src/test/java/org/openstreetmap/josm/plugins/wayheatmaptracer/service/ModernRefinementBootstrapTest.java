@@ -442,6 +442,21 @@ class ModernRefinementBootstrapTest {
                 SwingUtilities.invokeAndWait(()->{assertTrue(workflow[0].actualNativeCalls()>before,workflow[0].computationEvidence());if(!workflow[0].atRoot())((javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"undo")).doClick();assertTrue(workflow[0].currentNoChangeRoot().isPresent());assertEquals(nodes.get(middle).getCoor(),initialCoordinates.get(middle));});
             }
             SwingUtilities.invokeAndWait(()->{assertTrue(workflow[0].canApplyNative());assertThrows(IllegalStateException.class,workflow[0]::command);workflow[0].acceptNoChangeRoot();assertEquals(nodes,way.getNodes());assertEquals(initialCoordinates,nodes.stream().map(org.openstreetmap.josm.data.osm.Node::getCoor).toList());assertEquals(initialFlags,data.allPrimitives().stream().collect(java.util.stream.Collectors.toMap(p->p.getUniqueId(),p->List.of(p.isModified(),p.isDeleted()))));assertEquals(undo,List.copyOf(host.getUndoCommands()));assertEquals(redo,List.copyOf(host.getRedoCommands()));});
+            SwingUtilities.invokeAndWait(()->{
+                workflow[0].close();workflow[0]=new LegacyRefinementWorkflow(review[0],null,review[0]::select,d->{},s->{},workers::add,publications::add,port);
+                workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.MEDIUM);
+            });
+            VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
+            SwingUtilities.invokeAndWait(()->{
+                if(!workflow[0].atRoot())((javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"undo")).doClick();
+                assertTrue(workflow[0].currentNoChangeRoot().isPresent(),workflow[0].computationEvidence());
+                var retained=workflow[0].currentStage();int nativeCalls=workflow[0].actualNativeCalls();epoch.sourceChanged();
+                assertFalse(workflow[0].canApplyNative());assertThrows(IllegalStateException.class,workflow[0]::acceptNoChangeRoot);
+                assertSame(retained,workflow[0].currentStage());assertEquals(nativeCalls,workflow[0].actualNativeCalls());
+                assertEquals(nodes,way.getNodes());assertEquals(initialCoordinates,nodes.stream().map(org.openstreetmap.josm.data.osm.Node::getCoor).toList());
+                assertEquals(initialFlags,data.allPrimitives().stream().collect(java.util.stream.Collectors.toMap(p->p.getUniqueId(),p->List.of(p.isModified(),p.isDeleted()))));
+                assertEquals(undo,List.copyOf(host.getUndoCommands()));assertEquals(redo,List.copyOf(host.getRedoCommands()));
+            });
         }finally{SwingUtilities.invokeAndWait(()->{workflow[0].close();review[0].close();});}
     }
     private static String originalRouteFacts(IntervalTraceBatch batch,IntervalTraceBatch.IntervalRun run,ModernTracePipeline.Route route) {
