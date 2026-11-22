@@ -1242,7 +1242,7 @@ public class AlignWayAction extends JosmAction {
                         for(int i=0;i<choices.size();i++){populateIntervalRouteChoices(choices.get(i),state.batch().runs().get(i).routes());choices.get(i).setSelectedIndex(state.routeChoices().getOrDefault(i,0));}
                     }finally{rebuildingChoices[0]=false;}
                 }
-                refinement[0].refresh();refresh.run();quality.setText(tr("Root selection unavailable; the previous composition is retained. Run alignment again if its source changed.")+"\n"+intervalPreviewSummary(state));return;
+                refinement[0].refresh();if(refinement[0].currentSourceAvailable())refresh.run();quality.setText(tr("Root selection unavailable; the previous composition is retained. Run alignment again if its source changed.")+"\n"+intervalPreviewSummary(state));return;
             }
             boolean closed = closeAndPublishIfCurrent(livePreviewSession, owner, () ->
                     recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.FAILED,
@@ -1413,7 +1413,8 @@ public class AlignWayAction extends JosmAction {
                 },message->{
                     if(refinement[0]==null)return;
                     if(refinement[0].busy()) {sourceChoices.setEnabled(false);choices.forEach(choice->choice.setEnabled(false));apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);}
-                    else refresh.run();
+                    else if(refinement[0].currentSourceAvailable())refresh.run();
+                    else {sourceChoices.setEnabled(false);choices.forEach(choice->choice.setEnabled(false));apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);quality.setText(tr("The source changed. This cached result is available for inspection and diagnostics; run alignment again before applying."));}
                 },nativeVisibleCapturePort(computed.captured(),imageryLayer,mapView,refinementRoot[0]::requireAuthorityCurrent));
                 refinement[0].controls().externalRootSelection(true);refinement[0].enableNativeRuntimeDiagnostics(candidate->createNativeRootContext(computed,candidate,false),candidate->createNativeRootContext(computed,candidate,true));
                 refinement[0].attachCommandContext(detachedCommandContext(dataSet,computed.captured().managedRaster()==null?imageryLayer:null,computed.captured().managedRaster()!=null?previewSourceOwner:null));
@@ -2169,7 +2170,8 @@ public class AlignWayAction extends JosmAction {
                             apply.setEnabled(!busy&&!applying[0]&&refinement[0].canApplyNative());
                             disconnect.setEnabled(false);preciseRerun.setVisible(false);
                         } else if(busy){apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);preciseRerun.setEnabled(false);}
-                        else {disconnect.setEnabled(true);refresh.run();if(!refinement[0].currentSourceAvailable()){apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);preciseRerun.setEnabled(false);}}
+                        else if(refinement[0].currentSourceAvailable()){disconnect.setEnabled(true);refresh.run();}
+                        else {apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);preciseRerun.setEnabled(false);quality.setText(tr("The source changed. This cached result is available for inspection and diagnostics; run alignment again before applying."));}
                     },nativeVisibleCapturePort(computed.captured(),imageryLayer,mapView,refinementRoot[0]::requireAuthorityCurrent));
                 refinement[0].controls().externalRootSelection(true);
                 refinement[0].attachCommandContext(detachedCommandContext(dataSet,computed.captured().managedRaster()==null?imageryLayer:null,computed.captured().managedRaster()!=null?previewSourceOwner:null));
