@@ -259,7 +259,7 @@ class RefinementSessionTest {
             () -> Stage.root(List.of(candidate("one"), candidate("one")), new CandidateId("one")));
     }
 
-    @Test void rootConfigForcesLegacyWhileKeepingSavedAndExplicitGeometryMode() throws Exception {
+    @Test void rootConfigPreservesSelectedEngineAndExplicitGeometryMode() throws Exception {
         edt(() -> {
             for (AlignmentMode setting : AlignmentMode.values()) {
                 for (AlignmentMode override : new AlignmentMode[] {null, AlignmentMode.PRECISE_SHAPE,
@@ -267,7 +267,7 @@ class RefinementSessionTest {
                     AlignmentConfig saved = config(setting);
                     saved = new AlignmentConfig(saved.heatmap().withTrackerMode(TrackerMode.PROBABILISTIC), saved.cleanup());
                     AlignmentConfig frozen = RefinementSession.normalRootConfig(saved, override);
-                    assertEquals(TrackerMode.LEGACY_V02, frozen.heatmap().trackerMode());
+                    assertEquals(TrackerMode.PROBABILISTIC, frozen.heatmap().trackerMode());
                     assertEquals(override == null ? setting : override, frozen.heatmap().alignmentMode());
                     assertEquals(TrackerMode.PROBABILISTIC, saved.heatmap().trackerMode());
                 }
