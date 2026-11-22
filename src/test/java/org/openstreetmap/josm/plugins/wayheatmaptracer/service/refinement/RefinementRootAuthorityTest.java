@@ -10,6 +10,24 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 
 class RefinementRootAuthorityTest {
+    @Test void factualNativeRootBindsExactEngineAndMode() throws Exception {
+        SwingUtilities.invokeAndWait(()->{
+            for(var engine:List.of(TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC))for(var mode:AlignmentMode.values()) {
+                var old=RefinementParentFixtures.authority(mode);var r=old.request();
+                var config=new AlignmentConfig(old.effectiveConfig().heatmap().withTrackerMode(engine),old.effectiveConfig().cleanup());
+                var request=new TraceRequest(r.selectedWayKey(),r.selectedRange(),engine,r.geometryMode(),r.permissions(),r.budgets(),r.evidenceSnapshotId(),r.evidenceContentHash(),r.networkSnapshotId(),r.networkContentHash(),r.settingsHash(),r.parameterHash(),r.samplerId(),r.configuredSampleStepMeters(),r.profileChainage(),r.evidenceResolution(),r.corridorInput(),r.disconnectionSource());
+                var authority=new RefinementRootAuthority(old.network(),request,old.evidence(),config,old.projectionCode(),old.sourceIdentity());
+                assertEquals(engine,authority.request().engine());
+                var candidate=RefinementParentFixtures.parent(authority,"blue");
+                var stage=new Stage(new StageId(UUID.randomUUID()),Optional.empty(),Optional.empty(),StageKind.valueOf("ROOT_NATIVE"),engine,List.of(candidate),candidate.id(),Optional.empty());
+                try(var session=new RefinementSession(stage,config,authority.sourceIdentity(),authority,RefinementLimits.defaults())) {
+                    var ticket=session.begin(engine==TrackerMode.CORRIDOR_AWARE?TrackerMode.PROBABILISTIC:TrackerMode.CORRIDOR_AWARE);
+                    assertEquals(mode,ticket.mode());session.cancel(ticket);session.workerSettled(ticket);
+                }
+                assertThrows(IllegalArgumentException.class,()->new RefinementRootAuthority(old.network(),request,old.evidence(),old.effectiveConfig(),old.projectionCode(),old.sourceIdentity()));
+            }
+        });
+    }
     record Captured(RefinementRootAuthority root,SelectedWayIntervalPartitioner.Partition partition) { }
     @Test void ordinaryTwoOriginalNodeWholeHasFactualNoIslandProofAndStillReachesActualPreciseInference() {
         var root=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE,false,true,false);

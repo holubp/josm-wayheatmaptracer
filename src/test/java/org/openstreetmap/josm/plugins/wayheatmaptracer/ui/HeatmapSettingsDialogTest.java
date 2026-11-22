@@ -31,19 +31,19 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 /** Exercises real focus and keyboard events using synthetic access values in an isolated Swing process. */
 class HeatmapSettingsDialogTest {
     @Test
-    void settingsContainNoPrimaryTrackerChoice() throws Exception {
+    void settingsRetainExactlyThreeStartingAlgorithms() throws Exception {
         Config.setPreferencesInstance(new MemoryPreferences());
         HeatmapSettingsDialog dialog = new HeatmapSettingsDialog(null);
+        java.util.List<Object> engines=new java.util.ArrayList<>();
         for (Field field : HeatmapSettingsDialog.class.getDeclaredFields()) {
             field.setAccessible(true);
             if (field.get(dialog) instanceof JComboBox<?> combo) {
                 for (int index = 0; index < combo.getItemCount(); index++) {
-                    assertTrue(!(combo.getItemAt(index) instanceof
-                        org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode),
-                        "primary tracker selector remains in settings");
+                    if(combo.getItemAt(index) instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode)engines.add(combo.getItemAt(index));
                 }
             }
         }
+        assertEquals(java.util.List.of(org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.LEGACY_V02,org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.CORRIDOR_AWARE,org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.PROBABILISTIC),engines);
     }
     @Test
     void enterAcceptsTheCookiePaneWhileTheTextAreaKeepsItsStandardPasteAction() throws Exception {
