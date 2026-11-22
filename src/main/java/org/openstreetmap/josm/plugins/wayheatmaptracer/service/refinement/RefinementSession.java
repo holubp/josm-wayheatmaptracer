@@ -144,7 +144,11 @@ public final class RefinementSession implements AutoCloseable {
     }
     /** Adds a validated root composition without rewriting a retained child's factual parent choice. */
     public void selectRootComposition(Candidate candidate) {
-        requireIdle();Objects.requireNonNull(candidate);
+        selectRootComposition(candidate,()->{});
+    }
+    /** Prepare the exact admitted presentation before the selected root/history can change. */
+    public void selectRootComposition(Candidate candidate,Runnable beforeCommit) {
+        requireIdle();Objects.requireNonNull(candidate);Objects.requireNonNull(beforeCommit);
         if(cursor!=0||!current().kind().root())throw new IllegalStateException("Root composition selection requires the root cursor");
         var root=current();var candidates=new ArrayList<>(root.candidates());
         var existing=candidates.stream().filter(c->c.id().equals(candidate.id())).findFirst();
@@ -157,6 +161,8 @@ public final class RefinementSession implements AutoCloseable {
         var updated=new Stage(root.id(),root.parent(),root.parentChoice(),root.kind(),root.engine(),candidates,candidate.id(),root.smoothingInput());
         var proposed=new ArrayList<>(history);proposed.set(0,updated);
         var refusal=retentionRefusal(proposed);if(refusal!=null)throw new Refused(refusal);
+        beforeCommit.run();requireIdle();
+        if(cursor!=0||current()!=root)throw new IllegalStateException("Root selection changed during presentation");
         history.set(0,updated);confirmed=false;
     }
     public Optional<Stage> back() {
