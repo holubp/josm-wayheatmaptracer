@@ -67,6 +67,21 @@ class VisibleRefinementWorkflowTest {
                 });
                 // The selected native descendant, not root geometry, is the exact second-engine parent.
                 var firstStage=stage(workflow[0]);var second=engine==TrackerMode.CORRIDOR_AWARE?TrackerMode.PROBABILISTIC:TrackerMode.CORRIDOR_AWARE;
+                int beforeSmoothing=workflow[0].actualNativeCalls();
+                SwingUtilities.invokeAndWait(()->workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.MEDIUM));
+                drain(work,publications,workflow[0]);
+                SwingUtilities.invokeAndWait(()->{
+                    assertEquals(beforeSmoothing,workflow[0].actualNativeCalls(),"Smoothen must not trace or acquire another source");
+                    var smoothed=workflow[0].currentStage();
+                    if(!smoothed.id().equals(firstStage.id())) {
+                        assertEquals(RefinementModels.StageKind.SMOOTH,smoothed.kind());
+                        assertEquals(firstStage.id(),smoothed.parent().orElseThrow());
+                        ((JButton)find(workflow[0].controls(),"undo")).doClick();assertEquals(firstStage.id(),workflow[0].currentStage().id());
+                        ((JButton)find(workflow[0].controls(),"redo")).doClick();assertEquals(smoothed.id(),workflow[0].currentStage().id());
+                        assertEquals(beforeSmoothing,workflow[0].actualNativeCalls());
+                        ((JButton)find(workflow[0].controls(),"undo")).doClick();
+                    }
+                });
                 SwingUtilities.invokeAndWait(()->workflow[0].refine(second));drain(work,publications,workflow[0]);
                 var secondStage=stage(workflow[0]);
                 SwingUtilities.invokeAndWait(()->{
