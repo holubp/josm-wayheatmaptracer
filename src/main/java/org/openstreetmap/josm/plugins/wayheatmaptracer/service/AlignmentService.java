@@ -3057,6 +3057,7 @@ public final class AlignmentService {
         EastNorth originalCenter = mapView.getCenter();
         double originalScale = mapView.getScale();
         Dimension originalSize = mapView.getSize();
+        if(nativeViewport)originalBounds=captureBoundsForSize(originalCenter,originalSize,originalScale);
         ProjectionBounds requestedBounds = expandedBounds(sourcePolyline, visibleCaptureMarginProjectionUnits(visibleHalfWidthPx));
         double targetScale = REFERENCE_CAPTURE_PROJECTION_UNITS_PER_VIEW_PIXEL;
         Dimension captureSize = requiredCaptureSize(requestedBounds, targetScale);
