@@ -60,6 +60,7 @@ class VisibleRefinementWorkflowTest {
                         var archive=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader.read(path);
                         assertTrue(archive.artifactNames().stream().anyMatch(name->name.startsWith("smoothing/stage-")));
                         assertTrue(workflow[0].latestAttemptDiagnostics().orElseThrow().pipeline().isEmpty());
+                        assertGaussianPublicationBound(archive,workflow[0]);
                     }catch(Exception unavailable){throw new AssertionError("Actual Gaussian export unavailable",unavailable);}
                     workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.STRONG);
                 });
@@ -68,6 +69,12 @@ class VisibleRefinementWorkflowTest {
                 SwingUtilities.invokeAndWait(()->strong.set(workflow[0].selectedGeometry()));
                 SwingUtilities.invokeAndWait(()->{
                     assertEquals("Strong",workflow[0].currentStage().smoothingInput().orElseThrow().preset());
+                    assertDoesNotThrow(workflow[0]::prepareExport);
+                    try {
+                        var path=temp.resolve("published-strong-"+mode.name()+".zip");
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.writeLatest(path.toFile());
+                        assertGaussianPublicationBound(org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader.read(path),workflow[0]);
+                    }catch(Exception unavailable){throw new AssertionError("Strong replacement export unavailable",unavailable);}
                     ((JButton)find(workflow[0].controls(),"undo")).doClick();
                     workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.STRONG);
                 });
@@ -77,6 +84,17 @@ class VisibleRefinementWorkflowTest {
                 SwingUtilities.invokeAndWait(()->assertTrue(workflow[0].actualNativeCalls()>0,"A smoothed parent must permit requested native work"));
             } finally {SwingUtilities.invokeAndWait(()->{workflow[0].close();owner[0].close();});}
         }
+    }
+    private static void assertGaussianPublicationBound(org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Archive archive,LegacyRefinementWorkflow workflow) {
+        var bundle=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle(archive.buildIdentity(),archive.sourceIdentityHash(),archive.parameterHash(),archive.artifacts());
+        var stage=workflow.currentStage();var codec=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.readBound(bundle,stage.id(),stage.selected()).orElseThrow();
+        var selected=codec.stages().stream().filter(s->s.id().equals(stage.id())).findFirst().orElseThrow().candidates().stream().filter(c->c.id().equals(stage.selected())).findFirst().orElseThrow();
+        var actual=selected.smoothingPublication().orElseThrow();
+        assertEquals(workflow.latestAttemptDiagnostics().orElseThrow().binding().ticket(),actual.ticket());assertTrue(selected.operation().isEmpty());
+        var artifact=bundle.artifacts().get(actual.receipt().artifact());var changed=new LinkedHashMap<>(bundle.artifacts());
+        changed.put(artifact.name(),org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Artifact.text(artifact.name(),"{}"));
+        var corrupt=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle(bundle.buildIdentity(),bundle.sourceIdentityHash(),bundle.parameterHash(),changed);
+        assertThrows(IllegalArgumentException.class,()->org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.readBound(corrupt,stage.id(),stage.selected()),"Gaussian receipt checksum is bound to the actual publication");
     }
     @ParameterizedTest @MethodSource("cells")
     void visibleABPreciseAndMove(AlignmentMode mode,TrackerMode engine) throws Exception {

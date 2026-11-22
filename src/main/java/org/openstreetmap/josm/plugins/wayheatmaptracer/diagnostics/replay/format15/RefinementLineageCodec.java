@@ -49,11 +49,19 @@ public final class RefinementLineageCodec {
         }
     }
     /** Successful factual operation summaries are copied only from candidate-owned payloads. */
+    public record SmoothingPublication(OperationTicket ticket,GeometryRef receipt,String parentIdentity) {
+        public SmoothingPublication {Objects.requireNonNull(ticket);Objects.requireNonNull(receipt);identity(parentIdentity);
+            if(ticket.kind()!=StageKind.SMOOTH||ticket.smoothingInput().isEmpty())throw invalid();}
+    }
     public record CandidateEntry(CandidateId id, String immutableIdentity, String nativeCandidateId,
-            String sourcePalette, GeometryRef geometry, Optional<RefinementOperationReceipt> operation) {
+            String sourcePalette, GeometryRef geometry, Optional<RefinementOperationReceipt> operation,Optional<SmoothingPublication> smoothingPublication) {
+        public CandidateEntry(CandidateId id,String immutableIdentity,String nativeCandidateId,String sourcePalette,GeometryRef geometry,Optional<RefinementOperationReceipt> operation){
+            this(id,immutableIdentity,nativeCandidateId,sourcePalette,geometry,operation,Optional.empty());
+        }
         public CandidateEntry {
             Objects.requireNonNull(id); text(id.value()); identity(immutableIdentity); identity(nativeCandidateId);
             text(sourcePalette); Objects.requireNonNull(geometry); Objects.requireNonNull(operation);
+            Objects.requireNonNull(smoothingPublication);if(operation.isPresent()&&smoothingPublication.isPresent())throw invalid();
         }
     }
     /** Retained stage metadata without payloads, coordinates, images, or mutable handles. */
@@ -107,6 +115,12 @@ public final class RefinementLineageCodec {
     public static Document capture(String build,String sourceHash,String settingsHash,AlignmentMode mode,
             SessionId session,String originalOsmIdentity,Format15Artifact originalGeometry,List<Stage> history,StageId current,
             Optional<RefinementOperationReceipt> latest,Map<CandidateKey,Format15Artifact> geometry,Optional<LatestPublication> publication) {
+        return capture(build,sourceHash,settingsHash,mode,session,originalOsmIdentity,originalGeometry,history,current,latest,geometry,publication,Map.of());
+    }
+    public static Document capture(String build,String sourceHash,String settingsHash,AlignmentMode mode,
+            SessionId session,String originalOsmIdentity,Format15Artifact originalGeometry,List<Stage> history,StageId current,
+            Optional<RefinementOperationReceipt> latest,Map<CandidateKey,Format15Artifact> geometry,Optional<LatestPublication> publication,
+            Map<CandidateKey,SmoothingPublication> smoothingPublications) {
         if(history==null || history.isEmpty() || history.size()>8 || geometry==null || originalGeometry==null) throw invalid();
         var originalOsm=new OriginalOsm(originalOsmIdentity,new GeometryRef(originalGeometry.name(),originalGeometry.sha256()));
         var entries=new ArrayList<StageEntry>(); var expected=new HashSet<CandidateKey>();
@@ -117,7 +131,7 @@ public final class RefinementLineageCodec {
                 var artifact=geometry.get(key); if(artifact==null) throw invalid();
                 candidates.add(new CandidateEntry(candidate.id(),candidate.immutableIdentity(),candidate.nativeCandidateId(),
                     candidate.sourcePalette(),new GeometryRef(artifact.name(),artifact.sha256()),
-                    candidate.payload().nativeReview().flatMap(review->review.operation())));
+                    candidate.payload().nativeReview().flatMap(review->review.operation()),Optional.ofNullable(smoothingPublications.get(key))));
             }
             entries.add(new StageEntry(stage.id(),stage.parent(),stage.parentChoice(),stage.kind(),stage.engine(),
                 stage.selected(),stage.smoothingInput(),candidates));
@@ -159,11 +173,13 @@ public final class RefinementLineageCodec {
                 var s=fields(item,"id","parent","parentChoice","kind","engine","selected","smoothingInput","candidates");
                 var cs=new ArrayList<CandidateEntry>();
                 for(var ci:array(s.get("candidates"),32)) {
-                    var c=fields(ci,"id","identity","nativeId","palette","geometry","operation");
+                    var c=ci instanceof Map<?,?> values&&values.containsKey("smoothingPublication")
+                        ?fields(ci,"id","identity","nativeId","palette","geometry","operation","smoothingPublication")
+                        :fields(ci,"id","identity","nativeId","palette","geometry","operation");
                     var g=fields(c.get("geometry"),"artifact","sha256");
                     cs.add(new CandidateEntry(candidate(c.get("id")),string(c.get("identity")),string(c.get("nativeId")),
                         string(c.get("palette")),new GeometryRef(string(g.get("artifact")),string(g.get("sha256"))),
-                        optionalReceipt(c.get("operation"))));
+                        optionalReceipt(c.get("operation")),readSmoothingPublication(c.get("smoothingPublication"))));
                 }
                 entries.add(new StageEntry(stage(s.get("id")),optionalStage(s.get("parent")),optionalCandidate(s.get("parentChoice")),
                     enumeration(StageKind.class,s.get("kind")),enumeration(TrackerMode.class,s.get("engine")),
@@ -195,11 +211,51 @@ public final class RefinementLineageCodec {
                 || !b.parameterHash().equals(bundle.parameterHash()) || !b.current().equals(current)
                 || !b.currentChoice().equals(choice)) throw invalid();
         validateGeometry(document.originalOsm().geometry(),bundle);
-        for(var s:document.stages()) for(var c:s.candidates()) validateGeometry(c.geometry(),bundle);
+        for(var s:document.stages()) for(var c:s.candidates()) {
+            validateGeometry(c.geometry(),bundle);
+            c.smoothingPublication().ifPresent(publication->validateSmoothingArtifact(s,c,publication,bundle));
+        }
     }
     private static void validateGeometry(GeometryRef reference,Format15Bundle bundle) {
         var actual=bundle.artifacts().get(reference.artifact());
         if(actual==null || !actual.sha256().equals(reference.sha256())) throw invalid();
+    }
+    private static void validateSmoothingArtifact(StageEntry stage,CandidateEntry candidate,SmoothingPublication publication,Format15Bundle bundle) {
+        validateGeometry(publication.receipt(),bundle);
+        var artifact=bundle.artifacts().get(publication.receipt().artifact());
+        if(artifact.sizeBytes()>MAX_BYTES)throw invalid();
+        try {
+            var text=StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(artifact.bytes())).toString();checkNesting(text);
+            Object decoded=new Format15ArchiveReader.JsonParser(text).parse();
+            if(!(decoded instanceof Map<?,?> receipt))throw invalid();
+            var ticket=publication.ticket();var preset=ticket.smoothingInput().orElseThrow().preset();
+            if(number(receipt.get("schema"))!=1||!stage.id().equals(stage(receipt.get("stage")))||!candidate.id().equals(candidate(receipt.get("choice")))
+                    ||!candidate.geometry().artifact().equals(string(receipt.get("geometryArtifact")))||!candidate.geometry().sha256().equals(string(receipt.get("geometrySha256")))
+                    ||!ticket.equals(readTicket(receipt.get("operationTicket")))||!publication.parentIdentity().equals(string(receipt.get("parentIdentity")))
+                    ||!ticket.mode().name().equals(string(receipt.get("mode")))||!"existing-gaussian-capture-reference-v1".equals(string(receipt.get("method")))
+                    ||!"CHANGED".equals(string(receipt.get("outcome")))||number(receipt.get("nativeCalls"))!=0
+                    ||!Objects.equals(preset.equals("Medium")?"MEDIUM_1PX":preset.equals("Strong")?"STRONG_2PX":null,string(receipt.get("strength")))
+                    ||number(receipt.get("workVisits"))<0||number(receipt.get("proposalWorkVisits"))<0
+                    ||number(receipt.get("proposalWorkVisits"))>number(receipt.get("workVisits"))||number(receipt.get("guardTrials"))<0)throw invalid();
+            Format15Safety.requiredHash(string(receipt.get("inputHash")),"Gaussian input hash");
+            Format15Safety.requiredHash(string(receipt.get("referenceEvidenceHash")),"Gaussian reference hash");
+            Format15Safety.requiredHash(string(receipt.get("referenceTransformIdentity")),"Gaussian frame hash");
+            if(!(receipt.get("acceptedScale") instanceof Number scale)||!Double.isFinite(scale.doubleValue())||scale.doubleValue()<=0||scale.doubleValue()>1
+                    ||number(receipt.get("referenceWidth"))<=0||number(receipt.get("referenceHeight"))<=0)throw invalid();
+            String protocol=string(receipt.get("inputHashProtocol"));
+            if(!Set.of(org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEvidenceCapture.ORIGINAL_ARGB_PROTOCOL,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEvidenceCapture.ORIGINAL_ARGB_SET_PROTOCOL).contains(protocol))throw invalid();
+            identity(string(receipt.get("mappingIdentity")));identity(string(receipt.get("referenceField")));
+        }catch(java.nio.charset.CharacterCodingException malformed){throw invalid();}
+    }
+    public static String operationTicketJson(OperationTicket ticket){return json(ticketMap(ticket));}
+    private static Map<String,Object> smoothingPublicationMap(SmoothingPublication publication){
+        return map("ticket",ticketMap(publication.ticket()),"receipt",map("artifact",publication.receipt().artifact(),"sha256",publication.receipt().sha256()),"parentIdentity",publication.parentIdentity());
+    }
+    private static Optional<SmoothingPublication> readSmoothingPublication(Object value){
+        if(value==null)return Optional.empty();var publication=fields(value,"ticket","receipt","parentIdentity");var receipt=fields(publication.get("receipt"),"artifact","sha256");
+        return Optional.of(new SmoothingPublication(readTicket(publication.get("ticket")),new GeometryRef(string(receipt.get("artifact")),string(receipt.get("sha256"))),string(publication.get("parentIdentity"))));
     }
 
     private static void validate(Binding b,OriginalOsm original,List<StageEntry> stages,Optional<RefinementOperationReceipt> latest,Optional<LatestPublication> publication) {
@@ -222,6 +278,14 @@ public final class RefinementLineageCodec {
                 }
             }
             long stageSequence=0;
+            for(var c:s.candidates())if(c.smoothingPublication().isPresent()) {
+                if(index==0||s.kind()!=StageKind.SMOOTH)throw invalid();
+                var t=c.smoothingPublication().orElseThrow().ticket();var input=t.smoothingInput().orElseThrow();
+                if(!t.session().equals(b.session())||t.mode()!=b.mode()||t.engine()!=s.engine()||!s.smoothingInput().equals(t.smoothingInput())
+                        ||!s.parent().orElseThrow().equals(input.unsmoothedParent())||!s.parentChoice().orElseThrow().equals(input.unsmoothedChoice())
+                        ||stageSequence!=0&&stageSequence!=t.sequence())throw invalid();
+                stageSequence=t.sequence();
+            }
             for(var c:s.candidates()) if(c.operation().isPresent()) {
                 if(index==0) throw invalid();
                 var r=c.operation().get(); validateReceipt(r,b,retained);
@@ -274,6 +338,16 @@ public final class RefinementLineageCodec {
         var disposition=diagnostic.publication();var cause=diagnostic.cause();
         if(disposition==RefinementAttemptDiagnostics.Publication.PUBLISHED) {
             StageId newest=null;for(var retainedStage:retained.keySet())newest=retainedStage;
+            if(ticket.kind()==StageKind.SMOOTH) {
+                if(!diagnostic.materializationComplete()||latest.isPresent()||cause!=RefinementAttemptDiagnostics.Cause.NONE
+                        ||diagnostic.phase()!=RefinementAttemptDiagnostics.Phase.PUBLICATION||ticket.sequence()!=lastSequence
+                        ||!state.resultingSelection().stage().equals(newest))throw invalid();
+                var stage=retained.get(state.resultingSelection().stage());
+                var selected=stage.candidates().stream().filter(c->c.id().equals(state.resultingSelection().candidate())).findFirst().orElseThrow(RefinementLineageCodec::invalid);
+                var actual=selected.smoothingPublication().orElseThrow(RefinementLineageCodec::invalid);
+                if(!actual.ticket().equals(ticket)||!actual.parentIdentity().equals(binding.parentIdentity()))throw invalid();
+                return;
+            }
             if(!diagnostic.materializationComplete()||latest.isEmpty()||cause!=RefinementAttemptDiagnostics.Cause.NONE||diagnostic.phase()!=RefinementAttemptDiagnostics.Phase.PUBLICATION
                     ||ticket.sequence()!=lastSequence||!state.resultingSelection().stage().equals(newest)||!latest.get().equals(sequences.get(ticket.sequence())))throw invalid();
             var stage=retained.get(state.resultingSelection().stage());
@@ -325,7 +399,8 @@ public final class RefinementLineageCodec {
             var cs=new ArrayList<Object>();
             for(var c:s.candidates()) cs.add(map("id",c.id().value(),"identity",c.immutableIdentity(),"nativeId",c.nativeCandidateId(),
                 "palette",c.sourcePalette(),"geometry",map("artifact",c.geometry().artifact(),"sha256",c.geometry().sha256()),
-                "operation",c.operation().map(RefinementLineageCodec::receiptMap).orElse(null)));
+                "operation",c.operation().map(RefinementLineageCodec::receiptMap).orElse(null),
+                "smoothingPublication",c.smoothingPublication().map(RefinementLineageCodec::smoothingPublicationMap).orElse(null)));
             stages.add(map("id",s.id().value().toString(),"parent",s.parent().map(v->v.value().toString()).orElse(null),
                 "parentChoice",s.parentChoice().map(CandidateId::value).orElse(null),"kind",s.kind().name(),"engine",s.engine().name(),
                 "selected",s.selected().value(),"smoothingInput",smoothingMap(s.smoothingInput()),"candidates",cs));

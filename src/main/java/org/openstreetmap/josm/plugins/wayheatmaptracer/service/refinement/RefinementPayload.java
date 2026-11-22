@@ -36,7 +36,13 @@ public final class RefinementPayload {
             Optional<RefinementOperationReceipt> operation,List<RefinementSourcePlanner.SourceRequest> sources,
             OptionalInt retainedParentSections,Map<RefinementSourcePlanner.SourceRequest,RetainedSmoothingSource> retainedSources,
             List<RefinementPipeline.SourceSpan> sourceSpans,Optional<List<FinalRoutePointId>> finalPointIds,
-            Optional<RefinementSmoothingAdapter.Receipt> smoothingReceipt) {
+            Optional<RefinementSmoothingAdapter.Receipt> smoothingReceipt,Optional<RefinementModels.OperationTicket> smoothingTicket) {
+        public NativeReview(AlignmentEditPlan plan,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality,
+                Optional<RefinementOperationReceipt> operation,List<RefinementSourcePlanner.SourceRequest> sources,OptionalInt retainedParentSections,
+                Map<RefinementSourcePlanner.SourceRequest,RetainedSmoothingSource> retainedSources,List<RefinementPipeline.SourceSpan> sourceSpans,
+                Optional<List<FinalRoutePointId>> finalPointIds,Optional<RefinementSmoothingAdapter.Receipt> smoothingReceipt) {
+            this(plan,quality,operation,sources,retainedParentSections,retainedSources,sourceSpans,finalPointIds,smoothingReceipt,Optional.empty());
+        }
         public NativeReview(AlignmentEditPlan plan,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result quality,
                 Optional<RefinementOperationReceipt> operation,List<RefinementSourcePlanner.SourceRequest> sources,OptionalInt retainedParentSections,
                 Map<RefinementSourcePlanner.SourceRequest,RetainedSmoothingSource> retainedSources,List<RefinementPipeline.SourceSpan> sourceSpans,Optional<List<FinalRoutePointId>> finalPointIds) {
@@ -44,6 +50,9 @@ public final class RefinementPayload {
         }
         public NativeReview {sources=List.copyOf(sources);retainedSources=Map.copyOf(retainedSources);sourceSpans=List.copyOf(sourceSpans);
             Objects.requireNonNull(smoothingReceipt);
+            Objects.requireNonNull(smoothingTicket);
+            smoothingTicket.ifPresent(ticket->{if(ticket.kind()!=RefinementModels.StageKind.SMOOTH||smoothingReceipt.isEmpty()||operation.isPresent()
+                ||ticket.mode()!=smoothingReceipt.orElseThrow().mode())throw new IllegalArgumentException("Actual Gaussian publication ticket/receipt required");});
             finalPointIds=finalPointIds.map(List::copyOf);
             for(var entry:retainedSources.entrySet())if(!sources.contains(entry.getKey())||!entry.getKey().equals(entry.getValue().source()))
                 throw new IllegalArgumentException("Retained source differs from candidate source ownership");
@@ -253,7 +262,7 @@ public final class RefinementPayload {
     /** Borrowed evidence keeps its acquisition's grouped scalar/mask charge, never a second array inventory. */
     private static Map<Object,Long> nativeReviewCharges(NativeReview review) {
         var values=new IdentityHashMap<Object,Long>();
-        values.putAll(RefinementRootAuthority.detachedCharges(review.plan(),review.quality(),review.operation(),review.sources(),review.retainedParentSections(),review.finalPointIds(),review.smoothingReceipt()));
+        values.putAll(RefinementRootAuthority.detachedCharges(review.plan(),review.quality(),review.operation(),review.sources(),review.retainedParentSections(),review.finalPointIds(),review.smoothingReceipt(),review.smoothingTicket()));
         values.put(review,512L);values.put(review.retainedSources(),128L+128L*review.retainedSources().size());
         values.put(review.sourceSpans(),128L+32L*review.sourceSpans().size());
         review.retainedSources().values().forEach(source->values.putAll(source.charges()));

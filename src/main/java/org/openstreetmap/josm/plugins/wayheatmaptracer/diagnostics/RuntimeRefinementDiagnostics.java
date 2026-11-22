@@ -46,6 +46,15 @@ public final class RuntimeRefinementDiagnostics {
                 }
             }
         }
+        var smoothingPublications=new LinkedHashMap<RefinementLineageCodec.CandidateKey,RefinementLineageCodec.SmoothingPublication>();
+        for(int s=0;s<history.size();s++)for(int c=0;c<history.get(s).candidates().size();c++) {
+            var stage=history.get(s);var candidate=stage.candidates().get(c);var review=candidate.payload().nativeReview();
+            if(review.isPresent()&&review.get().smoothingTicket().isPresent()) {
+                var receipt=review.get().smoothingReceipt().orElseThrow();var actual=artifacts.get("smoothing/stage-"+s+"-choice-"+c+".json");
+                smoothingPublications.put(new RefinementLineageCodec.CandidateKey(stage.id(),candidate.id()),new RefinementLineageCodec.SmoothingPublication(
+                    review.get().smoothingTicket().orElseThrow(),new RefinementLineageCodec.GeometryRef(actual.name(),actual.sha256()),receipt.parentIdentity()));
+            }
+        }
         var currentKey=new RefinementLineageCodec.CandidateKey(current.id(),current.selected());
         if(!history.contains(current)||!geometry.containsKey(currentKey))throw new IllegalArgumentException("Current retained selection differs");
         var originalRoot=history.get(0);
@@ -76,7 +85,7 @@ public final class RuntimeRefinementDiagnostics {
         var base=new Format15Bundle("runtime-stepwise-refinement-v1",source,parameters,artifacts);
         var publication=latest.map(d->new RefinementLineageCodec.LatestPublication(d,operationResult.orElseThrow()));
         var document=RefinementLineageCodec.capture(base.buildIdentity(),source,parameters,authority.request().geometryMode(),session,
-            authority.network().canonicalHash(),original,history,current.id(),latest.flatMap(RefinementAttemptDiagnostics::pipeline),geometry,publication);
+            authority.network().canonicalHash(),original,history,current.id(),latest.flatMap(RefinementAttemptDiagnostics::pipeline),geometry,publication,smoothingPublications);
         return RefinementLineageCodec.attach(base,document);
     }
     /** Opaque binding only: optional artifact privacy validation must never gate native refinement. */
@@ -139,7 +148,7 @@ public final class RuntimeRefinementDiagnostics {
     }
     private static String smoothingJson(Stage stage,CandidateId choice,Format15Artifact geometry,RefinementSmoothingAdapter.Receipt receipt,RefinementPayload.NativeReview review) {
         var protocol=review.retainedSources().values().stream().filter(source->source.inputByteHash().equals(receipt.inputHash())).map(RetainedSmoothingSource::inputHashProtocol).findFirst();
-        return "{\"schema\":1,"+selectionFields(stage,choice,geometry)+","+smoothingReceiptFields(receipt,protocol)+"}\n";
+        return "{\"schema\":1,"+selectionFields(stage,choice,geometry)+",\"operationTicket\":"+review.smoothingTicket().map(RefinementLineageCodec::operationTicketJson).orElse("null")+","+smoothingReceiptFields(receipt,protocol)+"}\n";
     }
     public static Format15Artifact smoothingAttemptArtifact(RefinementAttemptDiagnostics diagnostic,RefinementSmoothingAdapter.Receipt receipt,Optional<String> inputProtocol) {
         var ticket=diagnostic.binding().ticket();

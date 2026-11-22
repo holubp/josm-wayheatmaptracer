@@ -211,6 +211,9 @@ class ModernRefinementBootstrapTest {
         var computed=service.compute(capture[0],CancellationProbe.NONE);
         var choices=service.adaptChoices(computed,p->ProjectionRegistry.getProjection().latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(p.latitudeDegrees(),p.longitudeDegrees())));
         assertFalse(choices.isEmpty(),"The compact same-policy capture must produce an actual native root choice");
+        var initial=choices.get(choices.size()-1);var initialAssessment=new ModernSingleWayEditPlanAdapter().assess(initial.owner(),initial.localRouteIndex());
+        assertTrue(initialAssessment.plan().isPresent(),()->"Compact actual native root: "+initialAssessment.availability()+"; "+initialAssessment.detail()
+            +"; quality="+initial.owner().pipeline().routes().get(initial.localRouteIndex()).quality().findings());
         // Alternate native root/source selection with a saved child is exercised by the actual
         // managed interval GUI smoke. This compact public scene has one factual native choice;
         // it qualifies recapture, exact parent ownership, cached history and detached commands.
