@@ -115,7 +115,7 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
             for(var owner:owners) {
                 nativeFacts.putAll(RefinementRootAuthority.detachedCharges(owner.request(),owner.pipeline(),owner.options(),owner.counters(),owner.intervalBatch(),owner.settingsResolutionJson()));
                 nativeFacts.put(owner,512L);
-                owner.corridorReceipt().ifPresent(receipt->nativeFacts.put(receipt,nativeReceiptBytes(receipt)));
+                owner.corridorReceipt().ifPresent(nativeReceipt->nativeFacts.put(nativeReceipt,nativeReceiptBytes(nativeReceipt)));
             }
             nativeFacts.putAll(RefinementRootAuthority.detachedCharges(capture.specification(),capture.disconnectionSource(),capture.sourceGeographic(),capture.sourceMetric(),capture.outputGrid(),capture.alternativeMappings()));
             nativeFacts.put(capture,capturedBytes(capture));
