@@ -187,7 +187,10 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
         var points=new ArrayList<org.openstreetmap.josm.data.coor.EastNorth>();
         var assignments=new LinkedHashMap<Long,org.openstreetmap.josm.data.coor.EastNorth>();
         for(var id:ids) {
-            var geographic=plan.metricFrame().toGeographic(selection.assessment().assignments().get(id));
+            var key=id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing
+                ?plan.disconnectedOccurrenceReplacements().getOrDefault(existing.originalOccurrenceIndex(),existing.nodeKey())
+                :PrimitiveKey.planned(PrimitiveKey.Type.NODE,((FinalRoutePointId.GeneratedCandidatePoint)id).originalPointIndex());
+            var geographic=((DetachedNode)plan.after().primitives().get(key)).coordinate();
             var point=projection.latlon2eastNorth(new LatLon(geographic.latitudeDegrees(),geographic.longitudeDegrees()));points.add(point);
             if(id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing)assignments.put(existing.nodeKey().id(),point);
         }
