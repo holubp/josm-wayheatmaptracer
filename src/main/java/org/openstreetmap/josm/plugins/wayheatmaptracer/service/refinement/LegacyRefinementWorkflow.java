@@ -670,8 +670,15 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         review.requireOriginalAttemptCurrent();
         if(!canApplyNative())throw new IllegalStateException("Refinement candidate requires review or is busy");
         var plan=currentNative().orElseThrow().plan();
-        var originalSource=seed.originalSource();var originalCoordinator=coordinator;long originalGeneration=root.receipt().snapshot().sourceGeneration();
-        java.util.function.LongSupplier sourceGuard=()->{originalSource.requireCurrent(originalCoordinator);return originalGeneration;};
+        long originalGeneration=root.receipt().snapshot().sourceGeneration();
+        java.util.function.LongSupplier sourceGuard;
+        if(seed.originalSource() instanceof LegacyRefinementBootstrap.ManagedOriginalSource managed) {
+            var guard=managed.receipt().generationGuard();
+            sourceGuard=()->{guard.getAsLong();return originalGeneration;};
+        } else {
+            var receipt=((LegacyRefinementBootstrap.VisibleOriginalSource)seed.originalSource()).metadata().sourceReceipt();
+            sourceGuard=()->{receipt.owner().requireCurrent(receipt);return originalGeneration;};
+        }
         var validator=new LiveNetworkSnapshotValidator(root.receipt(),plan,sourceGuard);
         var command=new ApplyAlignmentEditPlanCommand(review.dataSet(),plan,validator,"Apply heatmap refinement");
         if(!session.terminalizeForApply())throw new IllegalStateException("The refinement session is no longer idle");

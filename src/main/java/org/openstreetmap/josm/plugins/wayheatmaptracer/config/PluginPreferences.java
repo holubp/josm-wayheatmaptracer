@@ -178,7 +178,7 @@ public final class PluginPreferences {
         }
         for (String key : new String[] {TRACKER_MODE, TRACING_ENGINE}) {
             if (!pref.get(key, "").isEmpty()
-                    && !TrackerMode.LEGACY_V02.name().equals(pref.get(key, ""))) {
+                    && !java.util.Set.of(TrackerMode.LEGACY_V02.name(),TrackerMode.CORRIDOR_AWARE.name(),TrackerMode.PROBABILISTIC.name()).contains(pref.get(key, ""))) {
                 pref.put(key, TrackerMode.LEGACY_V02.name());
             }
         }

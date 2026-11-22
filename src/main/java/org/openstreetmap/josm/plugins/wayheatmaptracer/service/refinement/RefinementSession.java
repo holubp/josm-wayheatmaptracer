@@ -27,10 +27,12 @@ public final class RefinementSession implements AutoCloseable {
     private boolean terminal;
     private boolean confirmed;
 
-    /** Captures a normal Legacy first pass without changing saved tracker or one-shot mode preferences. */
+    /** Preserves a supported starting engine and the configured or explicit invocation mode. */
     public static AlignmentConfig normalRootConfig(AlignmentConfig saved, AlignmentMode explicitMode) {
         Objects.requireNonNull(saved);
-        return new AlignmentConfig(saved.heatmap().withTrackerMode(TrackerMode.LEGACY_V02).withAlignmentMode(explicitMode),
+        var selected=saved.heatmap().trackerMode();
+        var engine=Set.of(TrackerMode.LEGACY_V02,TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC).contains(selected)?selected:TrackerMode.LEGACY_V02;
+        return new AlignmentConfig(saved.heatmap().withTrackerMode(engine).withAlignmentMode(explicitMode),
             saved.cleanup(), saved.searchHalfWidthMetersOverride());
     }
     /**
