@@ -1691,7 +1691,18 @@ public final class PublicGuiSmokeMain {
             var owner=onEventThread(()->{
                 if(dialog.isModal())throw new IllegalStateException("Smoothing review must be modeless");
                 var attempt=session.currentAttempt();if(attempt!=null&&attempt.result() instanceof LiveBPreviewService.Computed computed)selectRidgeRoute(dialog,computed);
-                return (LegacyRefinementWorkflow)dialog.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner");
+                var actual=(LegacyRefinementWorkflow)dialog.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner");
+                if(attempt==null) {
+                    var originalReview=originalReview(actual);var choices=requiredNamed(dialog.getContentPane(),"candidate",JComboBox.class);int selected=choices.getSelectedIndex();int chosen=-1;
+                    for(int i=0;i<originalReview.originalResult().candidates().size();i++) {
+                        var candidate=originalReview.originalResult().candidates().get(i);
+                        if(i!=selected&&originalReview.originalResult().applicableCandidates().contains(candidate)
+                                &&originalReview.originalResult().detectorAttempts().stream().filter(value->value.candidateIds().contains(candidate.id())).allMatch(value->!value.mappingName().equals("all-colors-combined"))){chosen=i;break;}
+                    }
+                    if(chosen<0)throw new IllegalStateException("An actual applicable selected-source Legacy parent is required for the Gaussian GUI chain");
+                    var initial=actual.selectedChoiceIdentity();choices.setSelectedIndex(chosen);checkedNoninitialChoice(initial,actual.selectedChoiceIdentity(),choices.getItemCount());
+                }
+                return actual;
             });
             var parentGeometry=onEventThread(owner::selectedGeometry);var parentChoice=onEventThread(owner::selectedChoiceIdentity);
             int calls=owner.actualNativeCalls();var source=ManagedTileRuntime.initializedCoordinator().stats();
