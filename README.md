@@ -2,7 +2,7 @@
 
 `WayHeatmapTracer` is a JOSM plugin for tracing or realigning selected OSM paths, tracks, and roads against heatmap imagery when the visible activity pattern is clearer than the existing mapped geometry.
 
-The plugin is meant for mappers who already inspect imagery manually, but want help turning a clear heatmap corridor into editable OSM geometry. With managed Strava access configured, it samples fixed-resolution source tiles. Without managed access, it asks JOSM to render the heatmap layer over the selected segment at the required working resolution. Every new alignment starts with **Legacy v0.2-compatible** tracing. The modeless review offers explicit Corridor-aware A and Probabilistic B refinements; nothing is applied until the mapper confirms.
+The plugin is meant for mappers who already inspect imagery manually, but want help turning a clear heatmap corridor into editable OSM geometry. With managed Strava access configured, it samples fixed-resolution source tiles. Without managed access, it asks JOSM to render the heatmap layer over the selected segment at the required working resolution. **Legacy v0.2-compatible** tracing is the default starting algorithm; a saved Corridor-aware A or Probabilistic B choice is preserved. The modeless review offers explicit refinement and smoothing; nothing is applied until the mapper confirms.
 
 Geometry cleanup is a separate, opt-in stage for future slide candidates. It is configured independently from heatmap sampling and never changes existing OSM geometry merely because its settings dialog was opened or accepted.
 
@@ -65,7 +65,7 @@ the preview before applying.
 - Use cross-section gradient evidence, intensity/prominence, raw/B3/B5 peak-center agreement, and source-pixel roughness when ranking ridge candidates and confirming longitudinal stability
 - Resolve ridge geometry through reliable anchor profiles and constrained intervals, reducing short weak side excursions near crossings
 - Treat source-tile resolution as a real evidence limit: sub-source-pixel alternating wiggles are penalized, while sustained bends remain available as candidate geometry
-- Start with `Legacy v0.2-compatible` tracing, then optionally request A or B from the review; refinements never run automatically.
+- Choose Legacy, Corridor-aware A or Probabilistic B as the starting algorithm, then optionally refine or smooth the selected result; these optional operations never run automatically.
 - In corridor-aware mode, combine complementary intermittent recording strands into an additional `sparse corridor` candidate when their longitudinal union is coherent. Direct child evidence and bounded interpolation remain distinct, every elementary child stays selectable, and persistent deep-valley parallel roads remain separate.
 - In corridor-aware mode, map RGB to scalar intensity first, interpolate corridor edges and intensity evidence between source samples, then build local L0/L1/L2 Gaussian levels from the imagery already acquired for the slide. Source pixels define evidence uncertainty, not a grid to which the result must snap.
 - In corridor-aware mode, associate the same longitudinal strand through short gaps, fit confidence-weighted 5 m and 12 m robust corridor references, and add a 32 m reference only for weak signal without sustained motion. One exact second-order centerline optimization follows that evidence; temporary side traces cannot authorize a lateral switch, while sustained weak turns and switchbacks retain the local reference.
@@ -99,7 +99,7 @@ the preview before applying.
 - Access values are kept out of docs and diagnostics, but the current plugin stores them in JOSM preferences rather than OS-backed secure storage.
 - Heatmap interpretation is strongest for `hot`, `bluered`, and `purple`. `gray` and `blue` are supported but may still need additional tuning in difficult cases. `gray` is treated as a dual-color scheme because high-activity traces can become pink/magenta rather than merely brighter gray; `purple` uses the real purple/lavender palette path rather than strict old magenta-only hue matching.
 - Strava's current public access appears to expose signed rendered PNG tiles, not the old raw numeric heat-density tile feed used by Strava Slide. Direct intensity modes therefore operate on rendered pixel channels and are intended for scalar imagery, diagnostics, and future compatible sources.
-- New live sessions start with Legacy. A and B are explicit review refinements; sparse-corridor parents remain hypotheses, not declarations that several traces are one OSM way.
+- New installations default to Legacy; saved Legacy/A/B starts remain selected. Sparse-corridor parents remain hypotheses, not declarations that several traces are one OSM way.
 - Parallel-way awareness is opt-in and applies only to the corridor-aware tracker. It uses downloaded nearby `highway=*` ways as read-only ranking context; it never edits those ways and cannot prove lane or carriageway semantics on its own.
 - With complete managed Strava access values, `Stable fixed scale` and `Raw high-resolution` align from fetched source tiles rather than the current screen capture. This makes sliding independent of the current JOSM zoom and allows the selected way to extend outside the current viewport.
 - Without managed Strava access values, alignment falls back to the legacy visible rendered-layer path. In that fallback mode, the plugin temporarily renders the selected segment plus the search corridor through a normal-resolution virtual JOSM viewport. If one viewport would be too large, it pans that virtual viewport over the extent and stitches the rendered chunks for sampling, then restores the user's previous viewport.
@@ -246,7 +246,7 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 ### 2. Recommended Settings
 
 - `Alignment mode`: use `Move Existing Nodes` for normal OSM ways whose node count should remain stable. Use `Precise Shape` when drawing from a rough sketch or when the existing geometry is too coarse.
-- New sessions start with Legacy. Older saved starting-method choices migrate to Legacy; source, alignment mode, palette and protection settings are retained. A and B are chosen explicitly in the review.
+- `Starting algorithm` offers Legacy, Corridor-aware A and Probabilistic B. Valid saved choices are preserved. Unsupported historical Hybrid/Image starting choices migrate to Legacy; source, alignment mode, palette and protection settings are retained.
 - `Inference mode`, `Inference zoom`, `Validation zoom`, `Search half-width meters`, and `Sample step meters`: used by managed source-tile alignment. `Stable fixed scale` uses the calibrated fixed-scale sampling parameters and avoids broad z15 heat dilation; `Raw high-resolution` uses the source tiles directly. When no managed access values are configured, the plugin uses the legacy visible-layer path instead.
 - Rough 2-5 node sketches use the same configured `Search half-width meters`; the plugin does not silently widen the search. The 25 m default accommodates displaced paths; a narrower saved width remains useful when nearby parallel traces make the intended branch ambiguous.
 - If a corridor-aware preview says the heatmap center leaves the search corridor, the candidate remains selectable for inspection but Apply stays disabled. `Retry with wider search...` re-runs the complete unchanged selection once at an explicitly entered larger physical half-width. It does not alter saved settings, reuse old profiles, or widen automatically, and ordinary retries are capped at a 14 m half-width.
@@ -501,11 +501,27 @@ The documentation avoids publishing a raw tokenized imagery URL, but the setting
 
 ### Stepwise review
 
-The ordinary action opens a Legacy preview. Choose A or B explicitly to refine the
-selected candidate, and use review Undo and Redo to navigate retained stages without
-rerunning them. Intermediate previews do not edit OSM; one final Apply creates the
-edit command. Smoothing is unavailable in this build. Historical engine identities
-remain readable in diagnostics and replay; they are not starting-method choices.
+The development branch is still completing integration and release qualification
+for this workflow.
+
+The ordinary action runs the saved starting algorithm once. **Refine using A**,
+**Refine using B** and **Smoothen** operate on the exact selected result, including
+a previously smoothed result. Choose a detector result after computation; the
+parent palette does not lock the next operation to that palette. Review Undo and
+Redo restore cached geometry, choices and findings without rerunning work.
+
+Medium and Strong smoothing are alternatives from the same unsmoothed selected
+parent. Changing strength does not smooth the Medium result again. Original
+movement permissions, fixed and shared anchors, and whole-preview safety checks
+continue to apply. An unavailable or rejected optional result retains its parent.
+
+The result review hides while optional work runs. A modeless progress window
+provides Cancel, and the diagnostics menu and shortcut remain available. Returning
+to an earlier stage or selecting another retained root composition keeps its saved
+forward branch; only a successfully published replacement changes that branch.
+Intermediate previews do not edit OSM. One final Apply creates the edit command,
+whose Undo and Redo use stored coordinates. Export diagnostics through the menu or
+shortcut, including after failure or cancellation.
 
 Connections are preserved by default. In the modern preview, use **Disconnect
 selected way at shared nodes…** to choose individual shared-node occurrences or
