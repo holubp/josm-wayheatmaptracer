@@ -91,6 +91,7 @@ public final class PublicGuiSmokeMain {
             if (!fixture.tilesUsable()) throw new IllegalStateException("Public Hot tile is unusable");
             ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
             boolean intervalGui="INTERVAL".equals(System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder"));
+            boolean visibleGui="VISIBLE_B_A".equals(System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder"));
             if(intervalGui)onEventThread(()->{configureIntervalFixture(fixture);return null;});
             AlignmentMode requestedMode=AlignmentMode.valueOf(System.getProperty("wayheatmaptracer.guiSmoke.alignmentMode","PRECISE_SHAPE"));
             AlignmentMode savedMode = engine == TrackerMode.LEGACY_THEN_B
@@ -100,7 +101,7 @@ public final class PublicGuiSmokeMain {
             PluginPreferences.save(stepwiseConfig(savedMode).withTrackerMode(engine));
             PluginPreferences.saveTracingSettings(new TracingSettings(
                     TracingSettings.CURRENT_SCHEMA_VERSION, engine,
-                    RecoverySettings.defaults(7.01), false, AlignmentSourceMode.MANAGED_TILES));
+                    RecoverySettings.defaults(7.01), false, visibleGui?AlignmentSourceMode.VISIBLE_LAYER:AlignmentSourceMode.MANAGED_TILES));
             PluginPreferences.saveGeometryCleanup(GeometryCleanupConfig.disabled());
             Config.getPref().putLong("wayheatmaptracer.cacheBuster", 0L);
             fixture.seedTiles();
@@ -116,7 +117,10 @@ public final class PublicGuiSmokeMain {
                 OsmDataLayer layer = new OsmDataLayer(fixture.dataSet(),
                         "public-analytic-osm", null);
                 MainApplication.getLayerManager().addLayer(layer);
-                addOfflineManagedLayer(PluginPreferences.load(), MainApplication.getLayerManager()::addLayer);
+                if(visibleGui) {
+                    for(var old:List.copyOf(MainApplication.getLayerManager().getLayers()))if(old instanceof org.openstreetmap.josm.gui.layer.ImageryLayer)MainApplication.getLayerManager().removeLayer(old);
+                    MainApplication.getLayerManager().addLayer(new AnalyticVisibleLayer());
+                } else addOfflineManagedLayer(PluginPreferences.load(), MainApplication.getLayerManager()::addLayer);
                 MainApplication.getLayerManager().setActiveLayer(layer);
                 fixture.dataSet().setSelected(fixture.selectedWay());
                 return loaded;
@@ -190,7 +194,7 @@ public final class PublicGuiSmokeMain {
                         && !status.contains("\"status\":\"review-required\"")) {
                     throw new IllegalStateException("Production preview diagnostics are not open");
                 }
-                if (!status.contains("\"sourceLineage\":\"managed-tiles\"")) {
+                if (!status.contains("\"sourceLineage\":\""+(visibleGui?"visible-layer":"managed-tiles")+"\"")) {
                     throw new IllegalStateException("Production preview did not use managed source tiles");
                 }
                 if (!status.contains("\"routeIndex\":" + selectedRouteIndex)) {
@@ -444,7 +448,7 @@ public final class PublicGuiSmokeMain {
         var rootFindings=onEventThread(()->displayedFindings(preview));
         var rootGeometry=onEventThread(owner::selectedGeometry);
         requireUnchanged(fixture,original,originalUndo);
-        boolean bFirst="B_A".equals(System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder","A_B"));
+        boolean bFirst=System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder","A_B").endsWith("B_A");
         var first=bFirst?StageKind.REFINE_B:StageKind.REFINE_A;
         var second=bFirst?StageKind.REFINE_A:StageKind.REFINE_B;
         checkDialogLayout(preview);
@@ -861,6 +865,33 @@ public final class PublicGuiSmokeMain {
         Field resultField=overlay.getClass().getDeclaredField("result");resultField.setAccessible(true);
         var result=(org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult)resultField.get(overlay);
         if(result==null||!result.previewPolyline().equals(expected))throw new IllegalStateException("Actual overlay differs from stored selected geometry");
+    }
+
+    /** Continuous public imagery painted through the actual JOSM visible-layer capture port. */
+    private static final class AnalyticVisibleLayer extends org.openstreetmap.josm.gui.layer.ImageryLayer {
+        AnalyticVisibleLayer(){super(new org.openstreetmap.josm.data.imagery.ImageryInfo("Strava public analytic visible heatmap"));}
+        @Override public void paint(java.awt.Graphics2D graphics,org.openstreetmap.josm.gui.MapView view,org.openstreetmap.josm.data.Bounds bounds) {
+            int width=view.getWidth(),height=view.getHeight();if(width<1||height<1)return;
+            var image=new java.awt.image.BufferedImage(width,height,java.awt.image.BufferedImage.TYPE_INT_RGB);
+            double radians=Math.PI/180,earth=PublicGuiSmokeOracle.EARTH_RADIUS_METERS;
+            for(int y=0;y<height;y++)for(int x=0;x<width;x++) {
+                var point=view.getLatLon(x,y);
+                double east=(point.lon()-PublicGuiSmokeOracle.BASE_LONGITUDE)*radians*earth*Math.cos(PublicGuiSmokeOracle.BASE_LATITUDE*radians);
+                double north=(point.lat()-PublicGuiSmokeOracle.BASE_LATITUDE)*radians*earth;
+                double ridge=4*Math.max(0,Math.cos(Math.PI*east/64));
+                // Match the public native z15 image's 1.2-source-pixel Gaussian ridge.
+                double pitch=2*Math.PI*earth/(512*(1<<15));
+                double distance=(north-ridge)/pitch;
+                int gray=(int)Math.round(3+250*Math.exp(-.5*distance*distance/1.44));
+                image.setRGB(x,y,gray<<16|gray<<8|gray);
+            }
+            graphics.drawImage(image,0,0,null);
+        }
+        @Override public String getToolTipText(){return "Public analytic visible heatmap";}
+        @Override public void visitBoundingBox(org.openstreetmap.josm.data.osm.visitor.BoundingXYVisitor visitor){}
+        @Override public javax.swing.Action[] getMenuEntries(){return new javax.swing.Action[0];}
+        @Override protected javax.swing.Action getAdjustAction(){return new javax.swing.AbstractAction("Public source"){public void actionPerformed(java.awt.event.ActionEvent event){}};}
+        @Override protected List<org.openstreetmap.josm.gui.layer.ImageryLayer.OffsetMenuEntry> getOffsetMenuEntries(){return List.of();}
     }
 
     static void addOfflineManagedLayer(ManagedHeatmapConfig config,

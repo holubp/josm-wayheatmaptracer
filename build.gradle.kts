@@ -196,10 +196,10 @@ tasks.register<JavaExec>("v022PublicGuiSmoke") {
     val guiMode=providers.gradleProperty("publicGuiAlignmentMode").getOrElse("PRECISE_SHAPE")
     val guiOrder=providers.gradleProperty("publicGuiRefinementOrder").getOrElse("A_B")
     require(guiMode in listOf("PRECISE_SHAPE","MOVE_EXISTING_NODES")) { "Unsupported public GUI alignment mode" }
-    require(guiOrder in listOf("A_B","B_A","INTERVAL")) { "Unsupported public GUI refinement order" }
+    require(guiOrder in listOf("A_B","B_A","INTERVAL","VISIBLE_B_A")) { "Unsupported public GUI refinement order" }
     systemProperty("wayheatmaptracer.guiSmoke.alignmentMode",guiMode)
     systemProperty("wayheatmaptracer.guiSmoke.refinementOrder",guiOrder)
-    val root = layout.buildDirectory.dir(if(guiOrder=="INTERVAL") "reports/public-gui-smoke-native-interval" else when (engine) {
+    val root = layout.buildDirectory.dir(if(guiOrder=="VISIBLE_B_A") "reports/public-gui-smoke-visible-b-move" else if(guiOrder=="INTERVAL") "reports/public-gui-smoke-native-interval" else when (engine) {
         "PROBABILISTIC" -> if(guiMode=="MOVE_EXISTING_NODES") "reports/public-gui-smoke-native-b-move" else "reports/public-gui-smoke-migrate-b"
         "LEGACY_THEN_B" -> "reports/public-gui-smoke-migrate-sequential"
         "LEGACY_V02" -> "reports/public-gui-smoke-stepwise-${if(guiMode=="PRECISE_SHAPE") "precise" else "move"}-${if(guiOrder=="A_B") "a-b" else "b-a"}"
