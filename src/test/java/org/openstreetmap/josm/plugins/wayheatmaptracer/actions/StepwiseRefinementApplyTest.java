@@ -35,9 +35,10 @@ class StepwiseRefinementApplyTest {
             String previous=Config.getPref().get("wayheatmaptracer.activity","all");
             try {Config.getPref().put("wayheatmaptracer.activity",previous.equals("ride")?"run":"ride");assertThrows(IllegalStateException.class,guard::run);}
             finally {Config.getPref().put("wayheatmaptracer.activity",previous);}
-            assertDoesNotThrow(guard::run);
+            assertThrows(IllegalStateException.class,guard::run,"Restoring values must not renew a command after material source changes");
+            var fresh=AlignWayAction.detachedCommandContext(null,null,null);assertDoesNotThrow(fresh::run);
             var tracing=PluginPreferences.loadTracingSettings();
-            try {PluginPreferences.saveTracingSettings(new TracingSettings(tracing.schemaVersion(),tracing.engine()==TrackerMode.PROBABILISTIC?TrackerMode.CORRIDOR_AWARE:TrackerMode.PROBABILISTIC,tracing.recovery(),tracing.diagnosticComparisons(),tracing.sourceMode()));assertThrows(IllegalStateException.class,guard::run);}
+            try {PluginPreferences.saveTracingSettings(new TracingSettings(tracing.schemaVersion(),tracing.engine()==TrackerMode.PROBABILISTIC?TrackerMode.CORRIDOR_AWARE:TrackerMode.PROBABILISTIC,tracing.recovery(),tracing.diagnosticComparisons(),tracing.sourceMode()));assertThrows(IllegalStateException.class,fresh::run);}
             finally {PluginPreferences.saveTracingSettings(tracing);}
         });
     }
