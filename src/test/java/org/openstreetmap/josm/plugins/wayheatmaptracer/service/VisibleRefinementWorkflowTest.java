@@ -131,7 +131,11 @@ class VisibleRefinementWorkflowTest {
         var presetBundle=new Format15Bundle(bundle.buildIdentity(),bundle.sourceIdentityHash(),bundle.parameterHash(),presetArtifacts);
         assertThrows(IllegalArgumentException.class,()->RefinementLineageCodec.attach(presetBundle,wrongDocument),"Even a self-consistent receipt checksum cannot change the actual ticket preset");
         var t=actual.ticket();var forgedTicket=new RefinementModels.OperationTicket(t.session(),t.sequence()+1,t.parent(),t.choice(),t.engine(),t.mode(),t.kind(),t.smoothingInput());
-        assertThrows(IllegalArgumentException.class,()->replaceSmoothingPublication(codec,stage.id(),stage.selected(),Optional.of(new RefinementLineageCodec.SmoothingPublication(forgedTicket,actual.receipt(),actual.parentIdentity())),true));
+        assertThrows(IllegalArgumentException.class,()->{
+            var forged=replaceSmoothingPublication(codec,stage.id(),stage.selected(),Optional.of(new RefinementLineageCodec.SmoothingPublication(forgedTicket,actual.receipt(),actual.parentIdentity())),true);
+            var forgedArtifacts=new LinkedHashMap<>(bundle.artifacts());forgedArtifacts.remove("refinement-lineage.json");
+            RefinementLineageCodec.attach(new Format15Bundle(bundle.buildIdentity(),bundle.sourceIdentityHash(),bundle.parameterHash(),forgedArtifacts),forged);
+        },"A forged historical publication ticket must fail its actual checksummed Gaussian receipt binding even after a later failed attempt");
         var historical=replaceSmoothingPublication(codec,stage.id(),stage.selected(),Optional.empty(),false);
         var old=RefinementLineageCodec.read(RefinementLineageCodec.artifact(historical));
         assertTrue(old.stages().stream().flatMap(s->s.candidates().stream()).allMatch(c->c.smoothingPublication().isEmpty()),"Absent historical Gaussian publication stays unavailable");
