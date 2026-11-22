@@ -258,7 +258,7 @@ public final class AlignmentService {
                     org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch.Receipt before =
                         epoch == null ? null : epoch.captureStable();
                     RenderedCapture capture = captureVisibleHeatmap(
-                            imageryLayer, mapView, source, halfWidth);
+                            imageryLayer, mapView, source, halfWidth,true);
                     if (epoch != null) epoch.requireCurrent(before);
                     return new VisibleCaptureFrame(capture.raster(), capture.bounds(),
                             capture.projectionUnitsPerViewPixel(),
@@ -3049,6 +3049,10 @@ public final class AlignmentService {
         List<EastNorth> sourcePolyline,
         int visibleHalfWidthPx
     ) {
+        return captureVisibleHeatmap(imageryLayer,mapView,sourcePolyline,visibleHalfWidthPx,false);
+    }
+    private RenderedCapture captureVisibleHeatmap(ImageryLayer imageryLayer,MapView mapView,
+            List<EastNorth> sourcePolyline,int visibleHalfWidthPx,boolean nativeViewport) {
         ProjectionBounds originalBounds = mapView.getProjectionBounds();
         EastNorth originalCenter = mapView.getCenter();
         double originalScale = mapView.getScale();
@@ -3065,12 +3069,15 @@ public final class AlignmentService {
             if (captureSize.width <= MAX_CAPTURE_VIEW_DIMENSION_PX && captureSize.height <= MAX_CAPTURE_VIEW_DIMENSION_PX) {
                 captureState = captureState.withCapturePlan(false, 1);
                 mapView.setSize(captureSize);
+                if(nativeViewport)mapView.prepareToDraw();
                 mapView.zoomTo(captureBounds.getCenter(), targetScale, false);
+                if(nativeViewport)requireNativePaintFrame(mapView,captureSize.width,captureSize.height,captureBounds,targetScale);
+                if(nativeViewport){captureBounds=mapView.getProjectionBounds(new java.awt.Rectangle(0,0,captureSize.width,captureSize.height));captureState=new VisibleCaptureState(originalCenter,originalScale,originalBounds,originalSize,requestedBounds,captureBounds,captureSize,targetScale,false,1);}
                 PaintObservation observation=observePaintGeometry(mapView,captureSize.width,captureSize.height);
                 raster = sampler.captureLayer(imageryLayer, mapView);
                 observePaintedChunk(paintedChunks,observation,imageryLayer,mapView,sourcePolyline,0,0,raster.getWidth(),raster.getHeight());
             } else {
-                raster = captureLayerInChunks(imageryLayer, mapView, captureBounds, captureSize, targetScale, originalSize,sourcePolyline,paintedChunks);
+                raster = captureLayerInChunks(imageryLayer, mapView, captureBounds, captureSize, targetScale, originalSize,sourcePolyline,paintedChunks,nativeViewport);
                 int chunkCount = chunkCount(captureSize, chunkSize(originalSize));
                 captureState = captureState.withCapturePlan(true, chunkCount);
             }
@@ -3095,7 +3102,9 @@ public final class AlignmentService {
             );
         } finally {
             mapView.setSize(originalSize);
+            if(nativeViewport)mapView.prepareToDraw();
             mapView.zoomTo(originalCenter, originalScale, false);
+            if(nativeViewport)requireNativePaintFrame(mapView,originalSize.width,originalSize.height,originalBounds,originalScale);
             PluginLog.verbose("Restored JOSM map view after heatmap capture.");
         }
     }
@@ -3108,7 +3117,7 @@ public final class AlignmentService {
         double targetScale,
         Dimension originalSize,
         List<EastNorth> sourcePolyline,
-        List<LegacyVisibleSource.PaintedChunk> paintedChunks
+        List<LegacyVisibleSource.PaintedChunk> paintedChunks,boolean nativeViewport
     ) {
         Dimension chunkSize = chunkSize(originalSize);
         BufferedImage mosaic = new BufferedImage(
@@ -3124,11 +3133,13 @@ public final class AlignmentService {
                 for (int x = 0; x < captureSize.width; x += chunkSize.width) {
                     int viewWidth = Math.min(chunkSize.width, captureSize.width - x);
                     mapView.setSize(new Dimension(viewWidth, viewHeight));
+                    if(nativeViewport)mapView.prepareToDraw();
                     EastNorth center = new EastNorth(
                         captureBounds.minEast + (x + viewWidth / 2.0) * targetScale,
                         captureBounds.maxNorth - (y + viewHeight / 2.0) * targetScale
                     );
                     mapView.zoomTo(center, targetScale, false);
+                    if(nativeViewport)requireNativePaintFrame(mapView,viewWidth,viewHeight,new ProjectionBounds(center.east()-viewWidth*targetScale/2,center.north()-viewHeight*targetScale/2,center.east()+viewWidth*targetScale/2,center.north()+viewHeight*targetScale/2),targetScale);
                     PaintObservation observation=observePaintGeometry(mapView,viewWidth,viewHeight);
                     BufferedImage chunk = sampler.captureLayer(imageryLayer, mapView);
                     observePaintedChunk(paintedChunks,observation,imageryLayer,mapView,sourcePolyline,x*6,y*6,chunk.getWidth(),chunk.getHeight());
@@ -3148,6 +3159,14 @@ public final class AlignmentService {
         return mosaic;
     }
 
+    /** Native viewport checks permit only arithmetic round-off, never a source-domain extension. */
+    private static void requireNativePaintFrame(MapView view,int width,int height,ProjectionBounds expected,double scale) {
+        if(!view.isShowing()||view.getWidth()!=width||view.getHeight()!=height||view.getState().getViewWidth()!=width||view.getState().getViewHeight()!=height||view.getScale()!=scale)
+            throw new IllegalStateException("Native visible paint viewport did not settle to its requested dimensions and scale");
+        var actual=view.getProjectionBounds(new java.awt.Rectangle(0,0,width,height));
+        double[] observed={actual.minEast,actual.minNorth,actual.maxEast,actual.maxNorth},requested={expected.minEast,expected.minNorth,expected.maxEast,expected.maxNorth};
+        for(int i=0;i<observed.length;i++)if(!Double.isFinite(observed[i])||Math.abs(observed[i]-requested[i])>4*Math.ulp(Math.max(1,Math.abs(requested[i]))))throw new IllegalStateException("Native visible paint clip differs from its requested projected frame");
+    }
     private record PaintObservation(double left,double bottom,double right,double top,double scale,String projection) { }
     /** Observe the clip actually painted, without preparing/recentering the Legacy viewport. */
     private PaintObservation observePaintGeometry(MapView view,int width,int height) {

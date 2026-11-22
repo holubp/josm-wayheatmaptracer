@@ -119,10 +119,11 @@ public final class PublicGuiSmokeMain {
                 MainApplication.getLayerManager().addLayer(layer);
                 if(visibleGui) {
                     for(var old:List.copyOf(MainApplication.getLayerManager().getLayers()))if(old instanceof org.openstreetmap.josm.gui.layer.ImageryLayer)MainApplication.getLayerManager().removeLayer(old);
-                    MainApplication.getLayerManager().addLayer(new AnalyticVisibleLayer());
+                    visiblePainterFixture=installOfflineVisiblePainter(fixture);
                 } else addOfflineManagedLayer(PluginPreferences.load(), MainApplication.getLayerManager()::addLayer);
                 MainApplication.getLayerManager().setActiveLayer(layer);
                 fixture.dataSet().setSelected(fixture.selectedWay());
+                if(visibleGui)verifyNativeVisibleCaptureContract(fixture);
                 return loaded;
             });
             if (engine != TrackerMode.LEGACY_V02) onEventThread(() -> {
@@ -879,7 +880,8 @@ public final class PublicGuiSmokeMain {
     /** Continuous public imagery painted through the actual JOSM visible-layer capture port. */
     private static final class AnalyticVisibleLayer extends org.openstreetmap.josm.gui.layer.ImageryLayer {
         private int captureReceipts;
-        AnalyticVisibleLayer(){super(new org.openstreetmap.josm.data.imagery.ImageryInfo("Strava public analytic visible heatmap"));}
+        private final PublicGuiSmokeFixture.VisibleTile source;
+        AnalyticVisibleLayer(PublicGuiSmokeFixture.VisibleTile source){super(new org.openstreetmap.josm.data.imagery.ImageryInfo("Strava public analytic visible heatmap"));this.source=source;}
         @Override public void paint(java.awt.Graphics2D graphics,org.openstreetmap.josm.gui.MapView view,org.openstreetmap.josm.data.Bounds bounds) {
             int width=view.getWidth(),height=view.getHeight();if(width<1||height<1)return;
             var image=new java.awt.image.BufferedImage(width,height,java.awt.image.BufferedImage.TYPE_INT_RGB);
@@ -894,7 +896,7 @@ public final class PublicGuiSmokeMain {
                 double pitch=2*Math.PI*earth/(512*(1<<15));
                 double distance=(north-ridge)/pitch;
                 closest=Math.min(closest,Math.abs(north-ridge));
-                int gray=(int)Math.round(3+250*Math.exp(-.5*distance*distance/1.44));
+                int gray=source.gray(point);
                 maximumGray=Math.max(maximumGray,gray);
                 image.setRGB(x,y,gray<<16|gray<<8|gray);
             }
@@ -910,6 +912,52 @@ public final class PublicGuiSmokeMain {
         @Override public javax.swing.Action[] getMenuEntries(){return new javax.swing.Action[0];}
         @Override protected javax.swing.Action getAdjustAction(){return new javax.swing.AbstractAction("Public source"){public void actionPerformed(java.awt.event.ActionEvent event){}};}
         @Override protected List<org.openstreetmap.josm.gui.layer.ImageryLayer.OffsetMenuEntry> getOffsetMenuEntries(){return List.of();}
+    }
+
+    private static volatile AutoCloseable visiblePainterFixture;
+    /** Independent public pixels prove the actual native viewport, metadata and two-chunk assembly. */
+    private static void verifyNativeVisibleCaptureContract(PublicGuiSmokeFixture fixture) throws Exception {
+        var view=MainApplication.getMap().mapView;var layer=org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.HeatmapLayerResolver.resolve();
+        var size=view.getSize();var center=view.getCenter();double scale=view.getScale();int zoom=((org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer)layer).getZoomLevel();
+        var nodes=fixture.selectedWay().getNodes();var selection=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext(fixture.selectedWay(),0,nodes.size()-1,nodes,java.util.Set.of(nodes.get(0),nodes.get(nodes.size()-1)));
+        var service=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService();
+        var config=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig(PluginPreferences.load(),GeometryCleanupConfig.disabled());
+        var captured=service.captureLiveBVisibleRaster(selection,layer,view,config,"public-static-visible-contract");
+        if(!size.equals(view.getSize())||view.getCenter().distance(center)>4*Math.ulp(Math.max(1,Math.max(Math.abs(center.east()),Math.abs(center.north()))))||scale!=view.getScale()||zoom!=((org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer)layer).getZoomLevel())throw new IllegalStateException("Native source capture did not restore its original viewport and source zoom");
+        if(captured.sourceReceipt()==null||captured.nativePitchMeters().isEmpty())throw new IllegalStateException("Actual managed visible epoch and z15 pixel metadata required");
+        var pixels=captured.argb();int signal=publicVisibleSample(captured,pixels,0,4),background=publicVisibleSample(captured,pixels,0,-20);
+        if(signal<120||background>60)throw new IllegalStateException("Actual visible source missed the independently predicted public ridge/background: "+signal+"/"+background);
+        var method=org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService.class.getDeclaredMethod("captureLayerInChunks",org.openstreetmap.josm.gui.layer.ImageryLayer.class,org.openstreetmap.josm.gui.MapView.class,org.openstreetmap.josm.data.ProjectionBounds.class,java.awt.Dimension.class,double.class,java.awt.Dimension.class,List.class,List.class,boolean.class);method.setAccessible(true);
+        var bounds=new org.openstreetmap.josm.data.ProjectionBounds(captured.minimumEast(),captured.minimumNorth(),captured.maximumEast(),captured.maximumNorth());
+        java.awt.image.BufferedImage stitched;var chunks=new ArrayList<org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyVisibleSource.PaintedChunk>();
+        try{stitched=(java.awt.image.BufferedImage)method.invoke(service,layer,view,bounds,new java.awt.Dimension(captured.width()/6,captured.height()/6),captured.projectionUnitsPerViewPixel(),new java.awt.Dimension(320,240),nodes.stream().map(Node::getEastNorth).toList(),chunks,true);}
+        finally{view.setSize(size);view.prepareToDraw();view.zoomTo(center,scale,false);}
+        if(chunks.size()<2||stitched.getWidth()!=captured.width()||stitched.getHeight()!=captured.height())throw new IllegalStateException("Actual native chunk contract did not produce the complete same raster extent");
+        int maximumDifference=0;for(int y=0;y<captured.height();y++)for(int x=0;x<captured.width();x++)maximumDifference=Math.max(maximumDifference,Math.abs((pixels[y*captured.width()+x]&255)-(stitched.getRGB(x,y)&255)));
+        if(maximumDifference!=0)throw new IllegalStateException("Native chunk stitching differs from the same public single-frame pixels: "+maximumDifference);
+        System.err.println("GUI_SMOKE_VISIBLE_CONTRACT source=static-public-z15-png epoch=actual-managed-layer signal="+signal+" background="+background+" chunks="+chunks.size()+" maximumGrayDifference="+maximumDifference+" viewportRestored=true");
+    }
+    private static int publicVisibleSample(LiveBPreviewService.VisibleRaster raster,int[] pixels,double east,double north){
+        var geographic=PublicGuiSmokeOracle.point(east,north);var projected=ProjectionRegistry.getProjection().latlon2eastNorth(new LatLon(geographic.latitudeDegrees(),geographic.longitudeDegrees()));
+        int x=(int)Math.round((projected.east()-raster.minimumEast())/raster.projectionUnitsPerViewPixel()*6),y=(int)Math.round((raster.maximumNorth()-projected.north())/raster.projectionUnitsPerViewPixel()*6);
+        if(x<0||y<0||x>=raster.width()||y>=raster.height())throw new IllegalStateException("Independent public source pixel lies outside actual native capture");return pixels[y*raster.width()+x]&255;
+    }
+    /** Keeps actual managed epoch/lifecycle and production paintLayer while replacing only public imagery. */
+    @SuppressWarnings("unchecked")
+    private static AutoCloseable installOfflineVisiblePainter(PublicGuiSmokeFixture fixture) throws Exception {
+        var retained=new java.util.concurrent.atomic.AtomicReference<org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer>();
+        addOfflineManagedLayer(config(true,false),layer->{layer.getDisplaySettings().setAutoZoom(false);layer.setZoomLevel(15);MainApplication.getLayerManager().addLayer(layer);retained.set(layer);});
+        var layer=retained.get();var view=MainApplication.getMap().mapView;
+        var field=org.openstreetmap.josm.gui.MapView.class.getDeclaredField("registeredLayers");field.setAccessible(true);
+        var painters=(java.util.Map<org.openstreetmap.josm.gui.layer.Layer,org.openstreetmap.josm.gui.layer.MapViewPaintable.LayerPainter>)field.get(view);
+        var original=painters.get(layer);if(original==null)throw new IllegalStateException("Actual visible source painter is not registered");
+        var analytic=new AnalyticVisibleLayer(fixture.visibleTile());
+        var replacement=new org.openstreetmap.josm.gui.layer.MapViewPaintable.LayerPainter(){
+            public void paint(org.openstreetmap.josm.gui.layer.MapViewGraphics graphics){if(layer.getZoomLevel()!=15)throw new IllegalStateException("Public visible painter metadata differs from its actual z15 pixels");analytic.paint(graphics.getDefaultGraphics(),graphics.getMapView(),graphics.getClipBounds().getLatLonBoundsBox());}
+            public void detachFromMapView(org.openstreetmap.josm.gui.layer.MapViewPaintable.MapViewEvent event){original.detachFromMapView(event);}
+        };
+        painters.put(layer,replacement);
+        return ()->{if(painters.get(layer)==replacement)painters.put(layer,original);analytic.destroy();};
     }
 
     static void addOfflineManagedLayer(ManagedHeatmapConfig config,
@@ -2005,6 +2053,7 @@ public final class PublicGuiSmokeMain {
     }
 
     private static void writeSummary(Path report, String json) throws Exception {
+        var fixture=visiblePainterFixture;visiblePainterFixture=null;if(fixture!=null)onEventThread(()->{fixture.close();return null;});
         Files.createDirectories(report.getParent());
         Path temporary = Files.createTempFile(report.getParent(), ".public-gui-", ".tmp");
         try {

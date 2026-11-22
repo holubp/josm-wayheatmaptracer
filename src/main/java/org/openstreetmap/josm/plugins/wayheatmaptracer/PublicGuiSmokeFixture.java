@@ -85,6 +85,17 @@ final class PublicGuiSmokeFixture {
     DataSet dataSet() { return dataSet; }
     Way selectedWay() { return selectedWay; }
     int tileCount() { return tiles.size(); }
+    /** Static public z15 pixels for the controlled JOSM visible painter; no tile loading is claimed. */
+    VisibleTile visibleTile() throws Exception {var tile=tiles.get(15);return new VisibleTile(ImageIO.read(tile.path().toFile()),tile.address());}
+    record VisibleTile(BufferedImage image,ManagedTileAddress address) {
+        VisibleTile {if(image==null||image.getWidth()!=512||image.getHeight()!=512||address.zoom()!=15)throw new IllegalArgumentException("Actual public native z15 tile required");}
+        int gray(org.openstreetmap.josm.data.coor.LatLon point) {
+            double x=worldPixelX(address.zoom(),point.lon())-address.x()*512.-.5,y=worldPixelY(address.zoom(),point.lat())-address.y()*512.-.5;
+            if(x<0||y<0||x>511||y>511)return 3;
+            int left=(int)Math.floor(x),top=(int)Math.floor(y),right=Math.min(511,left+1),bottom=Math.min(511,top+1);double dx=x-left,dy=y-top;
+            return (int)Math.round((image.getRGB(left,top)&255)*(1-dx)*(1-dy)+(image.getRGB(right,top)&255)*dx*(1-dy)+(image.getRGB(left,bottom)&255)*(1-dx)*dy+(image.getRGB(right,bottom)&255)*dx*dy);
+        }
+    }
 
     boolean tilesUsable() throws Exception {
         TileDecoderClassifier classifier = new TileDecoderClassifier();
