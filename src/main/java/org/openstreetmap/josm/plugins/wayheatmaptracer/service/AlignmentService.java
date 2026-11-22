@@ -18,6 +18,10 @@ import java.util.Set;
 import java.util.function.Consumer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleRenderPolicy;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEvidenceCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyVisibleSource;
 
 import org.openstreetmap.josm.data.Bounds;
@@ -235,6 +239,109 @@ public final class AlignmentService {
     }
 
     /** Captures the exact visible-layer raster and slide-time scale for detached B preview. */
+    /** Only this actual-paint producer can issue an authoritative visible input receipt. */
+    public AuthoritativeVisibleInput captureAuthoritativeVisibleInput(SelectionContext selection,ManagedHeatmapLayer layer,
+            MapView view,AlignmentConfig config,String sourceIdentity,RecoveryPermissions permissions) {
+        if(!org.openstreetmap.josm.gui.MainApplication.getLayerManager().getLayers().contains(layer))throw new IllegalStateException("Authoritative visible source is not registered");
+        var policy=VisibleRenderPolicy.capture(layer);var source=toEastNorth(selection.segmentNodes());
+        var capture=captureVisibleHeatmap(layer,view,source,visibleSearchHalfWidthPixels(config,source,permissions),true);
+        policy.requireCurrent();var frame=capture.paintedFrame().orElseThrow(()->new IllegalStateException("Actual visible paint recipe unavailable"));
+        if(!frame.commonResolution())throw new IllegalStateException("Actual visible paint resolution is heterogeneous");
+        String hash;
+        try(var owner=AttemptMemoryLedger.production().rootOwner()) {
+            var work=visibleAuthorityWork(owner);hash=RasterEvidenceCapture.hashOriginalArgb(capture.raster(),work);
+        }
+        policy.requireCurrent();var bounds=capture.bounds();var image=capture.raster();
+        var raster=new LiveBPreviewService.VisibleRaster(image.getWidth(),image.getHeight(),image.getRGB(0,0,image.getWidth(),image.getHeight(),null,0,image.getWidth()),
+            bounds.minEast,bounds.minNorth,bounds.maxEast,bounds.maxNorth,capture.projectionUnitsPerViewPixel(),
+            ProjectionGroundScale.measure(source,capture.projectionUnitsPerViewPixel()).representativeMetersPerProjectionUnit()*capture.projectionUnitsPerViewPixel(),
+            capture.sourceResolution().metersPerPixel(),sourceIdentity,ProjectionRegistry.getProjection().toCode(),policy.publication());
+        double latitude=source.stream().map(ProjectionRegistry.getProjection()::eastNorth2latlon).mapToDouble(LatLon::lat).average().orElseThrow();
+        var state=new VisibleInputState(new VisibleFrameRecipe(frame,latitude),hash,policy,view);
+        return new AuthoritativeVisibleInput(raster,new VisibleInputReceipt(raster,state));
+    }
+    public record AuthoritativeVisibleInput(LiveBPreviewService.VisibleRaster raster,VisibleInputReceipt receipt) {
+        public AuthoritativeVisibleInput{receipt.requireRaster(raster);}
+    }
+    /** Numeric immutable actual paint recipe. It conveys no authority by itself. */
+    public record VisibleFrameRecipe(LegacyVisibleSource.PaintedFrame frame,double latitude) {
+        public VisibleFrameRecipe{Objects.requireNonNull(frame);if(!Double.isFinite(latitude)||!frame.commonResolution())throw new IllegalArgumentException("Factual visible recipe required");}
+    }
+    /** Preview-only producer proof; detached command authority never retains this raster-owning object. */
+    public static final class VisibleInputReceipt {
+        private final LiveBPreviewService.VisibleRaster raster;private final VisibleInputState state;
+        private VisibleInputReceipt(LiveBPreviewService.VisibleRaster raster,VisibleInputState state){this.raster=raster;this.state=state;}
+        public void requireRaster(LiveBPreviewService.VisibleRaster actual){if(actual!=raster)throw new IllegalArgumentException("Visible receipt belongs to another exact producer raster");requireCurrent();}
+        public void requireOwner(ImageryLayer layer){if(!state.policy.belongsTo(layer))throw new IllegalArgumentException("Visible input belongs to another source owner");requireCurrent();}
+        public void requireCurrent(){state.requireCurrent();}
+        public String inputArgbHash(){return state.hash;}
+        public VisibleFrameRecipe recipe(){return state.recipe;}
+        public long metadataBytes(){return 1024L+512L*state.recipe.frame().chunks().size()+state.policy.metadataBytes();}
+        public VisibleCommandAuthority commandAuthority(long sourceGeneration){requireCurrent();return new VisibleCommandAuthority(state,sourceGeneration);}
+    }
+    private static final class VisibleInputState {
+        final VisibleFrameRecipe recipe;final String hash;final VisibleRenderPolicy policy;
+        final java.lang.ref.WeakReference<MapView> view;final java.util.concurrent.atomic.AtomicBoolean invalid=new java.util.concurrent.atomic.AtomicBoolean();
+        VisibleInputState(VisibleFrameRecipe recipe,String hash,VisibleRenderPolicy policy,MapView view){this.recipe=recipe;this.hash=hash;this.policy=policy;this.view=new java.lang.ref.WeakReference<>(view);}
+        void requireCurrent(){
+            if(invalid.get())throw new IllegalStateException("Visible input authority is stale");
+            try{if(javax.swing.SwingUtilities.isEventDispatchThread())policy.requireCurrent();else policy.requireEpochCurrent();}
+            catch(RuntimeException stale){invalid.set(true);throw stale;}
+        }
+    }
+    /** Small copied source authority: numeric recipe/hash/policy/epoch, no capture or history graph. */
+    public static final class VisibleCommandAuthority implements org.openstreetmap.josm.plugins.wayheatmaptracer.util.PreparedCommandSource {
+        private final VisibleInputState state;private final long generation;
+        private VisibleCommandAuthority(VisibleInputState state,long generation){this.state=state;this.generation=generation;}
+        public long getAsLong(){state.requireCurrent();return generation;}
+        public Runnable prepareExecution(boolean redo){
+            try(var owner=AttemptMemoryLedger.production().rootOwner()){return prepareExecution(redo,visibleAuthorityWork(owner));}
+        }
+        /** Testable tightened/shared preparation context; never restarts an existing budget. */
+        public Runnable prepareExecution(boolean redo,GeometryWorkContext work){
+            if(!javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Visible command preparation requires EDT");
+            work.visit(GeometryWorkContext.Kind.BIND,8);state.requireCurrent();
+            var view=state.view.get();if(view==null)throw new IllegalStateException("Original visible viewport is unavailable");
+            try{new AlignmentService().verifyVisibleRepeat(state,view,work);state.requireCurrent();}
+            catch(VisibleInputMismatch changed){state.invalid.set(true);throw changed;}
+            return ()->{if(!javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Visible transaction requires EDT");state.requireCurrent();};
+        }
+        public void withSource(Runnable transaction){synchronized(state.policy.publication().owner()){state.requireCurrent();transaction.run();}}
+    }
+    private static final class VisibleInputMismatch extends IllegalStateException {
+        VisibleInputMismatch(String message){super(message);}
+        VisibleInputMismatch(String message,RuntimeException cause){super(message,cause);}
+    }
+    private static GeometryWorkContext visibleAuthorityWork(AttemptMemoryLedger.Owner owner){
+        var budget=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementPipeline.OperationBudget.production(org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets.defaults());
+        return new GeometryWorkContext(8_000_000L,AttemptMemoryLedger.MAX_BYTES,budget.finalDeadlineNanos(),CancellationProbe.NONE,owner);
+    }
+    private void verifyVisibleRepeat(VisibleInputState state,MapView view,GeometryWorkContext work) {
+        var frame=state.recipe.frame();var layer=state.policy.currentSource();
+        long pixels=Math.multiplyExact((long)frame.width(),frame.height());long largest=frame.chunks().stream().mapToLong(c->(long)c.width()*c.height()).max().orElseThrow();
+        try(var reserved=work.reserve("visible-command-paint",Math.addExact(8192L,Math.multiplyExact(4L,Math.addExact(pixels,largest))));var viewport=new NativeViewportScope(view)) {
+            var mosaic=new BufferedImage(frame.width(),frame.height(),BufferedImage.TYPE_INT_ARGB);var graphics=mosaic.createGraphics();
+            try{
+                for(var chunk:frame.chunks()){
+                    work.visit(GeometryWorkContext.Kind.BIND,1);state.requireCurrent();
+                    if(chunk.width()%6!=0||chunk.height()%6!=0)throw new IllegalStateException("Visible repeat recipe has unsupported raster dimensions");
+                    int width=chunk.width()/6,height=chunk.height()/6;view.setSize(width,height);view.prepareToDraw();
+                    var bounds=new ProjectionBounds(chunk.minimumEast(),chunk.minimumNorth(),chunk.maximumEast(),chunk.maximumNorth());
+                    view.zoomTo(bounds.getCenter(),chunk.projectionUnitsPerViewPixel(),false);
+                    try{requireNativePaintFrame(view,width,height,bounds,chunk.projectionUnitsPerViewPixel());}
+                    catch(IllegalStateException mismatch){throw new VisibleInputMismatch("Visible repeat frame differs from the original input",mismatch);}
+                    var image=sampler.captureLayer(layer,view);var actual=capturedTileZoom(layer);
+                    var resolution=new VisibleSourceResolutionResolver().resolveAtZoom(layer,actual.sourceTileZoom(),state.recipe.latitude());
+                    if(image.getWidth()!=chunk.width()||image.getHeight()!=chunk.height()||actual.sourceTileZoom()!=chunk.sourceZoom()||!resolution.metersPerPixel().equals(chunk.nativePitchMeters()))throw new VisibleInputMismatch("Visible repeat source resolution differs");
+                    for(long copied=0;copied<(long)chunk.width()*chunk.height();copied+=256)work.visit(GeometryWorkContext.Kind.COPY,Math.min(256,(long)chunk.width()*chunk.height()-copied));
+                    graphics.drawImage(image,chunk.rasterX(),chunk.rasterY(),null);state.requireCurrent();
+                }
+            }finally{graphics.dispose();}
+            if(!state.hash.equals(RasterEvidenceCapture.hashOriginalArgb(mosaic,work)))throw new VisibleInputMismatch("Visible repeat pixels differ from the original input");
+            state.requireCurrent();
+        }
+    }
+
     public LiveBPreviewService.VisibleRaster captureLiveBVisibleRaster(
             SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
             AlignmentConfig slideConfig, String sourceIdentity) {

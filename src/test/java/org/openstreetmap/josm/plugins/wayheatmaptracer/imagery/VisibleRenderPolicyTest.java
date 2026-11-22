@@ -17,6 +17,9 @@ import org.openstreetmap.josm.spi.preferences.*;
 class VisibleRenderPolicyTest {
     @TempDir java.nio.file.Path directory;
     private void withLayer(Consumer<ManagedHeatmapLayer> action) throws Exception {
+        withLayer(action,true);
+    }
+    private void withLayer(Consumer<ManagedHeatmapLayer> action,boolean destroyAtEnd) throws Exception {
         Config.setPreferencesInstance(new MemoryPreferences());
         Config.setBaseDirectoriesProvider(new IBaseDirectories(){
             public java.io.File getPreferencesDirectory(boolean create){return directory.toFile();}
@@ -27,7 +30,7 @@ class VisibleRenderPolicyTest {
             ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
             var layer=new ManagedHeatmapLayer(new ImageryInfo("public-policy","https://example.invalid/{zoom}/{x}/{y}.png","tms"));
             try{layer.getDisplaySettings().setAutoLoad(false);layer.getDisplaySettings().setAutoZoom(false);layer.setZoomLevel(15);action.accept(layer);}
-            finally{layer.destroy();}
+            finally{if(destroyAtEnd)layer.destroy();}
         });
     }
     @Test void directStandardSettersAreDetectedWithoutAnEpochCallback() throws Exception {
@@ -50,8 +53,8 @@ class VisibleRenderPolicyTest {
         for(Consumer<ManagedHeatmapLayer> mutation:List.<Consumer<ManagedHeatmapLayer>>of(
                 layer->layer.setOpacity(.5),layer->layer.setVisible(false),
                 layer->layer.getDisplaySettings().setAutoLoad(true),layer->layer.getDisplaySettings().setShowErrors(!layer.getDisplaySettings().isShowErrors()),
-                layer->layer.getDisplaySettings().setOffsetBookmark(new OffsetBookmark("EPSG:3857","public-id","public-policy","offset",1,2)),
-                ManagedHeatmapLayer::destroy))withLayer(layer->{var policy=VisibleRenderPolicy.capture(layer);mutation.accept(layer);assertThrows(IllegalStateException.class,policy::requireCurrent);});
+                layer->layer.getDisplaySettings().setOffsetBookmark(new OffsetBookmark("EPSG:3857","public-id","public-policy","offset",1,2))))withLayer(layer->{var policy=VisibleRenderPolicy.capture(layer);mutation.accept(layer);assertThrows(IllegalStateException.class,policy::requireCurrent);});
+        withLayer(layer->{var policy=VisibleRenderPolicy.capture(layer);layer.destroy();assertThrows(IllegalStateException.class,policy::requireCurrent);},false);
     }
     @Test void manualZoomIsMaterialWhileAutomaticViewportZoomIsNot() throws Exception {
         withLayer(layer->{var policy=VisibleRenderPolicy.capture(layer);layer.setZoomLevel(16);assertThrows(IllegalStateException.class,policy::requireCurrent);});

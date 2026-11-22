@@ -593,6 +593,7 @@ class ModernRefinementBootstrapTest {
         var receipt=forgedKind==1?Optional.of(new VisibleSourceEpoch().captureStable()):source.visibleReceipt();
         var suppliedEvidence=forgedKind==2?new EvidenceSnapshot(evidence.snapshotId(),evidence.coordinateFrame(),evidence.transform(),evidence.resolution(),
             evidence.decisionRegion(),evidence.evidenceRegion(),evidence.fields(),evidence.resampling(),evidence.sourceIdentity()):evidence;
+        if(forgedKind==2){work.reserveOn(prepared.memory(),"test-foreign-original-snapshot",source.backingBytes()).adopt(suppliedEvidence);assertEquals(evidence.canonicalHash(),suppliedEvidence.canonicalHash());}
         var fake=RetainedSmoothingSource.fromOriginalConversion(source.source(),source.intensityMode(),source.fieldName(),suppliedEvidence,
             source.referenceTransform(),source.referenceWidth(),source.referenceHeight(),source.backingBytes(),()->{},source.imageOwnershipIdentity(),
             source.inputByteHash(),source.generation(),receipt,source.legacyDisposition(),source.inputHashProtocol(),work,prepared.memory());
