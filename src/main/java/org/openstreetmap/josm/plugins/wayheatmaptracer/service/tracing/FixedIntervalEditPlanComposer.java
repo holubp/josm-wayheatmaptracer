@@ -42,10 +42,11 @@ public final class FixedIntervalEditPlanComposer {
         private final String identity;
         private CompositeNoChangeProof(IntervalTraceBatch batch,Map<Integer,Integer> choices,
                 ModernSingleWayEditPlanAdapter.FinalSelection selection,String identity) {
-            this.batch=batch;this.choices=normalizedChoices(batch,choices);this.selection=selection;this.identity=identity;
+            this.batch=batch;this.choices=normalizedChoices(batch,choices);this.selection=selection;
             routes=java.util.stream.IntStream.range(0,batch.runs().size()).mapToObj(i->batch.runs().get(i).routes().get(this.choices.get(i))).toList();
             var request=batch.fullRequest();var network=batch.network();
             watch=new ModernSingleWayEditPlanAdapter.NoChangeWatch(request.selectedWayKey(),request.selectedRange(),network.snapshotId(),network.datasetIdentity(),network.sourceGeneration(),network.canonicalHash());
+            this.identity=noChangeIdentity(watch.networkContentHash()+"\n"+request.evidenceContentHash()+"\n"+request.parameterHash()+"\n"+identity);
         }
         public ModernSingleWayEditPlanAdapter.FinalSelection finalSelection(){return selection;}
         public ModernSingleWayEditPlanAdapter.NoChangeWatch watch(){return watch;}
@@ -60,6 +61,10 @@ public final class FixedIntervalEditPlanComposer {
         }
         @Override public boolean equals(Object other){return other instanceof CompositeNoChangeProof proof&&batch==proof.batch&&choices.equals(proof.choices)&&identity.equals(proof.identity)&&watch.equals(proof.watch)&&selection.selectedGeometry().equals(proof.selection.selectedGeometry())&&selection.pointIds().equals(proof.selection.pointIds())&&selection.assignments().equals(proof.selection.assignments())&&selection.finalPreviewWays().equals(proof.selection.finalPreviewWays())&&selection.validation().equals(proof.selection.validation());}
         @Override public int hashCode(){return java.util.Objects.hash(System.identityHashCode(batch),choices,identity,watch,selection.selectedGeometry(),selection.pointIds(),selection.validation());}
+    }
+    private static String noChangeIdentity(String value){
+        try{var digest=java.security.MessageDigest.getInstance("SHA-256");var bytes=value.getBytes(java.nio.charset.StandardCharsets.UTF_8);for(byte ignored:bytes)org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.visit();return java.util.HexFormat.of().formatHex(digest.digest(bytes));}
+        catch(java.security.NoSuchAlgorithmException unavailable){throw new IllegalStateException("Required SHA-256 unavailable");}
     }
     private static Map<Integer,Integer> normalizedChoices(IntervalTraceBatch batch,Map<Integer,Integer> choices){
         if(batch==null||choices==null)throw new IllegalArgumentException("Actual batch and choices required");

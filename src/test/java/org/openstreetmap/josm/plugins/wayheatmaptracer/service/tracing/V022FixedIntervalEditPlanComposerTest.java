@@ -1039,6 +1039,7 @@ class V022FixedIntervalEditPlanComposerTest {
         var composer=new FixedIntervalEditPlanComposer();var assessment=composer.compose(batch,Map.of());
         assertTrue(assessment.plan().isEmpty());
         var proof=assessment.noChangeProof().orElseThrow();
+        assertTrue(proof.compositionIdentity().matches("[0-9a-f]{64}"),"Bounded composition identity must cover all actual selected routes and frozen inputs");
         proof.requireMatches(batch,Map.of(),batch.network());
         assertTrue(proof.finalSelection().validation().applicable());
         assertEquals(assessment,composer.compose(batch,Map.of()),"Canonical recomposition must retain deterministic equality");
