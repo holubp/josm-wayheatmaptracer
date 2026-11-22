@@ -1033,6 +1033,33 @@ class V022FixedIntervalEditPlanComposerTest {
         assertTrue(assessment.applyAvailable());
     }
 
+    @Test void allUsableUnchangedIntervalsRequireTheirOwnValidatedGraphProof() throws Exception {
+        var batch=batch();
+        for(int index=0;index<batch.runs().size();index++)batch=withRoute(batch,index,originalNoOpRoute(batch,index));
+        var composer=new FixedIntervalEditPlanComposer();var assessment=composer.compose(batch,Map.of());
+        assertTrue(assessment.plan().isEmpty());
+        var proof=assessment.noChangeProof().orElseThrow();
+        proof.requireMatches(batch,Map.of(),batch.network());
+        assertTrue(proof.finalSelection().validation().applicable());
+        assertEquals(assessment,composer.compose(batch,Map.of()),"Canonical recomposition must retain deterministic equality");
+        var selected=(DetachedWay)batch.network().primitives().get(batch.fullRequest().selectedWayKey());
+        assertEquals(selected.nodeKeys().subList(batch.fullRequest().selectedRange().firstIndex(),batch.fullRequest().selectedRange().lastIndex()+1),proof.finalSelection().pointIds().stream().map(id->((FinalRoutePointId.ExistingWayNodeOccurrence)id).nodeKey()).toList());
+        var foreign=batch();assertThrows(IllegalArgumentException.class,()->proof.requireMatches(foreign,Map.of(),foreign.network()));
+        assertTrue(composer.compose(noSignalBatch(),Map.of()).noChangeProof().isEmpty(),"An all-frozen/no-signal result cannot mint no-write authority");
+    }
+
+    private static ModernTracePipeline.Route originalNoOpRoute(IntervalTraceBatch batch,int index) {
+        var run=batch.runs().get(index);var first=run.routes().get(0);var raw=first.rawHypothesis();
+        var way=(DetachedWay)batch.network().primitives().get(batch.fullRequest().selectedWayKey());
+        List<FinalRoutePointId> ids=java.util.stream.IntStream.rangeClosed(run.interval().traceRange().firstIndex(),run.interval().traceRange().lastIndex()).mapToObj(i->(FinalRoutePointId)new FinalRoutePointId.ExistingWayNodeOccurrence(way.key(),way.nodeKeys().get(i),i)).toList();
+        var positions=new LinkedHashMap<FinalRoutePointId,MetricPoint>();var ownership=new LinkedHashMap<FinalRoutePointId,ObservationOwnership>();var protectedPositions=new LinkedHashMap<Integer,MetricPoint>();
+        for(int i=0;i<ids.size();i++){var id=(FinalRoutePointId.ExistingWayNodeOccurrence)ids.get(i);var point=originalMetric(batch,id.originalOccurrenceIndex());positions.put(id,point);ownership.put(id,ObservationOwnership.FIXED_TOPOLOGY_ONLY);if(batch.network().closure().protectedExistingNodeKeys().contains(id.nodeKey()))protectedPositions.put(i,point);}
+        var hypothesis=new TraceHypothesis(raw.id(),raw.branchSignature(),ids.stream().map(positions::get).toList(),ids.stream().map(ownership::get).toList(),raw.objective(),raw.posteriorProbability(),raw.diagnostics());
+        var image=new ImageCostField(batch.evidence().fields().get(batch.options().fieldName()),batch.evidence().transform(),batch.evidence().decisionRegion(),batch.evidence().resolution().effectivePitchMeters());
+        var quality=new FinalGeometryEvaluator().evaluate(new FinalGeometryEvaluator.Request(raw.id(),hypothesis.points(),ids,image,batch.evidence().resolution().effectivePitchMeters(),protectedPositions,List.of(),false,false,false,false));
+        return new ModernTracePipeline.Route(raw,hypothesis,ids,positions,ownership,quality,first.cleanupStatus(),false);
+    }
+
     @Test
     void emptyProductionAlternativesFreezeButExplicitChoiceIsRejected() throws Exception {
         IntervalTraceBatch batch = batch();
