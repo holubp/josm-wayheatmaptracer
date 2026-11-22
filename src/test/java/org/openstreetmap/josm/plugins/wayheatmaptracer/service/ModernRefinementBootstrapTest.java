@@ -589,8 +589,11 @@ class ModernRefinementBootstrapTest {
         var foreign=new EvidenceSnapshot(evidence.snapshotId(),evidence.coordinateFrame(),evidence.transform(),evidence.resolution(),
             evidence.decisionRegion(),evidence.evidenceRegion(),evidence.fields(),evidence.resampling(),evidence.sourceIdentity()+"/foreign-owner");
         assertThrows(IllegalArgumentException.class,()->root.requireAcquisitionEvidence(foreign),"Same dimensions/axes/geometry never authorize a foreign source");
-        for(var receipt:List.of(source.visibleReceipt(),Optional.of(new VisibleSourceEpoch().captureStable()))) {
-        var fake=RetainedSmoothingSource.fromOriginalConversion(source.source(),source.intensityMode(),source.fieldName(),source.evidence(),
+        for(int forgedKind=0;forgedKind<3;forgedKind++) {
+        var receipt=forgedKind==1?Optional.of(new VisibleSourceEpoch().captureStable()):source.visibleReceipt();
+        var suppliedEvidence=forgedKind==2?new EvidenceSnapshot(evidence.snapshotId(),evidence.coordinateFrame(),evidence.transform(),evidence.resolution(),
+            evidence.decisionRegion(),evidence.evidenceRegion(),evidence.fields(),evidence.resampling(),evidence.sourceIdentity()):evidence;
+        var fake=RetainedSmoothingSource.fromOriginalConversion(source.source(),source.intensityMode(),source.fieldName(),suppliedEvidence,
             source.referenceTransform(),source.referenceWidth(),source.referenceHeight(),source.backingBytes(),()->{},source.imageOwnershipIdentity(),
             source.inputByteHash(),source.generation(),receipt,source.legacyDisposition(),source.inputHashProtocol(),work,prepared.memory());
         var forgedReview=new RefinementPayload.NativeReview(nativeReview.plan(),nativeReview.quality(),nativeReview.operation(),nativeReview.sources(),
