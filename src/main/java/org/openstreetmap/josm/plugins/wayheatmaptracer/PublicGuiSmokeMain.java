@@ -680,7 +680,7 @@ public final class PublicGuiSmokeMain {
         try(var admissions=PipelineAdmissionObserver.openForTesting(value->{})) {
             var ready=new CompletableFuture<Void>();
             Runnable check=()->{
-                if(owner.busy())return;
+                if(owner.busy()){requireComputingView(dialog);return;}
                 if(owner.nativeSelected()&&owner.currentStage().kind()==expected)ready.complete(null);
                 else ready.completeExceptionally(new IllegalStateException("Requested live refinement did not publish a child"));
             };
@@ -693,7 +693,7 @@ public final class PublicGuiSmokeMain {
                     requiredNamed(dialog.getContentPane(),"refineA",javax.swing.JButton.class).addPropertyChangeListener(listener);
                     var target=requiredNamed(dialog.getContentPane(),button,javax.swing.JButton.class);
                     target.addActionListener(actionListener);
-                    if(!target.isEnabled())throw new IllegalStateException("Requested refinement button is disabled");target.doClick();SwingUtilities.invokeLater(check);return null;
+                    if(!target.isEnabled())throw new IllegalStateException("Requested refinement button is disabled");target.doClick();if(owner.busy())requireComputingView(dialog);SwingUtilities.invokeLater(check);return null;
                 });
                 ready.get(180,TimeUnit.SECONDS);
             } catch(Exception failure) {
@@ -842,6 +842,7 @@ public final class PublicGuiSmokeMain {
             }
         };
         Runnable check = () -> {
+            if(owner.busy())requireComputingView(dialog);
             boolean child = owner.nativeSelected() && owner.currentStage().kind() == expected;
             switch (firstChildState(actionObserved.get(), owner.busy(), owner.ownsPublication(), child)) {
                 case CHILD -> ready.complete(null);
@@ -1457,6 +1458,18 @@ public final class PublicGuiSmokeMain {
 
     private static boolean isPreview(JDialog dialog) {
         return (dialog.getTitle().endsWith("Alignment Preview")||"legacy-review".equals(dialog.getName())) && dialog.isVisible();
+    }
+    private static void requireComputingView(JDialog review) {
+        if(review.isVisible())throw new IllegalStateException("Old result review remains visible during optional work");
+        JDialog progress=null;
+        for(Window window:Window.getWindows())if(window instanceof JDialog dialog&&dialog.isShowing()&&"refinement-progress".equals(dialog.getName())) {
+            if(progress!=null)throw new IllegalStateException("Multiple optional-work progress windows");progress=dialog;
+        }
+        if(progress==null||progress.isModal()||!requiredNamed(progress.getContentPane(),"refinement-cancel",javax.swing.JButton.class).isShowing())
+            throw new IllegalStateException("Modeless optional-work progress and Cancel are unavailable");
+        boolean export=false;
+        for(Component component:MainApplication.getMenu().moreToolsMenu.getMenuComponents())if(component instanceof JMenuItem item&&item.getAction() instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.actions.ExportDiagnosticsAction)export=item.isEnabled();
+        if(!export)throw new IllegalStateException("Diagnostics menu is inaccessible during optional work");
     }
 
     private static boolean hasVisiblePreview() throws Exception {
