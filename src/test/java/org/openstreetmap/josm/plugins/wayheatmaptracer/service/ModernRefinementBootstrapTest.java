@@ -353,6 +353,19 @@ class ModernRefinementBootstrapTest {
                     assertEquals(originalNodes,fixture.selection().way().getNodes());assertEquals(original,originalNodes.stream().map(org.openstreetmap.josm.data.osm.Node::getCoor).toList());
                     assertEquals(flags,fixture.dataSet().allPrimitives().stream().collect(java.util.stream.Collectors.toMap(p->p.getUniqueId(),p->List.of(p.isModified(),p.isDeleted()))));assertEquals(undo,List.copyOf(host.getUndoCommands()));assertEquals(redo,List.copyOf(host.getRedoCommands()));
                 });
+                SwingUtilities.invokeAndWait(()->{
+                    workflow[0].close();workflow[0]=new LegacyRefinementWorkflow(review[0],null,review[0]::select,d->{},s->{},workers::add,publications::add,port);
+                    workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.MEDIUM);
+                });
+                VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
+                SwingUtilities.invokeAndWait(()->{
+                    if(!workflow[0].atRoot())((javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"undo")).doClick();
+                    var retained=workflow[0].currentStage();epoch.sourceChanged();assertFalse(workflow[0].canApplyNative());
+                    assertThrows(IllegalStateException.class,workflow[0]::acceptNoChangeRoot);assertSame(retained,workflow[0].currentStage());
+                    assertEquals(originalNodes,fixture.selection().way().getNodes());assertEquals(original,originalNodes.stream().map(org.openstreetmap.josm.data.osm.Node::getCoor).toList());
+                    assertEquals(flags,fixture.dataSet().allPrimitives().stream().collect(java.util.stream.Collectors.toMap(p->p.getUniqueId(),p->List.of(p.isModified(),p.isDeleted()))));
+                    assertEquals(undo,List.copyOf(host.getUndoCommands()));assertEquals(redo,List.copyOf(host.getRedoCommands()));
+                });
             }finally{SwingUtilities.invokeAndWait(()->{workflow[0].close();review[0].close();});}
         }
     }
