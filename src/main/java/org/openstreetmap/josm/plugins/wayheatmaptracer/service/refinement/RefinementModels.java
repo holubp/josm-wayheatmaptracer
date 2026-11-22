@@ -11,7 +11,9 @@ public final class RefinementModels {
     public record CandidateId(String value) {
         public CandidateId { if (value == null || value.isBlank()) throw new IllegalArgumentException("Candidate id required"); }
     }
-    public enum StageKind { ROOT_LEGACY, REFINE_A, REFINE_B, SMOOTH }
+    public enum StageKind { ROOT_LEGACY, ROOT_NATIVE, REFINE_A, REFINE_B, SMOOTH;
+        public boolean root(){return this==ROOT_LEGACY||this==ROOT_NATIVE;}
+    }
     public enum Outcome { COMPLETE, PARTIAL, NO_USABLE_RESULT, CANCELLED, STALE, RESOURCE_LIMIT, FAILED }
     public enum RefusalReason { NON_LEGACY_ROOT, STAGE_LIMIT, CANDIDATE_LIMIT, PAYLOAD_LIMIT, INVALID_ENGINE, RESERVATION_REQUIRED }
     /** Interior vertices belong to the outgoing edge at fraction zero; only the final vertex uses one. */
@@ -69,7 +71,10 @@ public final class RefinementModels {
                 if (!ids.add(candidate.id())) throw new IllegalArgumentException("Duplicate candidate id");
             if (!ids.contains(selected)) throw new IllegalArgumentException("Selected candidate missing");
             if (parent.isPresent() != parentChoice.isPresent()) throw new IllegalArgumentException("Incomplete parent binding");
-            if ((kind == StageKind.ROOT_LEGACY) != parent.isEmpty()) throw new IllegalArgumentException("Invalid root lineage");
+            if (kind.root() != parent.isEmpty()) throw new IllegalArgumentException("Invalid root lineage");
+            if(kind==StageKind.ROOT_LEGACY&&engine!=TrackerMode.LEGACY_V02
+                    ||kind==StageKind.ROOT_NATIVE&&!Set.of(TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC).contains(engine))
+                throw new IllegalArgumentException("Root kind must match captured engine");
             if ((kind == StageKind.SMOOTH) != smoothingInput.isPresent()) throw new IllegalArgumentException("Invalid smoothing lineage");
             if (kind == StageKind.REFINE_A && engine != TrackerMode.CORRIDOR_AWARE
                     || kind == StageKind.REFINE_B && engine != TrackerMode.PROBABILISTIC)
@@ -82,8 +87,11 @@ public final class RefinementModels {
             return new Stage(id, parent, parentChoice, kind, engine, candidates, choice, smoothingInput);
         }
         public static Stage root(List<Candidate> candidates, CandidateId selected) {
+            return root(TrackerMode.LEGACY_V02,candidates,selected);
+        }
+        public static Stage root(TrackerMode engine,List<Candidate> candidates,CandidateId selected) {
             return new Stage(new StageId(UUID.randomUUID()), Optional.empty(), Optional.empty(),
-                StageKind.ROOT_LEGACY, TrackerMode.LEGACY_V02, candidates, selected, Optional.empty());
+                engine==TrackerMode.LEGACY_V02?StageKind.ROOT_LEGACY:StageKind.ROOT_NATIVE, engine, candidates, selected, Optional.empty());
         }
         public static Stage child(OperationTicket ticket, List<Candidate> candidates, CandidateId selected) {
             return new Stage(new StageId(UUID.randomUUID()),
@@ -104,7 +112,7 @@ public final class RefinementModels {
             Objects.requireNonNull(engine); Objects.requireNonNull(mode);
             Objects.requireNonNull(kind); Objects.requireNonNull(smoothingInput);
             if (sequence <= 0) throw new IllegalArgumentException("Positive operation sequence required");
-            if (kind == StageKind.ROOT_LEGACY || (kind == StageKind.SMOOTH) != smoothingInput.isPresent()
+            if (kind.root() || (kind == StageKind.SMOOTH) != smoothingInput.isPresent()
                     || kind == StageKind.REFINE_A && engine != TrackerMode.CORRIDOR_AWARE
                     || kind == StageKind.REFINE_B && engine != TrackerMode.PROBABILISTIC)
                 throw new IllegalArgumentException("Operation kind and native engine/input binding disagree");

@@ -106,7 +106,7 @@ public final class RefinementSession implements AutoCloseable {
         requireEdt();
         if(!config.equals(authority.effectiveConfig())||!sourceIdentity.equals(authority.sourceIdentity()))
             throw new IllegalArgumentException("Session config/source differs from its factual root authority");
-        if (root.parent().isPresent()) throw new IllegalArgumentException("A session requires its original root");
+        if (root.parent().isPresent()||root.engine()!=authority.request().engine()) throw new IllegalArgumentException("A session requires its factual original root engine");
         this.config = authority.effectiveConfig();
         this.sourceIdentity = authority.sourceIdentity();
         this.authority = Objects.requireNonNull(authority);
@@ -242,7 +242,6 @@ public final class RefinementSession implements AutoCloseable {
         lastFailure = new Failure(ticket, Outcome.RESOURCE_LIMIT, reason); active = null;
     }
     private void checkBegin(boolean replacingSmoothing) {
-        if (history.get(0).engine() != TrackerMode.LEGACY_V02) throw new Refused(RefusalReason.NON_LEGACY_ROOT);
         if (!replacingSmoothing && cursor + 1 >= limits.maxStages()) throw new Refused(RefusalReason.STAGE_LIMIT);
         RefusalReason refusal = retentionRefusal(history);
         if (refusal != null) throw new Refused(refusal);

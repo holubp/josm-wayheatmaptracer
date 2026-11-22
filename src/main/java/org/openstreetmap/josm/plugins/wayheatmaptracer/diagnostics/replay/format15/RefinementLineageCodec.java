@@ -65,9 +65,10 @@ public final class RefinementLineageCodec {
             Objects.requireNonNull(kind); Objects.requireNonNull(engine); Objects.requireNonNull(selected);
             Objects.requireNonNull(smoothingInput); candidates=List.copyOf(candidates);
             if (candidates.isEmpty() || candidates.size()>32 || parent.isPresent()!=parentChoice.isPresent()
-                    || (kind==StageKind.ROOT_LEGACY)!=parent.isEmpty()
+                    || kind.root()!=parent.isEmpty()
                     || (kind==StageKind.SMOOTH)!=smoothingInput.isPresent()
                     || kind==StageKind.ROOT_LEGACY && engine!=TrackerMode.LEGACY_V02
+                    || kind==StageKind.ROOT_NATIVE && !Set.of(TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC).contains(engine)
                     || kind==StageKind.REFINE_A && engine!=TrackerMode.CORRIDOR_AWARE
                     || kind==StageKind.REFINE_B && engine!=TrackerMode.PROBABILISTIC) throw invalid();
             var ids=new HashSet<CandidateId>();
@@ -208,7 +209,7 @@ public final class RefinementLineageCodec {
         var sequences=new HashMap<Long,RefinementOperationReceipt>(); long lastSequence=0; int totalAttemptCopies=0;
         for(int index=0;index<stages.size();index++) {
             var s=stages.get(index);
-            if(retained.containsKey(s.id()) || (index==0)!=(s.kind()==StageKind.ROOT_LEGACY)) throw invalid();
+            if(retained.containsKey(s.id()) || (index==0)!=s.kind().root()) throw invalid();
             if(index>0) {
                 // Retained history is linear, including smoothing replacement's unsmoothed input.
                 if(!s.parent().orElseThrow().equals(stages.get(index-1).id())) throw invalid();

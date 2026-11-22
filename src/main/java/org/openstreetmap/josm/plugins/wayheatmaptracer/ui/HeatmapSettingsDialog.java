@@ -49,6 +49,7 @@ public final class HeatmapSettingsDialog {
     private final JComboBox<String> color = new JComboBox<>(COLORS);
     private final JComboBox<String> manualLayer = new JComboBox<>();
     private final JComboBox<AlignmentMode> alignmentMode = new JComboBox<>(AlignmentMode.values());
+    private final JComboBox<TrackerMode> trackerMode = new JComboBox<>(new TrackerMode[]{TrackerMode.LEGACY_V02,TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC});
     private final JComboBox<AlignmentSourceMode> sourceMode = new JComboBox<>(AlignmentSourceMode.values());
     private final JComboBox<InferenceMode> inferenceMode = new JComboBox<>(InferenceMode.values());
     private final JComboBox<IntensitySamplingMode> intensitySamplingMode = new JComboBox<>(IntensitySamplingMode.values());
@@ -115,6 +116,7 @@ public final class HeatmapSettingsDialog {
         cacheBuster = config.cacheBuster();
 
         TracingSettings tracing = PluginPreferences.loadTracingSettings();
+        trackerMode.setSelectedItem(tracing.engine());
         sourceMode.setSelectedItem(tracing.sourceMode());
         widerDiscovery.setSelected(tracing.recovery().widerDiscovery());
         maximumDiscoveryRadiusMeters.setText(Double.toString(
@@ -172,6 +174,8 @@ public final class HeatmapSettingsDialog {
         panel.add(regex, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("Alignment mode")), GBC.std());
         panel.add(alignmentMode, GBC.eol().fill(GBC.HORIZONTAL));
+        panel.add(new JLabel(tr("Starting algorithm")), GBC.std());
+        panel.add(trackerMode, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("Alignment source")), GBC.std());
         panel.add(sourceMode, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("Inference mode")), GBC.std());
@@ -239,7 +243,7 @@ public final class HeatmapSettingsDialog {
             manualLayer.getSelectedItem() == null ? "" : manualLayer.getSelectedItem().toString(),
             regex.getText().trim(),
             (AlignmentMode) alignmentMode.getSelectedItem(),
-            TrackerMode.LEGACY_V02,
+            (TrackerMode)trackerMode.getSelectedItem(),
             verbose.isSelected(),
             debug.isSelected(),
             multiColorDetection.isSelected(),
@@ -270,7 +274,7 @@ public final class HeatmapSettingsDialog {
             selectedJunctionPolicy = JunctionPolicy.FIXED;
         }
         PluginPreferences.saveTracingSettings(new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
-            TrackerMode.LEGACY_V02, new RecoverySettings(
+            (TrackerMode)trackerMode.getSelectedItem(), new RecoverySettings(
                 RecoverySettings.CURRENT_SCHEMA_VERSION, enableWiderDiscovery, ordinaryRadius,
                 enableWiderDiscovery ? Math.max(ordinaryRadius, parseDouble(
                     maximumDiscoveryRadiusMeters.getText(),

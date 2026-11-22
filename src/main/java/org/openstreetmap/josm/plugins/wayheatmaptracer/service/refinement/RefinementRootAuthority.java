@@ -72,19 +72,19 @@ public final class RefinementRootAuthority {
         inventory.visit(network);inventory.visit(request);inventory.visit(evidence);inventory.visit(effectiveConfig);
         inventory.visit(projectionCode);inventory.visit(sourceIdentity);
         inventory.visit(capturedPartition);
-        if (network.role() != SnapshotRole.CAPTURED_BEFORE || request.engine() != TrackerMode.LEGACY_V02
+        if (network.role() != SnapshotRole.CAPTURED_BEFORE || !Set.of(TrackerMode.LEGACY_V02,TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC).contains(request.engine())
                 || !request.networkSnapshotId().equals(network.snapshotId())
                 || !request.networkContentHash().equals(network.canonicalHash())
                 || !request.evidenceSnapshotId().equals(evidence.snapshotId())
                 || !request.evidenceContentHash().equals(work==null?evidence.canonicalHash():evidence.canonicalHash(work))
                 || !request.evidenceResolution().equals(evidence.resolution())
                 || request.geometryMode() != effectiveConfig.heatmap().alignmentMode()
-                || effectiveConfig.heatmap().trackerMode()!=TrackerMode.LEGACY_V02 || request.selectedRange().size()<2
+                || effectiveConfig.heatmap().trackerMode()!=request.engine() || request.selectedRange().size()<2
                 || projectionCode == null || projectionCode.isBlank() || sourceIdentity == null || sourceIdentity.isBlank()
                 || !sourceIdentity.equals(evidence.sourceIdentity())
                 || !(network.primitives().get(request.selectedWayKey()) instanceof DetachedWay way)
                 || way.deleted() || request.selectedRange().lastIndex() >= way.nodeKeys().size())
-            throw new IllegalArgumentException("Root authority differs from its factual Legacy capture");
+            throw new IllegalArgumentException("Root authority differs from its factual capture");
         var counts=new java.util.HashMap<PrimitiveKey,Integer>();
         way.nodeKeys().forEach(key->counts.merge(key,1,Integer::sum));
         for (int i=request.selectedRange().firstIndex();i<=request.selectedRange().lastIndex();i++) {

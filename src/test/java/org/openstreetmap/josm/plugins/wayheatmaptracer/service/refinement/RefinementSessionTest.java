@@ -229,22 +229,16 @@ class RefinementSessionTest {
         });
     }
 
-    @Test void mutationsRequireEdtAndHistoricalRootsRefuseWithTypedReason() throws Exception {
+    @Test void mutationsRequireEdtAndRootEngineCannotBeRelabelled() throws Exception {
         AtomicReference<RefinementSession> ref = new AtomicReference<>();
         edt(() -> ref.set(session(AlignmentMode.PRECISE_SHAPE)));
         assertThrows(IllegalStateException.class, () -> ref.get().begin(TrackerMode.CORRIDOR_AWARE));
         assertThrows(IllegalStateException.class, ref.get()::back);
         assertThrows(IllegalStateException.class, ref.get()::close);
         edt(() -> {
-            var invalid = new Stage(new StageId(UUID.randomUUID()), Optional.empty(), Optional.empty(),
+            assertThrows(IllegalArgumentException.class,()->new Stage(new StageId(UUID.randomUUID()), Optional.empty(), Optional.empty(),
                 StageKind.ROOT_LEGACY, TrackerMode.PROBABILISTIC, List.of(candidate("old")),
-                new CandidateId("old"), Optional.empty());
-            var session = new RefinementSession(invalid, config(AlignmentMode.PRECISE_SHAPE), "synthetic-source", RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE),
-                RefinementLimits.defaults());
-            var refusal = assertThrows(RefinementSession.Refused.class,
-                () -> session.begin(TrackerMode.CORRIDOR_AWARE));
-            assertEquals(RefusalReason.NON_LEGACY_ROOT, refusal.reason());
-            assertTrue(session.canApply());
+                new CandidateId("old"), Optional.empty()));
         });
     }
 
