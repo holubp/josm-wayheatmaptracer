@@ -10,6 +10,16 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 
 class RefinementRootAuthorityTest {
+    @Test void registeredHashLookupChargesAndCancelsBeforeInspectingAliases() {
+        var root=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);var candidate=RefinementParentFixtures.parent(root,"blue");
+        try(var owner=AttemptMemoryLedger.production().rootOwner()) {
+            var source=SmoothingParentBinderTest.source(root,"blue",owner,()->{});
+            var exhausted=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(0,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,owner);
+            assertThrows(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached.class,()->root.registeredOriginalEvidenceHash(candidate,source,exhausted));
+            var cancelled=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,()->{throw new java.util.concurrent.CancellationException();},owner);
+            assertThrows(java.util.concurrent.CancellationException.class,()->root.registeredOriginalEvidenceHash(candidate,source,cancelled));
+        }
+    }
     @Test void acquisitionFrameExtensionCertifiesCoverageWithoutRenewingOriginalAuthority() {
         var origin=new GeographicPoint(0,0);var southWest=new GeographicPoint(-.001,-.001);var northEast=new GeographicPoint(.001,.001);
         var original=LocalMetricFrame.certifiedEquirectangular(origin,southWest,northEast);

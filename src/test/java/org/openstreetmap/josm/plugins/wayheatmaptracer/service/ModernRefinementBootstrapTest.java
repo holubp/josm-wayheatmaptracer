@@ -540,7 +540,9 @@ class ModernRefinementBootstrapTest {
                     epoch.sourceChanged();assertThrows(IllegalStateException.class,prepared.source()::requireCurrent);
                     var retainedSource=selected.payload().nativeReview().orElseThrow().retainedSources().values().iterator().next();
                     assertThrows(IllegalStateException.class,()->prepared.root().authority().requireSelectedAcquisitionEvidence(selected,retainedSource));
+                    assertThrows(IllegalStateException.class,()->registeredOriginalHash(prepared.root().authority(),selected,retainedSource,work));
                     prepared.close();assertThrows(IllegalArgumentException.class,()->prepared.root().authority().requireSelectedAcquisitionEvidence(selected,retainedSource));
+                    assertThrows(IllegalArgumentException.class,()->registeredOriginalHash(prepared.root().authority(),selected,retainedSource,work));
                 }
             } finally {SwingUtilities.invokeAndWait(review[0]::close);}
         }
@@ -580,6 +582,10 @@ class ModernRefinementBootstrapTest {
         var root=prepared.root().authority();var nativeReview=selected.payload().nativeReview().orElseThrow();
         var source=nativeReview.retainedSources().values().iterator().next();var evidence=source.evidence();
         assertDoesNotThrow(()->root.requireSelectedAcquisitionEvidence(selected,source));
+        var lookupWork=new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,prepared.memory());
+        var actualOwner=computed.productionRuns().stream().filter(run->run.evidence()==evidence).findFirst().orElseThrow();
+        assertEquals(Optional.of(actualOwner.request().evidenceContentHash()),registeredOriginalHash(root,selected,source,lookupWork));
+        assertTrue(lookupWork.counters().get(GeometryWorkContext.Kind.BIND)>0);assertEquals(0L,lookupWork.counters().get(GeometryWorkContext.Kind.HASH));
         var foreign=new EvidenceSnapshot(evidence.snapshotId(),evidence.coordinateFrame(),evidence.transform(),evidence.resolution(),
             evidence.decisionRegion(),evidence.evidenceRegion(),evidence.fields(),evidence.resampling(),evidence.sourceIdentity()+"/foreign-owner");
         assertThrows(IllegalArgumentException.class,()->root.requireAcquisitionEvidence(foreign),"Same dimensions/axes/geometry never authorize a foreign source");
@@ -593,8 +599,8 @@ class ModernRefinementBootstrapTest {
             .withRootReviewState(selected.payload().rootReviewState().orElseThrow());
         var forged=new RefinementModels.Candidate(selected.id(),payload,selected.correspondence(),selected.immutableIdentity(),selected.nativeCandidateId(),selected.sourcePalette());
         assertThrows(IllegalArgumentException.class,()->root.requireSelectedAcquisitionEvidence(forged,fake),"A constructed descriptor and matching candidate alias cannot create original acquisition authority");
+        assertThrows(IllegalArgumentException.class,()->registeredOriginalHash(root,forged,fake,lookupWork));
         }
-        var actualOwner=computed.productionRuns().stream().filter(run->run.evidence()==evidence).findFirst().orElseThrow();
         var r=actualOwner.request();
         var foreignRequest=new TraceRequest(r.selectedWayKey(),r.selectedRange(),r.engine(),r.geometryMode(),r.permissions(),r.budgets(),
             r.evidenceSnapshotId(),r.evidenceContentHash(),r.networkSnapshotId()+"-foreign",r.networkContentHash(),r.settingsHash(),r.parameterHash(),
@@ -614,5 +620,11 @@ class ModernRefinementBootstrapTest {
             assertEquals(evidence.canonicalHash(),clone.canonicalHash());
             assertThrows(IllegalArgumentException.class,()->root.requireAcquisitionEvidence(clone),"Even exact alternative hashes require the registered evidence object");
         }
+    }
+    @SuppressWarnings("unchecked")
+    private static Optional<String> registeredOriginalHash(RefinementRootAuthority root,RefinementModels.Candidate candidate,RetainedSmoothingSource source,GeometryWorkContext work) throws Exception {
+        var method=RefinementRootAuthority.class.getDeclaredMethod("registeredOriginalEvidenceHash",RefinementModels.Candidate.class,RetainedSmoothingSource.class,GeometryWorkContext.class);method.setAccessible(true);
+        try{return (Optional<String>)method.invoke(root,candidate,source,work);}
+        catch(java.lang.reflect.InvocationTargetException failure){if(failure.getCause() instanceof RuntimeException actual)throw actual;throw failure;}
     }
 }
