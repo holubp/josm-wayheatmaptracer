@@ -3105,7 +3105,7 @@ public final class AlignmentService {
             mapView.setSize(originalSize);
             if(nativeViewport)mapView.prepareToDraw();
             mapView.zoomTo(originalCenter, originalScale, false);
-            if(nativeViewport)requireNativePaintFrame(mapView,originalSize.width,originalSize.height,originalBounds,originalScale);
+            if(nativeViewport)requireNativePaintFrame(mapView,originalSize.width,originalSize.height,captureBoundsForSize(originalCenter,originalSize,originalScale),originalScale);
             PluginLog.verbose("Restored JOSM map view after heatmap capture.");
         }
     }

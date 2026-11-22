@@ -919,6 +919,7 @@ public final class PublicGuiSmokeMain {
     /** Independent public pixels prove the actual native viewport, metadata and two-chunk assembly. */
     private static void verifyNativeVisibleCaptureContract(PublicGuiSmokeFixture fixture) throws Exception {
         var view=MainApplication.getMap().mapView;var layer=org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.HeatmapLayerResolver.resolve();
+        view.prepareToDraw();
         var size=view.getSize();var center=view.getCenter();double scale=view.getScale();int zoom=((org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer)layer).getZoomLevel();
         var nodes=fixture.selectedWay().getNodes();var selection=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext(fixture.selectedWay(),0,nodes.size()-1,nodes,java.util.Set.of(nodes.get(0),nodes.get(nodes.size()-1)));
         var service=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService();
@@ -947,8 +948,9 @@ public final class PublicGuiSmokeMain {
     @SuppressWarnings("unchecked")
     private static AutoCloseable installOfflineVisiblePainter(PublicGuiSmokeFixture fixture) throws Exception {
         var retained=new java.util.concurrent.atomic.AtomicReference<org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer>();
-        addOfflineManagedLayer(config(true,false),layer->{layer.getDisplaySettings().setAutoZoom(false);layer.setZoomLevel(15);MainApplication.getLayerManager().addLayer(layer);retained.set(layer);});
+        addOfflineManagedLayer(config(true,false),layer->{MainApplication.getLayerManager().addLayer(layer);layer.getDisplaySettings().setAutoZoom(false);layer.setZoomLevel(15);retained.set(layer);});
         var layer=retained.get();var view=MainApplication.getMap().mapView;
+        if(layer.getZoomLevel()!=15)throw new IllegalStateException("Public native z15 source metadata was not installed after actual layer registration");
         var field=org.openstreetmap.josm.gui.MapView.class.getDeclaredField("registeredLayers");field.setAccessible(true);
         var painters=(java.util.Map<org.openstreetmap.josm.gui.layer.Layer,org.openstreetmap.josm.gui.layer.MapViewPaintable.LayerPainter>)field.get(view);
         var original=painters.get(layer);if(original==null)throw new IllegalStateException("Actual visible source painter is not registered");
