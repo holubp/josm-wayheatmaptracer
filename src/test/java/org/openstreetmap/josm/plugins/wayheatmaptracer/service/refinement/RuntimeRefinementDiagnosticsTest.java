@@ -12,6 +12,47 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 
 /** Serializer/registry tests use detached synthetic retained values, not claimed native execution. */
 class RuntimeRefinementDiagnosticsTest {
+ @Test void nativeRootMetadataNamesActualDeclaredEngineAndKeepsUnretainedWorkUnavailable() {
+  var old=root();var r=old.request();var engine=TrackerMode.PROBABILISTIC;
+  var config=new AlignmentConfig(old.effectiveConfig().heatmap().withTrackerMode(engine),old.effectiveConfig().cleanup());
+  var request=new TraceRequest(r.selectedWayKey(),r.selectedRange(),engine,r.geometryMode(),r.permissions(),r.budgets(),r.evidenceSnapshotId(),r.evidenceContentHash(),r.networkSnapshotId(),r.networkContentHash(),r.settingsHash(),r.parameterHash(),r.samplerId(),r.configuredSampleStepMeters(),r.profileChainage(),r.evidenceResolution(),r.corridorInput(),r.disconnectionSource());
+  var authority=new RefinementRootAuthority(old.network(),request,old.evidence(),config,old.projectionCode(),old.sourceIdentity());
+  var original=RefinementParentFixtures.parent(authority,"blue");
+  var state=new RefinementPayload.RootReviewState("synthetic-native-owner",OptionalInt.of(1),Map.of(),"synthetic-plan-identity",Optional.empty());
+  var payload=RefinementPayload.captureNative(original.payload().result(),original.payload(),new RefinementPayload.NativeReview(null,null),1_000_000).withRootReviewState(state);
+  var candidate=new Candidate(original.id(),payload,original.correspondence(),original.immutableIdentity(),original.nativeCandidateId(),original.sourcePalette());
+  var stage=Stage.root(engine,List.of(candidate),candidate.id());
+  var bundle=RuntimeRefinementDiagnostics.capture(authority,List.of(stage),stage,new SessionId(UUID.randomUUID()),candidate.id().value(),Optional.empty(),Optional.empty(),RefinementAttemptDiagnostics.Availability.NONE,"preview-open",Optional.empty(),Optional.empty(),Optional.empty());
+  var review=new String(bundle.artifact("review-state.json").bytes(),java.nio.charset.StandardCharsets.UTF_8);
+  assertTrue(review.contains("\"rootEngine\":\"PROBABILISTIC\""));assertTrue(review.contains("\"rootKind\":\"ROOT_NATIVE\""));
+  assertTrue(review.contains("\"initialLegacyChoice\":null"));assertTrue(review.contains("\"nativeRootContext\":\"unavailable\""));
+  var rootMetadata=new String(bundle.artifact("root/stage-0-choice-0.json").bytes(),java.nio.charset.StandardCharsets.UTF_8);
+  assertTrue(rootMetadata.contains("\"sourceOwnerIdentity\":\"synthetic-native-owner\""));assertTrue(rootMetadata.contains("\"fullRouteIndex\":1"));assertTrue(rootMetadata.contains("\"compositionIdentity\":\"synthetic-plan-identity\""));
+  assertTrue(new String(bundle.artifact("frozen-root-settings.json").bytes(),java.nio.charset.StandardCharsets.UTF_8).contains("\"authorityRequestRole\":\"original-native-movement-authority\""));
+ }
+ @Test void smoothingArtifactKeepsActualGuardReceiptSeparateFromNativeExecution() {
+  try(var owner=AttemptMemoryLedger.production().rootOwner()) {
+   var work=RefinementSmoothingAdapterTest.work(owner);var bound=RefinementSmoothingAdapterTest.parent(AlignmentMode.PRECISE_SHAPE,owner,work,()->{});
+   var authority=bound.reference().root();var original=RefinementParentFixtures.parent(authority,"blue");
+   var root=new Stage(bound.reference().parentStage(),Optional.empty(),Optional.empty(),StageKind.ROOT_LEGACY,TrackerMode.LEGACY_V02,List.of(original),original.id(),Optional.empty());
+   try(var result=new RefinementSmoothingAdapter().smooth(bound,SmoothingModels.Preset.MEDIUM_1PX,work,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE)) {
+    assertEquals(RefinementSmoothingAdapter.Outcome.CHANGED,result.receipt().outcome());
+    var projection=org.openstreetmap.josm.data.projection.Projections.getProjectionByCode(authority.projectionCode());
+    var points=result.points().stream().map(p->{var g=authority.evidence().coordinateFrame().toGeographic(p);return projection.latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(g.latitudeDegrees(),g.longitudeDegrees()));}).toList();
+    String nativeId=result.assessment().orElseThrow().candidate().id();var shape=new CenterlineCandidate(nativeId,1,List.of(),List.of()).withFinalPreviewPoints(points);
+    var alignment=new AlignmentResult(original.payload().originalSelectionContext(),null,List.of(shape),original.payload().originalSourcePolyline(),points,List.of(),null,null,List.of(),List.of(shape));
+    var source=bound.nativeFacts().source();var request=source.source();
+    var review=new RefinementPayload.NativeReview(result.plan().orElseThrow(),result.assessment().orElseThrow().quality(),Optional.empty(),List.of(request),OptionalInt.empty(),Map.of(request,source),List.of(),Optional.of(bound.pointIds()),Optional.of(result.receipt()));
+    var payload=RefinementPayload.captureNative(alignment,original.payload(),review,1_000_000);var id=new CandidateId("actual-smoothing");
+    var candidate=new Candidate(id,payload,result.assessment().orElseThrow().candidate().correspondence(),result.plan().orElseThrow().canonicalHash(),nativeId,"blue");
+    var child=Stage.child(bound.ticket(),List.of(candidate),id);
+    var bundle=RuntimeRefinementDiagnostics.capture(authority,List.of(root,child),child,bound.ticket().session(),root.selected().value(),Optional.empty(),Optional.empty(),RefinementAttemptDiagnostics.Availability.NONE,"preview-open",Optional.empty(),Optional.empty(),Optional.empty());
+    var json=new String(bundle.artifact("smoothing/stage-1-choice-0.json").bytes(),java.nio.charset.StandardCharsets.UTF_8);
+    assertTrue(json.contains("\"outcome\":\"CHANGED\""));assertTrue(json.contains("\"strength\":\"MEDIUM_1PX\""));assertTrue(json.contains("\"nativeCalls\":0"));
+    assertTrue(json.contains("\"workVisits\":"+result.receipt().workVisits()));assertTrue(json.contains(result.receipt().inputHash()));assertTrue(json.contains(result.receipt().parentIdentity()));
+   }
+  }
+ }
  @TempDir Path directory;
  static RefinementRootAuthority root(){
   var a=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);var r=a.request();
