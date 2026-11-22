@@ -24,6 +24,23 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCoun
 
 /** Actual unchanged Legacy command seam; descendant original-authority transaction gates remain separate. */
 class StepwiseRefinementApplyTest {
+    @Test void detachedCommandContextRejectsChangedPreferencesWithoutRetainingCapture() throws Exception {
+        SwingUtilities.invokeAndWait(()->{
+            var guard=AlignWayAction.detachedCommandContext(null,null,null);
+            assertDoesNotThrow(guard::run);
+            for(var field:guard.getClass().getDeclaredFields()) {
+                assertFalse(field.getType()==AlignmentConfig.class||field.getType()==ManagedHeatmapConfig.class
+                    ||field.getType().getSimpleName().matches("Captured|Computed|ModernReviewRoot|LegacyReviewOwner|LegacyRefinementWorkflow"),field.toString());
+            }
+            String previous=Config.getPref().get("wayheatmaptracer.activity","all");
+            try {Config.getPref().put("wayheatmaptracer.activity",previous.equals("ride")?"run":"ride");assertThrows(IllegalStateException.class,guard::run);}
+            finally {Config.getPref().put("wayheatmaptracer.activity",previous);}
+            assertDoesNotThrow(guard::run);
+            var tracing=PluginPreferences.loadTracingSettings();
+            try {PluginPreferences.saveTracingSettings(new TracingSettings(tracing.schemaVersion(),tracing.engine()==TrackerMode.PROBABILISTIC?TrackerMode.CORRIDOR_AWARE:TrackerMode.PROBABILISTIC,tracing.recovery(),tracing.diagnosticComparisons(),tracing.sourceMode()));assertThrows(IllegalStateException.class,guard::run);}
+            finally {PluginPreferences.saveTracingSettings(tracing);}
+        });
+    }
     @BeforeAll static void setup() {
         Config.setPreferencesInstance(new MemoryPreferences());
         ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
