@@ -878,11 +878,13 @@ public final class PublicGuiSmokeMain {
 
     /** Continuous public imagery painted through the actual JOSM visible-layer capture port. */
     private static final class AnalyticVisibleLayer extends org.openstreetmap.josm.gui.layer.ImageryLayer {
+        private int captureReceipts;
         AnalyticVisibleLayer(){super(new org.openstreetmap.josm.data.imagery.ImageryInfo("Strava public analytic visible heatmap"));}
         @Override public void paint(java.awt.Graphics2D graphics,org.openstreetmap.josm.gui.MapView view,org.openstreetmap.josm.data.Bounds bounds) {
             int width=view.getWidth(),height=view.getHeight();if(width<1||height<1)return;
             var image=new java.awt.image.BufferedImage(width,height,java.awt.image.BufferedImage.TYPE_INT_RGB);
             double radians=Math.PI/180,earth=PublicGuiSmokeOracle.EARTH_RADIUS_METERS;
+            double closest=Double.POSITIVE_INFINITY;int maximumGray=0;
             for(int y=0;y<height;y++)for(int x=0;x<width;x++) {
                 var point=view.getLatLon(x,y);
                 double east=(point.lon()-PublicGuiSmokeOracle.BASE_LONGITUDE)*radians*earth*Math.cos(PublicGuiSmokeOracle.BASE_LATITUDE*radians);
@@ -891,8 +893,15 @@ public final class PublicGuiSmokeMain {
                 // Match the public native z15 image's 1.2-source-pixel Gaussian ridge.
                 double pitch=2*Math.PI*earth/(512*(1<<15));
                 double distance=(north-ridge)/pitch;
+                closest=Math.min(closest,Math.abs(north-ridge));
                 int gray=(int)Math.round(3+250*Math.exp(-.5*distance*distance/1.44));
+                maximumGray=Math.max(maximumGray,gray);
                 image.setRGB(x,y,gray<<16|gray<<8|gray);
+            }
+            if(graphics.getTransform().getScaleX()>=5.5&&captureReceipts++<4){
+                var projected=view.getProjectionBounds();var base=new LatLon(PublicGuiSmokeOracle.BASE_LATITUDE,PublicGuiSmokeOracle.BASE_LONGITUDE);var baseProjected=view.getProjection().latlon2eastNorth(base);
+                var corners=List.of(view.getLatLon(0,0),view.getLatLon(width,0),view.getLatLon(width,height),view.getLatLon(0,height),view.getLatLon(width/2,height/2)).stream().map(point->List.of((point.lon()-base.lon())*radians*earth*Math.cos(base.lat()*radians),(point.lat()-base.lat())*radians*earth)).toList();
+                System.err.println("GUI_SMOKE_VISIBLE_PAINT width="+width+" height="+height+" scale="+view.getScale()+" transform="+graphics.getTransform().getScaleX()+" projectedRelative="+List.of(projected.minEast-baseProjected.east(),projected.minNorth-baseProjected.north(),projected.maxEast-baseProjected.east(),projected.maxNorth-baseProjected.north())+" cornersAndCenterRelative="+corners+" basePixel="+view.getPoint(base)+" closestRidgeMeters="+closest+" generatedMaxGray="+maximumGray);
             }
             graphics.drawImage(image,0,0,null);
         }

@@ -1056,8 +1056,8 @@ class V022FixedIntervalEditPlanComposerTest {
             assertTrue(composer.compose(withRoute(batch,0,refused),Map.of()).noChangeProof().isEmpty(),"Exact positions cannot bypass hard quality or absent direct support");
         }
         var runs=new ArrayList<>(batch.runs());var run=runs.get(0);var inference=run.result().inference();
-        var cancelled=new TraceHypothesisSet(inference.engine(),inference.hypotheses(),TraceHypothesisSet.Status.CANCELLED,false,inference.evaluatedStates(),inference.evaluatedTransitions(),"cancelled");
-        runs.set(0,new IntervalTraceBatch.IntervalRun(run.interval(),run.request(),new ModernTracePipeline.Result(cancelled,run.routes()),run.usage()));
+        var cancelled=new TraceHypothesisSet(inference.engine(),List.of(),TraceHypothesisSet.Status.CANCELLED,false,inference.evaluatedStates(),inference.evaluatedTransitions(),"cancelled");
+        runs.set(0,new IntervalTraceBatch.IntervalRun(run.interval(),run.request(),new ModernTracePipeline.Result(cancelled,List.of()),run.usage()));
         assertTrue(composer.compose(new IntervalTraceBatch(batch.fullRequest(),batch.evidence(),batch.network(),batch.partition(),runs,batch.options()),Map.of()).noChangeProof().isEmpty());
         assertTrue(composer.compose(noSignalBatch(),Map.of()).noChangeProof().isEmpty(),"An all-frozen/no-signal result cannot mint no-write authority");
     }
