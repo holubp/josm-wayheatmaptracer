@@ -55,14 +55,15 @@ class VisibleRefinementWorkflowTest {
                     workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.STRONG);
                 });
                 drain(workers,publications,workflow[0]);
-                var strong=workflow[0].selectedGeometry();
+                var strong=new java.util.concurrent.atomic.AtomicReference<List<EastNorth>>();
+                SwingUtilities.invokeAndWait(()->strong.set(workflow[0].selectedGeometry()));
                 SwingUtilities.invokeAndWait(()->{
                     assertEquals("Strong",workflow[0].currentStage().smoothingInput().orElseThrow().preset());
                     ((JButton)find(workflow[0].controls(),"undo")).doClick();
                     workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.STRONG);
                 });
                 drain(workers,publications,workflow[0]);
-                SwingUtilities.invokeAndWait(()->{assertEquals(strong,workflow[0].selectedGeometry());assertEquals(0,workflow[0].actualNativeCalls());workflow[0].refine(TrackerMode.PROBABILISTIC);});
+                SwingUtilities.invokeAndWait(()->{assertEquals(strong.get(),workflow[0].selectedGeometry());assertEquals(0,workflow[0].actualNativeCalls());workflow[0].refine(TrackerMode.PROBABILISTIC);});
                 drain(workers,publications,workflow[0]);
                 SwingUtilities.invokeAndWait(()->assertTrue(workflow[0].actualNativeCalls()>0,"A smoothed parent must permit requested native work"));
             } finally {SwingUtilities.invokeAndWait(()->{workflow[0].close();owner[0].close();});}

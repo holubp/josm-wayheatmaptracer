@@ -273,6 +273,10 @@ jobs:
             report: public-gui-smoke-migrate-b
             mode: PRECISE_SHAPE
             order: A_B
+          - engine: PROBABILISTIC
+            report: public-gui-smoke-native-interval
+            mode: PRECISE_SHAPE
+            order: INTERVAL
           - engine: LEGACY_THEN_B
             report: public-gui-smoke-migrate-sequential
             mode: PRECISE_SHAPE
@@ -349,6 +353,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - engine: PROBABILISTIC
+            report: public-gui-smoke-native-interval
+            mode: PRECISE_SHAPE
+            order: INTERVAL
           - engine: PROBABILISTIC
             report: public-gui-smoke-migrate-b
             mode: PRECISE_SHAPE

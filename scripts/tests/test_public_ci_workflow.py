@@ -118,6 +118,7 @@ def test_public_gui_smoke_is_xvfb_gated_and_failure_remains_a_job_failure() -> N
         "fail-fast": "false",
         "matrix": {"include": [
             {"engine": "PROBABILISTIC", "report": "public-gui-smoke-migrate-b", "mode": "PRECISE_SHAPE", "order": "A_B"},
+            {"engine": "PROBABILISTIC", "report": "public-gui-smoke-native-interval", "mode": "PRECISE_SHAPE", "order": "INTERVAL"},
             {"engine": "LEGACY_THEN_B", "report": "public-gui-smoke-migrate-sequential", "mode": "PRECISE_SHAPE", "order": "A_B"},
             {"engine": "CORRIDOR_AWARE", "report": "public-gui-smoke-migrate-a", "mode": "MOVE_EXISTING_NODES", "order": "A_B"},
             {"engine": "LEGACY_V02", "report": "public-gui-smoke-stepwise-precise-a-b", "mode": "PRECISE_SHAPE", "order": "A_B"},

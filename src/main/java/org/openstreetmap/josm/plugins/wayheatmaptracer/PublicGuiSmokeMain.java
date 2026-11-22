@@ -90,6 +90,8 @@ public final class PublicGuiSmokeMain {
                     report.getParent().resolve("public-input"));
             if (!fixture.tilesUsable()) throw new IllegalStateException("Public Hot tile is unusable");
             ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+            boolean intervalGui="INTERVAL".equals(System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder"));
+            if(intervalGui)onEventThread(()->{configureIntervalFixture(fixture);return null;});
             AlignmentMode requestedMode=AlignmentMode.valueOf(System.getProperty("wayheatmaptracer.guiSmoke.alignmentMode","PRECISE_SHAPE"));
             AlignmentMode savedMode = engine == TrackerMode.LEGACY_THEN_B
                 ? AlignmentMode.MOVE_EXISTING_NODES
@@ -175,6 +177,7 @@ public final class PublicGuiSmokeMain {
                 if (!onEventThread(() -> preview.isVisible() && preview.isDisplayable())) {
                     throw new IllegalStateException("Selected production preview is no longer visible");
                 }
+                if(intervalGui){runNativeIntervalGui(report,fixture,preview,session,original,originalUndo);System.exit(0);return;}
                 var selectedAttempt = session.currentAttempt();
                 if (selectedAttempt == null || selectedAttempt.sequence() != ready.sequence()
                         || selectedAttempt.state() != AlignmentJob.State.PREVIEW_READY) {
@@ -271,6 +274,53 @@ public final class PublicGuiSmokeMain {
     }
 
     /** Drives the actual Legacy modeless dialog and its existing refinement controls. */
+    private static void configureIntervalFixture(PublicGuiSmokeFixture fixture) {
+        var nodes=fixture.selectedWay().getNodes();
+        for(int i=3;i<=7;i++) {
+            double east=-40+8*i;var point=PublicGuiSmokeOracle.point(east,4*Math.max(0,Math.cos(Math.PI*east/64)));
+            nodes.get(i).setCoor(new org.openstreetmap.josm.data.coor.LatLon(point.latitudeDegrees(),point.longitudeDegrees()));
+        }
+        nodes.get(3).put("note","public fixed island boundary");nodes.get(7).put("note","public fixed island boundary");
+        var point=PublicGuiSmokeOracle.point(0,34);var other=new Node(new org.openstreetmap.josm.data.coor.LatLon(point.latitudeDegrees(),point.longitudeDegrees()));other.setOsmId(9001,1);fixture.dataSet().addPrimitive(other);
+        var branch=new org.openstreetmap.josm.data.osm.Way();branch.setOsmId(9002,1);branch.setNodes(List.of(nodes.get(5),other));branch.put("highway","path");fixture.dataSet().addPrimitive(branch);
+        fixture.dataSet().allPrimitives().forEach(value->value.setModified(false));
+    }
+    private static void runNativeIntervalGui(Path report,PublicGuiSmokeFixture fixture,JDialog preview,PreviewSessionController<?> session,List<String> original,int originalUndo) throws Exception {
+        var owner=onEventThread(()->{
+            var attempt=session.currentAttempt();if(attempt==null||!(attempt.result() instanceof LiveBPreviewService.Computed computed)||!computed.partitioned()
+                    ||computed.intervalBatch().runs().stream().noneMatch(run->run.usage().transitions()>0))throw new IllegalStateException("Actual native interval inference unavailable");
+            var value=preview.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner");
+            if(!(value instanceof LegacyRefinementWorkflow workflow)||preview.isModal())throw new IllegalStateException("Native interval modeless refinement owner unavailable");
+            for(String name:List.of("refineA","refineB","smooth"))if(!requiredNamed(preview.getContentPane(),name,javax.swing.JButton.class).isShowing())throw new IllegalStateException("Native interval optional control unavailable");
+            return workflow;
+        });
+        clickAndAwaitStage(report,preview,owner,"refineA",StageKind.REFINE_A);
+        var firstParent=onEventThread(()->owner.currentStage().parentChoice().orElseThrow());int calls=owner.actualNativeCalls();
+        onEventThread(()->{requiredNamed(preview.getContentPane(),"undo",javax.swing.JButton.class).doClick();return null;});
+        awaitIntervalSelection(preview,owner,()->{
+            var sources=requiredNamed(preview.getContentPane(),"refinement-root-source",JComboBox.class);
+            if(!sources.isShowing()||sources.getItemCount()<2)throw new IllegalStateException("Native interval fixture needs actual source alternatives");sources.setSelectedIndex(1);
+        });
+        var rootChoice=onEventThread(()->{
+            if(!owner.atRoot()||owner.actualNativeCalls()!=calls||owner.selectedChoiceIdentity().equals(firstParent.value()))throw new IllegalStateException("Root source selection did not retain its exact independent candidate");
+            var id=owner.selectedChoiceIdentity();requiredNamed(preview.getContentPane(),"redo",javax.swing.JButton.class).doClick();
+            if(!owner.currentStage().parentChoice().orElseThrow().equals(firstParent))throw new IllegalStateException("Root selection rewrote saved descendant lineage");
+            requiredNamed(preview.getContentPane(),"undo",javax.swing.JButton.class).doClick();
+            if(!id.equals(owner.selectedChoiceIdentity())||requiredNamed(preview.getContentPane(),"refinement-root-source",JComboBox.class).getSelectedIndex()!=1)throw new IllegalStateException("Cached native interval root controls were not restored");return id;
+        });
+        requireUnchanged(fixture,original,originalUndo);
+        onEventThread(()->{if(owner.actualNativeCalls()!=calls)throw new IllegalStateException("Cached interval navigation performed inference");preview.dispatchEvent(new WindowEvent(preview,WindowEvent.WINDOW_CLOSING));return null;});
+        requireUnchanged(fixture,original,originalUndo);
+        writeSummary(report,"{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\",\"status\":\"PASS\",\"engine\":\"PROBABILISTIC\",\"nativeInterval\":true,\"modeless\":true,\"cachedUndoRedo\":true,\"rootSourceChoice\":\""+rootChoice+"\",\"actualNativeCalls\":"+calls+"}\n");
+    }
+    private static void awaitIntervalSelection(JDialog dialog,LegacyRefinementWorkflow owner,Runnable choose) throws Exception {
+        var ready=new CompletableFuture<Void>();var observed=new AtomicBoolean();
+        Runnable check=()->{if(!observed.get())return;if(owner.busy()){requireComputingView(dialog);return;}if(owner.ownsPublication())ready.complete(null);else ready.completeExceptionally(new IllegalStateException("Interval root selection lost its owner"));};
+        java.beans.PropertyChangeListener listener=event->SwingUtilities.invokeLater(check);
+        var control=onEventThread(()->requiredNamed(dialog.getContentPane(),"refineA",javax.swing.JButton.class));
+        try{onEventThread(()->{control.addPropertyChangeListener(listener);observed.set(true);choose.run();SwingUtilities.invokeLater(check);return null;});ready.get(180,TimeUnit.SECONDS);}
+        finally{onEventThread(()->{control.removePropertyChangeListener(listener);return null;});}
+    }
     private static void runStepwiseGui(Path report,PublicGuiSmokeFixture fixture,AlignWayAction action,
             PreviewSessionController<?> session,List<String> original,int originalUndo,AlignmentMode requestedMode,
             TrackerMode savedEngine) throws Exception {
