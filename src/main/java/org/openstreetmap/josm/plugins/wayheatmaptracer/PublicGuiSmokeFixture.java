@@ -84,6 +84,16 @@ final class PublicGuiSmokeFixture {
 
     DataSet dataSet() { return dataSet; }
     Way selectedWay() { return selectedWay; }
+    /** Compact ordinary OSM error around the same measured public PNG ridge; imagery is unchanged. */
+    void configureCompactVisibleSelection() {
+        if(!javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Public OSM fixture setup requires EDT");
+        for(int i=0;i<selectedWay.getNodesCount();i++){
+            double east=-16+32.*i/(selectedWay.getNodesCount()-1),ridge=4*Math.cos(Math.PI*east/64);
+            double error=i==0||i==selectedWay.getNodesCount()-1?0:1.5;
+            var point=PublicGuiSmokeOracle.point(east,ridge-error);
+            selectedWay.getNode(i).setCoor(new org.openstreetmap.josm.data.coor.LatLon(point.latitudeDegrees(),point.longitudeDegrees()));
+        }
+    }
     int tileCount() { return tiles.size(); }
     /** Static public z15 pixels for the controlled JOSM visible painter; no tile loading is claimed. */
     VisibleTile visibleTile() throws Exception {var tile=tiles.get(15);return new VisibleTile(ImageIO.read(tile.path().toFile()),tile.address());}

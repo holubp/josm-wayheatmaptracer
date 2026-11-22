@@ -27,11 +27,19 @@ final class PublicGuiSmokeOracle {
      * zones, so every exported sample there must follow the measured ridge.
      */
     static void verifyFinalGeometry(List<GeographicPoint> geometry) {
+        verifyFinalGeometry(geometry,point(-40,0),point(40,0));
+    }
+    /** Same image ridge and central error oracle, with explicitly supported compact fixture endpoints. */
+    static void verifyCompactVisibleFinalGeometry(List<GeographicPoint> geometry) {
+        double end=4*Math.cos(Math.PI*16/64);
+        verifyFinalGeometry(geometry,point(-16,end),point(16,end));
+    }
+    private static void verifyFinalGeometry(List<GeographicPoint> geometry,GeographicPoint first,GeographicPoint last) {
         if (geometry == null || geometry.size() < 3) {
             throw new IllegalStateException("Public preview has no sampled interior geometry");
         }
-        requireNear(geometry.get(0), point(-40, 0), 0.01, "first fixed endpoint");
-        requireNear(geometry.get(geometry.size() - 1), point(40, 0), 0.01,
+        requireNear(geometry.get(0), first, 0.01, "first fixed endpoint");
+        requireNear(geometry.get(geometry.size() - 1), last, 0.01,
                 "last fixed endpoint");
         int central = 0;
         double maximumCentralError = 0.0;

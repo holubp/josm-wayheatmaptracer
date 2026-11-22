@@ -134,6 +134,7 @@ public final class PublicGuiSmokeMain {
                 ||engine==TrackerMode.CORRIDOR_AWARE&&requestedMode==AlignmentMode.PRECISE_SHAPE
                 ? registeredOrdinaryAction() : registeredEntryAction(engine));
             PreviewSessionController<?> session = productionSession(plugin);
+            if(visibleGui){qualifyLargeVisibleLimitedReview(report,fixture,action,session);onEventThread(()->{fixture.configureCompactVisibleSelection();return null;});}
             List<String> original = wayState(fixture);
             int originalUndo = UndoRedoHandler.getInstance().getUndoCommands().size();
             if(PluginPreferences.loadTracingSettings().engine()==TrackerMode.LEGACY_V02){
@@ -226,7 +227,7 @@ public final class PublicGuiSmokeMain {
                     throw new IllegalStateException("Selected route and frozen preview differ");
                 }
                 List<GeographicPoint> geometry = plan.finalPreviewWays().get(plan.selectedWayKey());
-                PublicGuiSmokeOracle.verifyFinalGeometry(geometry);
+                verifyGuiFinalGeometry(geometry);
                 requireUnchanged(fixture, original, originalUndo);
                 if(engine==TrackerMode.CORRIDOR_AWARE||engine==TrackerMode.PROBABILISTIC) {
                     exerciseOriginalNativeApply(preview,fixture,geometry,original,originalUndo);
@@ -524,7 +525,7 @@ public final class PublicGuiSmokeMain {
             requireOverlayGeometry(action,finalGeometry);return null;
         });
         if(finalCalls!=owner.actualNativeCalls()||!finalSource.equals(ManagedTileRuntime.initializedCoordinator().stats()))throw new IllegalStateException("Chained cached navigation performed work");
-        PublicGuiSmokeOracle.verifyFinalGeometry(plan.finalPreviewWays().get(plan.selectedWayKey()));
+        verifyGuiFinalGeometry(plan.finalPreviewWays().get(plan.selectedWayKey()));
         requireUnchanged(fixture,original,originalUndo);
         if(onEventThread(()->requiredNamed(preview.getContentPane(),"legacy-confirm",javax.swing.JButton.class).isVisible()))confirmStepwise(preview);
         var appliedExpected=onEventThread(()->snapshotExport(owner,requestedMode,originalCoordinates,rootChoice,rootGeometry,firstStage,firstChoice,firstGeometry));
@@ -926,6 +927,37 @@ public final class PublicGuiSmokeMain {
     private static final java.util.concurrent.atomic.AtomicReference<Runnable> visiblePaintFault=new java.util.concurrent.atomic.AtomicReference<>();
     private static final java.util.concurrent.atomic.AtomicInteger visiblePaintCalls=new java.util.concurrent.atomic.AtomicInteger();
     /** Independent public pixels prove the actual native viewport, metadata and two-chunk assembly. */
+    private static void verifyGuiFinalGeometry(List<GeographicPoint> geometry) {
+        if("VISIBLE_B_A".equals(System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder")))PublicGuiSmokeOracle.verifyCompactVisibleFinalGeometry(geometry);
+        else PublicGuiSmokeOracle.verifyFinalGeometry(geometry);
+    }
+    /** Retain the original80m real native result and its bounded export refusal as a separate case. */
+    private static void qualifyLargeVisibleLimitedReview(Path report,PublicGuiSmokeFixture fixture,AlignWayAction action,PreviewSessionController<?> session) throws Exception {
+        var original=wayState(fixture);int undo=UndoRedoHandler.getInstance().getUndoCommands().size();
+        var opened=new CompletableFuture<JDialog>();
+        AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog dialog&&isPreview(dialog))opened.complete(dialog);};
+        Toolkit.getDefaultToolkit().addAWTEventListener(listener,AWTEvent.WINDOW_EVENT_MASK);
+        JDialog dialog=null;
+        try{
+            onEventThread(()->{action.actionPerformed(null);return null;});dialog=opened.get(180,TimeUnit.SECONDS);
+            var visible=dialog;if(!onEventThread(()->visible.isVisible()&&!visible.isModal()))throw new IllegalStateException("Large visible result must remain modeless");
+            var ready=session.currentAttempt();
+            if(ready==null||ready.state()!=AlignmentJob.State.PREVIEW_READY||!(ready.result() instanceof LiveBPreviewService.Computed actual)||actual.partitioned()
+                    ||actual.pipeline().inference().status()!=org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet.Status.AMBIGUOUS||actual.pipeline().routes().size()!=1)
+                throw new IllegalStateException("Large visible limited case lost its actual native ambiguous route");
+            var archive=Format15ArchiveReader.read(exportThroughActualMenu());
+            String status=artifactText(archive,"attempt-status.json"),failure=artifactText(archive,"failure-summary.json");
+            if(!status.contains("\"sourceLineage\":\"visible-layer\"")||!status.contains("\"FULL_EDIT_PLAN\":false")||archive.artifact("frozen-edit-plan.bin").isPresent()
+                    ||!failure.contains("\"phase\":\"DIAGNOSTIC_EXPORT\"")||!failure.contains("\"finalRoutes\":1")
+                    ||!failure.contains("\"evaluatedTransitions\":"+actual.pipeline().inference().evaluatedTransitions()))throw new IllegalStateException("Limited visible export fabricated capability or lost actual native work");
+            System.err.println("GUI_SMOKE_VISIBLE_LIMITED "+failure);
+            if(!failure.contains("\"exceptionKind\":")||!failure.contains("\"boundary\":\"FULL_ROUTE_DIAGNOSTIC_BUNDLE\""))throw new IllegalStateException("Actual visible export exception kind and fixed builder boundary are unavailable");
+            requireUnchanged(fixture,original,undo);
+        }finally{
+            if(dialog!=null){var closing=dialog;var closed=observeClose(closing);onEventThread(()->{closing.dispatchEvent(new WindowEvent(closing,WindowEvent.WINDOW_CLOSING));return null;});closed.get(30,TimeUnit.SECONDS);}
+            Toolkit.getDefaultToolkit().removeAWTEventListener(listener);requireUnchanged(fixture,original,undo);
+        }
+    }
     private static void verifyNativeVisibleCaptureContract(PublicGuiSmokeFixture fixture) throws Exception {
         var view=MainApplication.getMap().mapView;var layer=org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.HeatmapLayerResolver.resolve();
         System.err.println("GUI_SMOKE_VISIBLE_BEFORE showing="+view.isShowing()+" component="+view.getWidth()+"x"+view.getHeight()+" state="+view.getState().getViewWidth()+"x"+view.getState().getViewHeight()+" scale="+view.getScale());
@@ -2029,7 +2061,7 @@ public final class PublicGuiSmokeMain {
             if (assessment.plan().isEmpty()) continue;
             var plan = assessment.plan().orElseThrow();
             try {
-                PublicGuiSmokeOracle.verifyFinalGeometry(plan.finalPreviewWays().get(plan.selectedWayKey()));
+                verifyGuiFinalGeometry(plan.finalPreviewWays().get(plan.selectedWayKey()));
                 selected = i;
             } catch (IllegalStateException rejectedGeometry) {
                 // Other actual alternatives may disagree with the analytic ridge.
