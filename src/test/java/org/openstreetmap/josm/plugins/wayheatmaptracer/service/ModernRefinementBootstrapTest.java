@@ -55,6 +55,37 @@ class ModernRefinementBootstrapTest {
                 assertEquals(points.size(),payload.nativeReview().orElseThrow().finalPointIds().orElseThrow().size());
                 assertEquals(assessment,payload.rootReviewState().orElseThrow().intervalAssessment().orElseThrow());
             }
+            var alternatives=java.util.stream.IntStream.range(0,computed.intervalBatch().runs().size()).filter(i->computed.intervalBatch().runs().get(i).routes().size()>1).boxed().toList();
+            assertFalse(alternatives.isEmpty(),"Public native interval fixture must contain a factual alternative");
+            var alternativeChoices=Map.of(alternatives.get(0),1);
+            var alternativeAssessment=new FixedIntervalEditPlanComposer().compose(computed.intervalBatch(),alternativeChoices);
+            assertTrue(alternativeAssessment.plan().isPresent(),alternativeAssessment.toString());
+            var workers=new java.util.concurrent.LinkedBlockingQueue<Runnable>();var publications=new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+            var workflow=new LegacyRefinementWorkflow[1];
+            SwingUtilities.invokeAndWait(()->{
+                workflow[0]=new LegacyRefinementWorkflow(root[0],null,root[0]::select,d->{},s->{},workers::add,publications::add);
+                workflow[0].refine(TrackerMode.CORRIDOR_AWARE);
+            });
+            try {
+                VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
+                SwingUtilities.invokeAndWait(()->{
+                    assertTrue(workflow[0].currentStage().kind().name().startsWith("REFINE"),workflow[0].computationEvidence());
+                    ((javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"undo")).doClick();
+                    workflow[0].selectIntervalComposition(new ModernReviewRoot.IntervalSelection(computed,alternativeChoices,alternativeAssessment));
+                });
+                int calls=workflow[0].actualNativeCalls();
+                VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
+                SwingUtilities.invokeAndWait(()->{
+                    assertEquals(calls,workflow[0].actualNativeCalls(),"Root selection materialization performs no inference");
+                    var selected=workflow[0].currentStage().candidates().stream().filter(c->c.id().equals(workflow[0].currentStage().selected())).findFirst().orElseThrow();
+                    assertEquals(alternativeChoices,selected.payload().rootReviewState().orElseThrow().routeChoices());
+                    var selectedId=selected.id();
+                    var redo=(javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"redo");assertTrue(redo.isEnabled());redo.doClick();
+                    assertNotEquals(selectedId,workflow[0].currentStage().parentChoice().orElseThrow(),"The saved child retains its original exact composition parent");
+                    ((javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"undo")).doClick();
+                    assertEquals(selectedId,workflow[0].currentStage().selected());assertEquals(calls,workflow[0].actualNativeCalls());
+                });
+            } finally {SwingUtilities.invokeAndWait(workflow[0]::close);}
         } finally {SwingUtilities.invokeAndWait(root[0]::close);}
     }
     @Test void nativeRootSupportsHistoryWithoutLegacyInference() throws Exception {
