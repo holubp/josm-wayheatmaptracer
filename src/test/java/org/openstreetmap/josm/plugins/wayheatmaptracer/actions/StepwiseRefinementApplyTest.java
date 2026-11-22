@@ -24,8 +24,23 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCoun
 
 /** Actual unchanged Legacy command seam; descendant original-authority transaction gates remain separate. */
 class StepwiseRefinementApplyTest {
+    /** MemoryPreferences intentionally emits no change events; exercise the live event contract. */
+    private static final class EventfulPreferences extends MemoryPreferences {
+        private final List<PreferenceChangedListener> listeners=new ArrayList<>();
+        @Override public void addPreferenceChangeListener(PreferenceChangedListener listener){listeners.add(listener);}
+        @Override public void removePreferenceChangeListener(PreferenceChangedListener listener){listeners.remove(listener);}
+        @Override public boolean putSetting(String key,Setting<?> value) {
+            var old=getAllSettings().get(key);boolean result=super.putSetting(key,value);
+            if(!Objects.equals(old,value))for(var listener:List.copyOf(listeners))listener.preferenceChanged(new PreferenceChangeEvent(){
+                public Class<?> getSource(){return EventfulPreferences.class;}public String getKey(){return key;}
+                public Setting<?> getOldValue(){return old;}public Setting<?> getNewValue(){return value;}
+            });return result;
+        }
+    }
     @Test void detachedCommandContextRejectsChangedPreferencesWithoutRetainingCapture() throws Exception {
         SwingUtilities.invokeAndWait(()->{
+            var previousPreferences=Config.getPref();Config.setPreferencesInstance(new EventfulPreferences());
+            try {
             var guard=AlignWayAction.detachedCommandContext(null,null,null);
             assertDoesNotThrow(guard::run);
             for(var field:guard.getClass().getDeclaredFields()) {
@@ -40,6 +55,7 @@ class StepwiseRefinementApplyTest {
             var tracing=PluginPreferences.loadTracingSettings();
             try {PluginPreferences.saveTracingSettings(new TracingSettings(tracing.schemaVersion(),tracing.engine()==TrackerMode.PROBABILISTIC?TrackerMode.CORRIDOR_AWARE:TrackerMode.PROBABILISTIC,tracing.recovery(),tracing.diagnosticComparisons(),tracing.sourceMode()));assertThrows(IllegalStateException.class,fresh::run);}
             finally {PluginPreferences.saveTracingSettings(tracing);}
+            } finally {Config.setPreferencesInstance(previousPreferences);}
         });
     }
     @BeforeAll static void setup() {

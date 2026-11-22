@@ -68,17 +68,17 @@ class ModernRefinementBootstrapTest {
             double east=-200+x/3.0,north=20-y/3.0;
             double branch=east>-140&&east< -110?-4*Math.pow(Math.sin(Math.PI*(east+140)/30),2):0;
             double primary=Math.exp(-.5*north*north/1.44),secondary=Math.exp(-.5*Math.pow(north-branch,2)/1.44);
-            // Actual middle trace is x=-40..40. Strict output-grid bilinear reaches one
-            // 1.56m cell; capture inverse bilinear adds one1/3m input pixel. Snap
-            // ceil(3*(40+1.56+1/3))/3=42 outward in this original pixel frame.
-            int gray=Math.abs(east)<=42?0:(int)Math.round(255*(.02+.8*Math.max(primary,secondary)));
+            // Actual middle trace is x=-40..40. RAW_HIGH_RESOLUTION retains this
+            // 1/3m grid. One output bilinear cell plus one input pixel reaches
+            // ceil(3*(40+1/3+1/3))/3=40 2/3m in the original pixel frame.
+            int gray=x>=478&&x<=722?0:(int)Math.round(255*(.02+.8*Math.max(primary,secondary)));
             pixels[y*width+x]=0xff000000|gray<<16|gray<<8|gray;
         }
         var raster=new LiveBPreviewService.VisibleRaster(width,height,pixels,-200,-20,200,20,2,2,OptionalDouble.of(2),"visible-interval-root-test","EPSG:3857",epoch.captureStable());
         var service=new LiveBPreviewService();var capture=new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(()->capture[0]=service.capture(data,selection,raster,config,true));
         var computed=service.compute(capture[0],CancellationProbe.NONE);assertTrue(computed.partitioned());assertNull(computed.pipeline());
-        assertEquals(1.56,computed.evidence().resolution().resampledPitchMeters().orElseThrow(),1e-12);
+        assertEquals(1./3,computed.evidence().resolution().resampledPitchMeters().orElseThrow(),1e-12);
         var missing=computed.intervalBatch().runs().stream().filter(run->run.interval().traceRange().firstIndex()==11&&run.interval().traceRange().lastIndex()==19).findFirst().orElseThrow();
         assertEquals("NO_ROUTE",missing.result().inference().status().name());assertTrue(missing.routes().isEmpty());
         var assessment=new FixedIntervalEditPlanComposer().compose(computed.intervalBatch(),Map.of());assertTrue(assessment.plan().isPresent(),assessment.toString());
