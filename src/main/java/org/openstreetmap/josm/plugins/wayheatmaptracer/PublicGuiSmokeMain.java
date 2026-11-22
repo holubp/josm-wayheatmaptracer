@@ -158,6 +158,7 @@ public final class PublicGuiSmokeMain {
                 if (ready == null || ready.state() != AlignmentJob.State.PREVIEW_READY) {
                     throw new IllegalStateException("Production preview attempt is not ready");
                 }
+                if(intervalGui){runNativeIntervalGui(report,fixture,preview,session,original,originalUndo);System.exit(0);return;}
                 String initialStatus = artifactText(latestArchive(report.getParent()),
                         "attempt-status.json");
                 if (!initialStatus.contains("\"routeIndex\":0")) {
@@ -177,7 +178,6 @@ public final class PublicGuiSmokeMain {
                 if (!onEventThread(() -> preview.isVisible() && preview.isDisplayable())) {
                     throw new IllegalStateException("Selected production preview is no longer visible");
                 }
-                if(intervalGui){runNativeIntervalGui(report,fixture,preview,session,original,originalUndo);System.exit(0);return;}
                 var selectedAttempt = session.currentAttempt();
                 if (selectedAttempt == null || selectedAttempt.sequence() != ready.sequence()
                         || selectedAttempt.state() != AlignmentJob.State.PREVIEW_READY) {
