@@ -2577,7 +2577,7 @@ class V022LiveBPreviewServiceTest {
         return fixture;
     }
 
-    private static LiveBPreviewService.VisibleRaster raster() {
+    static LiveBPreviewService.VisibleRaster raster() {
         return rasterAt(288.0);
     }
 
@@ -2622,7 +2622,7 @@ class V022LiveBPreviewServiceTest {
         return config(TrackerMode.PROBABILISTIC);
     }
 
-    private static AlignmentConfig config(TrackerMode trackerMode) {
+    static AlignmentConfig config(TrackerMode trackerMode) {
         ManagedHeatmapConfig heatmap = new ManagedHeatmapConfig("", "", "", "", "all", "hot", "", ".*",
                 AlignmentMode.PRECISE_SHAPE, trackerMode, false, false,
                 false, false, false, false, false, false, false, false,
@@ -2709,7 +2709,7 @@ class V022LiveBPreviewServiceTest {
                 + ":tags=" + primitive.getKeys() + ":" + payload;
     }
 
-    private static Fixture fiveNodeFixture() {
+    static Fixture fiveNodeFixture() {
         DataSet dataSet = new DataSet();
         List<Node> nodes = List.of(
                 loadedNode(101, 0.0, longitude(-8)),
@@ -2745,5 +2745,5 @@ class V022LiveBPreviewServiceTest {
         all.addAll(closure.removableExistingNodeKeys());
         assertEquals(Set.copyOf(keys), all);
     }
-    private record Fixture(DataSet dataSet, SelectionContext selection) { }
+    record Fixture(DataSet dataSet, SelectionContext selection) { }
 }

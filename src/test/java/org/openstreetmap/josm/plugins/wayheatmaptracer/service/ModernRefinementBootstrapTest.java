@@ -1,0 +1,53 @@
+package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
+
+import static org.junit.jupiter.api.Assertions.*;
+import java.util.*;
+import javax.swing.SwingUtilities;
+import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.data.projection.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch;
+import org.openstreetmap.josm.spi.preferences.*;
+
+class ModernRefinementBootstrapTest {
+    @Test void nativeRootSupportsHistoryWithoutLegacyInference() throws Exception {
+        Config.setPreferencesInstance(new MemoryPreferences());
+        ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+        var service=new LiveBPreviewService();
+        for(var engine:List.of(TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC))for(var mode:AlignmentMode.values()) {
+            var fixture=V022LiveBPreviewServiceTest.fiveNodeFixture();
+            var base=V022LiveBPreviewServiceTest.config(engine);
+            var config=new AlignmentConfig(base.heatmap().withAlignmentMode(mode),base.cleanup());
+            var pixels=V022LiveBPreviewServiceTest.raster();var epoch=new VisibleSourceEpoch();
+            var raster=new LiveBPreviewService.VisibleRaster(pixels.width(),pixels.height(),pixels.argb(),pixels.minimumEast(),pixels.minimumNorth(),pixels.maximumEast(),pixels.maximumNorth(),pixels.projectionUnitsPerViewPixel(),pixels.groundMetersPerViewPixel(),pixels.nativePitchMeters(),pixels.sourceIdentity(),pixels.projectionCode(),epoch.captureStable());
+            var capture=new LiveBPreviewService.Captured[1];
+            SwingUtilities.invokeAndWait(()->capture[0]=service.capture(fixture.dataSet(),fixture.selection(),raster,config,true));
+            var computed=service.compute(capture[0],CancellationProbe.NONE);
+            var choices=service.adaptChoices(computed,g->ProjectionRegistry.getProjection().latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(g.latitudeDegrees(),g.longitudeDegrees())));
+            assertFalse(choices.isEmpty());
+            var review=new ModernReviewRoot[1];
+            SwingUtilities.invokeAndWait(()->{
+                review[0]=ModernReviewRoot.fromFullChoices(fixture.dataSet(),fixture.selection(),config,choices,null,()->{});
+                review[0].select(choices.get(choices.size()-1).candidate());
+            });
+            try(var memory=AttemptMemoryLedger.production().rootOwner()) {
+                var work=new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,memory);
+                try(var prepared=new ModernRefinementBootstrap().complete(review[0],work)) {
+                    assertSame(capture[0].network(),prepared.root().authority().network());
+                    assertSame(computed.request(),prepared.root().authority().request());
+                    assertEquals(engine,prepared.root().stage().engine());
+                    assertEquals("ROOT_NATIVE",prepared.root().stage().kind().name());
+                    assertSame(capture[0].originalReceipt().orElseThrow(),prepared.root().receipt());
+                    var selected=prepared.root().stage().candidates().stream().filter(c->c.id().equals(prepared.root().stage().selected())).findFirst().orElseThrow();
+                    assertEquals(choices.get(choices.size()-1).localRouteIndex(),selected.payload().rootReviewState().orElseThrow().fullRouteIndex().orElseThrow());
+                    assertEquals(mode,prepared.root().authority().request().geometryMode());
+                    assertSame(capture[0].network(),selected.payload().nativeReview().orElseThrow().plan().before());
+                    epoch.sourceChanged();assertThrows(IllegalStateException.class,prepared.source()::requireCurrent);
+                }
+            } finally {SwingUtilities.invokeAndWait(review[0]::close);}
+        }
+    }
+}

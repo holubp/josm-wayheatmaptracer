@@ -82,7 +82,7 @@ jobs:
         run: |
           case "$GITHUB_REF" in
             refs/heads/codex/g004-stepwise-20261119)
-              filters=(--tests '*VisibleRefinementWorkflowTest' --tests '*RefinementAttemptDiagnosticsTest' --tests '*RefinementLineageCodecTest' --tests '*RefinementSessionTest' --tests '*PluginPreferencesTest' --tests '*RefinementRootAuthorityTest' --tests '*HeatmapSettingsDialogTest' --tests '*V022LiveBPreviewServiceTest.distantCompleteReceiverKeepsInteriorJunctionFixedDuringCapture' --tests '*RefinementSmoothingAdapterTest' --tests '*SmoothingParentBinderTest' --tests '*SmoothingWorkContextTest' --tests '*RetainedSmoothingRootTest')
+              filters=(--tests '*VisibleRefinementWorkflowTest' --tests '*RefinementAttemptDiagnosticsTest' --tests '*RefinementLineageCodecTest' --tests '*RefinementSessionTest' --tests '*PluginPreferencesTest' --tests '*RefinementRootAuthorityTest' --tests '*HeatmapSettingsDialogTest' --tests '*V022LiveBPreviewServiceTest.distantCompleteReceiverKeepsInteriorJunctionFixedDuringCapture' --tests '*RefinementSmoothingAdapterTest' --tests '*SmoothingParentBinderTest' --tests '*SmoothingWorkContextTest' --tests '*RetainedSmoothingRootTest' --tests '*ModernRefinementBootstrapTest')
               ;;
             refs/heads/codex/g004-smoothing-adapter-20261121)
               filters=(
@@ -122,6 +122,7 @@ jobs:
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.SmoothingParentBinderTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.SmoothingWorkContextTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RetainedSmoothingRootTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.ModernRefinementBootstrapTest.xml",
               ],
               "refs/heads/codex/g004-smoothing-adapter-20261121": [
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementSmoothingAdapterTest.xml",
@@ -158,7 +159,7 @@ jobs:
           from pathlib import Path
 
           classes = {
-              "refs/heads/codex/g004-stepwise-20261119": ["VisibleRefinementWorkflowTest", "RefinementAttemptDiagnosticsTest", "RefinementLineageCodecTest", "RefinementSessionTest", "PluginPreferencesTest", "RefinementRootAuthorityTest", "HeatmapSettingsDialogTest", "V022LiveBPreviewServiceTest", "RefinementSmoothingAdapterTest", "SmoothingParentBinderTest", "SmoothingWorkContextTest", "RetainedSmoothingRootTest"],
+              "refs/heads/codex/g004-stepwise-20261119": ["VisibleRefinementWorkflowTest", "RefinementAttemptDiagnosticsTest", "RefinementLineageCodecTest", "RefinementSessionTest", "PluginPreferencesTest", "RefinementRootAuthorityTest", "HeatmapSettingsDialogTest", "V022LiveBPreviewServiceTest", "RefinementSmoothingAdapterTest", "SmoothingParentBinderTest", "SmoothingWorkContextTest", "RetainedSmoothingRootTest", "ModernRefinementBootstrapTest"],
               "refs/heads/codex/g004-smoothing-adapter-20261121": [
                   "RefinementSmoothingAdapterTest",
                   "PostprocessingValidationWorkTest",
@@ -200,6 +201,7 @@ jobs:
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/SmoothingParentBinderTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/SmoothingWorkContextTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RetainedSmoothingRootTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/ModernRefinementBootstrapTest.java",
               ],
               "refs/heads/codex/g004-smoothing-adapter-20261121": [
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RefinementSmoothingAdapterTest.java",
