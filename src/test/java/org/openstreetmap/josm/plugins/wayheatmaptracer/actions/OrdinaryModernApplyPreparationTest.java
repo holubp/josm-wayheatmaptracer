@@ -131,7 +131,9 @@ class OrdinaryModernApplyPreparationTest {
             edt(()->{UndoRedoHandler.getInstance().redo();return null;});assertEquals(applied,state(fixture.dataSet()));
             edt(()->{UndoRedoHandler.getInstance().undo();return null;});assertEquals(before,state(fixture.dataSet()));
             attempt.source.updateActiveGeneration(new ManagedTileGeneration(1));assertThrows(IllegalStateException.class,generation::getAsLong);
-            assertFalse(edt(()->prepared.command().executeCommand()));assertEquals(before,state(fixture.dataSet()));assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+            var redo=List.copyOf(UndoRedoHandler.getInstance().getRedoCommands());
+            assertThrows(IllegalStateException.class,()->edt(()->prepared.command().executeCommand()));assertEquals(before,state(fixture.dataSet()));assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+            assertEquals(redo,UndoRedoHandler.getInstance().getRedoCommands());
         }
     }
 

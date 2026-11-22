@@ -148,7 +148,7 @@ class ModernRefinementBootstrapTest {
                     assertEquals(1,recaptures.get(),"A must attempt one bounded same-source capture when the original B image lacks its halo");
                     var diagnostic=workflow[0].latestAttemptDiagnostics().orElseThrow(()->new AssertionError("Latest diagnostics "+workflow[0].attemptDiagnosticsAvailability()+"; "+workflow[0].computationEvidence()));
                     var sourceWork=diagnostic.sourcePreparation().orElseThrow(()->new AssertionError("Source work unavailable: "+diagnostic.phase()+"/"+diagnostic.cause()+"; "+workflow[0].computationEvidence()));
-                    assertEquals(RefinementAttemptDiagnostics.Coverage.RECAPTURED,sourceWork.sourceFacts().orElseThrow().coverage());
+                    assertEquals(RefinementAttemptDiagnostics.Coverage.RECAPTURED,sourceWork.sourceFacts().orElseThrow().coverage(),()->diagnostic.phase()+"/"+diagnostic.cause()+"; auxiliary="+sourceWork.visits()+"; "+workflow[0].computationEvidence());
                     assertTrue(workflow[0].currentStage().kind().name().startsWith("REFINE"),workflow[0].computationEvidence());
                     assertSame(computed.evidence().coordinateFrame(),workflow[0].currentNative().orElseThrow().plan().metricFrame());
                     assertSame(capture[0].network(),workflow[0].currentNative().orElseThrow().plan().before());
@@ -192,6 +192,81 @@ class ModernRefinementBootstrapTest {
         double branch=east>-140&&east< -110?-4*Math.pow(Math.sin(Math.PI*(east+140)/30),2):0;
         double primary=Math.exp(-.5*north*north/1.44),secondary=Math.exp(-.5*Math.pow(north-branch,2)/1.44);
         return Math.abs(east)<=40+2./3?0:(int)Math.round(255*(.02+.8*Math.max(primary,secondary)));
+    }
+    @Test void compactNativeRecaptureKeepsSuccessfulHistoryParentIdentityAndStoredCommand() throws Exception {
+        Config.setPreferencesInstance(new MemoryPreferences());ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+        var fixture=V022LiveBPreviewServiceTest.fiveNodeFixture();var config=V022LiveBPreviewServiceTest.config(TrackerMode.PROBABILISTIC);
+        var epoch=new VisibleSourceEpoch();int width=320,height=160;var pixels=new int[width*height];
+        for(int y=0;y<height;y++)for(int x=0;x<width;x++){int gray=compactGray(-width/12.+x/6.,height/12.-y/6.);pixels[y*width+x]=0xff000000|gray<<16|gray<<8|gray;}
+        var raster=new LiveBPreviewService.VisibleRaster(width,height,pixels,-width/12.,-height/12.,width/12.,height/12.,1,1,OptionalDouble.of(1),"compact-native-recapture","EPSG:3857",epoch.captureStable());
+        var service=new LiveBPreviewService();var capture=new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(()->capture[0]=service.capture(fixture.dataSet(),fixture.selection(),raster,config,true));
+        var computed=service.compute(capture[0],CancellationProbe.NONE);
+        var choices=service.adaptChoices(computed,p->ProjectionRegistry.getProjection().latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(p.latitudeDegrees(),p.longitudeDegrees())));
+        assertTrue(choices.size()>1,"A real joined secondary ridge must supply a noninitial native root choice");
+        var workers=new java.util.concurrent.LinkedBlockingQueue<Runnable>();var publications=new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+        var review=new ModernReviewRoot[1];var workflow=new LegacyRefinementWorkflow[1];var paints=new java.util.concurrent.atomic.AtomicInteger();
+        var renderer=new VisibleRefinementCapture.Renderer(){
+            public void requireCurrent(VisibleRefinementCapture.Request request){epoch.requireCurrent(raster.sourceReceipt());}
+            public VisibleRefinementCapture.Viewport snapshot(){return new VisibleRefinementCapture.Viewport(0,0,1,54,27);}
+            public void restore(VisibleRefinementCapture.Viewport saved){}
+            public VisibleRefinementCapture.RenderedChunk render(VisibleRefinementCapture.Request request,VisibleRefinementCapture.Chunk chunk){
+                assertTrue(SwingUtilities.isEventDispatchThread());paints.incrementAndGet();
+                assertTrue(request.evidencePlan().grid().coordinateFrame().isCertifiedExtensionOf(computed.evidence().coordinateFrame()));
+                for(var polygon:request.evidencePlan().grid().footprint().polygons())for(var point:polygon)assertDoesNotThrow(()->request.evidencePlan().grid().coordinateFrame().toGeographic(point));
+                var image=new java.awt.image.BufferedImage(chunk.viewWidth()*6,chunk.viewHeight()*6,java.awt.image.BufferedImage.TYPE_INT_ARGB);
+                for(int y=0;y<image.getHeight();y++)for(int x=0;x<image.getWidth();x++){int gray=compactGray(chunk.bounds().minimumEast()+x/6.,chunk.bounds().maximumNorth()-y/6.);image.setRGB(x,y,0xff000000|gray<<16|gray<<8|gray);}
+                return new VisibleRefinementCapture.RenderedChunk(image,chunk.bounds(),-1,OptionalDouble.of(1),1);
+            }
+        };
+        var port=new VisibleRefinementCapture(renderer,SwingUtilities::invokeLater,java.util.concurrent.ForkJoinPool.commonPool(),320,320).port();
+        var originalNodes=List.copyOf(fixture.selection().way().getNodes());var originalCoordinates=originalNodes.stream().map(org.openstreetmap.josm.data.osm.Node::getCoor).toList();
+        var originalFlags=fixture.dataSet().allPrimitives().stream().collect(java.util.stream.Collectors.toMap(p->p.getUniqueId(),p->List.of(p.isModified(),p.isDeleted())));
+        SwingUtilities.invokeAndWait(()->{
+            review[0]=ModernReviewRoot.fromFullChoices(fixture.dataSet(),fixture.selection(),config,choices,null,()->{});review[0].select(choices.get(choices.size()-1).candidate());
+            workflow[0]=new LegacyRefinementWorkflow(review[0],null,review[0]::select,d->{},s->{},workers::add,publications::add,port);
+            workflow[0].refine(TrackerMode.CORRIDOR_AWARE);
+        });
+        try {
+            VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
+            var first=VisibleRefinementWorkflowTest.stage(workflow[0]);assertEquals(RefinementModels.StageKind.REFINE_A,first.kind(),workflow[0].computationEvidence());
+            assertTrue(workflow[0].actualNativeCalls()>0);assertTrue(paints.get()>0);
+            var originalParent=first.parentChoice().orElseThrow();int calls=workflow[0].actualNativeCalls(),captured=paints.get();
+            SwingUtilities.invokeAndWait(()->{
+                ((javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"undo")).doClick();
+                var selector=(javax.swing.JComboBox<?>)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"candidate");selector.setSelectedIndex(0);
+                var selected=workflow[0].currentStage().selected();assertNotEquals(originalParent,selected);
+                var redo=(javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"redo");assertTrue(redo.isEnabled());redo.doClick();
+                assertSame(first,workflow[0].currentStage());assertEquals(originalParent,workflow[0].currentStage().parentChoice().orElseThrow());
+                ((javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"undo")).doClick();assertEquals(selected,workflow[0].currentStage().selected());
+                assertEquals(calls,workflow[0].actualNativeCalls());assertEquals(captured,paints.get());redo.doClick();
+                workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.MEDIUM);
+            });
+            VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
+            var smoothed=VisibleRefinementWorkflowTest.stage(workflow[0]);assertEquals(calls,workflow[0].actualNativeCalls());assertEquals(captured,paints.get());
+            SwingUtilities.invokeAndWait(()->{
+                assertEquals(RefinementModels.StageKind.SMOOTH,workflow[0].latestAttemptDiagnostics().orElseThrow().binding().ticket().kind());
+                workflow[0].refine(TrackerMode.PROBABILISTIC);
+            });
+            VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
+            SwingUtilities.invokeAndWait(()->{
+                assertEquals(RefinementModels.StageKind.REFINE_B,workflow[0].currentStage().kind(),workflow[0].computationEvidence());
+                assertEquals(smoothed.id(),workflow[0].currentStage().parent().orElseThrow());assertEquals(smoothed.selected(),workflow[0].currentStage().parentChoice().orElseThrow());
+                assertSame(capture[0].network(),workflow[0].currentNative().orElseThrow().plan().before());assertSame(computed.evidence().coordinateFrame(),workflow[0].currentNative().orElseThrow().plan().metricFrame());
+                VisibleRefinementWorkflowTest.assertApplicableAfterRequiredConfirmation(workflow[0]);
+                var command=workflow[0].command();workflow[0].close();review[0].close();assertTrue(command.executeCommand());
+                var applied=fixture.selection().way().getNodes().stream().map(org.openstreetmap.josm.data.osm.Node::getCoor).toList();
+                command.undoCommand();assertEquals(originalNodes,fixture.selection().way().getNodes());assertEquals(originalCoordinates,originalNodes.stream().map(org.openstreetmap.josm.data.osm.Node::getCoor).toList());
+                assertTrue(command.executeCommand());assertEquals(applied,fixture.selection().way().getNodes().stream().map(org.openstreetmap.josm.data.osm.Node::getCoor).toList());command.undoCommand();
+                assertEquals(originalNodes,fixture.selection().way().getNodes());assertEquals(originalCoordinates,originalNodes.stream().map(org.openstreetmap.josm.data.osm.Node::getCoor).toList());
+                assertEquals(originalFlags,fixture.dataSet().allPrimitives().stream().collect(java.util.stream.Collectors.toMap(p->p.getUniqueId(),p->List.of(p.isModified(),p.isDeleted()))));
+            });
+        }finally{SwingUtilities.invokeAndWait(()->{workflow[0].close();review[0].close();});}
+    }
+    private static int compactGray(double east,double north) {
+        double branch=east> -8&&east<8?3*Math.pow(Math.sin(Math.PI*(east+8)/16),2):0;
+        double primary=Math.exp(-.5*north*north/.25),secondary=Math.exp(-.5*Math.pow(north-branch,2)/.25);
+        return (int)Math.round(255*(.02+.8*Math.max(primary,secondary)));
     }
     private static String originalRouteFacts(IntervalTraceBatch batch,IntervalTraceBatch.IntervalRun run,ModernTracePipeline.Route route) {
         var way=(DetachedWay)batch.network().primitives().get(batch.fullRequest().selectedWayKey());
