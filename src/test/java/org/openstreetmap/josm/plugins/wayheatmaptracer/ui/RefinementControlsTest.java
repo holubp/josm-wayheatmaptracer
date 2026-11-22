@@ -33,6 +33,9 @@ class RefinementControlsTest {
     @Test void restoresWithoutCallbacksAndUserActionsAreExplicit() throws Exception {
         SwingUtilities.invokeAndWait(() -> {
             Events e = new Events(); RefinementControls p = new RefinementControls(e);
+            assertEquals("Refine using A",((JButton)find(p,"refineA")).getText());
+            assertEquals("Refine using B",((JButton)find(p,"refineB")).getText());
+            assertEquals("Smoothen",((JButton)find(p,"smooth")).getText());
             p.present(state("a", Strength.MEDIUM, false, "First"));
             p.present(state("b", Strength.STRONG, false, "Second"));
             assertTrue(e.events.isEmpty());
