@@ -1334,7 +1334,6 @@ public class AlignWayAction extends JosmAction {
         });
         close.addActionListener(event -> dialog.dispatchEvent(
                 new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING)));
-        var originalReviewBody=((BorderLayout)panel.getLayout()).getLayoutComponent(BorderLayout.CENTER);
         try {
             refresh.run();
             recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.PREVIEW,
@@ -2039,6 +2038,7 @@ public class AlignWayAction extends JosmAction {
         });
         close.addActionListener(event -> dialog.dispatchEvent(
                 new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING)));
+        var originalReviewBody=((BorderLayout)panel.getLayout()).getLayoutComponent(BorderLayout.CENTER);
         if(slideConfig.heatmap().trackerMode()==TrackerMode.CORRIDOR_AWARE||slideConfig.heatmap().trackerMode()==TrackerMode.PROBABILISTIC) {
             try {
                 refinementRoot[0]=ModernReviewRoot.fromFullChoices(dataSet,selection,slideConfig,previewChoices,previewSourceOwner,
