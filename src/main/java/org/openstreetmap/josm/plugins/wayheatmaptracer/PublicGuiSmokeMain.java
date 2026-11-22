@@ -1859,7 +1859,7 @@ public final class PublicGuiSmokeMain {
             onEventThread(()->{action.actionPerformed(null);return null;});var dialog=opened.get(180,TimeUnit.SECONDS);
             var computed=onEventThread(()->(LiveBPreviewService.Computed)session.currentAttempt().result());
             if(!computed.partitioned()||computed.captured().visibleInputReceipt().isEmpty()||computed.intervalBatch().runs().isEmpty())throw new IllegalStateException("Actual producer-backed visible interval source is unavailable");
-            var initial=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer().compose(computed.intervalBatch(),Map.of()).plan().orElseThrow();
+            var initial=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer().compose(computed.intervalBatch(),java.util.Map.of()).plan().orElseThrow();
             Format15ArchiveReader.read(exportThroughActualMenu());
             // Applying the original interval plan exercises its own production source validator.
             applyStoredNativePlan(dialog,fixture,initial,baseline,originalUndo);
