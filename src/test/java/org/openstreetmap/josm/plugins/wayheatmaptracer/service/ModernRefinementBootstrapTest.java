@@ -66,12 +66,10 @@ class ModernRefinementBootstrapTest {
         int width=1200,height=120;var pixels=new int[width*height];var epoch=new VisibleSourceEpoch();
         for(int x=0;x<width;x++)for(int y=0;y<height;y++) {
             double east=-200+x/3.0,north=20-y/3.0;
-            double branch=east>-140&&east< -110?-4*Math.pow(Math.sin(Math.PI*(east+140)/30),2):0;
-            double primary=Math.exp(-.5*north*north/1.44),secondary=Math.exp(-.5*Math.pow(north-branch,2)/1.44);
             // Actual middle trace is x=-40..40. RAW_HIGH_RESOLUTION retains this
             // 1/3m grid. One output bilinear cell plus one input pixel reaches
             // ceil(3*(40+1/3+1/3))/3=40 2/3m in the original pixel frame.
-            int gray=x>=478&&x<=722?0:(int)Math.round(255*(.02+.8*Math.max(primary,secondary)));
+            int gray=intervalGray(east,north);
             pixels[y*width+x]=0xff000000|gray<<16|gray<<8|gray;
         }
         var raster=new LiveBPreviewService.VisibleRaster(width,height,pixels,-200,-20,200,20,2,2,OptionalDouble.of(2),"visible-interval-root-test","EPSG:3857",epoch.captureStable());
@@ -117,14 +115,41 @@ class ModernRefinementBootstrapTest {
             assertTrue(alternativeAssessment.plan().isPresent(),alternativeAssessment.toString());
             var workers=new java.util.concurrent.LinkedBlockingQueue<Runnable>();var publications=new java.util.concurrent.LinkedBlockingQueue<Runnable>();
             var workflow=new LegacyRefinementWorkflow[1];
+            var recaptures=new java.util.concurrent.atomic.AtomicInteger();
+            var failRender=new java.util.concurrent.atomic.AtomicBoolean();
+            var cancelRender=new java.util.concurrent.atomic.AtomicBoolean();
+            var renderer=new VisibleRefinementCapture.Renderer(){
+                public void requireCurrent(VisibleRefinementCapture.Request request){epoch.requireCurrent(raster.sourceReceipt());}
+                public VisibleRefinementCapture.Viewport snapshot(){return new VisibleRefinementCapture.Viewport(0,0,2,200,20);}
+                public void restore(VisibleRefinementCapture.Viewport saved){}
+                public VisibleRefinementCapture.RenderedChunk render(VisibleRefinementCapture.Request request,VisibleRefinementCapture.Chunk chunk){
+                    assertTrue(SwingUtilities.isEventDispatchThread());
+                    if(failRender.get())throw new IllegalStateException("public-synthetic-render-refusal");
+                    if(cancelRender.get())workflow[0].cancel();
+                    var grid=request.evidencePlan().grid();assertTrue(grid.coordinateFrame().isCertifiedExtensionOf(computed.evidence().coordinateFrame()));
+                    for(var polygon:grid.footprint().polygons())for(var point:polygon)assertDoesNotThrow(()->grid.coordinateFrame().toGeographic(point));
+                    var image=new java.awt.image.BufferedImage(chunk.viewWidth()*6,chunk.viewHeight()*6,java.awt.image.BufferedImage.TYPE_INT_ARGB);
+                    for(int y=0;y<image.getHeight();y++)for(int x=0;x<image.getWidth();x++){
+                        double east=chunk.bounds().minimumEast()+x*2./6,north=chunk.bounds().maximumNorth()-y*2./6;int gray=intervalGray(east,north);
+                        image.setRGB(x,y,0xff000000|gray<<16|gray<<8|gray);
+                    }
+                    return new VisibleRefinementCapture.RenderedChunk(image,chunk.bounds(),-1,OptionalDouble.of(2),2);
+                }
+            };
+            var capturePort=new VisibleRefinementCapture(renderer,SwingUtilities::invokeLater,java.util.concurrent.ForkJoinPool.commonPool(),320,320).port();
             SwingUtilities.invokeAndWait(()->{
-                workflow[0]=new LegacyRefinementWorkflow(root[0],null,root[0]::select,d->{},s->{},workers::add,publications::add);
+                workflow[0]=new LegacyRefinementWorkflow(root[0],null,root[0]::select,d->{},s->{},workers::add,publications::add,(request,context)->{recaptures.incrementAndGet();return capturePort.capture(request,context);});
+                workflow[0].enableNativeRuntimeDiagnostics(candidate->null,candidate->null);
                 workflow[0].refine(TrackerMode.CORRIDOR_AWARE);
             });
             try {
                 VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
                 SwingUtilities.invokeAndWait(()->{
+                    assertEquals(1,recaptures.get(),"A must attempt one bounded same-source capture when the original B image lacks its halo");
+                    assertEquals(RefinementAttemptDiagnostics.Coverage.RECAPTURED,workflow[0].latestAttemptDiagnostics().orElseThrow().sourcePreparation().orElseThrow().sourceFacts().orElseThrow().coverage());
                     assertTrue(workflow[0].currentStage().kind().name().startsWith("REFINE"),workflow[0].computationEvidence());
+                    assertSame(computed.evidence().coordinateFrame(),workflow[0].currentNative().orElseThrow().plan().metricFrame());
+                    assertSame(capture[0].network(),workflow[0].currentNative().orElseThrow().plan().before());
                     ((javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"undo")).doClick();
                     workflow[0].selectIntervalComposition(new ModernReviewRoot.IntervalSelection(computed,alternativeChoices,alternativeAssessment));
                 });
@@ -140,8 +165,31 @@ class ModernRefinementBootstrapTest {
                     ((javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"undo")).doClick();
                     assertEquals(selectedId,workflow[0].currentStage().selected());assertEquals(calls,workflow[0].actualNativeCalls());
                 });
+                var retainedRoot=VisibleRefinementWorkflowTest.stage(workflow[0]);
+                for(boolean cancel:List.of(false,true)) {
+                    SwingUtilities.invokeAndWait(()->{
+                        assertNotEquals(ValidationReport.Disposition.HARD_BLOCKED,workflow[0].currentNative().orElseThrow().plan().validation().disposition());
+                        if(!workflow[0].canApplyNative())workflow[0].confirm();assertTrue(workflow[0].canApplyNative());
+                        failRender.set(!cancel);cancelRender.set(cancel);workflow[0].refine(TrackerMode.CORRIDOR_AWARE);
+                    });
+                    VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
+                    SwingUtilities.invokeAndWait(()->{
+                        assertSame(retainedRoot,workflow[0].currentStage());assertEquals(calls,workflow[0].actualNativeCalls());assertFalse(workflow[0].busy());
+                        var diagnostic=workflow[0].latestAttemptDiagnostics().orElseThrow();
+                        assertEquals(cancel?RefinementAttemptDiagnostics.Cause.CANCELLED:RefinementAttemptDiagnostics.Cause.FAILED,diagnostic.cause());
+                        assertEquals(RefinementAttemptDiagnostics.Coverage.CAPTURE_REQUESTED,diagnostic.sourcePreparation().orElseThrow().sourceFacts().orElseThrow().coverage());
+                        assertTrue(((javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"redo")).isEnabled());
+                        if(!workflow[0].canApplyNative())workflow[0].confirm();assertTrue(workflow[0].canApplyNative(),"Source capture refusal/cancellation must preserve ordinary Apply on the exact safe retained parent");
+                    });
+                }
+                assertEquals(3,recaptures.get());
             } finally {SwingUtilities.invokeAndWait(workflow[0]::close);}
         } finally {SwingUtilities.invokeAndWait(root[0]::close);}
+    }
+    private static int intervalGray(double east,double north) {
+        double branch=east>-140&&east< -110?-4*Math.pow(Math.sin(Math.PI*(east+140)/30),2):0;
+        double primary=Math.exp(-.5*north*north/1.44),secondary=Math.exp(-.5*Math.pow(north-branch,2)/1.44);
+        return Math.abs(east)<=40+2./3?0:(int)Math.round(255*(.02+.8*Math.max(primary,secondary)));
     }
     private static String originalRouteFacts(IntervalTraceBatch batch,IntervalTraceBatch.IntervalRun run,ModernTracePipeline.Route route) {
         var way=(DetachedWay)batch.network().primitives().get(batch.fullRequest().selectedWayKey());
@@ -197,8 +245,9 @@ class ModernRefinementBootstrapTest {
                     var workers=new java.util.concurrent.LinkedBlockingQueue<Runnable>();
                     var publications=new java.util.concurrent.LinkedBlockingQueue<Runnable>();
                     var workflow=new LegacyRefinementWorkflow[1];
+                    var captures=new java.util.concurrent.atomic.AtomicInteger();
                     SwingUtilities.invokeAndWait(()->{
-                        workflow[0]=new LegacyRefinementWorkflow(review[0],null,review[0]::select,display->{},status->{},workers::add,publications::add);
+                        workflow[0]=new LegacyRefinementWorkflow(review[0],null,review[0]::select,display->{},status->{},workers::add,publications::add,(request,context)->{captures.incrementAndGet();throw new AssertionError("Covered original native raster must not paint");});
                         workflow[0].refine(engine==TrackerMode.CORRIDOR_AWARE?TrackerMode.PROBABILISTIC:TrackerMode.CORRIDOR_AWARE);
                     });
                     try {
@@ -209,6 +258,7 @@ class ModernRefinementBootstrapTest {
                         SwingUtilities.invokeAndWait(()->{
                             assertFalse(workflow[0].busy());assertNotNull(workflow[0].currentStage());
                             assertTrue(workflow[0].actualNativeCalls()>0,"Native root refinement must reach actual requested inference");
+                            assertEquals(0,captures.get());
                         });
                     } finally {SwingUtilities.invokeAndWait(workflow[0]::close);}
                     epoch.sourceChanged();assertThrows(IllegalStateException.class,prepared.source()::requireCurrent);

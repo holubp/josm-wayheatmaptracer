@@ -17,8 +17,15 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
     private final AlignmentConfig config;
     private final TileFetchCoordinator coordinator;
     private final LongSupplier guard;
+    private final VisibleRefinementCapture.Port visibleCapture;
+    private String originalInputHash;
+    private Optional<RefinementAttemptDiagnostics.SourceFacts> facts=Optional.empty();
     NativeRefinementSourceContext(LiveBPreviewService.Captured captured,AlignmentConfig config,TileFetchCoordinator coordinator) {
+        this(captured,config,coordinator,(request,work)->{throw new UnsupportedOperationException("visible-refinement-capture-unavailable");});
+    }
+    NativeRefinementSourceContext(LiveBPreviewService.Captured captured,AlignmentConfig config,TileFetchCoordinator coordinator,VisibleRefinementCapture.Port visibleCapture) {
         this.captured=captured;this.config=config;this.coordinator=coordinator;
+        this.visibleCapture=Objects.requireNonNull(visibleCapture);
         long value=captured.network().sourceGeneration();
         if(captured.raster()!=null) {
             var receipt=captured.raster().sourceReceipt();
@@ -33,9 +40,11 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
     public RefinementAttemptDiagnostics.SourceKind kind(){return captured.raster()==null?RefinementAttemptDiagnostics.SourceKind.MANAGED:RefinementAttemptDiagnostics.SourceKind.VISIBLE;}
     public void requireCurrent(){guard.getAsLong();}
     public LongSupplier detachedCommandGeneration(){return guard;}
+    public Optional<RefinementAttemptDiagnostics.SourceFacts> sourceFacts(){return facts;}
+    void bindOriginalInputHash(String value){if(originalInputHash!=null||!value.matches("[0-9a-f]{64}"))throw new IllegalArgumentException("Original native input witness differs");originalInputHash=value;}
     public RefinementPipeline.Sources open(RefinementSourcePlanner.Plan plan,Stage parent,GeometryWorkContext work,
             AttemptMemoryLedger.Owner owner,CancellationProbe cancellation) {
-        requireCurrent();
+        facts=Optional.empty();requireCurrent();
         if(captured.managedRaster()!=null) {
             var acquired=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(config.heatmap()),cancellation,owner);
             return RefinementPipeline.managedSources(acquired.value(),coordinator,work);
@@ -46,11 +55,34 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
         var metadata=new LegacyVisibleSource(raster.minimumEast(),raster.minimumNorth(),raster.maximumEast(),raster.maximumNorth(),raster.projectionUnitsPerViewPixel(),raster.groundMetersPerViewPixel(),raster.nativePitchMeters(),raster.projectionCode(),raster.sourceReceipt(),OptionalDouble.of(captured.searchRadiusMeters()),OptionalDouble.of(captured.sampleStepMeters()),Optional.of(painted));
         var evidencePlan=VisibleEvidencePlan.create(plan,metadata,work);
         var mappings=new LinkedHashMap<String,RefinementAcquisition.VisibleCapture>();
-        for(var request:plan.requests())if(request.unavailableReason().isEmpty()&&!request.aggregate()&&request.palette().equals(plan.settings().selectedPalette())) {
-            cancellation.checkpoint();var converted=RefinementAcquisition.captureVisible(plan,evidencePlan,raster,request.mapping(),work);
-            converted.owner().transferTo(owner);mappings.put(request.mapping(),converted.value());
-        }
-        requireCurrent();return RefinementPipeline.visibleSources(mappings);
+        var support=RefinementAcquisition.visibleSupport(evidencePlan,raster);
+        var planHash=hash(evidencePlan.canonicalIdentity(),work);var frameHash=hash(painted.toString(),work);var sourceHash=hash(plan.parent().root().sourceIdentity(),work);
+        var coverage=switch(support){case COVERED->RefinementAttemptDiagnostics.Coverage.COVERED;case NEEDS_CAPTURE->RefinementAttemptDiagnostics.Coverage.NEEDS_CAPTURE;case UNSUPPORTED->RefinementAttemptDiagnostics.Coverage.UNSUPPORTED;};
+        String inputHash=Objects.requireNonNull(originalInputHash,"Original native input hash unavailable");
+        facts=Optional.of(new RefinementAttemptDiagnostics.SourceFacts(plan.ticket(),sourceHash,kind(),coverage,planHash,frameHash,inputHash,RefinementAttemptDiagnostics.InputFrameRole.ORIGINAL_INPUT,raster.width(),raster.height(),evidencePlan.grid().width(),evidencePlan.grid().height(),metadata.sourceReceipt().revision(),OptionalLong.empty()));
+        VisibleRefinementCapture.CaptureOperation capture=null;Accounted<VisibleRefinementCapture.Frame> frame=null;
+        try {
+            if(support==VisibleEvidencePlan.Support.NEEDS_CAPTURE) {
+                long start=work.visits();
+                facts=Optional.of(new RefinementAttemptDiagnostics.SourceFacts(plan.ticket(),sourceHash,kind(),RefinementAttemptDiagnostics.Coverage.CAPTURE_REQUESTED,planHash,frameHash,inputHash,RefinementAttemptDiagnostics.InputFrameRole.ORIGINAL_INPUT,raster.width(),raster.height(),evidencePlan.grid().width(),evidencePlan.grid().height(),metadata.sourceReceipt().revision(),OptionalLong.empty()));
+                capture=visibleCapture.capture(new VisibleRefinementCapture.Request(evidencePlan,parent,List.of(captured)),work);var actualCapture=capture;
+                try(var registration=cancellation.onCancellation(actualCapture::cancel)){frame=capture.result().toCompletableFuture().join();}
+                var actual=frame.value();
+                facts=Optional.of(new RefinementAttemptDiagnostics.SourceFacts(plan.ticket(),sourceHash,kind(),RefinementAttemptDiagnostics.Coverage.RECAPTURED,planHash,hash(actual.actualBounds().toString()+actual.chunks(),work),actual.inputHash(),RefinementAttemptDiagnostics.InputFrameRole.CAPTURED_INPUT,actual.width(),actual.height(),evidencePlan.grid().width(),evidencePlan.grid().height(),metadata.sourceReceipt().revision(),OptionalLong.of(work.visits()-start)));
+            } else if(support!=VisibleEvidencePlan.Support.COVERED)throw new UnsupportedOperationException("visible-original-frame-unavailable");
+            for(var request:plan.requests())if(request.unavailableReason().isEmpty()&&!request.aggregate()&&request.palette().equals(plan.settings().selectedPalette())) {
+                cancellation.checkpoint();var converted=frame==null?RefinementAcquisition.captureVisible(plan,evidencePlan,raster,request.mapping(),work):RefinementAcquisition.captureVisible(plan,evidencePlan,frame.value(),request.mapping(),work);
+                converted.owner().transferTo(owner);mappings.put(request.mapping(),converted.value());
+            }
+            requireCurrent();return RefinementPipeline.visibleSources(mappings);
+        } finally {if(capture!=null)capture.settled().toCompletableFuture().join();if(frame!=null)frame.owner().close();}
+    }
+    private static String hash(String text,GeometryWorkContext work) {
+        try(var admitted=work.reserve("native-source-fact-hash",Math.addExact(4096L,Math.multiplyExact(3L,text.length())))) {
+            byte[] bytes=text.getBytes(java.nio.charset.StandardCharsets.UTF_8);var hash=java.security.MessageDigest.getInstance("SHA-256");
+            for(int offset=0;offset<bytes.length;offset+=256){int count=Math.min(256,bytes.length-offset);work.visit(GeometryWorkContext.Kind.HASH,count);hash.update(bytes,offset,count);}
+            return java.util.HexFormat.of().formatHex(hash.digest());
+        }catch(java.security.NoSuchAlgorithmException unavailable){throw new IllegalStateException("Required SHA-256 unavailable");}
     }
     static RetainedSmoothingSource retain(LiveBPreviewService.Computed run,RefinementSourcePlanner.Settings settings,
             NativeRefinementSourceContext context,GeometryWorkContext work,AttemptMemoryLedger.Owner memory,IdentityHashMap<Object,String> hashes) {

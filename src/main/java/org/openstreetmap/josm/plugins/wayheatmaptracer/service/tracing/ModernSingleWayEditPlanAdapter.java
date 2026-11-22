@@ -779,7 +779,7 @@ public final class ModernSingleWayEditPlanAdapter {
         if(request.permissions().junctionPolicy()!=JunctionPolicy.FIXED){disposition=ValidationReport.Disposition.REVIEW_REQUIRED;findings.add("network-review-required");}
         var after=new NetworkSnapshot(before.snapshotId()+":refinement:"+composed.id(),SnapshotRole.PROPOSED_AFTER,before.datasetIdentity(),before.sourceGeneration(),
             before.closure(),afterValues,proposedWatches(before,afterValues),null);
-        return new AlignmentEditPlan(selected.key(),request.selectedRange(),before,after,evidence.coordinateFrame(),request.permissions(),request.settingsHash(),postprocessingEvidenceHash(evidence),
+        return new AlignmentEditPlan(selected.key(),request.selectedRange(),before,after,root.evidence().coordinateFrame(),request.permissions(),request.settingsHash(),postprocessingEvidenceHash(evidence),
             request.parameterHash(),composed.id(),finalPreviewWays(before,afterValues),new ValidationReport(disposition,findings));
     }
 

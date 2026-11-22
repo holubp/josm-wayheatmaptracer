@@ -144,6 +144,9 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
 
     /** Worker preparation retains factual native plans/evidence, without inference or new capture. */
     public PreparedRefinementRoot prepare(GeometryWorkContext work) {
+        return prepare(work,(request,context)->{throw new UnsupportedOperationException("visible-refinement-capture-unavailable");});
+    }
+    public PreparedRefinementRoot prepare(GeometryWorkContext work,VisibleRefinementCapture.Port visibleCapture) {
         if(SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Native root preparation requires worker thread");
         final String[] selectedId=new String[1];onEdt(()->{requireAuthorityCurrent();selectedId[0]=choiceId(selected);});
         var memory=work.owner().child("original-native-root");
@@ -152,11 +155,12 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
             work.visit(GeometryWorkContext.Kind.BIND,1);
             var primary=firstOwner();var capture=primary.captured();
             var receipt=capture.originalReceipt().orElseThrow(()->new IllegalStateException("Original native capture receipt unavailable"));
-            var context=source();
+            var context=new NativeRefinementSourceContext(capture,config,coordinator,visibleCapture);
             var retainedSources=new IdentityHashMap<LiveBPreviewService.Computed,RetainedSmoothingSource>();
             var hashes=new IdentityHashMap<Object,String>();
             work.reserveOn(memory,"native-original-hash-cache",8192).adopt(hashes);
             var primarySource=NativeRefinementSourceContext.retain(primary,settings,context,work,memory,hashes);retainedSources.put(primary,primarySource);
+            context.bindOriginalInputHash(primarySource.inputByteHash());
             var nativeFacts=new IdentityHashMap<Object,Long>();
             nativeFacts.put(hashes,8192L);
             var owners=Collections.newSetFromMap(new IdentityHashMap<LiveBPreviewService.Computed,Boolean>());
@@ -205,7 +209,7 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
             if(candidates.size()>32||retained.values().stream().mapToLong(Long::longValue).sum()>RefinementLimits.defaults().maxPayloadBytes())throw new RefinementSession.Refused(RefusalReason.PAYLOAD_LIMIT);
             work.reserveOn(memory,"native-root-stage",1024L+32L*candidates.size()).adopt(stage);
             onEdt(this::requireAuthorityCurrent);work.visit(GeometryWorkContext.Kind.BIND,1);
-            return new PreparedRefinementRoot(new LegacyRefinementBootstrap.Root(authority,stage,receipt),settings,original,source(),memory,RefinementLimits.defaults().maxPayloadBytes());
+            return new PreparedRefinementRoot(new LegacyRefinementBootstrap.Root(authority,stage,receipt),settings,original,context,memory,RefinementLimits.defaults().maxPayloadBytes());
         } catch(RuntimeException|Error failure){memory.close();throw failure;}
     }
     private static void admit(AttemptMemoryLedger.Owner owner,GeometryWorkContext work,Object identity,long bytes) {

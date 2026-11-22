@@ -1334,8 +1334,8 @@ public class AlignWayAction extends JosmAction {
                 requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
                         persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
                 AlignmentEditPlan currentPlan = state.currentPlanForApply();
-                NetworkSnapshotCapture.CapturedSnapshot receipt = NetworkSnapshotCapture.captureBound(
-                        dataSet, computed.captured().specification());
+                NetworkSnapshotCapture.CapturedSnapshot receipt = computed.captured().originalReceipt().orElseGet(()->NetworkSnapshotCapture.captureBound(
+                        dataSet, computed.captured().specification()));
                 LiveNetworkSnapshotValidator network = new LiveNetworkSnapshotValidator(receipt,
                         currentPlan,
                         () -> ManagedTileRuntime.initializedCoordinator().activeGenerationValue());
@@ -1413,7 +1413,9 @@ public class AlignWayAction extends JosmAction {
                     if(refinement[0]==null)return;
                     if(refinement[0].busy()) {sourceChoices.setEnabled(false);choices.forEach(choice->choice.setEnabled(false));apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);}
                     else refresh.run();
-                });
+                },new org.openstreetmap.josm.plugins.wayheatmaptracer.service.VisibleRefinementCapture(
+                    alignmentService.visibleRefinementRenderer(imageryLayer,mapView,refinementRoot[0]::requireAuthorityCurrent),
+                    SwingUtilities::invokeLater,java.util.concurrent.ForkJoinPool.commonPool(),320,320).port());
                 refinement[0].controls().externalRootSelection(true);refinement[0].enableNativeRuntimeDiagnostics(candidate->createNativeRootContext(computed,candidate,false),candidate->createNativeRootContext(computed,candidate,true));
                 refinement[0].attachCommandContext(detachedCommandContext(dataSet,computed.captured().managedRaster()==null?imageryLayer:null,computed.captured().managedRaster()!=null?previewSourceOwner:null));
                 footer.add(refinement[0].controls(),BorderLayout.CENTER);
@@ -2156,7 +2158,9 @@ public class AlignWayAction extends JosmAction {
                             disconnect.setEnabled(false);preciseRerun.setVisible(false);
                         } else if(busy){apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);preciseRerun.setEnabled(false);}
                         else {disconnect.setEnabled(true);refresh.run();if(!refinement[0].currentSourceAvailable()){apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);preciseRerun.setEnabled(false);}}
-                    });
+                    },new org.openstreetmap.josm.plugins.wayheatmaptracer.service.VisibleRefinementCapture(
+                        alignmentService.visibleRefinementRenderer(imageryLayer,mapView,refinementRoot[0]::requireAuthorityCurrent),
+                        SwingUtilities::invokeLater,java.util.concurrent.ForkJoinPool.commonPool(),320,320).port());
                 refinement[0].controls().externalRootSelection(true);
                 refinement[0].attachCommandContext(detachedCommandContext(dataSet,computed.captured().managedRaster()==null?imageryLayer:null,computed.captured().managedRaster()!=null?previewSourceOwner:null));
                 refinement[0].enableNativeRuntimeDiagnostics(candidate->createNativeRootContext(computed,candidate,false),candidate->createNativeRootContext(computed,candidate,true));
@@ -2738,8 +2742,8 @@ public class AlignWayAction extends JosmAction {
         if (review == null || !(review.equals(current) || review.matches(current)) || !review.canApply()) {
             throw new IllegalStateException("The reviewed candidate plan is stale");
         }
-        NetworkSnapshotCapture.CapturedSnapshot receipt = NetworkSnapshotCapture.captureBound(
-                dataSet, computed.captured().specification());
+        NetworkSnapshotCapture.CapturedSnapshot receipt = computed.captured().originalReceipt().orElseGet(()->NetworkSnapshotCapture.captureBound(
+                dataSet, computed.captured().specification()));
         LiveNetworkSnapshotValidator network = new LiveNetworkSnapshotValidator(receipt, plan, sourceGeneration);
         LockedApplyValidator validator = Objects.requireNonNull(validatorFactory.apply(network, plan),
                 "locked validator");

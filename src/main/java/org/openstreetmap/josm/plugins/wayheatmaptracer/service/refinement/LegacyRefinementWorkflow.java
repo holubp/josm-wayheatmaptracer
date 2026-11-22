@@ -438,6 +438,11 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             Consumer<CenterlineCandidate> rootSelection,Consumer<Display> display,Consumer<String> status,VisibleRefinementCapture.Port visibleCapture) {
         this(review,coordinator,rootSelection,display,status,ForkJoinPool.commonPool(),SwingUtilities::invokeLater,SourcePreparationControl.production(),visibleCapture);
     }
+    public LegacyRefinementWorkflow(RefinementReviewRoot review,TileFetchCoordinator coordinator,
+            Consumer<CenterlineCandidate> rootSelection,Consumer<Display> display,Consumer<String> status,
+            Executor executor,AlignmentJob.EventDispatcher publicationDispatcher,VisibleRefinementCapture.Port visibleCapture) {
+        this(review,coordinator,rootSelection,display,status,executor,publicationDispatcher,SourcePreparationControl.production(),visibleCapture);
+    }
     private LegacyRefinementWorkflow(RefinementReviewRoot review,TileFetchCoordinator coordinator,
             Consumer<CenterlineCandidate> rootSelection,Consumer<Display> display,Consumer<String> status,
             Executor executor,AlignmentJob.EventDispatcher publicationDispatcher,SourcePreparationControl sourcePreparationControl,VisibleRefinementCapture.Port visibleCapture) {
@@ -480,7 +485,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         try{work=beginOwnedWork();present();}
         catch(RuntimeException failed){busy=false;operation.close();publication.close();preparation.close();throw failed;}
         CompletableFuture<PreparedRefinementRoot> computation;
-        try{computation=CompletableFuture.supplyAsync(()->new ModernRefinementBootstrap().complete(preparation,workContext),executor);}
+        try{computation=CompletableFuture.supplyAsync(()->new ModernRefinementBootstrap().complete(preparation,workContext,visibleCapture),executor);}
         catch(RuntimeException rejected){computation=CompletableFuture.failedFuture(rejected);}
         computation.whenComplete((prepared,failure)->dispatchCompletion(()->{
             boolean published=false;
@@ -631,7 +636,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                 var bootstrapWork=initialVisibleWork;
                 CompletableFuture<PreparedRefinementRoot> bootstrap;
                 try{bootstrap=CompletableFuture.supplyAsync(()->{
-                    if(review instanceof ModernReviewRoot modern)return new ModernRefinementBootstrap().complete(modern,bootstrapWork);
+                    if(review instanceof ModernReviewRoot modern)return new ModernRefinementBootstrap().complete(modern,bootstrapWork,visibleCapture);
                     var completed=captured.context()==null?new LegacyRefinementBootstrap().complete(captured,coordinator,probe):new LegacyRefinementBootstrap().complete(captured,coordinator,captured.context());
                     return new PreparedRefinementRoot(completed,captured.settings(),captured.original(),new LegacyRefinementSourceContext(captured,completed,coordinator,visibleCapture),captured.memory(),captured.payloadLimit());
                 },executor);}catch(RuntimeException rejected){bootstrap=CompletableFuture.failedFuture(rejected);}
@@ -918,6 +923,13 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             +" rejectedFindings="+outcome.rejected().stream().map(a->a.quality().findings().stream().map(f->f.code().name()).toList()).toList();
         var computed=materialize(ticket,parent,outcome,evidence,sourcePayload,original,allowance,probe,progress,publication,baseline);
         computationEvidence+=" plan-refusals="+progress.materializationRefusals+" auxiliary-source-hash-visits="+hashWork.visits()+" auxiliary-source-hash-counts="+hashWork.counters();return computed;
+        } catch(RuntimeException failure) {
+            if(progress.phase==RefinementAttemptDiagnostics.Phase.ACQUISITION) {
+                var actual=unwrap(failure);
+                progress.sourcePreparationCause=actual instanceof CancellationException?RefinementAttemptDiagnostics.Cause.CANCELLED:
+                    actual instanceof AttemptMemoryLedger.ResourceLimitException||actual instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached?RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT:RefinementAttemptDiagnostics.Cause.FAILED;
+            }
+            throw failure;
         } finally {progress.sourceFacts=sourceContext.sourceFacts();progress.sourcePreparation=Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(progress.sourcePreparationCause,hashWork.visits(),hashWork.counters(),progress.failedSource,progress.nativeWork,progress.sourceFacts));}
     }
     /** Claims the unchanged future Stage bound only once actual assessed output needs materialization. */
