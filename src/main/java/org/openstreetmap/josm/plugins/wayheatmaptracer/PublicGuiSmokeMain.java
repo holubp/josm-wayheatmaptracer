@@ -291,6 +291,11 @@ public final class PublicGuiSmokeMain {
         var sparseOwner=onEventThread(()->(LegacyRefinementWorkflow)preview.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner"));
         var sparseChoice=onEventThread(sparseOwner::selectedChoiceIdentity);
         clickAndAwaitStage(report,preview,sparseOwner,"refineA",StageKind.ROOT_NATIVE);
+        var sparseExport=Format15ArchiveReader.read(exportThroughActualMenu());
+        var sparseStatus=parseReviewStatus(new String(sparseExport.artifact("review-state.json").orElseThrow().bytes(),StandardCharsets.UTF_8));
+        if(!"PROBABILISTIC".equals(sparseStatus.getString("rootEngine"))||!"AVAILABLE".equals(sparseStatus.getString("latestAttemptAvailability"))
+                ||sparseExport.artifact("root/stage-0-choice-0.json").isEmpty()||sparseExport.artifact("native-root-diagnostics.zip").isEmpty())
+            throw new IllegalStateException("Actual menu export lacks retained native root and failed-operation evidence");
         onEventThread(()->{
             var diagnostic=sparseOwner.latestAttemptDiagnostics().orElseThrow();
             if(diagnostic.publication()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Publication.NO_CHILD
@@ -1563,11 +1568,29 @@ public final class PublicGuiSmokeMain {
     }
 
     private static boolean hasEnabledDiagnosticsExport(javax.swing.JMenu menu) {
+        return diagnosticsExportItem(menu)!=null;
+    }
+    private static JMenuItem diagnosticsExportItem(javax.swing.JMenu menu) {
         for(Component component:menu.getMenuComponents()) {
-            if(component instanceof javax.swing.JMenu child&&child.isEnabled()&&hasEnabledDiagnosticsExport(child))return true;
-            if(component instanceof JMenuItem item&&item.getAction() instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.actions.ExportDiagnosticsAction&&item.isEnabled())return true;
+            if(component instanceof javax.swing.JMenu child&&child.isEnabled()){var found=diagnosticsExportItem(child);if(found!=null)return found;}
+            if(component instanceof JMenuItem item&&item.getAction() instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.actions.ExportDiagnosticsAction&&item.isEnabled())return item;
         }
-        return false;
+        return null;
+    }
+    private static Path exportThroughActualMenu() throws Exception {
+        var exported=new CompletableFuture<Path>();
+        AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog dialog&&dialog.isModal()) {
+            var fields=new ArrayList<javax.swing.JTextField>();collectTextFields(dialog.getContentPane(),fields);
+            if(fields.size()==1&&!fields.get(0).isEditable()&&fields.get(0).getText().endsWith(".zip"))exported.complete(Path.of(fields.get(0).getText()));
+            else exported.completeExceptionally(new IllegalStateException("Actual diagnostics menu did not show its exported file"));
+            SwingUtilities.invokeLater(dialog::dispose);
+        }};
+        Toolkit.getDefaultToolkit().addAWTEventListener(listener,AWTEvent.WINDOW_EVENT_MASK);
+        try{onEventThread(()->{var item=diagnosticsExportItem(MainApplication.getMenu().moreToolsMenu);if(item==null)throw new IllegalStateException("Actual diagnostics menu is unavailable");item.doClick();return null;});return exported.get(30,TimeUnit.SECONDS);}
+        finally{Toolkit.getDefaultToolkit().removeAWTEventListener(listener);}
+    }
+    private static void collectTextFields(Container parent,List<javax.swing.JTextField> fields) {
+        for(Component child:parent.getComponents()){if(child instanceof javax.swing.JTextField field)fields.add(field);else if(child instanceof Container nested)collectTextFields(nested,fields);}
     }
 
     private static boolean hasVisiblePreview() throws Exception {
