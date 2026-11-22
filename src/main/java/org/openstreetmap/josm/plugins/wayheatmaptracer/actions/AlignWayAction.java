@@ -11,6 +11,7 @@ import java.awt.event.WindowEvent;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.Set;
 import java.util.HashSet;
@@ -25,6 +26,8 @@ import java.util.function.Function;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyReviewOwner;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyRefinementWorkflow;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ModernReviewRoot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementPayload;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Candidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementReviewLifecycle;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.InvocationSourceWatch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyVisibleSource;
@@ -360,6 +363,13 @@ public class AlignWayAction extends JosmAction {
                     .filter(LiveBPreviewService.Computed::partitioned).toList();
             this.batch = sourceRuns.get(0).intervalBatch();
             recompose();
+        }
+        private IntervalPreviewState(List<LiveBPreviewService.Computed> sources,LiveBPreviewService.Computed selected,RefinementPayload.RootReviewState stored) {
+            sourceRuns=List.copyOf(sources);sourceIndex=-1;
+            for(int i=0;i<sourceRuns.size();i++)if(sourceRuns.get(i)==selected)sourceIndex=i;
+            if(sourceIndex<0||!selected.partitioned()||stored.intervalAssessment().isEmpty())throw new IllegalArgumentException("Stored native interval context unavailable");
+            batch=selected.intervalBatch();routeChoices=stored.routeChoices();assessment=stored.intervalAssessment().orElseThrow();review=unconfirmedReview(assessment);
+            if(assessment.plan().isPresent()&&assessment.plan().orElseThrow().before()!=batch.network())throw new IllegalArgumentException("Stored native interval context has foreign authority");
         }
 
         /** Returns the sole frozen inference batch for this preview session. */
@@ -1402,7 +1412,7 @@ public class AlignWayAction extends JosmAction {
                     if(refinement[0].busy()) {sourceChoices.setEnabled(false);choices.forEach(choice->choice.setEnabled(false));apply.setEnabled(false);confirm.setEnabled(false);disconnect.setEnabled(false);}
                     else refresh.run();
                 });
-                refinement[0].controls().externalRootSelection(true);refinement[0].enableRuntimeDiagnostics(()->null);
+                refinement[0].controls().externalRootSelection(true);refinement[0].enableNativeRuntimeDiagnostics(candidate->createNativeRootContext(computed,candidate,false),candidate->createNativeRootContext(computed,candidate,true));
                 refinement[0].attachCommandContext(detachedCommandContext(dataSet,computed.captured().managedRaster()==null?imageryLayer:null,computed.captured().managedRaster()!=null?previewSourceOwner:null));
                 footer.add(refinement[0].controls(),BorderLayout.CENTER);
                 dialog.getRootPane().putClientProperty("wayheatmaptracer.refinementOwner",refinement[0]);
@@ -2147,7 +2157,7 @@ public class AlignWayAction extends JosmAction {
                     });
                 refinement[0].controls().externalRootSelection(true);
                 refinement[0].attachCommandContext(detachedCommandContext(dataSet,computed.captured().managedRaster()==null?imageryLayer:null,computed.captured().managedRaster()!=null?previewSourceOwner:null));
-                refinement[0].enableRuntimeDiagnostics(()->null);
+                refinement[0].enableNativeRuntimeDiagnostics(candidate->createNativeRootContext(computed,candidate,false),candidate->createNativeRootContext(computed,candidate,true));
                 var reviewBody=new JPanel(new BorderLayout(4,4));reviewBody.add(originalReviewBody,BorderLayout.CENTER);reviewBody.add(refinement[0].controls(),BorderLayout.SOUTH);panel.add(reviewBody,BorderLayout.CENTER);
                 dialog.getRootPane().putClientProperty("wayheatmaptracer.refinementOwner",refinement[0]);
                 livePreviewSession.replaceWindow(previewOwner,()->{refinement[0].close();dialog.dispose();overlay.hide();});
@@ -2403,6 +2413,18 @@ public class AlignWayAction extends JosmAction {
     }
 
     /** Records requested detector outcomes and the exact frozen owner selected for this bundle. */
+    private static Format15Bundle createNativeRootContext(LiveBPreviewService.Computed root,Candidate candidate,boolean metadataOnly) {
+        var state=candidate.payload().rootReviewState().orElseThrow(()->new IllegalArgumentException("Native root context metadata unavailable"));
+        var matching=root.productionRuns().stream().filter(owner->(owner.options().sourceTier()+":"+owner.request().evidenceContentHash()).equals(state.sourceOwnerIdentity())).toList();
+        if(matching.size()!=1)throw new IllegalArgumentException("Native root context source owner differs");
+        var selected=matching.get(0);
+        if(metadataOnly) {
+            var fallback=Format15ProductionBundleFactory.createUnavailableLive(LastSlideDebugBundle.buildIdentity(),"resource-limited",selected.captured().managedRaster()==null?"visible-layer":"managed-tiles","original-native-root-context",null);
+            return withSourceChoices(withFailureSummary(fallback,"ORIGINAL_ROOT_DIAGNOSTICS","native-frozen-inputs-unavailable",selected),root,selected);
+        }
+        if(selected.partitioned())return createIntervalDiagnostics(root,new IntervalPreviewState(root.productionRuns().stream().filter(LiveBPreviewService.Computed::partitioned).toList(),selected,state),IntervalArtifactStatus.PREVIEW);
+        return createModernDiagnostics(root,selected,"preview-open",state.fullRouteIndex().orElseThrow(),candidate.payload().nativeReview().orElseThrow().plan(),false,false,null,null,null);
+    }
     private static Format15Bundle withSourceChoices(Format15Bundle bundle,
             LiveBPreviewService.Computed root, LiveBPreviewService.Computed selected) {
         if (root == null || selected == null || root.productionRuns().stream()
@@ -2430,6 +2452,7 @@ public class AlignWayAction extends JosmAction {
                         .append(owner.partitioned() ? owner.intervalBatch().runs().stream()
                                 .mapToInt(run -> run.routes().size()).sum()
                                 : owner.pipeline().routes().size());
+                appendOriginalSourceWork(json,owner);
             }
             json.append('}');
         }
@@ -2446,6 +2469,44 @@ public class AlignWayAction extends JosmAction {
         artifacts.put("source-choices.json", Format15Artifact.text("source-choices.json", json.toString()));
         return new Format15Bundle(bundle.buildIdentity(), bundle.sourceIdentityHash(),
                 bundle.parameterHash(), artifacts);
+    }
+    private static void appendOriginalSourceWork(StringBuilder json,LiveBPreviewService.Computed owner) {
+        json.append(",\"work\":{\"schema\":1,\"scope\":\"").append(owner.partitioned()?"INTERVAL_SOURCE_BATCH":"FULL_SELECTED_SOURCE_RUN")
+            .append("\",\"acquisitionKind\":\"").append(owner.captured().managedRaster()==null?"VISIBLE":"MANAGED")
+            .append("\",\"engine\":\"").append(owner.request().engine().name()).append("\",\"runs\":[");
+        if(owner.partitioned()) {
+            for(int i=0;i<owner.intervalBatch().runs().size();i++) {
+                if(i>0)json.append(',');var run=owner.intervalBatch().runs().get(i);
+                json.append("{\"intervalIndex\":").append(i).append(",\"editFirst\":").append(run.interval().range().firstIndex()).append(",\"editLast\":").append(run.interval().range().lastIndex()).append(',');
+                appendOriginalRunWork(json,run.request(),run.result(),Optional.of(run.usage()),run.corridorReceipt());json.append('}');
+            }
+        } else {json.append('{');appendOriginalRunWork(json,owner.request(),owner.pipeline(),Optional.empty(),owner.corridorReceipt());json.append('}');}
+        json.append("]}");
+    }
+    private static void appendOriginalRunWork(StringBuilder json,org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest request,ModernTracePipeline.Result result,
+            Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage> charged,Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorExecutionReceipt> corridor) {
+        var inference=result.inference();
+        json.append("\"requestHash\":\"").append(FrozenReplayCodec.canonicalRequestHash(request)).append("\",\"parameterHash\":\"").append(request.parameterHash()).append("\",\"corridorPolicy\":").append(request.corridorInput().map(input->"\""+input.executionPolicy().name()+"\"").orElse("null"))
+            .append(",\"traceFirst\":").append(request.selectedRange().firstIndex()).append(",\"traceLast\":").append(request.selectedRange().lastIndex())
+            .append(",\"requestedProfileCount\":").append(request.profileChainage().cumulativeGroundMeters().size()).append(",\"status\":\"").append(inference.status().name())
+            .append("\",\"evaluatedStates\":").append(inference.evaluatedStates()).append(",\"evaluatedTransitions\":").append(inference.evaluatedTransitions())
+            .append(",\"rawHypotheses\":").append(inference.hypotheses().size()).append(",\"finalRoutes\":").append(result.routes().size()).append(",\"intervalChargedWork\":");
+        if(charged.isEmpty())json.append("null");else {var work=charged.orElseThrow();json.append("{\"pairVisits\":").append(work.pairVisits()).append(",\"transitions\":").append(work.transitions()).append(",\"rawAlternatives\":").append(work.rawAlternatives()).append(",\"distinctAlternatives\":").append(work.distinctAlternatives()).append('}');}
+        json.append(",\"scoredExecutionWork\":");
+        if(inference.workAccounting().isEmpty())json.append("null");else {
+            var work=inference.workAccounting().orElseThrow();json.append("{\"otherEngineTransitions\":").append(work.otherEngineTransitions()).append(",\"bStages\":[");
+            for(int i=0;i<work.bStages().size();i++) {if(i>0)json.append(',');var stage=work.bStages().get(i);
+                json.append("{\"executionPolicy\":\"").append(safeChoiceToken(stage.executionPolicy())).append("\",\"forwardBackwardScores\":").append(stage.forwardBackwardScores()).append(",\"kBestScores\":").append(stage.kBestScores()).append(",\"logicalKBestExtensions\":").append(stage.logicalKBestExtensions()).append(",\"refusedScoreAttempts\":").append(stage.refusedScoreAttempts()).append('}');}
+            json.append("]}");
+        }
+        json.append(",\"corridorWork\":");
+        if(corridor.isEmpty())json.append("null");else {
+            var receipt=corridor.orElseThrow();var work=receipt.totals();
+            json.append("{\"phase\":\"").append(receipt.phase().name()).append("\",\"originalStates\":").append(work.originalStates()).append(",\"retainedUnaryEvaluations\":").append(work.retainedUnaryEvaluations()).append(",\"bridgeUnaryEvaluations\":").append(work.bridgeUnaryEvaluations())
+                .append(",\"admissionContacts\":").append(work.admissionContacts()).append(",\"admissionPairs\":").append(work.admissionPairs()).append(",\"adjacentObjectiveEntries\":").append(work.adjacentObjectiveEntries()).append(",\"solverStarts\":").append(work.solverStarts())
+                .append(",\"attemptedTransitions\":").append(work.attemptedTransitions()).append(",\"testedTriples\":").append(work.testedTriples()).append(",\"rejectedTriples\":").append(work.rejectedTriples()).append(",\"scoredTransitions\":").append(work.scoredTransitions())
+                .append(",\"gapAdmissionUnits\":").append(work.gapAdmissionUnits().isPresent()?Long.toString(work.gapAdmissionUnits().getAsLong()):"null").append(",\"observedAdmissionUnits\":").append(work.observedAdmissionUnits().isPresent()?Long.toString(work.observedAdmissionUnits().getAsLong()):"null").append('}');
+        }
     }
 
     private static String safeChoiceToken(String value) {
@@ -2715,9 +2776,11 @@ public class AlignWayAction extends JosmAction {
 
     /** Small detached command guard: no capture, candidate, history, dialog or credential strings. */
     private record DetachedCommandContext(DataSet data,ImageryLayer layer,TileFetchCoordinator coordinator,
-            org.openstreetmap.josm.spi.preferences.IPreferences preferences,String settings,String tracing,String projection) implements Runnable {
+            org.openstreetmap.josm.spi.preferences.IPreferences preferences,java.util.concurrent.atomic.AtomicLong epoch,long capturedEpoch,
+            String settings,String tracing,String projection) implements Runnable {
         public void run() {
             if(preferences!=org.openstreetmap.josm.spi.preferences.Config.getPref()
+                    ||capturedEpoch==Long.MAX_VALUE||epoch.get()!=capturedEpoch
                     ||!settings.equals(commandSettingsIdentity())||!tracing.equals(PluginPreferences.loadTracingSettings().toString())
                     ||!projection.equals(ProjectionRegistry.getProjection().toCode())
                     ||data!=null&&MainApplication.getLayerManager().getEditDataSet()!=data
@@ -2726,8 +2789,23 @@ public class AlignWayAction extends JosmAction {
                 throw new IllegalStateException("The command dataset, source or settings changed");
         }
     }
+    private record PreferenceEpoch(java.lang.ref.WeakReference<org.openstreetmap.josm.spi.preferences.IPreferences> preferences,
+            java.util.concurrent.atomic.AtomicLong stamp) { }
+    private static final List<PreferenceEpoch> COMMAND_PREFERENCE_EPOCHS=new ArrayList<>();
+    private static synchronized java.util.concurrent.atomic.AtomicLong commandPreferenceEpoch(org.openstreetmap.josm.spi.preferences.IPreferences preferences) {
+        COMMAND_PREFERENCE_EPOCHS.removeIf(value->value.preferences().get()==null);
+        for(var value:COMMAND_PREFERENCE_EPOCHS)if(value.preferences().get()==preferences)return value.stamp();
+        var stamp=new java.util.concurrent.atomic.AtomicLong();
+        preferences.addPreferenceChangeListener(event->{
+            if(LegacyReviewOwner.isMaterialSetting(event.getKey()))stamp.updateAndGet(value->value==Long.MAX_VALUE?value:value+1);
+        });
+        COMMAND_PREFERENCE_EPOCHS.add(new PreferenceEpoch(new java.lang.ref.WeakReference<>(preferences),stamp));
+        return stamp;
+    }
     static Runnable detachedCommandContext(DataSet data,ImageryLayer layer,TileFetchCoordinator coordinator) {
-        return new DetachedCommandContext(data,layer,coordinator,org.openstreetmap.josm.spi.preferences.Config.getPref(),commandSettingsIdentity(),PluginPreferences.loadTracingSettings().toString(),ProjectionRegistry.getProjection().toCode());
+        var preferences=org.openstreetmap.josm.spi.preferences.Config.getPref();
+        var epoch=commandPreferenceEpoch(preferences);
+        return new DetachedCommandContext(data,layer,coordinator,preferences,epoch,epoch.get(),commandSettingsIdentity(),PluginPreferences.loadTracingSettings().toString(),ProjectionRegistry.getProjection().toCode());
     }
     private static String commandSettingsIdentity() {
         var config=PluginPreferences.load();

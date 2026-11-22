@@ -115,9 +115,12 @@ public record RefinementAttemptDiagnostics(Binding binding, Optional<RefinementO
             return Optional.of(RefinementOperationReceipt.capture(binding.ticket(),parent,result));
         }
         boolean retain(RefinementAttemptDiagnostics value) {
+            return retain(value,Optional.empty(),Optional.empty());
+        }
+        boolean retain(RefinementAttemptDiagnostics value,Optional<RefinementSmoothingAdapter.Receipt> smoothing,Optional<String> inputProtocol) {
             // A full receipt may exceed the slot while the bounded core/auxiliary summary still fits.
             long total=0;
-            for(long charge:RefinementRootAuthority.detachedCharges(value).values())total=add(total,charge);
+            for(long charge:RefinementRootAuthority.detachedCharges(value,smoothing,inputProtocol).values())total=add(total,charge);
             if(total>bytes){unavailable=true;return false;}
             reservation.adopt(value);return true;
         }

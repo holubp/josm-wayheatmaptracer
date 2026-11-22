@@ -43,7 +43,7 @@ class RuntimeRefinementDiagnosticsTest {
     var alignment=new AlignmentResult(original.payload().originalSelectionContext(),null,List.of(shape),original.payload().originalSourcePolyline(),points,List.of(),null,null,List.of(),List.of(shape));
     var source=bound.nativeFacts().source();var request=source.source();
     var review=new RefinementPayload.NativeReview(result.plan().orElseThrow(),result.assessment().orElseThrow().quality(),Optional.empty(),List.of(request),OptionalInt.empty(),Map.of(request,source),List.of(),Optional.of(bound.pointIds()),Optional.of(result.receipt()));
-    var payload=RefinementPayload.captureNative(alignment,original.payload(),review,1_000_000);var id=new CandidateId("actual-smoothing");
+    var payload=RefinementPayload.captureNative(alignment,original.payload(),review,RefinementLimits.defaults().maxPayloadBytes());var id=new CandidateId("actual-smoothing");
     var candidate=new Candidate(id,payload,result.assessment().orElseThrow().candidate().correspondence(),result.plan().orElseThrow().canonicalHash(),nativeId,"blue");
     var child=Stage.child(bound.ticket(),List.of(candidate),id);
     var bundle=RuntimeRefinementDiagnostics.capture(authority,List.of(root,child),child,bound.ticket().session(),root.selected().value(),Optional.empty(),Optional.empty(),RefinementAttemptDiagnostics.Availability.NONE,"preview-open",Optional.empty(),Optional.empty(),Optional.empty());
