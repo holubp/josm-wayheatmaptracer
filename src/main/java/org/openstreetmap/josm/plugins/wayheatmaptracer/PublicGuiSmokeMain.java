@@ -468,6 +468,7 @@ public final class PublicGuiSmokeMain {
             checkedMode(requestedMode,owner.currentNative().orElseThrow().operation().orElseThrow().ticket().mode());
             requireExactLegacyParent(owner,rootReview,rootChoice,rootCandidate,rootGeometry);
             var choices=requiredNamed(preview.getContentPane(),"candidate",JComboBox.class);
+            if(savedEngine==TrackerMode.LEGACY_V02&&requestedMode==AlignmentMode.PRECISE_SHAPE&&!bFirst&&choices.getItemCount()<2)throw new IllegalStateException("The designated post-computation non-top detector GUI case requires actual distinct children; actualChildChoices="+choices.getItemCount());
             if(choices.getItemCount()>1)choices.setSelectedIndex(choices.getItemCount()-1);
             return null;
         });
