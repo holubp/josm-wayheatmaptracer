@@ -1650,7 +1650,7 @@ public final class PublicGuiSmokeMain {
             var dialog=opened.get(180,TimeUnit.SECONDS);
             var owner=onEventThread(()->{
                 if(dialog.isModal())throw new IllegalStateException("Smoothing review must be modeless");
-                if(session.currentAttempt().result() instanceof LiveBPreviewService.Computed computed)selectRidgeRoute(dialog,computed);
+                var attempt=session.currentAttempt();if(attempt!=null&&attempt.result() instanceof LiveBPreviewService.Computed computed)selectRidgeRoute(dialog,computed);
                 return (LegacyRefinementWorkflow)dialog.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner");
             });
             var parentGeometry=onEventThread(owner::selectedGeometry);var parentChoice=onEventThread(owner::selectedChoiceIdentity);
