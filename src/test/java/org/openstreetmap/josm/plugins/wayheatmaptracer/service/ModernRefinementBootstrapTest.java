@@ -13,6 +13,36 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoc
 import org.openstreetmap.josm.spi.preferences.*;
 
 class ModernRefinementBootstrapTest {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path diagnosticsDirectory;
+    @Test void rejectedLazyBootstrapExportsCurrentFailureWithoutInventingNativeInputs() throws Exception {
+        Config.setPreferencesInstance(new MemoryPreferences());ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+        var fixture=V022LiveBPreviewServiceTest.fiveNodeFixture();var service=new LiveBPreviewService();
+        var config=V022LiveBPreviewServiceTest.config(TrackerMode.PROBABILISTIC);
+        var raw=V022LiveBPreviewServiceTest.raster();var epoch=new VisibleSourceEpoch();
+        var raster=new LiveBPreviewService.VisibleRaster(raw.width(),raw.height(),raw.argb(),raw.minimumEast(),raw.minimumNorth(),raw.maximumEast(),raw.maximumNorth(),raw.projectionUnitsPerViewPixel(),raw.groundMetersPerViewPixel(),raw.nativePitchMeters(),raw.sourceIdentity(),raw.projectionCode(),epoch.captureStable());
+        var captured=new LiveBPreviewService.Captured[1];SwingUtilities.invokeAndWait(()->captured[0]=service.capture(fixture.dataSet(),fixture.selection(),raster,config,true));
+        var computed=service.compute(captured[0],CancellationProbe.NONE);
+        var choices=service.adaptChoices(computed,p->ProjectionRegistry.getProjection().latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(p.latitudeDegrees(),p.longitudeDegrees())));
+        var publications=new java.util.concurrent.LinkedBlockingQueue<Runnable>();var review=new ModernReviewRoot[1];var workflow=new LegacyRefinementWorkflow[1];
+        org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.setLastBundle(null);
+        SwingUtilities.invokeAndWait(()->{
+            review[0]=ModernReviewRoot.fromFullChoices(fixture.dataSet(),fixture.selection(),config,choices,null,()->{});
+            workflow[0]=new LegacyRefinementWorkflow(review[0],null,review[0]::select,d->{},s->{},task->{throw new java.util.concurrent.RejectedExecutionException();},publications::add);
+            workflow[0].enableNativeRuntimeDiagnostics(c->{throw new AssertionError("No prepared root exists");},c->{throw new AssertionError("No prepared root exists");});
+            workflow[0].refine(TrackerMode.CORRIDOR_AWARE);
+        });
+        try {
+            SwingUtilities.invokeAndWait(publications.remove());
+            SwingUtilities.invokeAndWait(()->{assertFalse(workflow[0].busy());assertThrows(IllegalStateException.class,workflow[0]::currentStage);assertEquals(0,workflow[0].actualNativeCalls());});
+            var path=diagnosticsDirectory.resolve("rejected-bootstrap.zip");
+            org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.writeLatest(path.toFile());
+            var archive=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader.read(path);
+            var json=new String(archive.artifact("latest-operation.json").orElseThrow().bytes(),java.nio.charset.StandardCharsets.UTF_8);
+            assertTrue(json.contains("\"phase\":\"BOOTSTRAP\""));assertTrue(json.contains("\"cause\":\"EXECUTOR_REJECTED\""));assertTrue(json.contains("\"requestedEngine\":\"CORRIDOR_AWARE\""));
+            assertTrue(json.contains("\"nativeCalls\":0"));assertTrue(json.contains("\"nativeFrozenInputs\":\"unavailable\""));
+            assertTrue(archive.artifact("refinement-lineage.json").isEmpty());assertTrue(archive.artifact("original-osm-geographic.csv").isPresent());
+        } finally {SwingUtilities.invokeAndWait(()->{workflow[0].close();review[0].close();});org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.setLastBundle(null);}
+    }
     @Test void nativeIntervalRootRetainsExactSelectedOccurrences() throws Exception {
         Config.setPreferencesInstance(new MemoryPreferences());
         ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
