@@ -335,6 +335,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - engine: PROBABILISTIC
+            report: public-gui-smoke-migrate-b
+            mode: PRECISE_SHAPE
+            order: A_B
+          - engine: CORRIDOR_AWARE
+            report: public-gui-smoke-migrate-a
+            mode: MOVE_EXISTING_NODES
+            order: A_B
           - engine: LEGACY_V02
             report: public-gui-smoke-stepwise-precise-a-b
             mode: PRECISE_SHAPE

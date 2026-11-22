@@ -94,7 +94,7 @@ public final class PublicGuiSmokeMain {
             AlignmentMode savedMode = engine == TrackerMode.LEGACY_THEN_B
                 ? AlignmentMode.MOVE_EXISTING_NODES
                 : engine == TrackerMode.CORRIDOR_AWARE ? AlignmentMode.PRECISE_SHAPE : requestedMode;
-            // The matrix engine is the saved pre-migration preference, not a live route.
+            // Supported starting engines survive; historical Hybrid remains a migration row.
             PluginPreferences.save(stepwiseConfig(savedMode).withTrackerMode(engine));
             PluginPreferences.saveTracingSettings(new TracingSettings(
                     TracingSettings.CURRENT_SCHEMA_VERSION, engine,
@@ -103,9 +103,10 @@ public final class PublicGuiSmokeMain {
             Config.getPref().putLong("wayheatmaptracer.cacheBuster", 0L);
             fixture.seedTiles();
             fixture.seedRefinementTiles();
-            if (PluginPreferences.load().trackerMode() != TrackerMode.LEGACY_V02
-                    || PluginPreferences.loadTracingSettings().engine() != TrackerMode.LEGACY_V02) {
-                throw new IllegalStateException("Saved live preference did not migrate to Legacy");
+            var expectedStartingEngine=engine==TrackerMode.CORRIDOR_AWARE||engine==TrackerMode.PROBABILISTIC?engine:TrackerMode.LEGACY_V02;
+            if (PluginPreferences.load().trackerMode() != expectedStartingEngine
+                    || PluginPreferences.loadTracingSettings().engine() != expectedStartingEngine) {
+                throw new IllegalStateException("Saved starting algorithm was not preserved");
             }
             WayHeatmapTracerPlugin plugin = onEventThread(() -> {
                 WayHeatmapTracerPlugin loaded = new WayHeatmapTracerPlugin(
@@ -147,6 +148,10 @@ public final class PublicGuiSmokeMain {
                 if (!onEventThread(() -> preview.isVisible() && preview.isDisplayable() && !preview.isModal())) {
                     throw new IllegalStateException("Production preview is not visible and modeless");
                 }
+                onEventThread(()->{
+                    for(var name:List.of("refineA","refineB","smooth"))if(!requiredNamed(preview.getContentPane(),name,javax.swing.JButton.class).isShowing())throw new IllegalStateException("Native result lacks optional stage controls");
+                    return null;
+                });
                 var ready = session.currentAttempt();
                 if (ready == null || ready.state() != AlignmentJob.State.PREVIEW_READY) {
                     throw new IllegalStateException("Production preview attempt is not ready");
@@ -1215,6 +1220,8 @@ public final class PublicGuiSmokeMain {
             if (!PluginPreferences.load().verbose()) {
                 throw new IllegalStateException("Settings OK did not persist the changed control");
             }
+            if(PluginPreferences.load().trackerMode()!=previousTracing.engine()||PluginPreferences.loadTracingSettings().engine()!=previousTracing.engine())
+                throw new IllegalStateException("Settings acceptance changed the selected starting engine");
         } finally {
             Toolkit.getDefaultToolkit().removeAWTEventListener(listener);
             PluginPreferences.save(previous);
@@ -1236,9 +1243,10 @@ public final class PublicGuiSmokeMain {
             if (text != null && (text.contains("old A+B Hybrid") || text.contains("tracing method is now Legacy")))
                 throw new IllegalStateException("Obsolete method notice remains visible");
             if (component instanceof JComboBox<?> combo) {
-                for (int i = 0; i < combo.getItemCount(); i++)
-                    if (combo.getItemAt(i) instanceof TrackerMode)
-                        throw new IllegalStateException("Settings expose a primary tracker selector");
+                var engines=new ArrayList<TrackerMode>();
+                for(int i=0;i<combo.getItemCount();i++)if(combo.getItemAt(i) instanceof TrackerMode engine)engines.add(engine);
+                if(!engines.isEmpty()&&!engines.equals(List.of(TrackerMode.LEGACY_V02,TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC)))
+                    throw new IllegalStateException("Settings starting algorithm choices differ");
             }
             if (component instanceof Container nested) requireNoObsoleteMethodUi(nested);
         }
