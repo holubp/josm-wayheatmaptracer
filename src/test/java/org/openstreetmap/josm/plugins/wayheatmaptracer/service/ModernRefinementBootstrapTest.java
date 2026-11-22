@@ -47,7 +47,7 @@ class ModernRefinementBootstrapTest {
         var computed=service.compute(capture[0],CancellationProbe.NONE);assertTrue(computed.partitioned());assertNull(computed.pipeline());
         var assessment=new FixedIntervalEditPlanComposer().compose(computed.intervalBatch(),Map.of());assertTrue(assessment.plan().isPresent(),assessment.toString());
         assertTrue(assessment.intervals().stream().anyMatch(i->i.disposition()==FixedIntervalEditPlanComposer.Disposition.FROZEN_LOCAL_FAILURE),
-            ()->"Native intervals="+computed.intervalBatch().runs().stream().map(run->run.interval().traceRange()+":"+run.result().inference().status()+":routes="+run.routes().size()+":quality="+run.routes().stream().limit(8).map(route->route.quality().disposition()+":"+route.quality().findings().stream().map(f->f.code().name()).toList()).toList()).toList()+"; composition="+assessment.intervals());
+            ()->"Native intervals="+computed.intervalBatch().runs().stream().map(run->run.interval().traceRange()+":"+run.result().inference().status()+":routes="+run.routes().size()+":quality="+run.routes().stream().limit(8).map(route->originalRouteFacts(computed.intervalBatch(),run,route)+":"+route.quality().disposition()+":"+route.quality().findings().stream().map(f->f.code().name()).toList()).toList()).toList()+"; composition="+assessment.intervals());
         var root=new ModernReviewRoot[1];
         SwingUtilities.invokeAndWait(()->root[0]=ModernReviewRoot.fromIntervalSelection(data,selection,config,new ModernReviewRoot.IntervalSelection(computed,Map.of(),assessment),null,()->{}));
         try(var memory=AttemptMemoryLedger.production().rootOwner()) {
@@ -92,6 +92,18 @@ class ModernRefinementBootstrapTest {
                 });
             } finally {SwingUtilities.invokeAndWait(workflow[0]::close);}
         } finally {SwingUtilities.invokeAndWait(root[0]::close);}
+    }
+    private static String originalRouteFacts(IntervalTraceBatch batch,IntervalTraceBatch.IntervalRun run,ModernTracePipeline.Route route) {
+        var way=(DetachedWay)batch.network().primitives().get(batch.fullRequest().selectedWayKey());
+        boolean originalIds=route.pointIds().stream().allMatch(id->id instanceof FinalRoutePointId.ExistingWayNodeOccurrence);
+        boolean exact=route.pointIds().size()==run.request().selectedRange().size();
+        for(int j=0;j<route.pointIds().size();j++) {
+            var id=route.pointIds().get(j);int occurrence=run.request().selectedRange().firstIndex()+j;
+            if(!(id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing)||occurrence>run.request().selectedRange().lastIndex()||existing.originalOccurrenceIndex()!=occurrence||!existing.nodeKey().equals(way.nodeKeys().get(occurrence))) {exact=false;continue;}
+            var node=(DetachedNode)batch.network().primitives().get(existing.nodeKey());
+            if(!batch.evidence().coordinateFrame().toMetric(node.coordinate()).equals(route.assignments().get(id)))exact=false;
+        }
+        return "points="+route.pointIds().size()+",originalIds="+originalIds+",exactOriginal="+exact;
     }
     @Test void nativeRootSupportsHistoryWithoutLegacyInference() throws Exception {
         Config.setPreferencesInstance(new MemoryPreferences());
