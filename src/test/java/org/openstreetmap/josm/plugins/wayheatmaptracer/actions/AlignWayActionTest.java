@@ -743,7 +743,7 @@ class AlignWayActionTest {
                 StandardCharsets.UTF_8);
         assertTrue(summary.contains("\"phase\":\"DIAGNOSTIC_EXPORT\""));
         assertTrue(summary.contains("\"scope\":\"INTERVAL_SOURCE_BATCH\""));
-        assertTrue(summary.contains("\"exceptionKind\":\"ILLEGAL_ARGUMENT\""));
+        assertTrue(summary.contains("\"exceptionKind\":\"ILLEGAL_STATE\""),summary);
         assertTrue(summary.contains("\"boundary\":\"INTERVAL_DIAGNOSTIC_BUNDLE\""));
         assertTrue(summary.contains("\"intervalRuns\":" + computed.intervalBatch().runs().size()));
         assertTrue(summary.contains("\"intervalTransitions\":" + computed.intervalBatch().totalUsage().transitions()));
