@@ -811,6 +811,21 @@ public final class PublicGuiSmokeMain {
             ||isPublishedAttemptDiagnostic(diagnostic,selected.kind(),selected.parent(),selected.parentChoice(),expected);
         return new LaterExportSnapshot(selected.id(),selected.selected(),availability,diagnostic,owner.ownsPublication(),owner.busy(),currentAttempt,evidence);
     }
+    static String bootstrapFailureFacts(String json) {
+        var value=parseReviewStatus(json);
+        if(!"BOOTSTRAP".equals(value.getString("phase",""))||!"NO_PREPARED_ROOT".equals(value.getString("publication",""))
+                ||value.getInt("nativeCalls",-1)!=0||!"requested-optional-operation".equals(value.getString("nativeCallScope",""))
+                ||!"unavailable".equals(value.getString("nativeFrozenInputs",""))||!"unavailable".equals(value.getString("chainReplay","")))
+            throw new IllegalStateException("Actual rootless bootstrap diagnostic contract is unavailable");
+        var cause=diagnosticToken(value.getString("cause",""),java.util.Set.of("RUNNING","CANCELLED","STALE","EXECUTOR_REJECTED","RESOURCE_LIMIT","FAILED"));
+        String visits="null";
+        if(value.containsKey("auxiliaryWorkVisits")&&!value.isNull("auxiliaryWorkVisits")) {
+            long actual=value.getJsonNumber("auxiliaryWorkVisits").longValueExact();
+            if(actual<0||actual>8_000_000L)throw new IllegalStateException("Actual bootstrap work exceeds its unchanged ceiling");
+            visits=Long.toString(actual);
+        }
+        return "{\"phase\":\"BOOTSTRAP\",\"cause\":\""+cause+"\",\"publication\":\"NO_PREPARED_ROOT\",\"nativeCalls\":0,\"nativeCallScope\":\"requested-optional-operation\",\"nativeFrozenInputs\":\"unavailable\",\"chainReplay\":\"unavailable\",\"auxiliaryWorkVisits\":"+visits+"}";
+    }
     static boolean isPublishedAttemptDiagnostic(
             java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics> diagnostic,
             StageKind currentKind,java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageId> parent,
@@ -848,6 +863,23 @@ public final class PublicGuiSmokeMain {
                 ready.get(180,TimeUnit.SECONDS);
             } catch(Exception failure) {
                 try {
+                    // Bootstrap can fail before a Stage exists. Preserve its producer's
+                    // safe boundary and rootless export before asking for a stage/choice.
+                    String boundary=onEventThread(()->fixedFailureBoundary(owner.computationEvidence()));
+                    System.err.println("GUI_SMOKE_OPTIONAL_PREPARE_BOUNDARY "+boundary);
+                    boolean rootAvailable=onEventThread(()->{
+                        try{owner.currentStage();return true;}
+                        catch(IllegalStateException missing){if("Refinement root has not been captured".equals(missing.getMessage()))return false;throw missing;}
+                    });
+                    if(!rootAvailable) {
+                        Path archive=report.resolveSibling("bootstrap-refinement-failure.zip");DiagnosticsRegistry.writeLatest(archive.toFile());
+                        var read=Format15ArchiveReader.read(archive);
+                        var actual=read.artifact("latest-operation.json").orElseThrow();
+                        String facts=bootstrapFailureFacts(new String(actual.bytes(),StandardCharsets.UTF_8));
+                        System.err.println("GUI_SMOKE_ACTUAL_BOOTSTRAP "+facts);
+                        laterRefinementFailureEvidence="{\"schema\":\"wayheatmaptracer-rootless-refinement-1\",\"expected\":\""+expected.name()+"\",\"rootAvailable\":false,\"failureBoundary\":\""+boundary+"\",\"registryExport\":\"AVAILABLE\",\"actual\":"+facts+"}";
+                        writeSummary(report.resolveSibling("later-refinement-diagnostics.json"),laterRefinementFailureEvidence+"\n");
+                    } else {
                     var observed=onEventThread(()->laterExportSnapshot(owner,expected,actionObserved.get(),admissions));
                     System.err.println("GUI_SMOKE_ACTUAL_AUXILIARY_WORK "+observed.diagnostic().flatMap(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics::sourcePreparation));
                     System.err.println("GUI_SMOKE_NATIVE_REFUSAL "+observed.diagnostic().flatMap(d->admissions.latestNative(d.binding().ticket())));
@@ -876,6 +908,7 @@ public final class PublicGuiSmokeMain {
                     laterRefinementFailureEvidence=evidence.substring(0,evidence.length()-1)+",\"registryExport\":\""+exportStatus+"\",\"archiveSha256\":"+(archiveHash==null?"null":"\""+archiveHash+"\"")+"}";
                     System.err.println("Later refinement diagnostics: "+laterRefinementFailureEvidence);
                     writeSummary(report.resolveSibling("later-refinement-diagnostics.json"),laterRefinementFailureEvidence+"\n");
+                    }
                 } catch(Exception diagnosticFailure) { failure.addSuppressed(diagnosticFailure); }
                 throw failure;
             } finally {onEventThread(()->{requiredNamed(dialog.getContentPane(),"stage",javax.swing.JLabel.class).removePropertyChangeListener(listener);requiredNamed(dialog.getContentPane(),"refineA",javax.swing.JButton.class).removePropertyChangeListener(listener);requiredNamed(dialog.getContentPane(),button,javax.swing.JButton.class).removeActionListener(actionListener);return null;});}

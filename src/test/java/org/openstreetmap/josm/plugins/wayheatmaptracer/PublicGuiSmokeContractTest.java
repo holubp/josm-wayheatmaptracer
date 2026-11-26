@@ -62,6 +62,14 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 import org.openstreetmap.josm.tools.PlatformManager;
 
 class PublicGuiSmokeContractTest {
+    @Test void visibleIntervalBootstrapFailureKeepsActualRootlessFactsAndUnavailableWork() {
+        String actual="{\"phase\":\"BOOTSTRAP\",\"cause\":\"RESOURCE_LIMIT\",\"publication\":\"NO_PREPARED_ROOT\",\"nativeCalls\":0,\"nativeCallScope\":\"requested-optional-operation\",\"nativeFrozenInputs\":\"unavailable\",\"chainReplay\":\"unavailable\",\"auxiliaryWorkVisits\":7999999}";
+        var facts=PublicGuiSmokeMain.bootstrapFailureFacts(actual);assertTrue(facts.contains("\"auxiliaryWorkVisits\":7999999"));assertTrue(facts.contains("\"cause\":\"RESOURCE_LIMIT\""));
+        assertTrue(PublicGuiSmokeMain.bootstrapFailureFacts(actual.replace("7999999","null")).contains("\"auxiliaryWorkVisits\":null"));
+        assertTrue(PublicGuiSmokeMain.bootstrapFailureFacts(actual.replace("RESOURCE_LIMIT","synthetic-cookie=secret")).contains("\"cause\":\"UNAVAILABLE\""));
+        for(var invalid:List.of(actual.replace("7999999","8000001"),actual.replace("\"nativeCalls\":0","\"nativeCalls\":1"),actual.replace("BOOTSTRAP","NATIVE"),actual.replace("NO_PREPARED_ROOT","PUBLISHED")))
+            assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.bootstrapFailureFacts(invalid));
+    }
     @Test void visibleIntervalFailureClassificationExposesOnlyExactFixedSourceSymbols() {
         String known="GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Composite original occurrence exceeds its captured movement authority";
         assertEquals("COMPOSITE_OCCURRENCE_AUTHORITY",PublicGuiSmokeMain.visibleIntervalFailureCode(known));
