@@ -1927,10 +1927,30 @@ public final class PublicGuiSmokeMain {
             var computed=onEventThread(()->(LiveBPreviewService.Computed)session.currentAttempt().result());
             System.err.println("GUI_SMOKE_VISIBLE_INTERVAL_SOURCE partitioned="+computed.partitioned()+" producer="+computed.captured().visibleInputReceipt().isPresent()+" runs="+(computed.partitioned()?computed.intervalBatch().runs().size():0));
             if(!computed.partitioned()||computed.captured().visibleInputReceipt().isEmpty()||computed.intervalBatch().runs().isEmpty())throw new IllegalStateException("Actual producer-backed visible interval source is unavailable");
-            var initial=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer().compose(computed.intervalBatch(),java.util.Map.of()).plan().orElseThrow();
+            var initial=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer().compose(computed.intervalBatch(),java.util.Map.of());
+            System.err.println("GUI_SMOKE_VISIBLE_INTERVAL_ASSESSMENT plan="+initial.plan().isPresent()+" noChange="+initial.noChangeProof().isPresent()
+                +" statuses="+computed.intervalBatch().runs().stream().limit(16).map(value->value.result().inference().status().name()).toList()
+                +" dispositions="+initial.intervals().stream().limit(16).map(value->value.disposition().name()).toList());
             Format15ArchiveReader.read(exportThroughActualMenu());
             // Applying the original interval plan exercises its own production source validator.
-            applyStoredNativePlan(dialog,fixture,initial,baseline,originalUndo);
+            boolean originalChanged=initial.plan().isPresent();
+            if(originalChanged)applyStoredNativePlan(dialog,fixture,initial.plan().orElseThrow(),baseline,originalUndo);
+            else {
+                var proof=initial.noChangeProof().orElseThrow(()->new IllegalStateException("Actual visible interval root has neither an edit plan nor a safe producer no-change proof"));
+                if(!proof.finalSelection().validation().applicable())throw new IllegalStateException("Actual visible interval no-change proof is unsafe");
+                var modal=new AtomicBoolean();AWTEventListener dismiss=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog warning&&warning.isModal()){modal.set(true);SwingUtilities.invokeLater(warning::dispose);}};
+                Toolkit.getDefaultToolkit().addAWTEventListener(dismiss,AWTEvent.WINDOW_EVENT_MASK);
+                try{onEventThread(()->{
+                    proof.requireMatches(computed.intervalBatch(),java.util.Map.of(),computed.captured().originalReceipt().orElseThrow().requireCurrent(fixture.dataSet()));
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.begin();
+                    try{confirmOriginalNative(dialog);labelledButton(dialog.getContentPane(),"Apply").doClick();
+                        if(org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.snapshot().containsKey("apply.commandExecutions"))throw new IllegalStateException("Unchanged interval acceptance entered an edit command");
+                    }finally{org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.end();}
+                    return null;
+                });}finally{Toolkit.getDefaultToolkit().removeAWTEventListener(dismiss);}
+                if(modal.get()||onEventThread(dialog::isDisplayable))throw new IllegalStateException("Safe original unchanged interval acceptance did not close its modeless review");
+                requireUnchanged(fixture,baseline,originalUndo);
+            }
             var descendantOpened=new CompletableFuture<JDialog>();
             AWTEventListener descendantListener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog next&&isPreview(next))descendantOpened.complete(next);};
             Toolkit.getDefaultToolkit().addAWTEventListener(descendantListener,AWTEvent.WINDOW_EVENT_MASK);
@@ -1944,7 +1964,7 @@ public final class PublicGuiSmokeMain {
             }finally{Toolkit.getDefaultToolkit().removeAWTEventListener(descendantListener);}
             exerciseSmoothThenRefineGui(report,action,session,fixture,baseline,originalUndo,StageKind.REFINE_A);
             exerciseSmoothThenRefineGui(report,action,session,fixture,baseline,originalUndo,StageKind.REFINE_B);
-            System.err.println("GUI_SMOKE_VISIBLE_INTERVAL producer=true originalApplyUndoRedo=true actualNativeDescendant=true descendantApplyUndoRedo=true postSmoothA=true postSmoothB=true");
+            System.err.println("GUI_SMOKE_VISIBLE_INTERVAL producer=true originalApplyUndoRedo="+originalChanged+" originalNoChangeAccepted="+!originalChanged+" actualNativeDescendant=true descendantApplyUndoRedo=true postSmoothA=true postSmoothB=true");
         } finally {
             Toolkit.getDefaultToolkit().removeAWTEventListener(listener);
             onEventThread(()->{

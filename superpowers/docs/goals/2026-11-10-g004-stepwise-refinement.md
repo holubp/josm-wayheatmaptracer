@@ -28,6 +28,11 @@ admission controls comparing different native ownership lifetimes. The narrow
 correction preserves cancellation and consistent real-native assessment controls.
 Fresh qualification is required. No full workflow, independent final audit or RC
 claim is made; normal gate passes and tracker remains INCONCLUSIVE in one fork.
+Focused0b487 now passes. Its actual visible interval capture has producer evidence
+and two native runs; the helper's unconditional edit-plan assumption failed next.
+The approved harness correction requires either the actual edit plan and stored
+command, or a safe producer no-change proof with exact network binding and zero
+writes. Required changed A descendants and post-Smooth A/B commands remain.
 
 **Verified Nov26:** bounded Apply diagnostic labels and saved Strong
 Apply/Undo/Redo now pass. CI45786197532/job139793448688/artifact15101025813
