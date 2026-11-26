@@ -346,6 +346,10 @@ public final class RefinementPipeline {
         catch(DeadlineReached limited) {outcome=Outcome.RESOURCE_LIMIT;stopped=true;}
         catch(SourceInvalid stale){outcome=Outcome.STALE;stopped=true;}
         catch(CancellationException cancelled){outcome=Outcome.CANCELLED;stopped=true;}
+        catch(NativeRetentionLimited limited){
+            if(admissionObserver!=null)admissionObserver.memory(ticket,PipelineAdmissionObserver.Gate.NATIVE_RETENTION,parent,intervals.size(),vertices,observedEvidence,limited.refusal);
+            outcome=Outcome.RESOURCE_LIMIT;stopped=true;
+        }
         catch(AttemptMemoryLedger.ResourceLimitException limited){
             if(admissionObserver!=null&&admissionGate!=null)admissionObserver.memory(ticket,admissionGate,parent,intervals.size(),vertices,observedEvidence,limited);
             outcome=Outcome.RESOURCE_LIMIT;stopped=true;
@@ -389,6 +393,10 @@ public final class RefinementPipeline {
     private record SourceCandidates(RefinementSourcePlanner.SourceRequest source,List<ParentBackedComposer.Assessed> candidates) { }
     private record Selected(ParentBackedComposer.Choice choice,ModernTracePipeline.Route route,Optional<ModernTracePipeline.FinalProvenance> provenance) { }
     private static final class UnknownWork extends IllegalStateException { }
+    private static final class NativeRetentionLimited extends RuntimeException {
+        final AttemptMemoryLedger.ResourceLimitException refusal;
+        NativeRetentionLimited(AttemptMemoryLedger.ResourceLimitException refusal){super(refusal);this.refusal=refusal;}
+    }
     private static void requireCurrent(Sources sources){
         try{sources.requireCurrent();}
         catch(CancellationException cancelled){throw cancelled;}
@@ -415,7 +423,11 @@ public final class RefinementPipeline {
         if(run.execution().isPresent())run.execution().get().requireBinding(run.reference(),run.request(),evidence,parent.root().network());
         if(invocation.completed().isPresent()) {
             requireCurrent(adapters.sources());
-            try{retention.settleRun(invocation.completed().orElseThrow(),adapters.sources().retentionDescriptor(source,evidence),retentionProbe);}
+            try {
+                var descriptor=adapters.sources().retentionDescriptor(source,evidence);
+                try{retention.settleRun(invocation.completed().orElseThrow(),descriptor,retentionProbe);}
+                catch(AttemptMemoryLedger.ResourceLimitException limited){throw new NativeRetentionLimited(limited);}
+            }
             finally{requireCurrent(adapters.sources());}
         }
         return run;

@@ -81,6 +81,10 @@ def test_diagnostic_engine_metadata_keeps_mismatch_and_unavailable_evidence(tmp_
 
 def test_focused_xml_gate_uses_suite_identity_and_requires_executed_green_tests(tmp_path, monkeypatch) -> None:
     job = _workflow()["jobs"]["g004-focused-tests"]
+    focused = next(step for step in job["steps"] if step.get("name") == "Run focused public JUnit tests")
+    assert "*V022FixedIntervalEditPlanComposerTest.exactGeographicNoChangeRetainsNativeAssignmentsAndRequiresItsOwnSafeProof" in focused["run"]
+    assert "*PublicGuiSmokeContractTest.visiblePreparationWitness*" in focused["run"]
+    assert "*PublicGuiSmokeContractTest.visibleInterval*" in focused["run"]
     gate = next(step for step in job["steps"] if step.get("name") == "Require selected JUnit XML after a passing run")
     script = gate["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
     monkeypatch.chdir(tmp_path)

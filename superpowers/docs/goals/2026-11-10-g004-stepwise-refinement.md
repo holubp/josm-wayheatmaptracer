@@ -33,6 +33,13 @@ and two native runs; the helper's unconditional edit-plan assumption failed next
 The approved harness correction requires either the actual edit plan and stored
 command, or a safe producer no-change proof with exact network binding and zero
 writes. Required changed A descendants and post-Smooth A/B commands remain.
+Actual9199 diagnosis is exact primitive no-change: native metric assignments
+can differ while storing the identical geographic coordinate. The approved
+compositor correction uses exact primitive effect, preserving native geometry,
+strict protected metric authority and complete no-change validation. A separate
+typed retention admission receipt preserves COMPLETE native work when its graph
+cannot be retained before assessment. Local combined five checks pass; fresh
+actual interval/full qualification remains required.
 
 **Verified Nov26:** bounded Apply diagnostic labels and saved Strong
 Apply/Undo/Redo now pass. CI45786197532/job139793448688/artifact15101025813

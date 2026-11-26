@@ -15,6 +15,24 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneratio
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 
 class RefinementPipelineTest {
+    @Test void completedNativeRetentionAdmissionHasItsOwnTypedBoundaryAndActualWork() {
+        var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
+        var ledger=new AttemptMemoryLedger(32L*1024*1024);
+        try(var owner=ledger.rootOwner();var observed=PipelineAdmissionObserver.openForTesting(value->{})) {
+            var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),new RefinementPipeline.Adapters(sources(parent),RefinementPipeline.productionRunner(),owner),
+                RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
+            assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());assertTrue(result.candidates().isEmpty());
+            assertTrue(result.attempts().stream().flatMap(a->a.run().stream()).anyMatch(run->run.outcome()==Outcome.COMPLETE&&run.actualWorkAvailability().isPresent()));
+            assertTrue(result.actualWork().orElseThrow().transitions()>0);
+            assertTrue(result.attempts().stream().anyMatch(a->a.kind()==RefinementPipeline.AttemptKind.UNATTEMPTED&&a.nativeCallAvailability().orElse(-1)==0));
+            var refusal=observed.latest(ticket).orElseThrow(()->new AssertionError("Actual completed-native retention refusal needs its own admission receipt"));
+            assertEquals("NATIVE_RETENTION",refusal.gate().name());assertEquals(64L*1024*1024,refusal.requestedBytes().orElseThrow());
+            assertTrue(refusal.requestedBytes().orElseThrow()>refusal.limitBytes().orElseThrow()-refusal.currentBytes().orElseThrow());
+            assertEquals(32L*1024*1024,refusal.limitBytes().orElseThrow());assertTrue(refusal.currentEvidence().isPresent());
+            assertTrue(owner.currentBytes()>0,"Old native/result owners remain charged on admission refusal");
+        }
+        assertEquals(0,ledger.currentBytes());
+    }
     @Test void cancellationFromSourceCheckpointRemainsCancellationRatherThanStale() {
         var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
         var source=new RefinementPipeline.Sources(){

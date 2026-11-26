@@ -75,9 +75,12 @@ class PublicRefinementMemoryTest {
                                     var refusal=observed.latestNative(actual.ticket()).orElseThrow();
                                     assertTrue(refusal.family()!=PipelineAdmissionObserver.NativeFamily.UNAVAILABLE);assertTrue(refusal.phase().isPresent());
                                 } else {
-                                    // A COMPLETE native result may truthfully fail the later assessment admission.
-                                    var refusal=observed.latest(actual.ticket()).orElseThrow();assertEquals(PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH,refusal.gate());
+                                    // COMPLETE native work may fail its retained-graph admission
+                                    // before assessment, or the later assessment admission itself.
+                                    var refusal=observed.latest(actual.ticket()).orElseThrow();
+                                    assertTrue(refusal.gate()==PipelineAdmissionObserver.Gate.NATIVE_RETENTION||refusal.gate()==PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH);
                                     assertTrue(refusal.requestedBytes().orElseThrow()>refusal.limitBytes().orElseThrow()-refusal.currentBytes().orElseThrow());
+                                    System.out.println("public-memory actualBoundary="+refusal.gate().name()+" requested="+refusal.requestedBytes().orElseThrow()+" current="+refusal.currentBytes().orElseThrow()+" limit="+refusal.limitBytes().orElseThrow());
                                 }
                             }
                         } else {

@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 import java.util.Arrays;
 import java.util.List;
@@ -1033,6 +1035,56 @@ class V022FixedIntervalEditPlanComposerTest {
         assertTrue(assessment.applyAvailable());
     }
 
+    @Test void exactGeographicNoChangeRetainsNativeAssignmentsAndRequiresItsOwnSafeProof() throws Exception {
+        var batch=batch(296.0,296.0,TrackerMode.PROBABILISTIC,false,false,true,false,false,false,AlignmentMode.MOVE_EXISTING_NODES);
+        for(int index=0;index<batch.runs().size();index++)batch=withRoute(batch,index,originalNoOpRoute(batch,index));
+        var route=batch.runs().get(0).routes().get(0);
+        var positions=new LinkedHashMap<>(route.assignments());
+        FinalRoutePointId aliasId=null;MetricPoint alias=null;
+        for(var id:route.pointIds()) {
+            var existing=(FinalRoutePointId.ExistingWayNodeOccurrence)id;
+            var range=batch.runs().get(0).interval().traceRange();
+            if(existing.originalOccurrenceIndex()<=range.firstIndex()||existing.originalOccurrenceIndex()>=range.lastIndex())continue;
+            if(!batch.network().closure().movableExistingNodeKeys().contains(existing.nodeKey()))continue;
+            var original=(DetachedNode)batch.network().primitives().get(existing.nodeKey());var point=positions.get(id);
+            for(var candidate:List.of(new MetricPoint(Math.nextUp(point.xMeters()),point.yMeters()),new MetricPoint(Math.nextDown(point.xMeters()),point.yMeters()),
+                    new MetricPoint(point.xMeters(),Math.nextUp(point.yMeters())),new MetricPoint(point.xMeters(),Math.nextDown(point.yMeters())))) {
+                if(!candidate.equals(point)&&batch.evidence().coordinateFrame().toGeographic(candidate).equals(original.coordinate())){aliasId=id;alias=candidate;break;}
+            }
+            if(aliasId!=null)break;
+        }
+        assertNotNull(aliasId,"The existing captured fixture must have a one-ULP movable assignment with exactly identical stored geographic coordinates");
+        positions.put(aliasId,alias);
+        var hypothesis=new TraceHypothesis(route.hypothesis().id(),route.hypothesis().branchSignature(),route.pointIds().stream().map(positions::get).toList(),
+            route.hypothesis().support(),route.hypothesis().objective(),route.hypothesis().posteriorProbability(),route.hypothesis().diagnostics());
+        var actual=new ModernTracePipeline.Route(route.rawHypothesis(),hypothesis,route.pointIds(),positions,route.sourceOwnership(),route.quality(),route.cleanupStatus(),route.geometryChanged());
+        batch=withRoute(batch,0,actual);var receipt=batch.runs().get(0).usage();
+        var assessment=new FixedIntervalEditPlanComposer().compose(batch,Map.of());
+        assertTrue(assessment.plan().isEmpty());var proof=assessment.noChangeProof().orElseThrow(()->new AssertionError("Exact geographic no-op needs its own validated producer proof: "+assessment.intervals().stream().map(FixedIntervalEditPlanComposer.IntervalAssessment::disposition).toList()));
+        proof.requireMatches(batch,Map.of(),batch.network());assertTrue(proof.finalSelection().validation().applicable());
+        assertTrue(assessment.intervals().stream().allMatch(value->value.disposition()==FixedIntervalEditPlanComposer.Disposition.UNCHANGED_NOOP));
+        assertSame(actual,batch.runs().get(0).routes().get(0));assertEquals(alias,actual.assignments().get(aliasId));assertEquals(receipt,batch.runs().get(0).usage());
+        var originalGeo=((DetachedNode)batch.network().primitives().get(((FinalRoutePointId.ExistingWayNodeOccurrence)aliasId).nodeKey())).coordinate();
+        var material=batch.evidence().coordinateFrame().toMetric(new GeographicPoint(originalGeo.latitudeDegrees()+1e-7,originalGeo.longitudeDegrees()));
+        assertNotEquals(originalGeo,batch.evidence().coordinateFrame().toGeographic(material));
+        var materialPositions=new LinkedHashMap<>(positions);materialPositions.put(aliasId,material);
+        var materialResult=new FixedIntervalEditPlanComposer().compose(withRoute(batch,0,withFinalPositions(actual,materialPositions)),Map.of());
+        assertTrue(materialResult.noChangeProof().isEmpty(),"An exactly representable geographic move must remain material or blocked");
+        materialResult.plan().ifPresent(plan->assertFalse(plan.writePrimitiveKeys().isEmpty()));
+        var boundary=actual.pointIds().get(0);var fixed=actual.assignments().get(boundary);
+        var fixedPositions=new LinkedHashMap<>(positions);fixedPositions.put(boundary,new MetricPoint(Math.nextUp(fixed.xMeters()),fixed.yMeters()));
+        var fixedBatch=withRoute(batch,0,withFinalPositions(actual,fixedPositions));
+        var fixedResult=new FixedIntervalEditPlanComposer().compose(fixedBatch,Map.of());
+        assertTrue(fixedResult.plan().isEmpty()&&fixedResult.noChangeProof().isEmpty(),"Shared/fixed metric drift remains rejected even for tiny geographic aliases");
+        var outsidePositions=new LinkedHashMap<>(positions);outsidePositions.put(aliasId,new MetricPoint(1_000_000_000,1_000_000_000));
+        var outside=new FixedIntervalEditPlanComposer().compose(withRoute(batch,0,withFinalPositions(actual,outsidePositions)),Map.of());
+        assertTrue(outside.plan().isEmpty()&&outside.noChangeProof().isEmpty(),"Outside-domain conversion remains blocked rather than gaining no-change authority");
+    }
+    private static ModernTracePipeline.Route withFinalPositions(ModernTracePipeline.Route route,Map<FinalRoutePointId,MetricPoint> positions) {
+        var hypothesis=new TraceHypothesis(route.hypothesis().id(),route.hypothesis().branchSignature(),route.pointIds().stream().map(positions::get).toList(),
+            route.hypothesis().support(),route.hypothesis().objective(),route.hypothesis().posteriorProbability(),route.hypothesis().diagnostics());
+        return new ModernTracePipeline.Route(route.rawHypothesis(),hypothesis,route.pointIds(),positions,route.sourceOwnership(),route.quality(),route.cleanupStatus(),route.geometryChanged());
+    }
     @Test void allUsableUnchangedIntervalsRequireTheirOwnValidatedGraphProof() throws Exception {
         var batch=batch();
         for(int index=0;index<batch.runs().size();index++)batch=withRoute(batch,index,originalNoOpRoute(batch,index));

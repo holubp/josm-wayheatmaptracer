@@ -399,9 +399,18 @@ public final class FixedIntervalEditPlanComposer {
             FinalRoutePointId id = route.pointIds().get(offset);
             if (!(id instanceof ExistingWayNodeOccurrence existing)
                     || existing.originalOccurrenceIndex() != occurrence
-                    || !existing.nodeKey().equals(selected.nodeKeys().get(occurrence))
-                    || !route.assignments().get(id).equals(original(batch, selected, occurrence))) {
+                    || !existing.nodeKey().equals(selected.nodeKeys().get(occurrence))) {
                 return true;
+            }
+            var actual=route.assignments().get(id);
+            if(actual==null)return true;
+            if(!actual.equals(original(batch,selected,occurrence))) {
+                // A metric ULP need not change a stored geographic coordinate. Classify
+                // the exact primitive effect; native assignments and the independently
+                // strict fixed/protected metric authority checks remain unchanged.
+                var node=(DetachedNode)batch.network().primitives().get(existing.nodeKey());
+                try{if(!batch.evidence().coordinateFrame().toGeographic(actual).equals(node.coordinate()))return true;}
+                catch(IllegalArgumentException outsideCertifiedFrame){return true;}
             }
         }
         return false;

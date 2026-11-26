@@ -32,6 +32,13 @@ ordinary interval/midpoint fixture, preserves typed cancellation at source check
 and makes two admission-only controls use the same real native ownership path.
 Normal gate passes; tracker has one inconclusive fork. Fresh affected/full/GUI
 qualification is required; no full workflow or release claim is made.
+The actual rendered Move interval failure is now isolated: metric-only change
+classification reached an exactly unchanged primitive graph and correctly refused
+an empty edit plan. Approved exact-geographic effect classification retains the
+native assignments, fixed/protected metric authority and full no-change proof
+validation. Typed NATIVE_RETENTION admission evidence separately preserves actual
+COMPLETE native work and numeric refusal before assessment. Combined local five
+checks pass; held/released memory controls and original400m remain unchanged.
 
 Follow the [G004 current shortest RC path](../goals/2026-11-10-g004-stepwise-refinement.md):
 Nov26 diagnostic encoding and actual saved Strong Apply/Undo/Redo are verified

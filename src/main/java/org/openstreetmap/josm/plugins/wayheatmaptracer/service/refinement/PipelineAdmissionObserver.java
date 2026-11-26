@@ -13,7 +13,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorE
 public final class PipelineAdmissionObserver {
     private static final AtomicReference<Scope> ACTIVE=new AtomicReference<>();
     private PipelineAdmissionObserver() { }
-    public enum Gate { ASSEMBLED_RETENTION, SCALAR_PREPARATION, ASSESSMENT_SCRATCH, INFERENCE_DEADLINE, FINAL_DEADLINE }
+    public enum Gate { ASSEMBLED_RETENTION, SCALAR_PREPARATION, NATIVE_RETENTION, ASSESSMENT_SCRATCH, INFERENCE_DEADLINE, FINAL_DEADLINE }
     public enum NativeFamily { ATTEMPT_MEMORY_LIMIT, CORRIDOR_RESOURCE_LIMIT, HARD_GEOMETRY_RESOURCE_LIMIT, UNAVAILABLE }
     /** Enum-only cause and factual work; native explanations and geometry are never retained. */
     public record NativeRejection(OperationTicket ticket,NativeFamily family,Optional<CorridorExecutionReceipt.Phase> phase,
