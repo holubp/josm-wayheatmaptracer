@@ -1893,6 +1893,38 @@ public final class PublicGuiSmokeMain {
         onEventThread(()->{UndoRedoHandler.getInstance().undo();return null;});requireUnchanged(fixture,original,originalUndo);
     }
     /** Actual visible source authority must survive interval composition and a native descendant. */
+    static String visibleIntervalFailureCode(String reason) {
+        if(reason==null)return "UNAVAILABLE";
+        return switch(reason) {
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Composite candidate and frozen inputs do not match" -> "COMPOSITE_INPUT_BINDING";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Composite original-node authority is unavailable" -> "COMPOSITE_SOURCE_AUTHORITY";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Composite original occurrence exceeds its captured movement authority" -> "COMPOSITE_OCCURRENCE_AUTHORITY";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Composite plan omitted an original selected node" -> "COMPOSITE_OMITTED_OCCURRENCE";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Route exceeds the supported bounded edit-plan boundary" -> "UNSUPPORTED_PLAN_BOUNDARY";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Selected way occurrence identity is incomplete or repeated" -> "SELECTED_OCCURRENCE_IDENTITY";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Only one captured ordinary interior shape occurrence may be removed" -> "REMOVAL_AUTHORITY";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Selected occurrence authority is incomplete" -> "SELECTED_OCCURRENCE_AUTHORITY";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Selected occurrence movement/protection authority is incomplete" -> "SELECTED_MOVEMENT_AUTHORITY";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Final route must retain both selected boundaries" -> "FINAL_BOUNDARIES";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Final route existing occurrences are missing, duplicated, or reordered" -> "FINAL_OCCURRENCE_ORDER";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Final route omits a protected or movable existing occurrence" -> "FINAL_OMITTED_PROTECTED_OCCURRENCE";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Existing occurrence assignment exceeds its movement authority" -> "FINAL_ASSIGNMENT_AUTHORITY";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Generated route identities are inconsistent or duplicated" -> "GENERATED_IDENTITY";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Unsupported final route point identity" -> "FINAL_POINT_IDENTITY";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Final route omits a selected existing occurrence" -> "FINAL_OMITTED_OCCURRENCE";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Final selected-way node occurrence identities are duplicated" -> "FINAL_DUPLICATED_OCCURRENCE";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Native interval source or route binding differs" -> "NATIVE_INTERVAL_BINDING";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Native interval has a hard finding" -> "NATIVE_INTERVAL_HARD_FINDING";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Native physical support summary differs" -> "NATIVE_SUPPORT_BINDING";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Edit plan snapshots, closure, or selected way are inconsistent" -> "PLAN_SNAPSHOT_BINDING";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:An edit plan must contain a material change" -> "PLAN_NO_MATERIAL_CHANGE";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Structural diff exceeds explicit primitive edit authority" -> "PLAN_EDIT_AUTHORITY";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Final preview must contain exactly every affected way geometry" -> "PLAN_PREVIEW_BINDING";
+            case "GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Closure does not authorize new nodes" -> "PLAN_CREATE_AUTHORITY";
+            case "GLOBAL_FINAL_VALIDATION" -> "GLOBAL_REASON_UNAVAILABLE";
+            default -> "UNAVAILABLE";
+        };
+    }
     static void configureVisibleIntervalFixture(PublicGuiSmokeFixture fixture) {
         fixture.restoreOriginalSelectionGeometry();
         configureIntervalFixture(fixture);
@@ -1930,7 +1962,10 @@ public final class PublicGuiSmokeMain {
             var initial=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer().compose(computed.intervalBatch(),java.util.Map.of());
             System.err.println("GUI_SMOKE_VISIBLE_INTERVAL_ASSESSMENT plan="+initial.plan().isPresent()+" noChange="+initial.noChangeProof().isPresent()
                 +" statuses="+computed.intervalBatch().runs().stream().limit(16).map(value->value.result().inference().status().name()).toList()
-                +" dispositions="+initial.intervals().stream().limit(16).map(value->value.disposition().name()).toList());
+                +" dispositions="+initial.intervals().stream().limit(16).map(value->value.disposition().name()).toList()
+                +" causes="+initial.intervals().stream().limit(16).map(value->visibleIntervalFailureCode(value.reason())).toList()
+                +" routeQuality="+computed.intervalBatch().runs().stream().limit(16).map(value->value.routes().stream().limit(8)
+                    .map(route->route.quality().disposition().name()+":"+route.quality().findings().stream().limit(16).map(finding->finding.code().name()).toList()).toList()).toList());
             Format15ArchiveReader.read(exportThroughActualMenu());
             // Applying the original interval plan exercises its own production source validator.
             boolean originalChanged=initial.plan().isPresent();

@@ -62,6 +62,15 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 import org.openstreetmap.josm.tools.PlatformManager;
 
 class PublicGuiSmokeContractTest {
+    @Test void visibleIntervalFailureClassificationExposesOnlyExactFixedSourceSymbols() {
+        String known="GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Composite original occurrence exceeds its captured movement authority";
+        assertEquals("COMPOSITE_OCCURRENCE_AUTHORITY",PublicGuiSmokeMain.visibleIntervalFailureCode(known));
+        assertEquals("PLAN_EDIT_AUTHORITY",PublicGuiSmokeMain.visibleIntervalFailureCode("GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Structural diff exceeds explicit primitive edit authority"));
+        assertEquals("GLOBAL_REASON_UNAVAILABLE",PublicGuiSmokeMain.visibleIntervalFailureCode("GLOBAL_FINAL_VALIDATION"));
+        for(String unknown:List.of("synthetic-cookie=secret",known+" synthetic coordinate=1,2","untrusted-prefix:"+known))
+            assertEquals("UNAVAILABLE",PublicGuiSmokeMain.visibleIntervalFailureCode(unknown));
+        assertEquals("UNAVAILABLE",PublicGuiSmokeMain.visibleIntervalFailureCode(null));
+    }
     @Test void visibleIntervalFixtureSeparatesAllFrozenCompactNegativeFromExistingEligibleIntervals() throws Exception {
         ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
         var fixture=PublicGuiSmokeFixture.create(temporary);
