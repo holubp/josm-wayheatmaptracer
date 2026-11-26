@@ -1,4 +1,4 @@
-"""Contract checks for the fast, diagnostic-only Legacy GUI workflow."""
+"""Contract checks for the approved G004 native and Legacy diagnostic GUI rows."""
 
 from __future__ import annotations
 
@@ -16,6 +16,13 @@ GUI_RUN = (
     "-PpublicGuiRefinementOrder=${{ matrix.order }} --console=plain"
 )
 DIAGNOSTIC_MATRIX = [
+    {"engine": "PROBABILISTIC", "report": "public-gui-smoke-native-interval", "mode": "PRECISE_SHAPE", "order": "INTERVAL"},
+    {"engine": "PROBABILISTIC", "report": "public-gui-smoke-migrate-b", "mode": "PRECISE_SHAPE", "order": "A_B"},
+    {"engine": "CORRIDOR_AWARE", "report": "public-gui-smoke-migrate-a", "mode": "MOVE_EXISTING_NODES", "order": "A_B"},
+    {"engine": "CORRIDOR_AWARE", "report": "public-gui-smoke-native-a-precise", "mode": "PRECISE_SHAPE", "order": "A_B"},
+    {"engine": "PROBABILISTIC", "report": "public-gui-smoke-native-b-move", "mode": "MOVE_EXISTING_NODES", "order": "B_A"},
+    {"engine": "PROBABILISTIC", "report": "public-gui-smoke-visible-b-move", "mode": "MOVE_EXISTING_NODES", "order": "VISIBLE_B_A"},
+    {"engine": "PROBABILISTIC", "report": "public-gui-smoke-visible-stable-b-move", "mode": "MOVE_EXISTING_NODES", "order": "VISIBLE_B_A_STABLE"},
     {"engine": "LEGACY_V02", "report": "public-gui-smoke-stepwise-precise-a-b", "mode": "PRECISE_SHAPE", "order": "A_B"},
     {"engine": "LEGACY_V02", "report": "public-gui-smoke-stepwise-precise-b-a", "mode": "PRECISE_SHAPE", "order": "B_A"},
     {"engine": "LEGACY_V02", "report": "public-gui-smoke-stepwise-move-a-b", "mode": "MOVE_EXISTING_NODES", "order": "A_B"},
@@ -85,9 +92,10 @@ def test_g004_diagnostic_gui_is_fast_native_and_diagnostic_only() -> None:
     assert "releaseQualified" in metadata["run"]
     assert '"releaseQualified": False' in metadata["run"]
     assert metadata["env"]["G004_ENGINE"] == "${{ matrix.engine }}"
-    assert '"engine": "LEGACY_V02"' in metadata["run"]
-    assert '"engineRole": "expected"' in metadata["run"]
-    assert '"savedEngine": os.environ["G004_ENGINE"]' in metadata["run"]
+    assert '"engine": actual_engine' in metadata["run"]
+    assert '"expectedEngine": expected_engine' in metadata["run"]
+    assert '"engineRole": "observed" if actual_engine is not None else "unavailable"' in metadata["run"]
+    assert '"savedEngine": saved_engine' in metadata["run"]
 
 
 def test_diagnostic_job_does_not_change_public_release_gates_or_permissions() -> None:
@@ -96,15 +104,18 @@ def test_diagnostic_job_does_not_change_public_release_gates_or_permissions() ->
     jobs = workflow["jobs"]
     assert set(jobs) == {
         "public-validation", "public-gui-smoke", "g004-gui-diagnostic",
-        "legacy-normal-performance", "legacy-tracker-performance",
+        "legacy-normal-performance", "legacy-tracker-performance", "g004-focused-tests",
     }
     assert jobs["public-gui-smoke"]["needs"] == "public-validation"
-    assert jobs["public-gui-smoke"]["strategy"]["matrix"]["include"][-4:] == DIAGNOSTIC_MATRIX[:4]
+    public_matrix = jobs["public-gui-smoke"]["strategy"]["matrix"]["include"]
+    assert len(public_matrix) == 12
+    assert public_matrix[-4:] == DIAGNOSTIC_MATRIX[7:11]
     assert jobs["public-gui-smoke"]["strategy"]["matrix"]["include"][:3] == [
         {"engine": "PROBABILISTIC", "report": "public-gui-smoke-migrate-b", "mode": "PRECISE_SHAPE", "order": "A_B"},
+        {"engine": "PROBABILISTIC", "report": "public-gui-smoke-native-interval", "mode": "PRECISE_SHAPE", "order": "INTERVAL"},
         {"engine": "LEGACY_THEN_B", "report": "public-gui-smoke-migrate-sequential", "mode": "PRECISE_SHAPE", "order": "A_B"},
-        {"engine": "CORRIDOR_AWARE", "report": "public-gui-smoke-migrate-a", "mode": "MOVE_EXISTING_NODES", "order": "A_B"},
     ]
-    assert jobs["public-gui-smoke"]["strategy"]["matrix"]["include"][1] == DIAGNOSTIC_MATRIX[4]
+    assert public_matrix[2] == DIAGNOSTIC_MATRIX[-1]
+    assert public_matrix[3:] == DIAGNOSTIC_MATRIX[2:-1]
     assert jobs["public-validation"]["timeout-minutes"] == "300"
     assert jobs["public-validation"]["steps"][-1]["with"]["name"] == "public-validated-wayheatmaptracer"

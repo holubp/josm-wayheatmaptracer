@@ -20,6 +20,65 @@ def _workflow() -> dict[str, object]:
     return loaded
 
 
+def test_diagnostic_engine_metadata_binds_observed_summary_and_approved_selector(tmp_path, monkeypatch) -> None:
+    import json
+
+    steps = _workflow()["jobs"]["g004-gui-diagnostic"]["steps"]
+    step = next(step for step in steps if step.get("name") == "Write fixed diagnostic-only metadata")
+    script = step["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    monkeypatch.chdir(tmp_path)
+    for key, value in {"G004_REPORT": "synthetic-engine", "G004_MODE": "MOVE_EXISTING_NODES",
+                       "G004_ORDER": "B_A", "GITHUB_SHA": "a" * 40}.items():
+        monkeypatch.setenv(key, value)
+    report = tmp_path / "build/reports/synthetic-engine"
+    report.mkdir(parents=True)
+    for saved, observed in (("PROBABILISTIC", "PROBABILISTIC"), ("CORRIDOR_AWARE", "CORRIDOR_AWARE"),
+                            ("LEGACY_V02", "LEGACY_V02"), ("LEGACY_THEN_B", "LEGACY_V02")):
+        monkeypatch.setenv("G004_ENGINE", saved)
+        original = json.dumps({"status": "PASS", "engine": observed, "actualNativeCalls": 7})
+        (report / "summary.json").write_text(original)
+        exec(script, {})
+        metadata = json.loads((report / "diagnostic-metadata.json").read_text())
+        assert metadata["engine"] == observed
+        assert metadata["engineRole"] == "observed"
+        assert metadata["expectedEngine"] == observed
+        assert metadata["savedEngine"] == saved
+        assert metadata["sourceCommit"] == "a" * 40
+        assert metadata["releaseQualified"] is False
+        assert (report / "summary.json").read_text() == original
+
+
+def test_diagnostic_engine_metadata_keeps_mismatch_and_unavailable_evidence(tmp_path, monkeypatch) -> None:
+    import json
+    import pytest
+
+    step = next(step for step in _workflow()["jobs"]["g004-gui-diagnostic"]["steps"]
+                if step.get("name") == "Write fixed diagnostic-only metadata")
+    script = step["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    monkeypatch.chdir(tmp_path)
+    for key, value in {"G004_REPORT": "synthetic-engine", "G004_ENGINE": "CORRIDOR_AWARE",
+                       "G004_MODE": "PRECISE_SHAPE", "G004_ORDER": "A_B", "GITHUB_SHA": "b" * 40}.items():
+        monkeypatch.setenv(key, value)
+    report = tmp_path / "build/reports/synthetic-engine"
+    report.mkdir(parents=True)
+    (report / "summary.json").write_text(json.dumps({"status": "PASS", "engine": "PROBABILISTIC"}))
+    with pytest.raises(SystemExit):
+        exec(script, {})
+    metadata = json.loads((report / "diagnostic-metadata.json").read_text())
+    assert metadata["engine"] == "PROBABILISTIC"
+    assert metadata["expectedEngine"] == "CORRIDOR_AWARE"
+    (report / "summary.json").unlink()
+    exec(script, {})
+    metadata = json.loads((report / "diagnostic-metadata.json").read_text())
+    assert metadata["engine"] is None
+    assert metadata["engineRole"] == "unavailable"
+    assert metadata["expectedEngine"] == "CORRIDOR_AWARE"
+    for unavailable in (None, 0, ""):
+        (report / "summary.json").write_text(json.dumps({"status": "PASS", "engine": unavailable}))
+        with pytest.raises(SystemExit):
+            exec(script, {})
+
+
 def test_focused_xml_gate_uses_suite_identity_and_requires_executed_green_tests(tmp_path, monkeypatch) -> None:
     job = _workflow()["jobs"]["g004-focused-tests"]
     gate = next(step for step in job["steps"] if step.get("name") == "Require selected JUnit XML after a passing run")

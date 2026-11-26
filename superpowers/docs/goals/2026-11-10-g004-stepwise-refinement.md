@@ -1,31 +1,35 @@
 # G004 — Stepwise tracing refinement and menu cleanup
 
 > **Current execution —2026-11-26:** ACTIVE, explicitly resumed by user.
-> PARTIAL / NOT RELEASED at MAIN `adae5471`. This bookkeeping update does
-> not approve64M preparation or changes to the original400m assertions.
+> PARTIAL / NOT RELEASED. Latest verified visible Apply source: `7b7d230d`.
+>64M preparation and changes to the original400m assertions remain unapproved.
 
 ## Current shortest path to the next RC
 
-1. Repair existing Apply-failure diagnostic encoding, then reproduce/fix the
-   saved smoothed-result Apply refusal. Current counter labels contain
-   underscores/colon and potentially overlong stack tokens; the counter permits
-   only letters/digits/dots and81 characters. Actual CI137362242466 recorded
-   COMMAND phase but lost the cause. No speculative guard changes.
-2. Resolve the explicit pending64M preparation decision. Current conversion
+**Verified Nov26:** bounded Apply diagnostic labels and saved Strong
+Apply/Undo/Redo now pass. CI45783248767/job139783593631/artifact15098798775
+is source-bound to `7b7d230d`: actual original repeat, expected8M recapture
+refusal, exact retained Strong/history and one stored final command all pass.
+The refusal was a test-harness lifetime defect: an intermediate diagnostic
+write closed the synthetic painter. Only explicit terminal reports now release
+it; production pixel/source/transaction guards remain unchanged. This does not
+qualify successful A/B refinement after smoothing.
+
+1. Resolve the explicit pending64M preparation decision. Current conversion
    alone exceeds8M. Proposed64M is for A/B preparation only, with shared
    monotonic counters/owner/deadline through inherited bootstrap, palettes and
    fallback. Bootstrap/smoothing remain8M; native8Mpair/128Mscore, memory and
    cancellation stay unchanged. NOT APPROVED/APPLIED or verified sufficient.
    Keep original400m assertions unless separately approved.
-3. Qualify actual visible full/interval/post-smoothing refinement and stored
+2. Qualify actual visible full/interval/post-smoothing refinement and stored
    Apply/Undo/Redo alongside existing managed/Legacy cases. Safe refusal is not
    positive workflow proof. Do not repeat STABLE_FIXED_SCALE trials: it controls
    managed-tile zoom, not native rendered resolution.
-4. One coherent final public Java/Python/GUI/performance batch; reuse exact
+3. One coherent final public Java/Python/GUI/performance batch; reuse exact
    unchanged numerical evidence, finish docs, freeze source/version and obtain
    one independent Sol-high completion audit. Blocking repairs/affected checks
    only; no repeated component-review or new design cycle.
-5. Build/publish one next unused RC, verify source/tag/manifest/CI binding,
+4. Build/publish one next unused RC, verify source/tag/manifest/CI binding,
    download/check the JAR. Stable0.22 release/corpus gates remain separate.
 
 **Strict scope:** existing workflow reengineering, necessary correctness repairs,

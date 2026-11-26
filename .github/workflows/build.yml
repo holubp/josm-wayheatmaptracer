@@ -488,19 +488,32 @@ jobs:
 
           output = Path("build/reports") / os.environ["G004_REPORT"] / "diagnostic-metadata.json"
           output.parent.mkdir(parents=True, exist_ok=True)
+          saved_engine = os.environ["G004_ENGINE"]
+          supported = {"LEGACY_V02", "CORRIDOR_AWARE", "PROBABILISTIC"}
+          if saved_engine not in supported | {"LEGACY_THEN_B"}:
+              raise SystemExit("Unsupported saved GUI engine")
+          expected_engine = "LEGACY_V02" if saved_engine == "LEGACY_THEN_B" else saved_engine
+          summary_path = output.with_name("summary.json")
+          summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.is_file() else {}
+          actual_engine = summary.get("engine")
+          if actual_engine is not None and actual_engine not in supported:
+              raise SystemExit("Unsupported observed GUI engine")
           metadata = {
               "schema": "g004-gui-diagnostic-v1",
               "diagnosticOnly": True,
               "releaseQualified": False,
               "sourceCommit": os.environ["GITHUB_SHA"],
               "report": os.environ["G004_REPORT"],
-              "engine": "LEGACY_V02",
-              "engineRole": "expected",
-              "savedEngine": os.environ["G004_ENGINE"],
+              "engine": actual_engine,
+              "engineRole": "observed" if actual_engine is not None else "unavailable",
+              "expectedEngine": expected_engine,
+              "savedEngine": saved_engine,
               "mode": os.environ["G004_MODE"],
               "order": os.environ["G004_ORDER"],
           }
           output.write_text(json.dumps(metadata, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          if summary.get("status") == "PASS" and actual_engine != expected_engine:
+              raise SystemExit("Observed GUI engine differs from the approved starting method")
           PY
       - name: Upload diagnostic GUI evidence
         uses: actions/upload-artifact@v4

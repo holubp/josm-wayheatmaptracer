@@ -21,8 +21,11 @@ G004_REVIEWED_SOURCE_SHA256 = {
 }
 SERVICE_DIR = "src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/service"
 G004_REVIEWED_LEGACY_CAPTURE_SHA256 = {
+    # a0abe733: controller-reviewed native viewport/producer/repeat authority since
+    # 941ee0ec. Legacy false-flag capture and all tracker/objective kernels remain
+    # unchanged. This named integration pin is not final implementation approval.
     f"{SERVICE_DIR}/AlignmentService.java":
-        "c3bfcc66a6904208b47a59d12e2c3a7821abb052e67e9cc68e86d36e21872c70",
+        "6e85428a489223a3f0f480b18acf180b7a14224ac8d21afef94a077fb2ca926c",
     f"{SERVICE_DIR}/TileHeatmapSampler.java":
         "41acb4d80367ef2d1cfdd8b37f484806b74bbaa6d1c338e90ab24f46d4910e11",
 }

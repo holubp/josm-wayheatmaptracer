@@ -15,8 +15,11 @@
 ## Current remaining work —2026-11-26
 
 Follow the [G004 current shortest RC path](../goals/2026-11-10-g004-stepwise-refinement.md):
-repair diagnostic encoding/actual smoothed Apply, resolve explicit preparation
-policy, qualify visible continuation, coherent final CI/freeze, one Sol-high
+Nov26 diagnostic encoding and actual saved Strong Apply/Undo/Redo are verified
+at `7b7d230d` (CI45783248767/job139783593631). An intermediate diagnostic
+write prematurely released the synthetic painter; terminal-only fixture cleanup
+repairs that harness defect without changing production source guards.
+Resolve explicit preparation policy, qualify visible continuation, coherent final CI/freeze, one Sol-high
 audit, one verified RC. Reuse passing components rather than restarting them.
 No solver/conversion/source-grid/smoothing research or repeated configuration
 experiments.64M is proposed only, not approved/applied. Original task checklists
