@@ -1,14 +1,14 @@
 # G004 — Stepwise tracing refinement and menu cleanup
 
 > **Current execution —2026-11-26:** ACTIVE, explicitly resumed by user.
-> PARTIAL / NOT RELEASED. Latest verified visible Apply source: `7b7d230d`.
+> PARTIAL / NOT RELEASED. Latest verified visible Apply source: `4df8d118`.
 >64M preparation and changes to the original400m assertions remain unapproved.
 
 ## Current shortest path to the next RC
 
 **Verified Nov26:** bounded Apply diagnostic labels and saved Strong
-Apply/Undo/Redo now pass. CI45783248767/job139783593631/artifact15098798775
-is source-bound to `7b7d230d`: actual original repeat, expected8M recapture
+Apply/Undo/Redo now pass. CI45786197532/job139793448688/artifact15101025813
+is source-bound to `4df8d118`: actual original repeat, expected8M recapture
 refusal, exact retained Strong/history and one stored final command all pass.
 The refusal was a test-harness lifetime defect: an intermediate diagnostic
 write closed the synthetic painter. Only explicit terminal reports now release
@@ -151,8 +151,10 @@ establishes G004 completion.
 
 ## Next safe action
 
-Implementation remains paused. After explicit resume follow the current shortest
-RC path above. Cleanup approvals approve neither64M nor400m test changes.
+Implementation is active following the explicit Nov26 resume. Follow the current
+shortest RC path above; saved Strong Apply is verified. The64M preparation and
+original400m assertion decisions remain pending and are not inferred from resume
+or cleanup approvals.
 
 ### Historical task-start instructions — superseded, do not execute
 
