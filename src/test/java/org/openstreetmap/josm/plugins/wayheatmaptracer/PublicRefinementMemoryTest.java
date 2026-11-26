@@ -27,7 +27,7 @@ class PublicRefinementMemoryTest {
         var cache=new ManagedTileCache(temporary.resolve("cache"),decoder);fixture.seedRefinementTiles(cache);
         try(var coordinator=new TileFetchCoordinator((r,c)->{throw new AssertionError("the unchanged public fixture must remain offline");},cache,decoder,TileReliabilityPolicy.defaults())) {
             var config=AlignmentConfig.withoutCleanup(PublicGuiSmokeMain.stepwiseConfig(AlignmentMode.PRECISE_SHAPE));
-            Long heldEntryBytes=null;String heldInputHash=null;List<Object> heldRequestBinding=null;
+            Long heldEntryBytes=null,heldBaselineBytes=null;String heldInputHash=null;List<Object> heldRequestBinding=null;
             for(boolean legacyLifetime:List.of(true,false)) {
                 var ledger=AttemptMemoryLedger.production();var original=new AtomicReference<Trial>();var operation=new AtomicReference<Operation>();
                 try(var owner=ledger.rootOwner()) {
@@ -52,6 +52,8 @@ class PublicRefinementMemoryTest {
                     var actual=operation.get();var acquired=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(
                         actual.plan(),CredentialSnapshot.fromConfig(config.heatmap()),CancellationProbe.NONE,owner);
                     long released=ledger.peakBytes()-ledger.currentBytes();assertEquals(41943040L,released);
+                    long baselineAfterAcquisitionBytes=ledger.currentBytes();
+                    System.out.println("public-memory baseline legacyLifetime="+legacyLifetime+" currentBytes="+baselineAfterAcquisitionBytes);
                     if(legacyLifetime)owner.reserve(released).adopt(new Object());
                     var entries=new AtomicInteger();var firstEntryBytes=new AtomicLong(-1);
                     var budget=RefinementPipeline.OperationBudget.production(completed.authority().request().budgets());
@@ -104,8 +106,14 @@ class PublicRefinementMemoryTest {
                             assertEquals(RasterEvidenceCapture.ORIGINAL_ARGB_PROTOCOL,source.inputHashProtocol());
                             assertTrue(sourceWork.counters().get(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.HASH)>0);
                             var binding=List.<Object>of(request.selectedWayKey(),request.selectedRange(),request.engine(),request.geometryMode(),request.permissions(),request.budgets(),request.configuredSampleStepMeters(),request.profileChainage().cumulativeGroundMeters(),request.evidenceResolution());
-                            if(legacyLifetime){heldEntryBytes=firstEntryBytes.get();heldInputHash=source.inputByteHash();heldRequestBinding=binding;}
-                            else if(heldEntryBytes!=null){assertEquals(41943040L,heldEntryBytes-firstEntryBytes.get());assertEquals(heldInputHash,source.inputByteHash());assertEquals(heldRequestBinding,binding);}
+                            if(legacyLifetime){heldEntryBytes=firstEntryBytes.get();heldBaselineBytes=baselineAfterAcquisitionBytes;heldInputHash=source.inputByteHash();heldRequestBinding=binding;}
+                            else if(heldEntryBytes!=null){
+                                assertEquals(heldInputHash,source.inputByteHash());assertEquals(heldRequestBinding,binding);
+                                long baselineDelta=heldBaselineBytes-baselineAfterAcquisitionBytes;
+                                long preparationDelta=(heldEntryBytes-heldBaselineBytes-41943040L)-(firstEntryBytes.get()-baselineAfterAcquisitionBytes);
+                                System.out.println("public-memory paired baselineDelta="+baselineDelta+" preparationDelta="+preparationDelta+" entryDelta="+(heldEntryBytes-firstEntryBytes.get()));
+                                assertEquals(41943040L,(heldEntryBytes-heldBaselineBytes)-(firstEntryBytes.get()-baselineAfterAcquisitionBytes));
+                            }
                         }
                     }
                 }finally{SwingUtilities.invokeAndWait(()->{if(operation.get()!=null)operation.get().session().close();if(original.get()!=null)original.get().review().close();});}

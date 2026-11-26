@@ -97,6 +97,7 @@ jobs:
               filters+=(--tests '*V022AttemptMemoryLedgerTest')
               filters+=(--tests '*RefinementAcquisitionTest.frozenVisiblePlanConvertsSameEpochPixelsAndRejectsShortFrameBeforeScalarWork')
               filters+=(--tests '*PublicRefinementMemoryTest.exactPublicCaptureReleasesValidationCapacityBeforeRealNativeEntry' --tests '*RefinementAcquisitionTest.sameImageMappingsHaveDistinctChargedEvidenceGroupsAfterSettlement' --tests '*RefinementAcquisitionTest.retainedSourceSurvivesWorkerSettlementAndStillChecksExternalGeneration' --tests '*RefinementSourcePreparationTest.actualManagedHashRefusalRecordsTheFailingSourceBeforeAnyNativeEntry')
+              filters+=(--tests '*ImageCostFieldRouteMemoTest' --tests '*ImageCostFieldSegmentSupportTest')
               filters+=(--tests '*BenchmarkDecisionComparatorIntegrationTest.selectedObservationRejectsAbsentStaleAndSameCoreMissingWitnessOwners' --tests '*AlignWayActionTest.ordinaryBRouteFreezesSupportedSettingsWithoutChangingRequestedPreferences' --tests '*V022PreviewStateTest.t116SupportedLiveEnginePersistsWhileOtherSettingsAndHistoricalIdentityRemain' --tests '*VisibleEvidencePlanTest.pointsAndDecisionFitDoNotProveCompleteEngineSupport')
               ;;
             refs/heads/codex/g004-smoothing-adapter-20261121)
@@ -153,6 +154,8 @@ jobs:
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAcquisitionTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.PublicRefinementMemoryTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementSourcePreparationTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostFieldRouteMemoTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostFieldSegmentSupportTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControlsTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementReviewLifecycleTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.actions.StepwiseRefinementApplyTest.xml",
@@ -214,6 +217,7 @@ jobs:
           classes["refs/heads/codex/g004-stepwise-20261119"].append("V022AttemptMemoryLedgerTest")
           classes["refs/heads/codex/g004-stepwise-20261119"].extend(["BenchmarkDecisionComparatorIntegrationTest", "V022PreviewStateTest", "VisibleEvidencePlanTest", "RefinementAcquisitionTest"])
           classes["refs/heads/codex/g004-stepwise-20261119"].extend(["PublicRefinementMemoryTest", "RefinementSourcePreparationTest"])
+          classes["refs/heads/codex/g004-stepwise-20261119"].extend(["ImageCostFieldRouteMemoTest", "ImageCostFieldSegmentSupportTest"])
           selected = classes[os.environ["FOCUSED_REF"]]
           source = Path("build/test-results/test")
           destination = Path("build/reports/g004-focused-artifact/junit")
@@ -264,6 +268,8 @@ jobs:
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RefinementAcquisitionTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/PublicRefinementMemoryTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RefinementSourcePreparationTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/ImageCostFieldRouteMemoTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/ImageCostFieldSegmentSupportTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/ui/RefinementControlsTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/ui/RefinementReviewLifecycleTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/actions/StepwiseRefinementApplyTest.java",

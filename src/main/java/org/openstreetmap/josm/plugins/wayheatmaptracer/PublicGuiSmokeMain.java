@@ -2050,6 +2050,19 @@ public final class PublicGuiSmokeMain {
                 onEventThread(()->{action.actionPerformed(null);return null;});var next=descendantOpened.get(180,TimeUnit.SECONDS);
                 var descendant=onEventThread(()->(LegacyRefinementWorkflow)next.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner"));
                 clickAndAwaitStage(report,next,descendant,"refineA",StageKind.REFINE_A);
+                if(!originalChanged) {
+                    var root=onEventThread(()->{
+                        var child=descendant.currentStage();int calls=descendant.actualNativeCalls();
+                        requiredNamed(next.getContentPane(),"undo",javax.swing.JButton.class).doClick();
+                        var actual=descendant.currentNoChangeRoot().orElseThrow();
+                        requiredNamed(next.getContentPane(),"redo",javax.swing.JButton.class).doClick();
+                        if(!child.equals(descendant.currentStage())||calls!=descendant.actualNativeCalls())throw new IllegalStateException("Interval quality oracle navigation did not preserve its cached child");
+                        if(!(actual instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementPayload.RootIntervalNoChangeReview interval))throw new IllegalStateException("Actual interval no-change quality owner unavailable");
+                        return interval;
+                    });
+                    requireUncachedIntervalQualityParity(root);
+                    System.err.println("GUI_SMOKE_VISIBLE_INTERVAL fullQualityUncachedParity=true cachedChildRestored=true");
+                }
                 var plan=onEventThread(()->descendant.currentNative().orElseThrow().plan());
                 if(descendant.actualNativeCalls()==0)throw new IllegalStateException("Visible interval descendant did not enter actual native inference");
                 Format15ArchiveReader.read(exportThroughActualMenu());applyStoredNativePlan(next,fixture,plan,baseline,originalUndo);
@@ -2070,6 +2083,22 @@ public final class PublicGuiSmokeMain {
             });
         }
         requireUnchanged(fixture,original,originalUndo);
+    }
+    private static void requireUncachedIntervalQualityParity(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementPayload.RootIntervalNoChangeReview root) {
+        if(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.current()!=null)
+            throw new IllegalStateException("Independent interval quality oracle entered live operation work");
+        var run=root.owner();var proof=root.assessment().noChangeProof().orElseThrow();
+        proof.requireMatches(run.intervalBatch(),root.routeChoices(),run.captured().network());root.source().requireCurrent();
+        var ids=proof.finalSelection().pointIds();var points=ids.stream().map(root.assessment().assignments()::get).toList();
+        var protectedPoints=new java.util.LinkedHashMap<Integer,org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint>();
+        for(int i=0;i<ids.size();i++)if(ids.get(i) instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.ExistingWayNodeOccurrence existing
+                &&run.captured().network().closure().protectedExistingNodeKeys().contains(existing.nodeKey()))protectedPoints.put(i,points.get(i));
+        var image=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.fromEvidence(run.evidence(),run.options().fieldName());
+        var expected=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator().evaluate(
+            new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Request(proof.compositionIdentity(),points,ids,image,
+                run.evidence().resolution().effectivePitchMeters(),protectedPoints,List.of(),false,false,false,false));
+        if(!expected.equals(root.quality()))throw new IllegalStateException("Actual complete interval quality differs from uncached oracle");
     }
     private static void applyStoredNativePlan(JDialog dialog,PublicGuiSmokeFixture fixture,org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan plan,List<String> original,int undo) throws Exception {
         boolean legacy="legacy-review".equals(dialog.getName());

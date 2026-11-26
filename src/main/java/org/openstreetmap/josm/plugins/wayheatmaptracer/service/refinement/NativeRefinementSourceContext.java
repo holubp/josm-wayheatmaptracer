@@ -183,7 +183,9 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
         for(int i=0;i<ids.size();i++)if(ids.get(i) instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing
                 &&run.captured().network().closure().protectedExistingNodeKeys().contains(existing.nodeKey()))protectedPoints.put(i,points.get(i));
         var image=ImageCostField.fromEvidence(run.evidence(),run.options().fieldName(),work);
-        return new FinalGeometryEvaluator().evaluate(new FinalGeometryEvaluator.Request(assessment.plan().map(AlignmentEditPlan::routeIdentity).orElseGet(()->assessment.noChangeProof().orElseThrow().compositionIdentity()),points,ids,image,
-            run.evidence().resolution().effectivePitchMeters(),protectedPoints,List.of(),false,false,false,false));
+        try(var memo=image.memoizeRouteSamples(work)) {
+            return new FinalGeometryEvaluator().evaluate(new FinalGeometryEvaluator.Request(assessment.plan().map(AlignmentEditPlan::routeIdentity).orElseGet(()->assessment.noChangeProof().orElseThrow().compositionIdentity()),points,ids,image,
+                run.evidence().resolution().effectivePitchMeters(),protectedPoints,List.of(),false,false,false,false));
+        }
     }
 }

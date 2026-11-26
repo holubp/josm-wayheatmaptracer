@@ -30,6 +30,74 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
  * performed.</p>
  */
 public final class ImageCostField {
+    static final long ROUTE_MEMO_BYTES = 65_536L + 512L * (2_048 + 1);
+    private static final ThreadLocal<RouteSampleMemo> ACTIVE_ROUTE_MEMO = new ThreadLocal<>();
+    private volatile RouteSampleMemo routeSampleMemo;
+
+    /** One evaluation's admitted scratch; never retained by its quality result. */
+    synchronized RouteSampleMemo memoizeRouteSamples(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
+        if (routeSampleMemo != null || ACTIVE_ROUTE_MEMO.get() != null || PostprocessingValidationWork.current() != work) {
+            throw new IllegalStateException("Route sample memo scope differs");
+        }
+        var scratch = work.owner().child("route-sample-memo");
+        try (var admission = work.reserveOn(scratch, "route-sample-memo", ROUTE_MEMO_BYTES)) {
+            var memo = new RouteSampleMemo(work, scratch);
+            admission.adopt(memo);
+            routeSampleMemo = memo;
+            ACTIVE_ROUTE_MEMO.set(memo);
+            return memo;
+        } catch (RuntimeException failure) {
+            scratch.close();
+            throw failure;
+        }
+    }
+
+    final class RouteSampleMemo implements AutoCloseable {
+        private final java.util.LinkedHashMap<RouteSampleKey, Optional<RouteSample>> samples =
+                new java.util.LinkedHashMap<>(4_096, 0.75f, true);
+        private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work;
+        private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner scratch;
+        private final Thread thread = Thread.currentThread();
+        private boolean closed;
+        private RouteSampleMemo(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner scratch) {
+            this.work = work;
+            this.scratch = scratch;
+        }
+        @Override public void close() {
+            synchronized (ImageCostField.this) {
+                if (Thread.currentThread() != thread || !closed && (routeSampleMemo != this || ACTIVE_ROUTE_MEMO.get() != this)) {
+                    throw new IllegalStateException("Route sample memo owner differs");
+                }
+                if (closed) return;
+                routeSampleMemo = null;
+                ACTIVE_ROUTE_MEMO.remove();
+                samples.clear();
+                scratch.close();
+                closed = true;
+            }
+        }
+        private Optional<RouteSample> sample(MetricPoint point, MetricPoint tangent) {
+            if (Thread.currentThread() != thread || closed || ACTIVE_ROUTE_MEMO.get() != this || PostprocessingValidationWork.current() != work) {
+                throw new IllegalStateException("Route sample memo worker or context differs");
+            }
+            work.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.BIND, 1);
+            if (point == null || tangent == null) return sampleRouteUncached(point, tangent);
+            var key = new RouteSampleKey(Double.doubleToRawLongBits(point.xMeters()),
+                    Double.doubleToRawLongBits(point.yMeters()),
+                    Double.doubleToRawLongBits(tangent.xMeters()),
+                    Double.doubleToRawLongBits(tangent.yMeters()));
+            var cached = samples.get(key);
+            if (cached != null) return cached;
+            var result = sampleRouteUncached(point, tangent);
+            if (samples.size() == 2_048) samples.remove(samples.keySet().iterator().next());
+            samples.put(key, result);
+            return result;
+        }
+    }
+    private record RouteSampleKey(long x, long y, long tangentX, long tangentY) { }
     private static final int MAXIMUM_FROZEN_PROFILE_SAMPLES = 65_536;
     /** Frozen ownership state for a selected local image branch. */
     public enum FrozenSupport { MEASURED, AMBIGUOUS, MISSING }
@@ -617,6 +685,11 @@ public final class ImageCostField {
      * A valid query with no complete two-sided mode is returned as unknown, not as localization.
      */
     public Optional<RouteSample> sampleRoute(MetricPoint point, MetricPoint routeTangent) {
+        var memo = routeSampleMemo;
+        return memo == null ? sampleRouteUncached(point, routeTangent) : memo.sample(point, routeTangent);
+    }
+
+    private Optional<RouteSample> sampleRouteUncached(MetricPoint point, MetricPoint routeTangent) {
         if (point == null || routeTangent == null) {
             throw new IllegalArgumentException("Route-local sampling requires a point and tangent");
         }

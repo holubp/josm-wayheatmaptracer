@@ -1,11 +1,34 @@
 # G004 — Stepwise tracing refinement and menu cleanup
 
 > **Current execution —2026-11-26:** ACTIVE, explicitly resumed by user.
-> PARTIAL / NOT RELEASED. Latest verified visible Apply source: `4df8d118`.
+> PARTIAL / NOT RELEASED. Current functional qualification remains incomplete.
 >64M A/B preparation was explicitly approved Nov26; implementation/qualification
 > is in progress. Original400m positive assertions remain unchanged.
 
 ## Current shortest path to the next RC
+
+The actual visible full post-Smooth A/B stored commands and ten ordinary GUI
+rows pass. The remaining visible interval bootstrap exhausts its unchanged8M
+allowance during full-quality scalar profile convolution. The controller-approved
+exact-query memo is implemented only around interval full-quality evaluation:
+2048 raw-bit point/tangent entries, additional1,114,624-byte admitted scratch,
+same work/deadline/cancellation, original miss arithmetic and eight kernels.
+Local duplicate-work and complete-quality/negative tests pass; actual unchanged
+two-interval8M bootstrap, uncached full-quality parity, changed A descendant and
+post-Smooth A/B stored commands still require fresh CI. No cap/fixture/quality
+bypass is approved if this exact engineering reuse is insufficient.
+
+The public memory control now uses the real shared hashing context. Its two
+original roots have different pre-hold accounting baselines; actual preparation
+delta is exactly zero. The approved phase-local paired comparison retains the
+exact41,943,040-byte release/hold, factual hash/request bindings, actual held
+refusal and released candidates. Local exact control passes; CI remains required.
+After these gates: coherent full public/GUI/performance qualification, source and
+version freeze, controller's one independent completion audit and affected repairs,
+then next-unused RC16 publication/manifest/checksum/download verification.
+Original400m assertions and all production resource limits remain unchanged.
+
+### Historical Nov26 progression — current path above governs
 
 **Current candidate follow-up:** `c7011d42` actually published the visible
 post-Smooth A child (60,680,995/64M visits, one native call), then completed its

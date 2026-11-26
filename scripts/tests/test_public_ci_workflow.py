@@ -120,6 +120,8 @@ def test_focused_xml_gate_uses_suite_identity_and_requires_executed_green_tests(
         "service.refinement.RefinementAcquisitionTest",
         "PublicRefinementMemoryTest",
         "service.refinement.RefinementSourcePreparationTest",
+        "service.refinement.ImageCostFieldRouteMemoTest",
+        "service.refinement.ImageCostFieldSegmentSupportTest",
         "ui.RefinementControlsTest",
         "ui.RefinementReviewLifecycleTest",
         "actions.StepwiseRefinementApplyTest",

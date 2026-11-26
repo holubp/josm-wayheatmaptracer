@@ -14,6 +14,20 @@
 
 ## Current remaining work —2026-11-26
 
+Qualify the approved exact RouteSample memo on the actual unchanged visible
+two-interval bootstrap within its original8M context, compare complete quality
+with an independent uncached oracle, and finish real changed A/post-Smooth A/B
+stored commands. Memo storage is additionally admitted1,114,624-byte scratch;
+keys retain exact raw point/tangent bits and all misses preserve original sampling.
+No quality, cap, fixture or numerical-kernel change is authorized. The approved
+public-memory control correction preserves exact41,943,040-byte phase-local
+held/released accounting and all factual source/native controls; local GREEN
+requires current CI confirmation. Then freeze coherent public/GUI/performance
+evidence, complete the controller's one independent final audit/repairs and verify
+the next-unused RC16. Original400m assertions remain unchanged.
+
+### Historical Nov26 progression — current remaining work above governs
+
 Current integration implements the approved post-frame Run/Result retained-graph
 settlement and full native diagnostic receipt accounting. Only dedicated completed
 invocation/assembly capacity is retired atomically; source ownership, useful prior

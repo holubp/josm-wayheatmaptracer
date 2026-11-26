@@ -429,6 +429,17 @@ class ModernRefinementBootstrapTest {
                 assertTrue(prepared.root().stage().candidates().stream().allMatch(c->c.payload().rootNoChangeReview().isPresent()));
                 var stage=prepared.root().stage();var candidate=stage.candidates().stream().filter(c->c.id().equals(stage.selected())).findFirst().orElseThrow();
                 var source=candidate.payload().rootNoChangeReview().orElseThrow().source();
+                assertTrue(work.visits()<=8_000_000L,"Whole original interval bootstrap retains its inherited 8M ceiling");
+                var ids=proof.finalSelection().pointIds();var points=ids.stream().map(assessment.assignments()::get).toList();
+                var protectedPoints=new LinkedHashMap<Integer,MetricPoint>();
+                for(int i=0;i<ids.size();i++)if(ids.get(i) instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing
+                        &&computed.captured().network().closure().protectedExistingNodeKeys().contains(existing.nodeKey()))protectedPoints.put(i,points.get(i));
+                assertNull(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.current(),"Independent quality oracle is outside the live bootstrap context");
+                var oracleImage=ImageCostField.fromEvidence(computed.evidence(),computed.options().fieldName());
+                var oracle=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator().evaluate(
+                    new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Request(proof.compositionIdentity(),points,ids,oracleImage,
+                        computed.evidence().resolution().effectivePitchMeters(),protectedPoints,List.of(),false,false,false,false));
+                assertEquals(oracle,candidate.payload().rootNoChangeReview().orElseThrow().quality(),"Complete producer-backed interval quality must match uncached evaluation");
                 var input=new RefinementModels.SmoothingInput(stage.id(),candidate.id(),stage.id(),candidate.id(),"Medium");
                 var ticket=new RefinementModels.OperationTicket(new RefinementModels.SessionId(java.util.UUID.randomUUID()),1,stage.id(),candidate.id(),TrackerMode.PROBABILISTIC,AlignmentMode.MOVE_EXISTING_NODES,RefinementModels.StageKind.SMOOTH,Optional.of(input));
                 var bound=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.SmoothingParentBinder().bind(prepared.root().authority(),ticket,candidate,source,work);
