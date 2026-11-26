@@ -406,6 +406,13 @@ public final class AttemptMemoryLedger {
             return bytes;
         }
 
+        /** Read-only proof that this exact owner's preallocation charge is still active. */
+        public boolean isActiveFor(Owner expectedOwner) {
+            synchronized (ledger) {
+                return owner == expectedOwner && !owner.closed && state == State.ACTIVE;
+            }
+        }
+
         public MemoryLease adopt(Object newlyAllocatedIdentity) {
             return ledger.adopt(this, newlyAllocatedIdentity);
         }

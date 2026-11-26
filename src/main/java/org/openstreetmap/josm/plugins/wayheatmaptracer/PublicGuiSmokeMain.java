@@ -240,6 +240,8 @@ public final class PublicGuiSmokeMain {
                             finally{onEventThread(()->{tightening.close();return null;});}
                         }
                         exerciseSmoothThenRefineGui(report,action,session,fixture,original,originalUndo,engine==TrackerMode.PROBABILISTIC?StageKind.REFINE_A:StageKind.REFINE_B);
+                        if(visibleGui)exerciseSmoothThenRefineGui(report,action,session,fixture,original,originalUndo,
+                            engine==TrackerMode.PROBABILISTIC?StageKind.REFINE_B:StageKind.REFINE_A);
                     }
                 } else onEventThread(() -> {preview.dispatchEvent(new WindowEvent(preview, WindowEvent.WINDOW_CLOSING));return null;});
             } finally {
@@ -1918,7 +1920,9 @@ public final class PublicGuiSmokeMain {
                 if(descendant.actualNativeCalls()==0)throw new IllegalStateException("Visible interval descendant did not enter actual native inference");
                 Format15ArchiveReader.read(exportThroughActualMenu());applyStoredNativePlan(next,fixture,plan,baseline,originalUndo);
             }finally{Toolkit.getDefaultToolkit().removeAWTEventListener(descendantListener);}
-            System.err.println("GUI_SMOKE_VISIBLE_INTERVAL producer=true originalApplyUndoRedo=true actualNativeDescendant=true descendantApplyUndoRedo=true");
+            exerciseSmoothThenRefineGui(report,action,session,fixture,baseline,originalUndo,StageKind.REFINE_A);
+            exerciseSmoothThenRefineGui(report,action,session,fixture,baseline,originalUndo,StageKind.REFINE_B);
+            System.err.println("GUI_SMOKE_VISIBLE_INTERVAL producer=true originalApplyUndoRedo=true actualNativeDescendant=true descendantApplyUndoRedo=true postSmoothA=true postSmoothB=true");
         } finally {
             Toolkit.getDefaultToolkit().removeAWTEventListener(listener);
             onEventThread(()->{for(Window window:Window.getWindows())if(window instanceof JDialog dialog&&isPreview(dialog))dialog.dispatchEvent(new WindowEvent(dialog,WindowEvent.WINDOW_CLOSING));branch.setNodes(List.of());fixture.dataSet().removePrimitive(branch);fixture.dataSet().removePrimitive(remote);return null;});
@@ -2079,7 +2083,7 @@ public final class PublicGuiSmokeMain {
                             ||facts.frameRole()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.InputFrameRole.CAPTURED_INPUT
                             ||facts.ticket().kind()!=continuation||facts.captureAuxiliaryVisits().orElseThrow()<=0)
                         throw new IllegalStateException("Actual visible continuation must prove the selected64M phase and spent work beyond8M");
-                    System.err.println("GUI_SMOKE_VISIBLE_PREPARATION maximumVisits="+work.maximumVisits().orElseThrow()+" actualVisits="+work.visits()+" actualNativeCalls="+owner.actualNativeCalls());
+                    System.err.println("GUI_SMOKE_VISIBLE_PREPARATION maximumVisits="+work.maximumVisits().orElseThrow()+" actualVisits="+work.visits()+" actualNativeCalls="+owner.actualNativeCalls()+" kind="+continuation.name());
                 }
                 return owner.currentNative().orElseThrow().plan();
             });

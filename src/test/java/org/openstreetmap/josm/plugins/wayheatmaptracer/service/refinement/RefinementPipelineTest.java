@@ -15,6 +15,51 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneratio
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 
 class RefinementPipelineTest {
+    @Test void assessmentWorkspaceStartsAfterNativeAndRefusesBeforeComposition() throws Exception {
+        var root=RefinementRepairContractTest.largeRoot();
+        var parent=new ParentReferenceBinder().bind(root,new StageId(UUID.randomUUID()),RefinementParentFixtures.parent(root,"blue"));
+        var ticket=ticket(parent,TrackerMode.CORRIDOR_AWARE);var sourcePlan=plan(ticket,parent,false);
+        var vertexMethod=RefinementPipeline.class.getDeclaredMethod("maximumAssembledVertices",ParentTraceReference.class,int.class);vertexMethod.setAccessible(true);
+        long vertices=(long)vertexMethod.invoke(null,parent,new RefinementIntervalPlanner().plan(parent).size());
+        var scratchMethod=RefinementPipeline.class.getDeclaredMethod("assessmentScratchBytes",ParentTraceReference.class,EvidenceSnapshot.class,long.class);scratchMethod.setAccessible(true);
+        long scratch=(long)scratchMethod.invoke(null,parent,root.evidence(),vertices);
+        long retention=1_048_576L+32L*vertices*2048L;
+        var afterNative=new AtomicLong(retention);var assessments=new java.util.concurrent.atomic.AtomicInteger();
+        var production=RefinementPipeline.productionRunner();
+        RefinementPipeline.Result baseline;
+        try(var owner=AttemptMemoryLedger.production().rootOwner()) {
+            RefinementPipeline.NativeRunner observed=(t,p,e,b,c,o)->{
+                assertEquals(afterNative.get(),owner.currentBytes(),"Assessment workspace must not overlap native entry");
+                var run=production.run(t,p,e,b,c,o);afterNative.set(owner.currentBytes());return run;
+            };
+            CancellationProbe probe=()->{
+                if(StackWalker.getInstance().walk(frames->frames.anyMatch(f->f.getClassName().equals(RefinementPipeline.class.getName())&&f.getMethodName().equals("assess")))) {
+                    assertEquals(afterNative.get()+scratch,owner.currentBytes(),"Full unchanged assessment bound precedes compose/image/evaluation");assessments.incrementAndGet();
+                }
+                return false;
+            };
+            baseline=new RefinementPipeline().run(ticket,parent,sourcePlan,new RefinementPipeline.Adapters(sources(parent),observed,owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),probe);
+            assertNotEquals(Outcome.RESOURCE_LIMIT,baseline.outcome());assertTrue(assessments.get()>0);assertTrue(baseline.actualWork().orElseThrow().transitions()>0);
+        }
+        long separatedCap=afterNative.get()+scratch;
+        for(boolean oneByteShort:new boolean[]{false,true}) {
+            var ledger=new AttemptMemoryLedger(separatedCap-(oneByteShort?1:0));var enteredAssessment=new java.util.concurrent.atomic.AtomicBoolean();
+            try(var owner=ledger.rootOwner();var admissions=PipelineAdmissionObserver.openForTesting(value->{})) {
+                CancellationProbe probe=()->{
+                    if(StackWalker.getInstance().walk(frames->frames.anyMatch(f->f.getClassName().equals(RefinementPipeline.class.getName())&&f.getMethodName().equals("assess"))))enteredAssessment.set(true);
+                    return false;
+                };
+                var result=new RefinementPipeline().run(ticket,parent,sourcePlan,new RefinementPipeline.Adapters(sources(parent),production,owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),probe);
+                assertEquals(baseline.actualWork(),result.actualWork(),"Completed native receipt survives assessment admission refusal");
+                if(oneByteShort) {
+                    assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());assertFalse(enteredAssessment.get());
+                    var refusal=admissions.latest(ticket).orElseThrow();assertEquals(PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH,refusal.gate());
+                    assertEquals(scratch,refusal.requestedBytes().orElseThrow());assertEquals(afterNative.get(),refusal.currentBytes().orElseThrow());
+                } else {assertEquals(baseline.outcome(),result.outcome());assertTrue(enteredAssessment.get());assertEquals(baseline.candidates().size(),result.candidates().size());}
+            }
+            assertEquals(0,ledger.currentBytes());
+        }
+    }
     @Test void finalCompositionRetainsFrozenInteriorWhileWholeParentInferenceRemainsBlocked() {
         var parent=RefinementIntervalPlannerTest.capturedTopologyParent(List.of(new OccurrenceRange(0,18)),Set.of(),Set.of());
         assertThrows(ParentTraceReference.UnavailableException.class,parent::requireRefinementGeometryAuthority);
@@ -105,14 +150,18 @@ class RefinementPipelineTest {
             }
         }
     }
-    @Test void localFailureRetainsSelectedParentAndDoesNotDiscardSuccessfulNativeIntervals() {
+    @Test void localFailureRetainsSelectedParentAndDoesNotDiscardSuccessfulNativeIntervals() throws Exception {
         var parent=RefinementIntervalPlannerTest.capturedTopologyParent(List.of(new OccurrenceRange(0,18)),Set.of(),Set.of());
         var ticket=ticket(parent,TrackerMode.PROBABILISTIC);var ranges=new ArrayList<OccurrenceRange>();
+        var vertexMethod=RefinementPipeline.class.getDeclaredMethod("maximumAssembledVertices",ParentTraceReference.class,int.class);vertexMethod.setAccessible(true);
+        long vertices=(long)vertexMethod.invoke(null,parent,new RefinementIntervalPlanner().plan(parent).size());
+        var nativeBytes=new AtomicLong(1_048_576L+32L*vertices*2048L);
         var real=RefinementPipeline.productionRunner();
         RefinementPipeline.NativeRunner runner=(t,p,e,b,c,o)-> {
+            assertEquals(nativeBytes.get(),o.currentBytes(),"WHOLE and INTERVAL native entries never hold assessment scratch");
             ranges.add(p.originalRange());
             if(p.originalRange().firstIndex()==8)return refusal(p,Outcome.NO_USABLE_RESULT,0);
-            return real.run(t,p,e,b,c,o);
+            var run=real.run(t,p,e,b,c,o);nativeBytes.set(o.currentBytes());return run;
         };
         try(var owner=AttemptMemoryLedger.production().rootOwner()) {
             var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,false),new RefinementPipeline.Adapters(sources(parent),runner,owner),
@@ -187,14 +236,20 @@ class RefinementPipelineTest {
                     if(scalar)owner.reserve(AttemptMemoryLedger.MAX_BYTES);return parent.root().evidence();
                 }
             };
-            events.set(0);var result=admissionRefusal(parent,ticket,owner,source,RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()));
+            events.set(0);var budget=RefinementPipeline.OperationBudget.production(TraceBudgets.defaults());
+            var result=scalar?admissionRefusal(parent,ticket,owner,source,budget):new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),
+                new RefinementPipeline.Adapters(source,RefinementPipeline.productionRunner(),owner),budget,CancellationProbe.NONE);
             assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());var observed=scope.latest(ticket).orElseThrow();assertEquals(1,events.get(),"One original admission refusal emits exactly one event");
             assertEquals(scalar?PipelineAdmissionObserver.Gate.SCALAR_PREPARATION:PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH,observed.gate());
             assertTrue(observed.currentBytes().orElseThrow()>0);assertEquals(32L*1024*1024,observed.limitBytes().orElseThrow());
             assertTrue(observed.requestedBytes().orElseThrow()>observed.limitBytes().orElseThrow()-observed.currentBytes().orElseThrow());
             assertEquals(!scalar,observed.currentEvidence().isPresent());
             if(!scalar)assertEquals(parent.root().evidence().resampling().outputWidth(),observed.currentEvidence().orElseThrow().outputWidth());
-            assertTrue(result.attempts().stream().allMatch(a->a.nativeCallAvailability().orElse(-1)==0));
+            if(scalar)assertTrue(result.attempts().stream().allMatch(a->a.nativeCallAvailability().orElse(-1)==0));
+            else {
+                assertTrue(result.attempts().stream().anyMatch(a->a.nativeCallAvailability().orElse(-1)==1));
+                assertTrue(result.actualWork().orElseThrow().transitions()>0,"Assessment admission failure retains completed actual native work");
+            }
         }
     }
     @Test void sourcePreparationObserverPreservesOriginalNumericLedgerRefusalThroughWorkflowStyleWrapper() {

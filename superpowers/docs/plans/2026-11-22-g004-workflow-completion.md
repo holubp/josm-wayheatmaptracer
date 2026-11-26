@@ -22,9 +22,14 @@ repairs that harness defect without changing production source guards.
 The approved shared64M policy is implemented locally: policy/codec42 tests,
 expanded phase/source-failure package13 tests, and the unchanged400m positive
 pass; focused CI45849540947 also passes the unchanged400m positive. Visible
-preparation now completes within64M, then native A returns RESOURCE_LIMIT with
-zero pair/transition work; diagnose the actual bounded native receipt before
-repair. Qualify actual visible continuation, coherent final CI/freeze, one Sol-high
+preparation now completes within64M. Its native A SOURCE_CERTIFICATE refusal
+proved artificial256MiB lifetime overlap. The approved adapter-only correction
+passes exact native-output/byte-delta and per-assessment admission controls plus
+five neighboring ownership/cancellation/interval checks locally. Tracker/domain
+charges, full finalization allowance and all numerical files remain unchanged.
+Fullpublic24e3289Java tests/seven stages and both6283Legacy gates pass, preceding
+this correction. Qualify actual visible full/interval post-Smooth A/B using the
+existing helper, coherent final CI/freeze, one Sol-high
 audit, one verified RC. Reuse passing components rather than restarting them.
 No solver/conversion/source-grid/smoothing research or repeated configuration
 experiments. Earlier no-cap-change prose has only the explicitly approved64M

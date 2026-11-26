@@ -8,6 +8,31 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
 
 /** Explicit production A/B call and parent-aware finalization; source acquisition belongs to its caller. */
 public final class RefinementEngineAdapter {
+    /** Sealed live caller-output coverage; only this adapter can issue the certificate. */
+    public static final class NativeOutputAllowance implements AutoCloseable {
+        private final AttemptMemoryLedger.Owner owner;
+        private final TraceRequest request;
+        private final EvidenceSnapshot evidence;
+        private final AttemptMemoryLedger.Reservation backing;
+        private final Thread worker=Thread.currentThread();
+        private boolean closed;
+        private NativeOutputAllowance(AttemptMemoryLedger.Owner owner,TraceRequest request,EvidenceSnapshot evidence,
+                AttemptMemoryLedger.Reservation backing) {
+            this.owner=Objects.requireNonNull(owner);this.request=Objects.requireNonNull(request);
+            this.evidence=Objects.requireNonNull(evidence);this.backing=Objects.requireNonNull(backing);
+        }
+        public void requireCapacity(AttemptMemoryLedger.Owner actualOwner,TraceRequest actualRequest,EvidenceSnapshot actualEvidence) {
+            if(closed||owner!=actualOwner||request!=actualRequest||evidence!=actualEvidence||worker!=Thread.currentThread()
+                    ||!backing.isActiveFor(owner)||backing.bytes()<finalizationBytes(request))
+                throw new IllegalArgumentException("Native output allowance is unavailable for this owner/request/source/worker");
+        }
+        @Override public void close(){closed=true;}
+    }
+    private static long finalizationBytes(TraceRequest request) {
+        long perRoute=Math.addExact(16384L,Math.multiplyExact(2048L,
+            (long)request.profileChainage().cumulativeGroundMeters().size()+request.selectedRange().size()));
+        return Math.multiplyExact(perRoute,request.budgets().maximumDistinctAlternatives());
+    }
     /** Cannot be constructed from a supplied hypothesis. Only this adapter seals an actual native call. */
     public static final class NativeExecution {
         private final ParentTraceReference reference;
@@ -100,15 +125,14 @@ public final class RefinementEngineAdapter {
                     throw new ParentTraceReference.UnavailableException(ParentTraceReference.Unavailable.FROZEN_INTERIOR);
             // Shared caller memory, reserved BEFORE native entry. Covers native A output plus reconstruction
             // entries, IDs, assignment/lineage maps, evaluator scratch and retained result containers.
-            long perRoute=Math.addExact(16384L,Math.multiplyExact(2048L,
-                (long)request.profileChainage().cumulativeGroundMeters().size()+request.selectedRange().size()));
-            long bytes=Math.multiplyExact(perRoute,request.budgets().maximumDistinctAlternatives());
-            finalization=invocation.reserve(bytes);
+            finalization=invocation.reserve(finalizationBytes(request));
             Accounted<TraceEngineRun> nativeAccount;
             nativeEntered=true;
             nativeEntry.run();
             if(engine==TrackerMode.CORRIDOR_AWARE) {
-                nativeAccount=new CorridorEngineAdapter(field).traceRefinedWithUsage(parent,request,evidence,parent.root().network(),cancellation,invocation,bindingWorkspace);
+                try(var allowance=new NativeOutputAllowance(invocation,request,evidence,finalization)) {
+                    nativeAccount=new CorridorEngineAdapter(field).traceRefinedWithUsage(parent,request,evidence,parent.root().network(),cancellation,invocation,bindingWorkspace,allowance);
+                }
             } else nativeAccount=new ProbabilisticTraceEngine(field,EvidenceModelParameters.defaults(),
                 ProbabilisticTraceEngine.reliabilityPolicyFor(engine)).traceRefinedWithUsage(parent,request,evidence,parent.root().network(),cancellation,invocation,bindingWorkspace);
             execution=new NativeExecution(parent,request,evidence,parent.root().network(),nativeAccount.value(),field);

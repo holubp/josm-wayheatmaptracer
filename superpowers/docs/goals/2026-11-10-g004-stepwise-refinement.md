@@ -25,15 +25,19 @@ qualify successful A/B refinement after smoothing.
    Local policy/codec42 tests and the original unchanged400m positive pass;
    expanded phase/source-failure package13 tests also pass. Focused CI45849540947
    passes, including all8 bootstrap tests and the unchanged400m positive.
-   Visible64M preparation completes60,680,995visits; actual native A then refuses
-   RESOURCE_LIMIT before pair/transition work. Identify its bounded receipt
-   family/phase and repair the proven cause; actual visible continuation and
-   coherent final gates remain required before completion.
+   Visible64M preparation completes60,680,995visits. Actual native A then hit
+   the256MiB cap at SOURCE_CERTIFICATE because scratch lifetimes overlapped.
+   The controller-approved adapter-only correction passes exact native-output/
+   byte-delta, live-allowance, phase-admission and neighboring cancellation/
+   interval controls locally; all tracker/domain charges and numerical files
+   remain unchanged. Actual production visible continuation remains pending.
 2. Qualify actual visible full/interval/post-smoothing refinement and stored
    Apply/Undo/Redo alongside existing managed/Legacy cases. Safe refusal is not
    positive workflow proof. Do not repeat STABLE_FIXED_SCALE trials: it controls
    managed-tile zoom, not native rendered resolution.
-3. One coherent final public Java/Python/GUI/performance batch; reuse exact
+3. Fullpublic24e passes3289Java tests and all seven validation stages; both
+   Legacy performance gates pass6283. These precede the lifetime correction.
+   One coherent final public Java/Python/GUI/performance batch; reuse exact
    unchanged numerical evidence, finish docs, freeze source/version and obtain
    one independent Sol-high completion audit. Blocking repairs/affected checks
    only; no repeated component-review or new design cycle.

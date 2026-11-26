@@ -8,6 +8,76 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 class RefinementRepairContractTest {
+ @Test void nativeOutputAllowanceRequiresItsLiveExactBackingAndWorker() throws Exception {
+  var root=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);
+  var parent=new ParentReferenceBinder().bind(root,new StageId(UUID.randomUUID()),RefinementParentFixtures.parent(root,"blue"));
+  var request=parent.request(TrackerMode.CORRIDOR_AWARE,root.evidence(),TraceBudgets.defaults(),1);
+  long bytes=(16384L+2048L*(request.profileChainage().cumulativeGroundMeters().size()+request.selectedRange().size()))*request.budgets().maximumDistinctAlternatives();
+  var ledger=AttemptMemoryLedger.production();
+  try(var owner=ledger.rootOwner();var foreign=owner.child("foreign")) {
+   var backing=owner.reserve(bytes);
+   var allowance=outputAllowance(owner,request,root.evidence(),backing);
+   long before=owner.currentBytes();assertTrue(backing.isActiveFor(owner));assertFalse(backing.isActiveFor(foreign));
+   allowance.requireCapacity(owner,request,root.evidence());
+   assertThrows(IllegalArgumentException.class,()->allowance.requireCapacity(foreign,request,root.evidence()));
+   var otherRequest=parent.request(TrackerMode.CORRIDOR_AWARE,root.evidence(),TraceBudgets.defaults(),1);
+   assertThrows(IllegalArgumentException.class,()->allowance.requireCapacity(owner,otherRequest,root.evidence()));
+   var otherEvidence=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE).evidence();
+   assertThrows(IllegalArgumentException.class,()->allowance.requireCapacity(owner,request,otherEvidence));
+   var wrongThread=java.util.concurrent.CompletableFuture.runAsync(()->allowance.requireCapacity(owner,request,root.evidence()));
+   assertInstanceOf(IllegalArgumentException.class,assertThrows(java.util.concurrent.CompletionException.class,wrongThread::join).getCause());
+   assertEquals(before,owner.currentBytes(),"Capacity checks never allocate, adopt or release");
+   allowance.close();assertTrue(backing.isActiveFor(owner));
+   assertThrows(IllegalArgumentException.class,()->allowance.requireCapacity(owner,request,root.evidence()));
+   var workspace=parent.reserveBindingWorkspace(root.evidence(),owner);long checkedBytes=owner.currentBytes();
+   var probes=new java.util.concurrent.atomic.AtomicInteger();
+   assertThrows(IllegalArgumentException.class,()->new CorridorEngineAdapter("native").traceRefinedWithUsage(parent,request,root.evidence(),root.network(),()->{probes.incrementAndGet();return false;},owner,workspace,allowance));
+   assertEquals(0,probes.get());assertEquals(checkedBytes,owner.currentBytes(),"Closed output allowance refuses before binding/native allocation");
+   var closedBacking=outputAllowance(owner,request,root.evidence(),backing);backing.close();assertFalse(backing.isActiveFor(owner));
+   assertThrows(IllegalArgumentException.class,()->closedBacking.requireCapacity(owner,request,root.evidence()));
+   try(var insufficient=owner.reserve(bytes-1)) {
+    var small=outputAllowance(owner,request,root.evidence(),insufficient);
+    assertThrows(IllegalArgumentException.class,()->small.requireCapacity(owner,request,root.evidence()));
+   }
+   try(var adopted=owner.reserve(bytes)) {
+    var stale=outputAllowance(owner,request,root.evidence(),adopted);adopted.adopt(new Object());
+    assertFalse(adopted.isActiveFor(owner));assertThrows(IllegalArgumentException.class,()->stale.requireCapacity(owner,request,root.evidence()));
+   }
+   var closedOwner=owner.child("closed");var reservation=closedOwner.reserve(bytes);
+   var stale=outputAllowance(closedOwner,request,root.evidence(),reservation);closedOwner.close();
+   assertFalse(reservation.isActiveFor(closedOwner));assertThrows(IllegalArgumentException.class,()->stale.requireCapacity(closedOwner,request,root.evidence()));
+  }
+  assertEquals(0,ledger.currentBytes());
+ }
+ private static RefinementEngineAdapter.NativeOutputAllowance outputAllowance(AttemptMemoryLedger.Owner owner,TraceRequest request,
+     EvidenceSnapshot evidence,AttemptMemoryLedger.Reservation reservation) throws Exception {
+  var ctor=RefinementEngineAdapter.NativeOutputAllowance.class.getDeclaredConstructor(AttemptMemoryLedger.Owner.class,TraceRequest.class,EvidenceSnapshot.class,AttemptMemoryLedger.Reservation.class);
+  ctor.setAccessible(true);return ctor.newInstance(owner,request,evidence,reservation);
+ }
+ @Test void refinementASettlesOnlySamplerAndCertificateAfterInvocation() {
+  var root=largeRoot();var parent=new ParentReferenceBinder().bind(root,new StageId(UUID.randomUUID()),RefinementParentFixtures.parent(root,"blue"));
+  var ledger=AttemptMemoryLedger.production();
+  try(var owner=ledger.rootOwner();var directOwner=AttemptMemoryLedger.production().rootOwner()) {
+   var trackingBytes=new java.util.concurrent.atomic.AtomicLong();
+   CancellationProbe probe=()->{
+    if(StackWalker.getInstance().walk(frames->frames.anyMatch(f->f.getMethodName().equals("trackDetailed"))))trackingBytes.accumulateAndGet(owner.currentBytes(),Math::max);
+    return false;
+   };
+   var accounted=new RefinementEngineAdapter(TrackerMode.CORRIDOR_AWARE,"native").run(parent,root.evidence(),TraceBudgets.defaults(),probe,owner);
+   var run=accounted.value();assertEquals(Outcome.COMPLETE,run.outcome());
+   var actual=run.nativeRun().orElseThrow();var receipt=actual.corridorReceipt().orElseThrow();
+   var request=run.request();long finalBytes=(16384L+2048L*(request.profileChainage().cumulativeGroundMeters().size()+request.selectedRange().size()))*request.budgets().maximumDistinctAlternatives();
+   var field=root.evidence().fields().get("native");
+   long certificate=65536L+2L*(5L*field.width()*field.height()+(long)(field.width()-1)*(field.height()-1));
+   long scratch=receipt.sampling().orElseThrow().materializationEstimateBytes()+certificate;
+   assertTrue(trackingBytes.get()>=parent.bindingScratchBytes(root.evidence())+finalBytes+scratch,"Full sampler and certificate bounds survive through tracking");
+   var direct=new CorridorEngineAdapter("native").traceRefinedWithUsage(run.reference(),request,root.evidence(),root.network(),CancellationProbe.NONE,directOwner).value();
+   assertEquals(direct.result(),actual.result());assertEquals(direct.usage(),actual.usage());
+   assertEquals(direct.corridorReceipt().orElseThrow().totals(),receipt.totals());
+   assertEquals(directOwner.currentBytes()+finalBytes-scratch,owner.currentBytes(),"Only complete sampler/certificate scratch settles; all tracker/domain and output charges remain");
+   accounted.owner().close();assertEquals(0,ledger.currentBytes());
+  }
+ }
  @Test void nativeAScratchCannotBypassTheSharedLedgerEvenWhenFinalizationFits(){
   var root=largeRoot();var parent=new ParentReferenceBinder().bind(root,new StageId(UUID.randomUUID()),RefinementParentFixtures.parent(root,"blue"));
   var request=parent.request(TrackerMode.CORRIDOR_AWARE,root.evidence(),TraceBudgets.defaults(),1);
@@ -59,20 +129,38 @@ class RefinementRepairContractTest {
  }
  @Test void usableLargeNativeAAndCancelledSamplerRetainSharedChargesUntilSettlement() throws Exception {
   var root=largeRoot();var parent=new ParentReferenceBinder().bind(root,new StageId(UUID.randomUUID()),RefinementParentFixtures.parent(root,"blue"));
-  for(boolean cancel:new boolean[]{false,true}) {
+  long retainedOnSuccess=0;TraceWorkUsage completedWork=null;var samplerEstimate=new java.util.concurrent.atomic.AtomicLong();
+  for(int phase:new int[]{0,1,2}) {
+   boolean cancel=phase!=0;
    var ledger=AttemptMemoryLedger.production();
    try(var owner=ledger.rootOwner()) {
-    CancellationProbe probe=cancel?()->StackWalker.getInstance().walk(frames->frames.anyMatch(f->f.getClassName().endsWith(".ScalarIntensityField")&&f.getMethodName().equals("fromEvidence"))):CancellationProbe.NONE;
+    var duringSampling=new java.util.concurrent.atomic.AtomicLong();
+    CancellationProbe probe=cancel?()->{
+     boolean stop=StackWalker.getInstance().walk(frames->frames.anyMatch(f->phase==1
+        ?f.getClassName().endsWith(".ScalarIntensityField")&&f.getMethodName().equals("fromEvidence")
+        :f.getMethodName().equals("finalizeRefined")));
+     if(stop&&phase==1)duringSampling.set(owner.currentBytes());return stop;
+    }:CancellationProbe.NONE;
     var accounted=new RefinementEngineAdapter(TrackerMode.CORRIDOR_AWARE,"native").run(parent,root.evidence(),TraceBudgets.defaults(),probe,owner);var run=accounted.value();
     assertEquals(cancel?Outcome.CANCELLED:Outcome.COMPLETE,run.outcome());assertEquals(1,run.nativeCalls());
     var actual=run.nativeRun().orElseThrow();var receipt=actual.corridorReceipt().orElseThrow();
-    assertTrue(owner.currentBytes()>6_289_409L,"L0 payload and its live reservation cannot disappear before settlement");
+    long finalBytes=(16384L+2048L*(run.request().profileChainage().cumulativeGroundMeters().size()+run.request().selectedRange().size()))*run.request().budgets().maximumDistinctAlternatives();
+    long outputBase=parent.bindingScratchBytes(root.evidence())+finalBytes;
+    assertTrue(owner.currentBytes()>=outputBase,"Full binding/output allowance survives native scratch settlement");
     assertEquals(ledger.peakBytes(),actual.peakAdditionalRetainedBytes());
-    if(cancel){assertTrue(run.finalized().isEmpty());assertTrue(receipt.sampling().isEmpty());}
+    if(cancel){
+     assertTrue(run.finalized().isEmpty());
+     if(phase==1) {
+      assertTrue(receipt.sampling().isEmpty());assertEquals(outputBase,owner.currentBytes());
+      assertTrue(duringSampling.get()>=outputBase+samplerEstimate.get(),"Full original sampler bound remains live at cancellation");
+     } else {
+      assertTrue(receipt.sampling().isPresent());assertEquals(completedWork,run.actualWork());
+      assertEquals(retainedOnSuccess,owner.currentBytes(),"Finalization cancellation retains every tracker/domain/output charge");
+     }
+    }
     else {
-     assertTrue(run.finalized().isPresent());assertTrue(owner.currentBytes()>receipt.sampling().orElseThrow().materializationEstimateBytes(),"Native sampler, strict authority, tracker and optimizer overlap in the same ledger");assertTrue(run.actualWork().transitions()>0);
-     var derived=parent.request(TrackerMode.CORRIDOR_AWARE,root.evidence(),TraceBudgets.defaults(),1);
-     long finalBytes=(16384L+2048L*(derived.profileChainage().cumulativeGroundMeters().size()+derived.selectedRange().size()))*derived.budgets().maximumDistinctAlternatives();
+     assertTrue(run.finalized().isPresent());assertTrue(run.actualWork().transitions()>0);
+     retainedOnSuccess=owner.currentBytes();completedWork=run.actualWork();samplerEstimate.set(receipt.sampling().orElseThrow().materializationEstimateBytes());
      long samplerOnlyCap=parent.bindingScratchBytes(root.evidence())+finalBytes+receipt.sampling().orElseThrow().materializationEstimateBytes()-1;
      var limitedLedger=new AttemptMemoryLedger(samplerOnlyCap);
      try(var limitedOwner=limitedLedger.rootOwner()) {
@@ -100,7 +188,10 @@ class RefinementRepairContractTest {
    var run=new RefinementEngineAdapter(TrackerMode.CORRIDOR_AWARE,"native").run(parent,root.evidence(),TraceBudgets.defaults(),probe,owner).value();
    assertTrue(claimed.get());assertEquals(Outcome.RESOURCE_LIMIT,run.outcome());assertEquals(1,run.nativeCalls());assertTrue(run.finalized().isEmpty());
    assertTrue(run.nativeRun().orElseThrow().corridorReceipt().orElseThrow().sampling().isPresent(),"Sampling really happened before shared optimizer refusal");
-   assertEquals(cap,owner.currentBytes());assertEquals(cap,ledger.peakBytes());
+   var field=root.evidence().fields().get("native");
+   long scratch=run.nativeRun().orElseThrow().corridorReceipt().orElseThrow().sampling().orElseThrow().materializationEstimateBytes()
+       +65536L+2L*(5L*field.width()*field.height()+(long)(field.width()-1)*(field.height()-1));
+   assertEquals(cap-scratch,owner.currentBytes(),"Competing and tracker/domain charges persist; only expired sampler/certificate scratch settles");assertEquals(cap,ledger.peakBytes());
   }
   assertEquals(0,ledger.currentBytes());
  }

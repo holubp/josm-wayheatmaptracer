@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalDouble;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementEngineAdapter;
 import java.util.concurrent.CancellationException;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
@@ -102,6 +103,25 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
         }catch(RuntimeException|Error failure){scope.close();throw failure;}
     }
 
+    /** Refinement-only scratch settlement, backed by the caller's unchanged live output charge. */
+    public Accounted<TraceEngineRun> traceRefinedWithUsage(ParentTraceReference parent,TraceRequest request,
+            EvidenceSnapshot evidence,NetworkSnapshot network,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner,
+            ParentTraceReference.BindingWorkspace workspace,RefinementEngineAdapter.NativeOutputAllowance allowance) {
+        workspace.requireCapacity(parent,evidence,owner);
+        java.util.Objects.requireNonNull(allowance).requireCapacity(owner,request,evidence);
+        var scope=owner.child("a-native-result");
+        try {
+            parent.requireBinding(request,evidence,network,cancellation);
+            TraceEngineRun result;
+            // All sampler center rows remain covered until tracking/adaptation/receipt freezing
+            // return. Tracker/domain/optimizer charges stay on the retained result owner.
+            try(var scratch=scope.child("a-native-sampling-certificate-scratch")) {
+                result=new OwnedInvocation(request,evidence,network,cancellation,parent,scope,scratch).execute();
+            }
+            return new Accounted<>(result,scope);
+        }catch(RuntimeException|Error failure){scope.close();throw failure;}
+    }
+
     static String resourceExplanation(RuntimeException failure) {
         if (failure instanceof CorridorResourceLimitException resource) {
             var out = new StringBuilder("family=CORRIDOR_RESOURCE_LIMIT stage=").append(resource.stage())
@@ -137,6 +157,7 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
         private final CancellationProbe cancellation;
         private final ParentTraceReference parent;
         private final AttemptMemoryLedger.Owner memoryOwner;
+        private final AttemptMemoryLedger.Owner samplingOwner;
         private CorridorExecutionReceipt.Phase phase=CorridorExecutionReceipt.Phase.SAMPLING;
         private java.util.Optional<DetachedScalarProfileSampler.RadiusThreeWork> sampling=java.util.Optional.empty();
         private CorridorSourceProtection.Certificate certificate;
@@ -150,7 +171,11 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
         }
         OwnedInvocation(TraceRequest request,EvidenceSnapshot evidence,NetworkSnapshot network,CancellationProbe cancellation,
                 ParentTraceReference parent,AttemptMemoryLedger.Owner memoryOwner){
-            this.request=request;this.evidence=evidence;this.network=network;this.cancellation=cancellation;this.parent=parent;this.memoryOwner=memoryOwner;
+            this(request,evidence,network,cancellation,parent,memoryOwner,memoryOwner);
+        }
+        OwnedInvocation(TraceRequest request,EvidenceSnapshot evidence,NetworkSnapshot network,CancellationProbe cancellation,
+                ParentTraceReference parent,AttemptMemoryLedger.Owner memoryOwner,AttemptMemoryLedger.Owner samplingOwner){
+            this.request=request;this.evidence=evidence;this.network=network;this.cancellation=cancellation;this.parent=parent;this.memoryOwner=memoryOwner;this.samplingOwner=samplingOwner;
         }
         TraceEngineRun execute(){
             try{
@@ -158,7 +183,7 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
                 var input=request.corridorInput().orElseThrow();
                 var sampled=new DetachedScalarProfileSampler().sampleRadiusThree(evidence,fieldName,input.profileLocations(),
                     request.permissions().ordinaryRadiusMeters(),input.lateralStepMeters(),cancellation,
-                    request.profileChainage().sourceOriginGroundMeters(),memoryOwner);
+                    request.profileChainage().sourceOriginGroundMeters(),samplingOwner);
                 sampling=java.util.Optional.of(sampled.work());
                 phase=CorridorExecutionReceipt.Phase.SOURCE_CERTIFICATE;
                 if(memoryOwner!=null) {
@@ -167,7 +192,7 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
                     // Its constructor clones values/masks: temporary and retained arrays coexist.
                     long cells=(long)source.width()*source.height();
                     long scalar=5L*cells+(long)(source.width()-1)*(source.height()-1);
-                    memoryOwner.reserve(Math.addExact(65536L,Math.multiplyExact(2L,scalar)));
+                    samplingOwner.reserve(Math.addExact(65536L,Math.multiplyExact(2L,scalar)));
                 }
                 certificate=CorridorSourceProtection.inspect(request,evidence,network,fieldName,cancellation,parent);
                 double nativePitch=maximumSourcePitch(evidence,input.profileLocations(),request.profileChainage().sourceOriginGroundMeters());
