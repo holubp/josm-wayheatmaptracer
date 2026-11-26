@@ -2,7 +2,8 @@
 
 > **Current execution —2026-11-26:** ACTIVE, explicitly resumed by user.
 > PARTIAL / NOT RELEASED. Latest verified visible Apply source: `4df8d118`.
->64M preparation and changes to the original400m assertions remain unapproved.
+>64M A/B preparation was explicitly approved Nov26; implementation/qualification
+> is in progress. Original400m positive assertions remain unchanged.
 
 ## Current shortest path to the next RC
 
@@ -15,12 +16,15 @@ write closed the synthetic painter. Only explicit terminal reports now release
 it; production pixel/source/transaction guards remain unchanged. This does not
 qualify successful A/B refinement after smoothing.
 
-1. Resolve the explicit pending64M preparation decision. Current conversion
-   alone exceeds8M. Proposed64M is for A/B preparation only, with shared
+1. Qualify the implemented, explicitly approved64M preparation policy. Current
+   conversion alone exceeds8M.64M is for A/B preparation only, with shared
    monotonic counters/owner/deadline through inherited bootstrap, palettes and
    fallback. Bootstrap/smoothing remain8M; native8Mpair/128Mscore, memory and
-   cancellation stay unchanged. NOT APPROVED/APPLIED or verified sufficient.
+   cancellation stay unchanged. Approval does not prove sufficiency.
    Keep original400m assertions unless separately approved.
+   Local policy/codec42 tests and the original unchanged400m positive pass;
+   expanded phase/source-failure package13 tests also pass. Fresh coherent CI
+   and actual visible64M continuation remain required before completion.
 2. Qualify actual visible full/interval/post-smoothing refinement and stored
    Apply/Undo/Redo alongside existing managed/Legacy cases. Safe refusal is not
    positive workflow proof. Do not repeat STABLE_FIXED_SCALE trials: it controls
@@ -151,10 +155,11 @@ establishes G004 completion.
 
 ## Next safe action
 
-Implementation is active following the explicit Nov26 resume. Follow the current
-shortest RC path above; saved Strong Apply is verified. The64M preparation and
-original400m assertion decisions remain pending and are not inferred from resume
-or cleanup approvals.
+Implementation is active following the explicit Nov26 resume and subsequent
+explicit64M approval. Follow the current shortest RC path above; saved Strong
+Apply is verified. Earlier no-cap-change instructions have only this approved
+A/B-preparation exception. Original400m positive assertions remain unchanged;
+their waiver is not inferred from the preparation approval.
 
 ### Historical task-start instructions — superseded, do not execute
 

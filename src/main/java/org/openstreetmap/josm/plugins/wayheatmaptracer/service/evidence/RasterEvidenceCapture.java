@@ -66,10 +66,11 @@ public final class RasterEvidenceCapture {
     /** Operation-local cache. Its keys never escape their existing source owner's physical lifetime. */
     public static final class OriginalInputHashes {
         private record Entry(String hash) { }
-        private final GeometryWorkContext work;
+        private GeometryWorkContext work;
         private final java.util.IdentityHashMap<Object,Entry> singles,sets;
         public OriginalInputHashes(GeometryWorkContext work){this.work=java.util.Objects.requireNonNull(work);try(var admitted=work.reserve("original-hash-cache",4096)){singles=new java.util.IdentityHashMap<>();sets=new java.util.IdentityHashMap<>();admitted.adopt(this);}}
-        public void requireContext(GeometryWorkContext actual){if(actual!=work)throw new IllegalArgumentException("Original hash cache belongs to another operation context");}
+        /** Official phase views change only the debit ceiling, preserving private spent-state identity. */
+        public void requireContext(GeometryWorkContext actual){if(!work.sharesAccountingWith(actual))throw new IllegalArgumentException("Original hash cache belongs to another operation context");work=actual;}
         public String single(Object originalIdentity,BufferedImage original){return cached(singles,originalIdentity,()->hashOriginalArgb(original,work));}
         public String completeSet(Object originalIdentity,List<NamedOriginalRaster> originals){return cached(sets,originalIdentity,()->hashOriginalArgbSet(originals,work));}
         private String cached(java.util.IdentityHashMap<Object,Entry> cache,Object identity,java.util.function.Supplier<String> hash) {

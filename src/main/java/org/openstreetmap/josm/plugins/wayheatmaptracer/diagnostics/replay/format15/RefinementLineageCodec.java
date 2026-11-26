@@ -430,6 +430,7 @@ public final class RefinementLineageCodec {
         Object source=work.failedSource().map(s->map("palette",s.palette(),"mapping",s.mapping(),"aggregate",s.aggregate(),"unavailable",s.unavailableReason())).orElse(null);
         Object nativeWork=work.nativeWork().map(n->map("outcome",n.outcome().name(),"work",workMap(n.actualWork()),"calls",n.nativeCalls().isPresent()?n.nativeCalls().getAsInt():null)).orElse(null);
         var result=map("phase","SOURCE_PREPARATION","cause",work.cause().name(),"visits",work.visits(),"counters",counters,"failedSource",source,"nativeWork",nativeWork);
+        if(work.maximumVisits().isPresent())result.put("maximumVisits",work.maximumVisits().getAsLong());
         work.sourceFacts().ifPresent(f->result.put("sourceFacts",map("ticket",ticketMap(f.ticket()),"sourceIdentityHash",f.sourceIdentityHash(),"sourceKind",f.sourceKind().name(),"coverage",f.coverage().name(),
             "planHash",f.planHash(),"frameHash",f.frameHash(),"inputHash",f.inputHash(),"frameRole",f.frameRole().name(),"frameWidth",f.frameWidth(),"frameHeight",f.frameHeight(),
             "outputGridWidth",f.outputGridWidth(),"outputGridHeight",f.outputGridHeight(),"sourceRevision",f.sourceRevision(),"captureAuxiliaryVisits",f.captureAuxiliaryVisits().isPresent()?f.captureAuxiliaryVisits().getAsLong():null)));
@@ -437,13 +438,13 @@ public final class RefinementLineageCodec {
     }
     private static Optional<RefinementAttemptDiagnostics.SourcePreparationWork> readSourcePreparation(Object value) {
         if(value==null)return Optional.empty();
-        var keys=new ArrayList<>(List.of("phase","cause","visits","counters","failedSource","nativeWork"));if(value instanceof Map<?,?> m&&m.containsKey("sourceFacts"))keys.add("sourceFacts");
+        var keys=new ArrayList<>(List.of("phase","cause","visits","counters","failedSource","nativeWork"));if(value instanceof Map<?,?> m){if(m.containsKey("sourceFacts"))keys.add("sourceFacts");if(m.containsKey("maximumVisits"))keys.add("maximumVisits");}
         var p=fields(value,keys.toArray(String[]::new));if(!"SOURCE_PREPARATION".equals(p.get("phase")))throw invalid();
         var kinds=org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values();var names=Arrays.stream(kinds).map(Enum::name).toArray(String[]::new);var raw=fields(p.get("counters"),names);
         var counters=new EnumMap<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind,Long>(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.class);for(var kind:kinds)counters.put(kind,number(raw.get(kind.name())));
         Optional<RefinementSourcePlanner.SourceRequest> source=Optional.empty();if(p.get("failedSource")!=null){var v=fields(p.get("failedSource"),"palette","mapping","aggregate","unavailable");if(!(v.get("aggregate") instanceof Boolean))throw invalid();source=Optional.of(new RefinementSourcePlanner.SourceRequest(string(v.get("palette")),string(v.get("mapping")),(Boolean)v.get("aggregate"),string(v.get("unavailable"))));}
         Optional<RefinementAttemptDiagnostics.NativeWork> nativeWork=Optional.empty();if(p.get("nativeWork")!=null){var v=fields(p.get("nativeWork"),"outcome","work","calls");nativeWork=Optional.of(new RefinementAttemptDiagnostics.NativeWork(enumeration(Outcome.class,v.get("outcome")),work(v.get("work")),v.get("calls")==null?OptionalInt.empty():OptionalInt.of(integer(v.get("calls")))));}
-        return Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(enumeration(RefinementAttemptDiagnostics.Cause.class,p.get("cause")),number(p.get("visits")),counters,source,nativeWork,readSourceFacts(p.get("sourceFacts"))));
+        return Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(enumeration(RefinementAttemptDiagnostics.Cause.class,p.get("cause")),number(p.get("visits")),counters,source,nativeWork,readSourceFacts(p.get("sourceFacts")),p.get("maximumVisits")==null?OptionalLong.empty():OptionalLong.of(number(p.get("maximumVisits")))));
     }
     private static Optional<RefinementAttemptDiagnostics.SourceFacts> readSourceFacts(Object value){
         if(value==null)return Optional.empty();

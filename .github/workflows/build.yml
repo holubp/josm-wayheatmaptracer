@@ -89,6 +89,8 @@ jobs:
               filters+=(--tests '*VisibleRenderPolicyTest')
               filters+=(--tests '*AlignWayActionTest.refinementApplyFailureDiagnosticsKeepBoundedSafeCauseAndBoundary')
               filters+=(--tests '*PublicGuiSmokeContractTest.intermediateDiagnosticWritesKeepTheVisibleFixtureAlive' --tests '*PublicGuiSmokeContractTest.terminalReportWriteFailureStillReleasesTheVisibleFixture')
+              filters+=(--tests '*GeometryWorkContextPhaseTest' --tests '*SourcePreparationCeilingTest')
+              filters+=(--tests '*WorkflowSourcePreparationDiagnosticsTest')
               filters+=(--tests '*RefinementAcquisitionTest.frozenVisiblePlanConvertsSameEpochPixelsAndRejectsShortFrameBeforeScalarWork')
               filters+=(--tests '*BenchmarkDecisionComparatorIntegrationTest.selectedObservationRejectsAbsentStaleAndSameCoreMissingWitnessOwners' --tests '*AlignWayActionTest.ordinaryBRouteFreezesSupportedSettingsWithoutChangingRequestedPreferences' --tests '*V022PreviewStateTest.t116SupportedLiveEnginePersistsWhileOtherSettingsAndHistoricalIdentityRemain' --tests '*VisibleEvidencePlanTest.pointsAndDecisionFitDoNotProveCompleteEngineSupport')
               ;;
@@ -129,6 +131,9 @@ jobs:
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementSmoothingAdapterTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.SmoothingParentBinderTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.SmoothingWorkContextTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.GeometryWorkContextPhaseTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.SourcePreparationCeilingTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.WorkflowSourcePreparationDiagnosticsTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RetainedSmoothingRootTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.ModernRefinementBootstrapTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.V022FixedIntervalEditPlanComposerTest.xml",
@@ -230,6 +235,9 @@ jobs:
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RefinementSmoothingAdapterTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/SmoothingParentBinderTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/SmoothingWorkContextTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/GeometryWorkContextPhaseTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/SourcePreparationCeilingTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/WorkflowSourcePreparationDiagnosticsTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RetainedSmoothingRootTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/ModernRefinementBootstrapTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/V022FixedIntervalEditPlanComposerTest.java",

@@ -10,7 +10,7 @@
 
 **Spec:** [Approved specification](../specs/2026-11-10-stepwise-refinement-design.md), especially the binding 2026-11-22 amendment, S01–S08 and original authority/source/interval contracts. [Original implementation plan](2026-11-10-stepwise-refinement-implementation.md) Tasks1–8 retain scope except explicitly superseded decisions. [Pause checkpoint](2026-11-21-g004-user-pause-checkpoint.md) and `build/g004-execution-20261119/ledger.md` retain evidence. This is a completion/reconciliation plan, not permission to redesign engines or declare old partial tasks complete.
 
-**Status:** USER APPROVED; implementation ACTIVE following explicit user resume2026-11-26. Prior plan/execution approvals remain in force, not release evidence.64M preparation and original400m assertion changes remain unapproved.
+**Status:** USER APPROVED; implementation ACTIVE following explicit user resume2026-11-26 and subsequent explicit64M A/B-preparation approval. Bootstrap/smoothing remain8M; native/memory/deadline/cancel contracts are unchanged. Original400m positive assertions remain unchanged and have no waiver.
 
 ## Current remaining work —2026-11-26
 
@@ -19,10 +19,13 @@ Nov26 diagnostic encoding and actual saved Strong Apply/Undo/Redo are verified
 at `7b7d230d` (CI45783248767/job139783593631). An intermediate diagnostic
 write prematurely released the synthetic painter; terminal-only fixture cleanup
 repairs that harness defect without changing production source guards.
-Resolve explicit preparation policy, qualify visible continuation, coherent final CI/freeze, one Sol-high
+The approved shared64M policy is implemented locally: policy/codec42 tests,
+expanded phase/source-failure package13 tests, and the unchanged400m positive
+pass. Qualify fresh CI/actual visible continuation, coherent final CI/freeze, one Sol-high
 audit, one verified RC. Reuse passing components rather than restarting them.
 No solver/conversion/source-grid/smoothing research or repeated configuration
-experiments.64M is proposed only, not approved/applied. Original task checklists
+experiments. Earlier no-cap-change prose has only the explicitly approved64M
+A/B-preparation exception; no inference of wider budgets. Original task checklists
 retain full scope, not directions to redo verified work.
 
 ## Global Constraints

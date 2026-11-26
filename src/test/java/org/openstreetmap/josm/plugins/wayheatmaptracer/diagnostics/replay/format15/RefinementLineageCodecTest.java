@@ -11,6 +11,34 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.Refine
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage;
 
 class RefinementLineageCodecTest {
+    @Test void preparationCeilingRoundTripsWithoutGrantingOldArchivesANewBudget() throws Exception {
+        var root=root();var key=new RefinementLineageCodec.CandidateKey(root.id(),root.selected());
+        var base=publicationDocument(List.of(root),root,ticket(root,1),Optional.empty(),RefinementAttemptDiagnostics.Publication.FAILED,
+            RefinementAttemptDiagnostics.Phase.SOURCE_PREPARATION,RefinementAttemptDiagnostics.Cause.FAILED,key);
+        var counts=new EnumMap<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind,Long>(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.class);
+        for(var kind:org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values())counts.put(kind,kind.name().equals("COPY")?9_000_000L:0L);
+        var constructor=RefinementAttemptDiagnostics.SourcePreparationWork.class.getConstructor(RefinementAttemptDiagnostics.Cause.class,
+            long.class,Map.class,Optional.class,Optional.class,Optional.class,OptionalLong.class);
+        var work=constructor.newInstance(RefinementAttemptDiagnostics.Cause.FAILED,9_000_000L,counts,Optional.empty(),Optional.empty(),Optional.empty(),OptionalLong.of(64_000_000));
+        var old=base.latestPublication().orElseThrow().diagnostic();
+        var diagnostic=new RefinementAttemptDiagnostics(old.binding(),old.pipeline(),old.publication(),old.phase(),old.cause(),0,true,Optional.of(work));
+        var document=new RefinementLineageCodec.Document(base.binding(),base.originalOsm(),base.stages(),base.latestAttempt(),
+            Optional.of(new RefinementLineageCodec.LatestPublication(diagnostic,key)));
+        var artifact=RefinementLineageCodec.artifact(document);
+        var decoded=RefinementLineageCodec.read(artifact).latestPublication().orElseThrow().diagnostic().sourcePreparation().orElseThrow();
+        assertEquals(9_000_000L,decoded.visits());
+        assertEquals(OptionalLong.of(64_000_000),decoded.getClass().getMethod("maximumVisits").invoke(decoded));
+        String json=new String(artifact.bytes(),StandardCharsets.UTF_8);
+        assertTrue(json.contains("\"maximumVisits\":64000000"));
+        String missing=json.replace(",\"maximumVisits\":64000000","");
+        assertThrows(IllegalArgumentException.class,()->RefinementLineageCodec.read(Format15Artifact.text(RefinementLineageCodec.ARTIFACT,missing)));
+        String oldValid=missing.replace("\"visits\":9000000","\"visits\":7000000").replace("\"COPY\":9000000","\"COPY\":7000000");
+        var oldWork=RefinementLineageCodec.read(Format15Artifact.text(RefinementLineageCodec.ARTIFACT,oldValid)).latestPublication().orElseThrow().diagnostic().sourcePreparation().orElseThrow();
+        assertEquals(OptionalLong.empty(),oldWork.getClass().getMethod("maximumVisits").invoke(oldWork));
+        String overflow=json.replace("\"maximumVisits\":64000000","\"maximumVisits\":8000000");
+        assertThrows(IllegalArgumentException.class,()->RefinementLineageCodec.read(Format15Artifact.text(RefinementLineageCodec.ARTIFACT,overflow)));
+    }
     static final String SOURCE = "a".repeat(64), SETTINGS = "b".repeat(64);
     final SessionId session = new SessionId(UUID.randomUUID());
     final CandidateId blue = new CandidateId("blue"), purple = new CandidateId("purple");

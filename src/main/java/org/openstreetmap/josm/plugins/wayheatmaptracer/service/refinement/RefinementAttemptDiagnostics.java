@@ -23,16 +23,20 @@ public record RefinementAttemptDiagnostics(Binding binding, Optional<RefinementO
     /** Fixed-size observed auxiliary work. NONE means no source-preparation failure was observed, not that every source ran. */
     public record SourcePreparationWork(Cause cause,long visits,
             Map<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind,Long> counters,
-            Optional<RefinementSourcePlanner.SourceRequest> failedSource,Optional<NativeWork> nativeWork,Optional<SourceFacts> sourceFacts) {
+            Optional<RefinementSourcePlanner.SourceRequest> failedSource,Optional<NativeWork> nativeWork,Optional<SourceFacts> sourceFacts,OptionalLong maximumVisits) {
+        public SourcePreparationWork(Cause cause,long visits,Map<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind,Long> counters,
+                Optional<RefinementSourcePlanner.SourceRequest> failedSource,Optional<NativeWork> nativeWork,Optional<SourceFacts> sourceFacts){this(cause,visits,counters,failedSource,nativeWork,sourceFacts,OptionalLong.empty());}
         public SourcePreparationWork(Cause cause,long visits,Map<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind,Long> counters,
                 Optional<RefinementSourcePlanner.SourceRequest> failedSource,Optional<NativeWork> nativeWork){this(cause,visits,counters,failedSource,nativeWork,Optional.empty());}
         public SourcePreparationWork {
-            Objects.requireNonNull(cause);Objects.requireNonNull(failedSource);Objects.requireNonNull(nativeWork);Objects.requireNonNull(sourceFacts);counters=Map.copyOf(counters);
-            if(!Set.of(Cause.NONE,Cause.RESOURCE_LIMIT,Cause.CANCELLED,Cause.STALE,Cause.FAILED).contains(cause)||visits<0||visits>8_000_000L
+            Objects.requireNonNull(cause);Objects.requireNonNull(failedSource);Objects.requireNonNull(nativeWork);Objects.requireNonNull(sourceFacts);Objects.requireNonNull(maximumVisits);counters=Map.copyOf(counters);
+            long ceiling=maximumVisits.orElse(8_000_000L);
+            if(!Set.of(Cause.NONE,Cause.RESOURCE_LIMIT,Cause.CANCELLED,Cause.STALE,Cause.FAILED).contains(cause)||ceiling<0||ceiling>64_000_000L||visits<0||visits>ceiling
                     ||counters.size()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values().length
                     // Acquisition can fail before any detector source is attempted; keep it unavailable.
                     ||cause==Cause.NONE&&failedSource.isPresent())throw new IllegalArgumentException("Invalid auxiliary source work");
             long sum=0;for(var kind:org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values()) {var count=counters.get(kind);if(count==null||count<0)throw new IllegalArgumentException("Invalid auxiliary counter");sum=Math.addExact(sum,count);}if(sum!=visits)throw new IllegalArgumentException("Auxiliary counter sum differs");
+            if(sourceFacts.isPresent()&&sourceFacts.orElseThrow().captureAuxiliaryVisits().orElse(0)>visits)throw new IllegalArgumentException("Capture work exceeds total source work");
         }
     }
     public enum SourceKind { VISIBLE, MANAGED }
@@ -47,7 +51,7 @@ public record RefinementAttemptDiagnostics(Binding binding, Optional<RefinementO
         public SourceFacts {
             Objects.requireNonNull(ticket);Objects.requireNonNull(sourceKind);Objects.requireNonNull(coverage);Objects.requireNonNull(frameRole);Objects.requireNonNull(captureAuxiliaryVisits);
             for(String value:List.of(sourceIdentityHash,planHash,frameHash,inputHash))if(!value.matches("[a-f0-9]{64}"))throw new IllegalArgumentException("Checksummed source facts required");
-            if(frameWidth<1||frameHeight<1||outputGridWidth<1||outputGridHeight<1||sourceRevision<0||captureAuxiliaryVisits.orElse(0)<0||captureAuxiliaryVisits.orElse(0)>8_000_000L)
+            if(frameWidth<1||frameHeight<1||outputGridWidth<1||outputGridHeight<1||sourceRevision<0||captureAuxiliaryVisits.orElse(0)<0||captureAuxiliaryVisits.orElse(0)>preparationCeiling(ticket.kind()))
                 throw new IllegalArgumentException("Invalid source frame/work facts");
             if(frameRole==InputFrameRole.CAPTURED_INPUT&&coverage!=Coverage.RECAPTURED)throw new IllegalArgumentException("Captured input requires proven recapture coverage");
             if(coverage==Coverage.COVERED&&captureAuxiliaryVisits.isPresent())throw new IllegalArgumentException("Original reuse has no capture work receipt");
@@ -68,6 +72,7 @@ public record RefinementAttemptDiagnostics(Binding binding, Optional<RefinementO
     public RefinementAttemptDiagnostics {
         Objects.requireNonNull(binding);Objects.requireNonNull(pipeline);Objects.requireNonNull(publication);Objects.requireNonNull(phase);Objects.requireNonNull(cause);Objects.requireNonNull(sourcePreparation);
         if(materializationRefusals<0)throw new IllegalArgumentException("Negative observed refusal count");
+        sourcePreparation.ifPresent(work->{if(work.maximumVisits().orElse(8_000_000L)>preparationCeiling(binding.ticket().kind()))throw new IllegalArgumentException("Preparation ceiling does not belong to this operation kind");});
         sourcePreparation.flatMap(SourcePreparationWork::sourceFacts).ifPresent(facts->{
             if(!facts.ticket().equals(binding.ticket())||!facts.sourceIdentityHash().equals(sourceIdentityHash(binding.rootSourceIdentity())))
                 throw new IllegalArgumentException("Source facts belong to another attempt");
@@ -75,6 +80,7 @@ public record RefinementAttemptDiagnostics(Binding binding, Optional<RefinementO
         pipeline.ifPresent(receipt->{if(!receipt.ticket().equals(binding.ticket())||!receipt.parentIdentity().equals(binding.parentIdentity())
             ||!receipt.originalNetworkHash().equals(binding.originalNetworkHash()))throw new IllegalArgumentException("Attempt receipt binding differs");});
     }
+    private static long preparationCeiling(StageKind kind){return kind==StageKind.REFINE_A||kind==StageKind.REFINE_B?64_000_000L:8_000_000L;}
     private static String sourceIdentityHash(String identity) {
         try {
             return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")

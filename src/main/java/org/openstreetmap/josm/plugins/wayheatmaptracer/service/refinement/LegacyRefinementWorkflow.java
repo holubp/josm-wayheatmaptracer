@@ -53,10 +53,25 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     private final Consumer<CenterlineCandidate> rootSelection;
     private final Executor executor;
     private final AlignmentJob.EventDispatcher publicationDispatcher;
+    private static final ThreadLocal<SourcePreparationControl> PREPARATION_TIGHTENING=new ThreadLocal<>();
+    /** EDT-owned public-fixture scope; it only tightens both preparation phases and never changes preferences. */
+    public static AutoCloseable tightenPreparationForTesting(long visits) {
+        if(!SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Preparation test scope requires EDT");
+        if(PREPARATION_TIGHTENING.get()!=null)throw new IllegalStateException("Preparation test scope is already active");
+        var tightened=new SourcePreparationControl(visits,AttemptMemoryLedger.MAX_BYTES,value->{});
+        PREPARATION_TIGHTENING.set(tightened);
+        return new AutoCloseable(){private boolean closed;public void close(){
+            if(!SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Preparation test scope must close on EDT");
+            if(closed)return;
+            if(PREPARATION_TIGHTENING.get()!=tightened)throw new IllegalStateException("Preparation test scope owner changed");
+            PREPARATION_TIGHTENING.remove();closed=true;
+        }};
+    }
     /** Package-only deterministic test control: reductions and an extra checkpoint, never a replacement probe/context. */
-    record SourcePreparationControl(long visits,long bytes,java.util.function.LongConsumer checkpoint) {
-        SourcePreparationControl {if(visits<0||visits>8_000_000L||bytes<0||bytes>AttemptMemoryLedger.MAX_BYTES)throw new IllegalArgumentException("Source preparation control may only tighten production limits");Objects.requireNonNull(checkpoint);}
-        static SourcePreparationControl production(){return new SourcePreparationControl(8_000_000L,AttemptMemoryLedger.MAX_BYTES,value->{});}
+    record SourcePreparationControl(long visits,long refinementVisits,long bytes,java.util.function.LongConsumer checkpoint) {
+        SourcePreparationControl(long visits,long bytes,java.util.function.LongConsumer checkpoint){this(visits,visits,bytes,checkpoint);}
+        SourcePreparationControl {if(visits<0||visits>8_000_000L||refinementVisits<visits||refinementVisits>64_000_000L||bytes<0||bytes>AttemptMemoryLedger.MAX_BYTES)throw new IllegalArgumentException("Source preparation control may only tighten production phase limits");Objects.requireNonNull(checkpoint);}
+        static SourcePreparationControl production(){var tightened=PREPARATION_TIGHTENING.get();return tightened!=null?tightened:new SourcePreparationControl(8_000_000L,64_000_000L,AttemptMemoryLedger.MAX_BYTES,value->{});}
     }
     private final SourcePreparationControl sourcePreparationControl;
     private PreviewWorkGate workGate;
@@ -853,7 +868,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                     var cause=failed instanceof java.util.concurrent.CancellationException?RefinementAttemptDiagnostics.Cause.CANCELLED:
                         failed instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached||failed instanceof AttemptMemoryLedger.ResourceLimitException?RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT:RefinementAttemptDiagnostics.Cause.FAILED;
                     try{sourceContext.requireCurrent();}catch(RuntimeException stale){cause=RefinementAttemptDiagnostics.Cause.STALE;}
-                    progress.sourcePreparation=Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(cause,workContext.visits(),workContext.counters(),Optional.empty(),Optional.empty()));throw failed;
+                    progress.sourcePreparation=Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(cause,workContext.visits(),workContext.counters(),Optional.empty(),Optional.empty(),Optional.empty(),OptionalLong.of(workContext.maximumVisits())));throw failed;
                 }
             }
             return computeSmoothing(ticket,parent,actual,strength,workContext,probe,progress,publication,allowance,baseline);
@@ -942,18 +957,22 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             }
         } catch(SmoothingParentBinder.Unavailable unavailable) {
             computationEvidence="smoothing-binding-"+unavailable.reason();throw unavailable;
-        } finally {progress.sourcePreparation=Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(RefinementAttemptDiagnostics.Cause.NONE,work.visits(),work.counters(),Optional.empty(),Optional.empty()));}
+        } finally {progress.sourcePreparation=Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(RefinementAttemptDiagnostics.Cause.NONE,work.visits(),work.counters(),Optional.empty(),Optional.empty(),Optional.empty(),OptionalLong.of(work.maximumVisits())));}
     }
     private Computed compute(OperationTicket ticket,ParentTraceReference parent,RefinementSourcePlanner.Plan plan,
             CredentialSnapshot credentials,AttemptMemoryLedger.Owner operation,AttemptMemoryLedger.Owner publication,RefinementPayload sourcePayload,
             AlignmentResult original,long allowance,CancellationProbe probe,NativeEntry entry,AttemptProgress progress,List<Map<Object,Long>> baseline,Stage publishedParent,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext inheritedWork,RefinementPipeline.OperationBudget inheritedBudget) {
         progress.phase=RefinementAttemptDiagnostics.Phase.ACQUISITION;
+        if(ticket.kind()!=StageKind.REFINE_A&&ticket.kind()!=StageKind.REFINE_B)throw new IllegalArgumentException("Refinement preparation requires an actual A/B ticket");
         var budget=inheritedBudget!=null?inheritedBudget:RefinementPipeline.OperationBudget.production(parent.root().request().budgets());
         var workRef=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext[1];
         CancellationProbe hashProbe=()->{probe.checkpoint();try{sourcePreparationControl.checkpoint().accept(workRef[0].visits());}finally{probe.checkpoint();}return false;};
-        var hashWork=inheritedWork!=null?inheritedWork:new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(sourcePreparationControl.visits(),sourcePreparationControl.bytes(),budget.finalDeadlineNanos(),hashProbe,operation);workRef[0]=hashWork;
+        var hashWork=inheritedWork!=null?inheritedWork:new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(sourcePreparationControl.refinementVisits(),sourcePreparationControl.bytes(),budget.finalDeadlineNanos(),hashProbe,operation);workRef[0]=hashWork;
+        boolean sourceOpening=false;
         try {
+        if(inheritedWork!=null){hashWork=inheritedWork.phaseView(sourcePreparationControl.refinementVisits());workRef[0]=hashWork;}
+        sourceOpening=true;
         var sources=sourceContext.open(plan,publishedParent,hashWork,operation,probe);
         var evidence=new HashMap<RefinementSourcePlanner.SourceRequest,EvidenceSnapshot>();
         var wrapped=new RefinementPipeline.Sources(){
@@ -988,7 +1007,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                     actual instanceof AttemptMemoryLedger.ResourceLimitException||actual instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached?RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT:RefinementAttemptDiagnostics.Cause.FAILED;
             }
             throw failure;
-        } finally {progress.sourceFacts=sourceContext.sourceFacts();progress.sourcePreparation=Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(progress.sourcePreparationCause,hashWork.visits(),hashWork.counters(),progress.failedSource,progress.nativeWork,progress.sourceFacts));}
+        } finally {progress.sourceFacts=sourceOpening?sourceContext.sourceFacts():Optional.empty();progress.sourcePreparation=Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(progress.sourcePreparationCause,hashWork.visits(),hashWork.counters(),progress.failedSource,progress.nativeWork,progress.sourceFacts,OptionalLong.of(hashWork.maximumVisits())));}
     }
     /** Claims the unchanged future Stage bound only once actual assessed output needs materialization. */
     static Computed materialize(OperationTicket ticket,ParentTraceReference parent,RefinementPipeline.Result outcome,

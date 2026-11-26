@@ -233,13 +233,19 @@ public final class PublicGuiSmokeMain {
                     exerciseOriginalNativeApply(preview,fixture,geometry,original,originalUndo);
                     exerciseOriginalNativeStaleInspection(action,session,fixture,original,originalUndo);
                     if(engine==TrackerMode.CORRIDOR_AWARE&&requestedMode==AlignmentMode.PRECISE_SHAPE
-                            ||engine==TrackerMode.PROBABILISTIC&&requestedMode==AlignmentMode.MOVE_EXISTING_NODES)
+                            ||engine==TrackerMode.PROBABILISTIC&&requestedMode==AlignmentMode.MOVE_EXISTING_NODES) {
+                        if(isRawVisibleGuiScenario()) {
+                            var tightening=onEventThread(()->LegacyRefinementWorkflow.tightenPreparationForTesting(8_000_000));
+                            try{exerciseSmoothThenRefineGui(report,action,session,fixture,original,originalUndo,StageKind.REFINE_A,true);}
+                            finally{onEventThread(()->{tightening.close();return null;});}
+                        }
                         exerciseSmoothThenRefineGui(report,action,session,fixture,original,originalUndo,engine==TrackerMode.PROBABILISTIC?StageKind.REFINE_A:StageKind.REFINE_B);
+                    }
                 } else onEventThread(() -> {preview.dispatchEvent(new WindowEvent(preview, WindowEvent.WINDOW_CLOSING));return null;});
             } finally {
                 Toolkit.getDefaultToolkit().removeAWTEventListener(listener);
             }
-            if(visibleGui&&!isRawVisibleGuiScenario())exerciseVisibleIntervalApplyAndDescendant(report,action,session,fixture,original,originalUndo);
+            if(visibleGui)exerciseVisibleIntervalApplyAndDescendant(report,action,session,fixture,original,originalUndo);
             if(isRawVisibleGuiScenario()&&!rawVisibleResourceRetained)throw new IllegalStateException("The named raw visible case must retain its factual bounded recapture refusal");
             stage = "cancel";
             long cancelledSequence = onEventThread(() -> {
@@ -1986,6 +1992,10 @@ public final class PublicGuiSmokeMain {
     }
     private static void exerciseSmoothThenRefineGui(Path report,AlignWayAction action,PreviewSessionController<?> session,
             PublicGuiSmokeFixture fixture,List<String> original,int originalUndo,StageKind continuation) throws Exception {
+        exerciseSmoothThenRefineGui(report,action,session,fixture,original,originalUndo,continuation,false);
+    }
+    private static void exerciseSmoothThenRefineGui(Path report,AlignWayAction action,PreviewSessionController<?> session,
+            PublicGuiSmokeFixture fixture,List<String> original,int originalUndo,StageKind continuation,boolean expectPreparationRefusal) throws Exception {
         var opened=new CompletableFuture<JDialog>();
         AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED
                 &&e.getWindow() instanceof JDialog dialog&&isPreview(dialog))opened.complete(dialog);};
@@ -2048,17 +2058,28 @@ public final class PublicGuiSmokeMain {
             int paintsBeforeContinuation=visiblePaintCalls.get();
             try{clickAndAwaitStage(report,dialog,owner,continuation==StageKind.REFINE_A?"refineA":"refineB",continuation);}
             catch(Exception failure){
-                if(!isRawVisibleGuiScenario())throw failure;
+                if(!expectPreparationRefusal)throw failure;
                 if(!visiblePainterRegistered.getAsBoolean()||visiblePaintCalls.get()<=paintsBeforeContinuation)throw new IllegalStateException("Raw visible recapture did not retain its actual synthetic source painter",failure);
                 requireRawVisibleResourceRetention(dialog,owner,smooth,smoothGeometry,historyBefore,calls);
                 requireUnchanged(fixture,original,originalUndo);Format15ArchiveReader.read(exportThroughActualMenu());
                 var retainedPlan=onEventThread(()->owner.currentNative().orElseThrow().plan());
                 applyStoredNativePlan(dialog,fixture,retainedPlan,original,originalUndo);rawVisibleResourceRetained=true;return;
             }
+            if(expectPreparationRefusal)throw new IllegalStateException("Explicit8M tightening must retain its factual preparation refusal");
             var plan=onEventThread(()->{
                 if(!owner.currentStage().parent().orElseThrow().equals(smooth.id())
                         ||!owner.currentStage().parentChoice().orElseThrow().equals(smooth.selected())||owner.actualNativeCalls()<=calls)
                     throw new IllegalStateException("Post-smoothing refinement did not use its displayed smoothed parent");
+                if(isVisibleGuiScenario()) {
+                    var work=owner.latestAttemptDiagnostics().orElseThrow().sourcePreparation().orElseThrow();
+                    var facts=work.sourceFacts().orElseThrow();
+                    if(work.maximumVisits().orElseThrow()!=64_000_000L||work.visits()<=8_000_000L
+                            ||facts.coverage()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Coverage.RECAPTURED
+                            ||facts.frameRole()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.InputFrameRole.CAPTURED_INPUT
+                            ||facts.ticket().kind()!=continuation||facts.captureAuxiliaryVisits().orElseThrow()<=0)
+                        throw new IllegalStateException("Actual visible continuation must prove the selected64M phase and spent work beyond8M");
+                    System.err.println("GUI_SMOKE_VISIBLE_PREPARATION maximumVisits="+work.maximumVisits().orElseThrow()+" actualVisits="+work.visits()+" actualNativeCalls="+owner.actualNativeCalls());
+                }
                 return owner.currentNative().orElseThrow().plan();
             });
             requireUnchanged(fixture,original,originalUndo);
@@ -2092,7 +2113,7 @@ public final class PublicGuiSmokeMain {
                     ||!diagnostic.binding().ticket().parent().equals(parent.id())||!diagnostic.binding().ticket().choice().equals(parent.selected())
                     ||facts.coverage()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Coverage.RECAPTURED
                     ||facts.frameRole()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.InputFrameRole.CAPTURED_INPUT
-                    ||inverseLowerBound<=8_000_000L||work.visits()<=0||work.visits()>8_000_000L
+                    ||inverseLowerBound<=8_000_000L||work.maximumVisits().orElseThrow()!=8_000_000L||work.visits()<=0||work.visits()>8_000_000L
                     ||work.nativeWork().orElseThrow().nativeCalls().orElseThrow()!=0||work.counters().get(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.MAP)!=0
                     ||owner.currentStage()!=parent||!owner.selectedGeometry().equals(geometry)||owner.actualNativeCalls()!=calls
                     ||owner.busy()||!dialog.isShowing()||dialog.isModal()||retained.size()!=history.size())throw new IllegalStateException("Raw visible refusal lost its exact actual work, source or parent authority");

@@ -2,6 +2,23 @@
 
 Status: APPROVED by the user on 2026-11-10, including Astra high corrections and the concrete menu/source proposals, with subsequent user amendments below. Implementation is partial; component evidence and unfinished integration are recorded in the G004 execution ledger.
 
+## Binding preparation policy amendment — approved 2026-11-26
+
+The user explicitly approved64,000,000 auxiliary preparation visits for an
+actual A/B refinement ticket, across source palettes and fallback. Bootstrap
+and smoothing retain8,000,000 visits. Native pair/score/state limits,256MiB
+physical memory, retained history, cancellation and absolute deadlines remain
+unchanged. This is no solver, conversion, source-grid or numerical-method change.
+
+An inherited bootstrap phase and its refinement share one private counter state,
+owner, byte ceiling, cancellation probe and absolute deadline. Meter/admit the
+small phase view before allocation; no reset or per-palette pool is allowed.
+Diagnostics carry the actual effective ceiling and validate its ticket kind;
+older missing values stay unavailable under their original8M bound. Existing
+three-argument test tightening sets both phase ceilings together at≤8M, and
+actual GUI negative coverage uses only an EDT-owned tightening scope. Preserve
+the original400m positive assertions and all source/geometry/transaction guards.
+
 ## Binding workflow correction — approved 2026-11-22
 
 This amendment supersedes conflicting Legacy-only roots, method-selector removal,
