@@ -28,11 +28,13 @@ final class PublicGuiSmokeFixture {
     private static final int[] ZOOMS = {14, 15};
     private final DataSet dataSet;
     private final Way selectedWay;
+    private final java.util.List<org.openstreetmap.josm.data.coor.LatLon> originalSelectionCoordinates;
     private final Map<Integer, Tile> tiles;
 
     private PublicGuiSmokeFixture(DataSet dataSet, Way selectedWay, Map<Integer, Tile> tiles) {
         this.dataSet = dataSet;
         this.selectedWay = selectedWay;
+        this.originalSelectionCoordinates=selectedWay.getNodes().stream().map(node->node.getCoor()).toList();
         this.tiles = Map.copyOf(tiles);
     }
 
@@ -84,6 +86,10 @@ final class PublicGuiSmokeFixture {
 
     DataSet dataSet() { return dataSet; }
     Way selectedWay() { return selectedWay; }
+    void restoreOriginalSelectionGeometry() {
+        if(!javax.swing.SwingUtilities.isEventDispatchThread()||selectedWay.getNodesCount()!=originalSelectionCoordinates.size())throw new IllegalStateException("Original public fixture geometry requires its exact EDT-owned occurrences");
+        for(int i=0;i<originalSelectionCoordinates.size();i++)selectedWay.getNode(i).setCoor(originalSelectionCoordinates.get(i));
+    }
     /** Compact ordinary OSM error around the same measured public PNG ridge; imagery is unchanged. */
     void configureCompactVisibleSelection() {
         if(!javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Public OSM fixture setup requires EDT");

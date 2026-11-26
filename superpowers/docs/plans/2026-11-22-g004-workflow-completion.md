@@ -25,6 +25,13 @@ in CI against c701's four full-suite failures, managed palettes and actual visib
 full/interval A/B stored commands, followed by coherent performance/source freeze,
 the controller's one independent final audit and verified RC. Original400m stays
 unchanged. Local checks qualify ownership mechanics, not the complete workflow.
+Candidate0b13 clears the previously failing managed palette row and all ten
+ordinary host rows, plus full visible post-Smooth A/B stored commands. Current
+follow-up corrects the all-frozen compact interval fixture by reusing the existing
+ordinary interval/midpoint fixture, preserves typed cancellation at source checks,
+and makes two admission-only controls use the same real native ownership path.
+Normal gate passes; tracker has one inconclusive fork. Fresh affected/full/GUI
+qualification is required; no full workflow or release claim is made.
 
 Follow the [G004 current shortest RC path](../goals/2026-11-10-g004-stepwise-refinement.md):
 Nov26 diagnostic encoding and actual saved Strong Apply/Undo/Redo are verified

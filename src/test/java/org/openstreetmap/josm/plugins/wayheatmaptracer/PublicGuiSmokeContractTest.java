@@ -62,6 +62,31 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 import org.openstreetmap.josm.tools.PlatformManager;
 
 class PublicGuiSmokeContractTest {
+    @Test void visibleIntervalFixtureSeparatesAllFrozenCompactNegativeFromExistingEligibleIntervals() throws Exception {
+        ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+        var fixture=PublicGuiSmokeFixture.create(temporary);
+        var configMethod=PublicGuiSmokeMain.class.getDeclaredMethod("config",boolean.class,boolean.class);configMethod.setAccessible(true);
+        var config=AlignmentConfig.withoutCleanup(((ManagedHeatmapConfig)configMethod.invoke(null,true,false)).withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES));
+        var seed=new LiveBPreviewService.ManagedCaptureSeed[2];
+        SwingUtilities.invokeAndWait(()->{
+            fixture.configureCompactVisibleSelection();
+            var middle=fixture.selectedWay().getNode(5);var point=middle.getEastNorth();
+            var remote=new org.openstreetmap.josm.data.osm.Node(ProjectionRegistry.getProjection().eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth(point.east(),point.north()+30)));
+            fixture.dataSet().addPrimitive(remote);var branch=new org.openstreetmap.josm.data.osm.Way();branch.setNodes(List.of(middle,remote));branch.put("highway","path");fixture.dataSet().addPrimitive(branch);
+            var service=new LiveBPreviewService();fixture.dataSet().setSelected(fixture.selectedWay());
+            seed[0]=service.captureManagedSeed(fixture.dataSet(),SelectionResolver.resolve(fixture.dataSet(),false),config,"public-compact-negative");
+            branch.setNodes(List.of());fixture.dataSet().removePrimitive(branch);fixture.dataSet().removePrimitive(remote);
+            PublicGuiSmokeMain.configureVisibleIntervalFixture(fixture);
+            seed[1]=service.captureManagedSeed(fixture.dataSet(),SelectionResolver.resolve(fixture.dataSet(),false),config,"public-existing-interval-positive");
+        });
+        assertEquals(1,seed[0].intervalPartition().fixedIslands().size());
+        assertEquals(seed[0].specification().selectedRange(),seed[0].intervalPartition().fixedIslands().get(0).range());
+        assertTrue(seed[0].intervalPartition().slideIntervals().isEmpty(),"The compact junction case has no native interval to run");
+        assertFalse(seed[1].intervalPartition().fixedIslands().isEmpty());
+        assertFalse(seed[1].intervalPartition().slideIntervals().isEmpty());
+        assertTrue(seed[1].intervalPartition().slideIntervals().stream().allMatch(value->value.traceRange().size()>2));
+        assertEquals(21,fixture.selectedWay().getNodesCount(),"Reuse the existing interval midpoint fixture without changing its polyline");
+    }
     @Test void visiblePreparationWitnessAcceptsFreshAAndCoveredBWithoutInventingCaptureWork() throws Exception {
         var a=preparationTicket(StageKind.REFINE_A);var b=preparationTicket(StageKind.REFINE_B);
         var fresh=preparationDiagnostic(a,true,9_000_000,64_000_000,1);

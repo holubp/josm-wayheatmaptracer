@@ -361,7 +361,14 @@ public final class PublicGuiSmokeMain {
         // Same original piecewise-linear geometry and protected nodes, with one midpoint
         // per edge. The8m exterior intervals now have three original occurrences,
         // satisfying the production planner's unchanged >2-occurrence requirement.
-        onEventThread(()->{
+        onEventThread(()->{densifyIntervalFixture(fixture);return null;});
+        var opened=new CompletableFuture<JDialog>();
+        AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog dialog&&isPreview(dialog))opened.complete(dialog);};
+        Toolkit.getDefaultToolkit().addAWTEventListener(listener,AWTEvent.WINDOW_EVENT_MASK);
+        try{onEventThread(()->{action.actionPerformed(null);return null;});runNativeIntervalPositiveGui(report,fixture,opened.get(180,TimeUnit.SECONDS),session,wayState(fixture),originalUndo);}
+        finally{Toolkit.getDefaultToolkit().removeAWTEventListener(listener);}
+    }
+    private static void densifyIntervalFixture(PublicGuiSmokeFixture fixture) {
             var previous=fixture.selectedWay().getNodes();var dense=new ArrayList<Node>();
             for(int i=0;i<previous.size()-1;i++) {
                 dense.add(previous.get(i));var a=previous.get(i).getEastNorth();var b=previous.get(i+1).getEastNorth();
@@ -369,13 +376,7 @@ public final class PublicGuiSmokeMain {
                 var midpoint=new Node(coordinate);midpoint.setOsmId(9100+i,1);fixture.dataSet().addPrimitive(midpoint);dense.add(midpoint);
             }
             dense.add(previous.get(previous.size()-1));fixture.selectedWay().setNodes(dense);
-            fixture.dataSet().allPrimitives().forEach(value->value.setModified(false));fixture.dataSet().setSelected(fixture.selectedWay());return null;
-        });
-        var opened=new CompletableFuture<JDialog>();
-        AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog dialog&&isPreview(dialog))opened.complete(dialog);};
-        Toolkit.getDefaultToolkit().addAWTEventListener(listener,AWTEvent.WINDOW_EVENT_MASK);
-        try{onEventThread(()->{action.actionPerformed(null);return null;});runNativeIntervalPositiveGui(report,fixture,opened.get(180,TimeUnit.SECONDS),session,wayState(fixture),originalUndo);}
-        finally{Toolkit.getDefaultToolkit().removeAWTEventListener(listener);}
+            fixture.dataSet().allPrimitives().forEach(value->value.setModified(false));fixture.dataSet().setSelected(fixture.selectedWay());
     }
     private static void runNativeIntervalPositiveGui(Path report,PublicGuiSmokeFixture fixture,JDialog preview,PreviewSessionController<?> session,List<String> original,int originalUndo) throws Exception {
         var owner=onEventThread(()->{
@@ -1892,21 +1893,39 @@ public final class PublicGuiSmokeMain {
         onEventThread(()->{UndoRedoHandler.getInstance().undo();return null;});requireUnchanged(fixture,original,originalUndo);
     }
     /** Actual visible source authority must survive interval composition and a native descendant. */
+    static void configureVisibleIntervalFixture(PublicGuiSmokeFixture fixture) {
+        fixture.restoreOriginalSelectionGeometry();
+        configureIntervalFixture(fixture);
+        densifyIntervalFixture(fixture);
+    }
     private static void exerciseVisibleIntervalApplyAndDescendant(Path report,AlignWayAction action,PreviewSessionController<?> session,
             PublicGuiSmokeFixture fixture,List<String> original,int originalUndo) throws Exception {
-        var junction=fixture.selectedWay().getNodes().get(fixture.selectedWay().getNodesCount()/2);
-        var remote=new Node();var branch=new org.openstreetmap.josm.data.osm.Way();
-        onEventThread(()->{
-            var point=junction.getEastNorth();remote.setCoor(ProjectionRegistry.getProjection().eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth(point.east(),point.north()+30)));
-            remote.setOsmId(9201,1);branch.setOsmId(9202,1);branch.setNodes(List.of(junction,remote));branch.put("highway","path");
-            fixture.dataSet().addPrimitive(remote);fixture.dataSet().addPrimitive(branch);remote.setModified(false);branch.setModified(false);fixture.dataSet().setSelected(fixture.selectedWay());return null;
-        });
-        var baseline=wayState(fixture);var opened=new CompletableFuture<JDialog>();
+        var originalNodes=fixture.selectedWay().getNodes();
+        var coordinates=originalNodes.stream().map(Node::getCoor).toList();
+        var keys=originalNodes.stream().map(Node::getKeys).toList();
+        var primitives=java.util.Set.copyOf(fixture.dataSet().allPrimitives());
+        var flags=new java.util.IdentityHashMap<org.openstreetmap.josm.data.osm.OsmPrimitive,Boolean>();primitives.forEach(value->flags.put(value,value.isModified()));
+        var opened=new CompletableFuture<JDialog>();
         AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog dialog&&isPreview(dialog))opened.complete(dialog);};
         Toolkit.getDefaultToolkit().addAWTEventListener(listener,AWTEvent.WINDOW_EVENT_MASK);
         try {
+            onEventThread(()->{
+                configureVisibleIntervalFixture(fixture);
+                var selection=org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver.resolve(fixture.dataSet(),false);
+                // Geometry-only seed, never acquired. Synthetic access satisfies this
+                // existing capture API; the actual action still uses its visible source.
+                var actual=PluginPreferences.load();
+                var geometryConfig=config(true,false).withTrackerMode(actual.trackerMode()).withAlignmentMode(actual.alignmentMode());
+                var seed=new LiveBPreviewService().captureManagedSeed(fixture.dataSet(),selection,org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig.withoutCleanup(geometryConfig),"public-visible-interval-geometry-only");
+                if(seed.intervalPartition()==null||seed.intervalPartition().fixedIslands().isEmpty()
+                        ||seed.intervalPartition().slideIntervals().isEmpty()||seed.intervalPartition().slideIntervals().stream().anyMatch(value->value.traceRange().size()<=2))
+                    throw new IllegalStateException("Public visible interval fixture lacks eligible original occurrence ranges before inference");
+                return null;
+            });
+            var baseline=wayState(fixture);
             onEventThread(()->{action.actionPerformed(null);return null;});var dialog=opened.get(180,TimeUnit.SECONDS);
             var computed=onEventThread(()->(LiveBPreviewService.Computed)session.currentAttempt().result());
+            System.err.println("GUI_SMOKE_VISIBLE_INTERVAL_SOURCE partitioned="+computed.partitioned()+" producer="+computed.captured().visibleInputReceipt().isPresent()+" runs="+(computed.partitioned()?computed.intervalBatch().runs().size():0));
             if(!computed.partitioned()||computed.captured().visibleInputReceipt().isEmpty()||computed.intervalBatch().runs().isEmpty())throw new IllegalStateException("Actual producer-backed visible interval source is unavailable");
             var initial=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer().compose(computed.intervalBatch(),java.util.Map.of()).plan().orElseThrow();
             Format15ArchiveReader.read(exportThroughActualMenu());
@@ -1928,7 +1947,15 @@ public final class PublicGuiSmokeMain {
             System.err.println("GUI_SMOKE_VISIBLE_INTERVAL producer=true originalApplyUndoRedo=true actualNativeDescendant=true descendantApplyUndoRedo=true postSmoothA=true postSmoothB=true");
         } finally {
             Toolkit.getDefaultToolkit().removeAWTEventListener(listener);
-            onEventThread(()->{for(Window window:Window.getWindows())if(window instanceof JDialog dialog&&isPreview(dialog))dialog.dispatchEvent(new WindowEvent(dialog,WindowEvent.WINDOW_CLOSING));branch.setNodes(List.of());fixture.dataSet().removePrimitive(branch);fixture.dataSet().removePrimitive(remote);return null;});
+            onEventThread(()->{
+                for(Window window:Window.getWindows())if(window instanceof JDialog dialog&&isPreview(dialog))dialog.dispatchEvent(new WindowEvent(dialog,WindowEvent.WINDOW_CLOSING));
+                var added=fixture.dataSet().allPrimitives().stream().filter(value->!primitives.contains(value)).toList();
+                for(var value:added)if(value instanceof org.openstreetmap.josm.data.osm.Way way)way.setNodes(List.of());
+                fixture.selectedWay().setNodes(originalNodes);
+                for(int i=0;i<originalNodes.size();i++){originalNodes.get(i).setCoor(coordinates.get(i));originalNodes.get(i).setKeys(keys.get(i));}
+                for(var value:added)fixture.dataSet().removePrimitive(value);
+                flags.forEach((value,modified)->value.setModified(modified));fixture.dataSet().setSelected(fixture.selectedWay());return null;
+            });
         }
         requireUnchanged(fixture,original,originalUndo);
     }

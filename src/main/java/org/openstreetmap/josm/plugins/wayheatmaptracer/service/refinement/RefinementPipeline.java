@@ -389,7 +389,11 @@ public final class RefinementPipeline {
     private record SourceCandidates(RefinementSourcePlanner.SourceRequest source,List<ParentBackedComposer.Assessed> candidates) { }
     private record Selected(ParentBackedComposer.Choice choice,ModernTracePipeline.Route route,Optional<ModernTracePipeline.FinalProvenance> provenance) { }
     private static final class UnknownWork extends IllegalStateException { }
-    private static void requireCurrent(Sources sources){try{sources.requireCurrent();}catch(RuntimeException invalid){throw new SourceInvalid();}}
+    private static void requireCurrent(Sources sources){
+        try{sources.requireCurrent();}
+        catch(CancellationException cancelled){throw cancelled;}
+        catch(RuntimeException invalid){throw new SourceInvalid();}
+    }
     private static Attempt unattempted(RefinementSourcePlanner.SourceRequest source,OccurrenceRange range,String reason){return new Attempt(source,AttemptKind.UNATTEMPTED,range,Optional.empty(),reason);}
     private static void recordRemainingIntervals(RefinementSourcePlanner.SourceRequest source,List<RefinementIntervalPlanner.Interval> intervals,List<Attempt> attempts,String reason) {
         for(var interval:intervals)attempts.add(interval.eligible()?unattempted(source,interval.range(),reason):new Attempt(source,AttemptKind.FROZEN,interval.range(),Optional.empty(),interval.reason().name()));

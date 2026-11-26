@@ -18,8 +18,16 @@ settlement are implemented; source acquisition/currentness owners stay alive,
 all diagnostic rows remain charged, and all original caps and kernels remain.
 Local atomic/ownership/harness guards pass; new candidate CI must qualify the
 four c701 full-suite failures and actual managed/visible full/interval commands.
-The c701 full public run was terminal RED:3293 tests, four failures. No full
-workflow, performance replacement, independent final audit or RC claim is made.
+The c701 full public run was terminal RED:3293 tests, four failures. Candidate
+`0b13d2d0` clears all ten ordinary host rows and actual full visible post-Smooth
+A/B stored commands. Its later interval fixture is genuinely all-frozen under
+the unchanged30m normal-port rule; positive coverage now reuses the existing
+ordinary interval/midpoint fixture, with capture-only eligibility regression.
+Focused0b13 has299 tests/three failures: cancellation mislabeled stale and two
+admission controls comparing different native ownership lifetimes. The narrow
+correction preserves cancellation and consistent real-native assessment controls.
+Fresh qualification is required. No full workflow, independent final audit or RC
+claim is made; normal gate passes and tracker remains INCONCLUSIVE in one fork.
 
 **Verified Nov26:** bounded Apply diagnostic labels and saved Strong
 Apply/Undo/Redo now pass. CI45786197532/job139793448688/artifact15101025813

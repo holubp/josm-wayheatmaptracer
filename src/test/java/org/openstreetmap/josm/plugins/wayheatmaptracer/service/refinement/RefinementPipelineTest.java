@@ -15,6 +15,21 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneratio
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 
 class RefinementPipelineTest {
+    @Test void cancellationFromSourceCheckpointRemainsCancellationRatherThanStale() {
+        var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
+        var source=new RefinementPipeline.Sources(){
+            public void requireCurrent(){throw new java.util.concurrent.CancellationException();}
+            public EvidenceSnapshot evidence(RefinementSourcePlanner.SourceRequest request,CancellationProbe probe){throw new AssertionError("Cancelled source must not acquire evidence");}
+        };
+        try(var owner=AttemptMemoryLedger.production().rootOwner()) {
+            var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,false),new RefinementPipeline.Adapters(source,
+                (t,p,e,b,c,o)->{throw new AssertionError("Cancelled source must not enter native inference");},owner),
+                RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
+            assertEquals(Outcome.CANCELLED,result.outcome());assertTrue(result.candidates().isEmpty());
+            assertTrue(result.attempts().stream().allMatch(a->a.kind()==RefinementPipeline.AttemptKind.UNATTEMPTED&&a.nativeCallAvailability().orElse(-1)==0));
+            assertEquals(0,owner.currentBytes());
+        }
+    }
     @Test void assessmentWorkspaceStartsAfterNativeAndRefusesBeforeComposition() throws Exception {
         var root=RefinementRepairContractTest.largeRoot();
         var parent=new ParentReferenceBinder().bind(root,new StageId(UUID.randomUUID()),RefinementParentFixtures.parent(root,"blue"));
@@ -49,7 +64,9 @@ class RefinementPipelineTest {
                     if(StackWalker.getInstance().walk(frames->frames.anyMatch(f->f.getClassName().equals(RefinementPipeline.class.getName())&&f.getMethodName().equals("assess"))))enteredAssessment.set(true);
                     return false;
                 };
-                var result=new RefinementPipeline().run(ticket,parent,sourcePlan,new RefinementPipeline.Adapters(sources(parent),production,owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),probe);
+                // Both baseline and exact-fit control retain the same real native working
+                // owner: this test isolates assessment admission, not post-frame settlement.
+                var result=new RefinementPipeline().run(ticket,parent,sourcePlan,new RefinementPipeline.Adapters(sources(parent),production::run,owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),probe);
                 assertEquals(baseline.actualWork(),result.actualWork(),"Completed native receipt survives assessment admission refusal");
                 if(oneByteShort) {
                     assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());assertFalse(enteredAssessment.get());
@@ -238,7 +255,7 @@ class RefinementPipelineTest {
             };
             events.set(0);var budget=RefinementPipeline.OperationBudget.production(TraceBudgets.defaults());
             var result=scalar?admissionRefusal(parent,ticket,owner,source,budget):new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),
-                new RefinementPipeline.Adapters(source,RefinementPipeline.productionRunner(),owner),budget,CancellationProbe.NONE);
+                new RefinementPipeline.Adapters(source,RefinementPipeline.productionRunner()::run,owner),budget,CancellationProbe.NONE);
             assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());var observed=scope.latest(ticket).orElseThrow();assertEquals(1,events.get(),"One original admission refusal emits exactly one event");
             assertEquals(scalar?PipelineAdmissionObserver.Gate.SCALAR_PREPARATION:PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH,observed.gate());
             assertTrue(observed.currentBytes().orElseThrow()>0);assertEquals(32L*1024*1024,observed.limitBytes().orElseThrow());
