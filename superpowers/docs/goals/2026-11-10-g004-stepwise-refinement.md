@@ -1,13 +1,39 @@
 # G004 — Stepwise tracing refinement and menu cleanup
 
-> **Current execution — 2026-11-22:** the user approved the corrected completion
-> plan and explicitly resumed execution with executing-plans. One persistent
-> Sol6.1-medium implementer owns the isolated G004 tree. Implementation remains
-> PARTIAL / NOT RELEASED; the [canonical ledger](../../../build/g004-execution-20261119/ledger.md)
-> CURRENT block owns exact heads, CI evidence, remaining criteria and pending
-> decisions. The paused/Legacy-only/component statuses below are historical
-> where they conflict with this notice and the Nov22 specification amendment.
-> No solver redesign, cap increase, private upload or cleanup is authorized.
+> **Current execution —2026-11-26:** ACTIVE, explicitly resumed by user.
+> PARTIAL / NOT RELEASED at MAIN `adae5471`. This bookkeeping update does
+> not approve64M preparation or changes to the original400m assertions.
+
+## Current shortest path to the next RC
+
+1. Repair existing Apply-failure diagnostic encoding, then reproduce/fix the
+   saved smoothed-result Apply refusal. Current counter labels contain
+   underscores/colon and potentially overlong stack tokens; the counter permits
+   only letters/digits/dots and81 characters. Actual CI137362242466 recorded
+   COMMAND phase but lost the cause. No speculative guard changes.
+2. Resolve the explicit pending64M preparation decision. Current conversion
+   alone exceeds8M. Proposed64M is for A/B preparation only, with shared
+   monotonic counters/owner/deadline through inherited bootstrap, palettes and
+   fallback. Bootstrap/smoothing remain8M; native8Mpair/128Mscore, memory and
+   cancellation stay unchanged. NOT APPROVED/APPLIED or verified sufficient.
+   Keep original400m assertions unless separately approved.
+3. Qualify actual visible full/interval/post-smoothing refinement and stored
+   Apply/Undo/Redo alongside existing managed/Legacy cases. Safe refusal is not
+   positive workflow proof. Do not repeat STABLE_FIXED_SCALE trials: it controls
+   managed-tile zoom, not native rendered resolution.
+4. One coherent final public Java/Python/GUI/performance batch; reuse exact
+   unchanged numerical evidence, finish docs, freeze source/version and obtain
+   one independent Sol-high completion audit. Blocking repairs/affected checks
+   only; no repeated component-review or new design cycle.
+5. Build/publish one next unused RC, verify source/tag/manifest/CI binding,
+   download/check the JAR. Stable0.22 release/corpus gates remain separate.
+
+**Strict scope:** existing workflow reengineering, necessary correctness repairs,
+required verification, one final audit and one RC only. No Legacy/A/B maths
+changes, conversion/source-grid redesign, new smoothing research, ineffective
+configuration experiments, unrelated refactoring/cleanup or invented extra
+gates. G006/G007/G008 research stays deferred. Preserve all approved workflow
+and safety criteria; do not substitute a narrower deliverable.
 
 > **Current contract — 2026-11-22:** the user-approved specification amendment
 > restores the Legacy/A/B starting-method selector. Any selected eligible stage
@@ -17,7 +43,7 @@
 > restores stages; debug export stays in menu/shortcut only. Conflicting older
 > Legacy-only claims below are historical, not implemented acceptance criteria.
 > The [completion plan](../plans/2026-11-22-g004-workflow-completion.md) reconciles
-> paused source with this contract. Execution is now authorized as above;
+> source with this contract. Implementation is active;
 > no completed implementation or new release is claimed here.
 
 > **Release scope, 2026-11-21:** the user approves the existing visually reviewed
@@ -29,10 +55,10 @@
 > prerequisites below. Current integration evidence belongs to the ledger.
 
 - **Implementation status:** PARTIALLY IMPLEMENTED — configurable Legacy/A/B roots, managed refinement/smoothing, cached history and transactions have scoped passing evidence. Visible capture and original visible Apply/Undo/Redo have actual host evidence; interval smoothing has scoped passing evidence. Remaining visible recapture/descendant qualification and final integrated gates/audit/RC remain unfinished. The canonical ledger owns exact current revisions and receipts. Later smoothing research is G008; no Legacy/A/B optimization is authorized.
-- **Execution state:** ACTIVE — explicitly resumed by the user on2026-11-22 and confirmed ACTIVE through the runtime goal tool. Execute the [approved completion plan](../plans/2026-11-22-g004-workflow-completion.md) with one persistent implementation owner and one final independent Sol audit. The Nov21 pause is historical.
+- **Execution state:** ACTIVE — explicitly resumed2026-11-26. Follow the current shortest RC path. One persistent implementer and one independent final Sol-high audit.
 - **Created:** 2026-11-10
-- **Updated:** 2026-11-22
-- **Latest resume:** 2026-11-22, explicit user instruction. Current source/test/review ownership is recorded in the compact ledger. No paid pool/configuration change/bypass or release claim.
+- **Updated:** 2026-11-26
+- **Latest resume:** 2026-11-26, explicit user instruction. Current source/test/review ownership is recorded in the compact ledger. No paid pool/configuration change/bypass or release claim.
 - **Current checkpoint:** [execution ledger](../../../build/g004-execution-20261119/ledger.md), CURRENT section. Historical numerical floors and earlier component statuses below are superseded; remaining scope is unchanged.
 - **Historical scope amendment, 2026-11-19 — superseded by Nov22:** Legacy-only starts and removing the settings selector were previously approved. The current contract restores Legacy/A/B starting selection and allows refinement after every eligible stage. Existing Gaussian smoothing is accepted for this release; further shape research is G008.
 - **Selected for execution:** Yes; user selection supersedes the earlier wait for G006 release
@@ -49,7 +75,7 @@ Remove obsolete Hybrid/analysis launchers while retaining the settings method
 selector, production diagnostics and historical readers. The Nov22 amendment
 supersedes the older Legacy-only restrictions below.
 
-## Active completion sequence
+## Historical Nov22 completion sequence — current path above supersedes task status
 
 **Binding scope boundary, 2026-11-22:** the user explicitly requires finishing
 this implementation plan without additional work. Implement only the approved
@@ -120,6 +146,11 @@ establishes G004 completion.
   user-testable delivery complete under separate execution/release authorization.
 
 ## Next safe action
+
+Implementation remains paused. After explicit resume follow the current shortest
+RC path above. Cleanup approvals approve neither64M nor400m test changes.
+
+### Historical task-start instructions — superseded, do not execute
 
 Finish the Task7 actual settings/keyboard acceptance and documentation delta in
 MAIN, independently review its changed scope, then commit and run changed-source

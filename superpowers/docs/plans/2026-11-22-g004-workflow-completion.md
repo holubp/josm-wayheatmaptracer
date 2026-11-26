@@ -10,7 +10,17 @@
 
 **Spec:** [Approved specification](../specs/2026-11-10-stepwise-refinement-design.md), especially the binding 2026-11-22 amendment, S01–S08 and original authority/source/interval contracts. [Original implementation plan](2026-11-10-stepwise-refinement-implementation.md) Tasks1–8 retain scope except explicitly superseded decisions. [Pause checkpoint](2026-11-21-g004-user-pause-checkpoint.md) and `build/g004-execution-20261119/ledger.md` retain evidence. This is a completion/reconciliation plan, not permission to redesign engines or declare old partial tasks complete.
 
-**Status:** USER APPROVED; execution authorized2026-11-22 using executing-plans and one persistent Sol6.1-medium implementer. Astra high planning review APPROVED after three bounded corrections; [review record](2026-11-22-g004-workflow-completion-astra-review.md). Resume from actual paused source, not a clean restart. Planning approval is not implementation correctness or release readiness.
+**Status:** USER APPROVED; implementation ACTIVE following explicit user resume2026-11-26. Prior plan/execution approvals remain in force, not release evidence.64M preparation and original400m assertion changes remain unapproved.
+
+## Current remaining work —2026-11-26
+
+Follow the [G004 current shortest RC path](../goals/2026-11-10-g004-stepwise-refinement.md):
+repair diagnostic encoding/actual smoothed Apply, resolve explicit preparation
+policy, qualify visible continuation, coherent final CI/freeze, one Sol-high
+audit, one verified RC. Reuse passing components rather than restarting them.
+No solver/conversion/source-grid/smoothing research or repeated configuration
+experiments.64M is proposed only, not approved/applied. Original task checklists
+retain full scope, not directions to redo verified work.
 
 ## Global Constraints
 

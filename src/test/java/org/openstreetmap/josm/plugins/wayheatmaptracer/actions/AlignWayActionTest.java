@@ -90,6 +90,36 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 /** Verifies action-level candidate selection before the modeless preview opens. */
 class AlignWayActionTest {
     @Test
+    void refinementApplyFailureDiagnosticsKeepBoundedSafeCauseAndBoundary() throws Exception {
+        var method = AlignWayAction.class.getDeclaredMethod("recordRefinementApplyFailure", Throwable.class, boolean.class);
+        method.setAccessible(true);
+        var failure = new IllegalStateException("Cookie=synthetic-secret; coordinates=12,34",
+            new IllegalArgumentException("signed-url=synthetic-secret"));
+        failure.setStackTrace(new StackTraceElement[] {new StackTraceElement(
+            "org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.AVeryLongNestedRefinementCommand$Guard",
+            "lambda$validateCurrentSourceBeforeApply$123", "Private.java", 456)});
+        failure.getCause().setStackTrace(new StackTraceElement[] {new StackTraceElement(
+            "external.PrivateCookie", "synthetic-secret", "Private.java", 789)});
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.begin();
+        try {
+            method.invoke(null, failure, true);
+            var values = org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.snapshot();
+            assertEquals(1L, values.get("apply.refinementFailure.phase.COMMAND"));
+            assertEquals(1L, values.get("apply.refinementFailure.cause0.IllegalState"));
+            assertEquals(1L, values.get("apply.refinementFailure.cause1.IllegalArgument"));
+            assertEquals(456L, values.get("apply.refinementFailure.line0"));
+            assertTrue(values.keySet().stream().anyMatch(key -> key.startsWith("apply.refinementFailure.class0.AVeryLongNested")));
+            assertTrue(values.keySet().stream().anyMatch(key -> key.startsWith("apply.refinementFailure.method0.lambda.validate")));
+            assertEquals(1L, values.get("apply.refinementFailure.class1.unavailable"));
+            assertTrue(values.keySet().stream().allMatch(key -> key.matches("[A-Za-z][A-Za-z0-9.]{0,80}")));
+            assertFalse(values.toString().contains("synthetic-secret"));
+            assertFalse(values.toString().contains("coordinates"));
+        } finally {
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.end();
+        }
+    }
+
+    @Test
     void obsoleteExperimentalFactoriesRefuseBeforeCreatingLiveActions() throws Exception {
         var content = org.openstreetmap.josm.gui.MainApplication.class.getDeclaredField("contentPanePrivate");
         content.setAccessible(true);
