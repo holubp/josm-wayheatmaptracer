@@ -72,7 +72,10 @@ public final class RefinementEngineAdapter {
         if(!ticket.parent().equals(parent.parentStage())||!ticket.choice().equals(parent.parentChoice())
                 ||ticket.engine()!=engine||ticket.mode()!=parent.root().request().geometryMode())
             throw new IllegalArgumentException("Operation ticket does not pin this exact parent/engine/mode");
-        return run(parent,ticket.session().value()+":"+ticket.sequence(),evidence,remaining,cancellation,owner);
+        var result=run(parent,ticket.session().value()+":"+ticket.sequence(),evidence,remaining,cancellation,owner);
+        var observation=PipelineAdmissionObserver.active();
+        if(observation!=null)result.value().nativeRun().ifPresent(nativeRun->observation.nativeResult(ticket,nativeRun));
+        return result;
     }
     private Accounted<Run> run(ParentTraceReference unscoped,String operation,EvidenceSnapshot evidence,TraceBudgets remaining,
             CancellationProbe cancellation,AttemptMemoryLedger.Owner owner) {

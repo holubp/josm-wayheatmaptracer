@@ -127,8 +127,16 @@ def test_focused_xml_gate_uses_suite_identity_and_requires_executed_green_tests(
         (reports / f"TEST-randomized-{index}.xml").write_text(
             f'<testsuite name="org.openstreetmap.josm.plugins.wayheatmaptracer.{name}" tests="1" failures="0" errors="0" skipped="0"/>')
     exec(script, {})
+    # The upload staging inventory must preserve every suite required by the gate.
+    # Gradle may vary package prefixes, while retaining each simple class suffix.
+    for index, name in enumerate(names):
+        (reports / f"TEST-randomized-{index}.xml").rename(reports / f"TEST-randomized.{name.rsplit('.', 1)[-1]}.xml")
+    stage = next(step for step in job["steps"] if step.get("name") == "Stage only selected JUnit XML")
+    exec(stage["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0], {})
+    staged = tmp_path / "build/reports/g004-focused-artifact/junit"
+    assert {p.name for p in staged.glob("*.xml")} == {p.name for p in reports.glob("*.xml")}
     import pytest
-    (reports / "TEST-randomized-0.xml").write_text(
+    (reports / "TEST-randomized.VisibleRefinementWorkflowTest.xml").write_text(
         '<testsuite name="org.openstreetmap.josm.plugins.wayheatmaptracer.service.VisibleRefinementWorkflowTest" tests="0" failures="0" errors="0" skipped="0"/>')
     with pytest.raises(SystemExit):
         exec(script, {})

@@ -6,12 +6,18 @@ import java.util.function.Consumer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.OperationTicket;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngineRun;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorExecutionReceipt;
 
 /** Opt-in, numeric-only observation of an actual pipeline admission refusal. */
 public final class PipelineAdmissionObserver {
     private static final AtomicReference<Scope> ACTIVE=new AtomicReference<>();
     private PipelineAdmissionObserver() { }
     public enum Gate { ASSEMBLED_RETENTION, SCALAR_PREPARATION, ASSESSMENT_SCRATCH, INFERENCE_DEADLINE, FINAL_DEADLINE }
+    public enum NativeFamily { ATTEMPT_MEMORY_LIMIT, CORRIDOR_RESOURCE_LIMIT, HARD_GEOMETRY_RESOURCE_LIMIT, UNAVAILABLE }
+    /** Enum-only cause and factual work; native explanations and geometry are never retained. */
+    public record NativeRejection(OperationTicket ticket,NativeFamily family,Optional<CorridorExecutionReceipt.Phase> phase,
+            long peakBytes,long pairVisits,long transitions) { }
     public record GridCounts(int inputWidth,int inputHeight,int outputWidth,int outputHeight,int fields) {
         public GridCounts {
             if(inputWidth<=0||inputHeight<=0||outputWidth<=0||outputHeight<=0||fields<=0)throw new IllegalArgumentException("Positive factual grid counts required");
@@ -36,12 +42,29 @@ public final class PipelineAdmissionObserver {
     public static final class Scope implements AutoCloseable {
         private final Consumer<Rejection> observer;
         private final AtomicReference<Rejection> latest=new AtomicReference<>();
+        private final AtomicReference<NativeRejection> latestNative=new AtomicReference<>();
         private volatile boolean closed;
         private Scope(Consumer<Rejection> observer){this.observer=observer;}
         /** Missing, replaced, closed and foreign-attempt observations remain unavailable. */
         public Optional<Rejection> latest(OperationTicket ticket) {
             if(closed||ACTIVE.get()!=this||ticket==null)return Optional.empty();
             return Optional.ofNullable(latest.get()).filter(value->value.ticket().equals(ticket));
+        }
+        public Optional<NativeRejection> latestNative(OperationTicket ticket) {
+            if(closed||ACTIVE.get()!=this||ticket==null)return Optional.empty();
+            return Optional.ofNullable(latestNative.get()).filter(value->value.ticket().equals(ticket));
+        }
+        void nativeResult(OperationTicket ticket,TraceEngineRun run) {
+            if(closed||ACTIVE.get()!=this||run.result().status()!=org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet.Status.RESOURCE_LIMIT)return;
+            try {
+                String reason=run.result().explanation();
+                NativeFamily family=reason.equals("family=ATTEMPT_MEMORY_LIMIT")?NativeFamily.ATTEMPT_MEMORY_LIMIT
+                    :reason.startsWith("family=CORRIDOR_RESOURCE_LIMIT stage=")?NativeFamily.CORRIDOR_RESOURCE_LIMIT
+                    :reason.startsWith("family=HARD_GEOMETRY_RESOURCE_LIMIT stage=")?NativeFamily.HARD_GEOMETRY_RESOURCE_LIMIT:NativeFamily.UNAVAILABLE;
+                var value=new NativeRejection(ticket,family,run.corridorReceipt().map(CorridorExecutionReceipt::phase),
+                    run.peakAdditionalRetainedBytes(),run.usage().pairVisits(),run.usage().transitions());
+                if(!closed&&ACTIVE.get()==this)latestNative.set(value);
+            }catch(RuntimeException|Error ignored){ /* Observation cannot change native outcome. */ }
         }
         void memory(OperationTicket ticket,Gate gate,ParentTraceReference parent,int intervals,long vertices,
                 EvidenceSnapshot evidence,AttemptMemoryLedger.ResourceLimitException limited) {

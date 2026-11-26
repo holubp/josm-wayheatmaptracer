@@ -10,6 +10,28 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryW
 
 /** A declared preparation ceiling is factual and bound to the actual operation kind. */
 class SourcePreparationCeilingTest {
+    @Test void nativeRefusalObservationIsTypedOwnedAndNeverCopiesExplanation() {
+        var actual=ticket(StageKind.REFINE_A);
+        var result=new TraceHypothesisSet(TrackerMode.CORRIDOR_AWARE,List.of(),TraceHypothesisSet.Status.RESOURCE_LIMIT,
+            true,0,0,"family=ATTEMPT_MEMORY_LIMIT");
+        var run=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngineRun(result,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage.none(),123);
+        var scope=PipelineAdmissionObserver.openForTesting(value->{});
+        try {
+            scope.nativeResult(actual,run);
+            var observed=scope.latestNative(actual).orElseThrow();
+            assertEquals(PipelineAdmissionObserver.NativeFamily.ATTEMPT_MEMORY_LIMIT,observed.family());
+            assertEquals(123,observed.peakBytes());assertTrue(observed.phase().isEmpty());
+            assertTrue(scope.latestNative(ticket(StageKind.REFINE_A)).isEmpty());
+            var unsafe=new TraceHypothesisSet(TrackerMode.CORRIDOR_AWARE,List.of(),TraceHypothesisSet.Status.RESOURCE_LIMIT,
+                true,0,0,"family=ATTEMPT_MEMORY_LIMIT synthetic-secret=do-not-copy");
+            scope.nativeResult(actual,new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngineRun(unsafe,run.usage()));
+            assertEquals(PipelineAdmissionObserver.NativeFamily.UNAVAILABLE,scope.latestNative(actual).orElseThrow().family());
+            assertFalse(scope.latestNative(actual).orElseThrow().toString().contains("synthetic-secret"));
+            try(var replacement=PipelineAdmissionObserver.openForTesting(value->{})) {assertTrue(scope.latestNative(actual).isEmpty());}
+        } finally {scope.close();}
+        assertTrue(scope.latestNative(actual).isEmpty());
+    }
     private static Map<GeometryWorkContext.Kind,Long> counts(long visits) {
         var values=new EnumMap<GeometryWorkContext.Kind,Long>(GeometryWorkContext.Kind.class);
         for(var kind:GeometryWorkContext.Kind.values())values.put(kind,kind==GeometryWorkContext.Kind.COPY?visits:0L);

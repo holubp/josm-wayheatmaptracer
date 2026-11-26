@@ -200,6 +200,7 @@ jobs:
           classes["refs/heads/codex/g004-stepwise-20261119"].append("V022FixedIntervalEditPlanComposerTest")
           classes["refs/heads/codex/g004-stepwise-20261119"].append("AlignWayActionTest")
           classes["refs/heads/codex/g004-stepwise-20261119"].append("VisibleRenderPolicyTest")
+          classes["refs/heads/codex/g004-stepwise-20261119"].extend(["GeometryWorkContextPhaseTest", "SourcePreparationCeilingTest", "WorkflowSourcePreparationDiagnosticsTest", "PublicGuiSmokeContractTest"])
           classes["refs/heads/codex/g004-stepwise-20261119"].extend(["BenchmarkDecisionComparatorIntegrationTest", "V022PreviewStateTest", "VisibleEvidencePlanTest", "RefinementAcquisitionTest"])
           selected = classes[os.environ["FOCUSED_REF"]]
           source = Path("build/test-results/test")

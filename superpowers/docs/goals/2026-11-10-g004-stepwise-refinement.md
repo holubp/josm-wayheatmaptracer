@@ -23,8 +23,12 @@ qualify successful A/B refinement after smoothing.
    cancellation stay unchanged. Approval does not prove sufficiency.
    Keep original400m assertions unless separately approved.
    Local policy/codec42 tests and the original unchanged400m positive pass;
-   expanded phase/source-failure package13 tests also pass. Fresh coherent CI
-   and actual visible64M continuation remain required before completion.
+   expanded phase/source-failure package13 tests also pass. Focused CI45849540947
+   passes, including all8 bootstrap tests and the unchanged400m positive.
+   Visible64M preparation completes60,680,995visits; actual native A then refuses
+   RESOURCE_LIMIT before pair/transition work. Identify its bounded receipt
+   family/phase and repair the proven cause; actual visible continuation and
+   coherent final gates remain required before completion.
 2. Qualify actual visible full/interval/post-smoothing refinement and stored
    Apply/Undo/Redo alongside existing managed/Legacy cases. Safe refusal is not
    positive workflow proof. Do not repeat STABLE_FIXED_SCALE trials: it controls
