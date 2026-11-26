@@ -118,6 +118,8 @@ def test_focused_xml_gate_uses_suite_identity_and_requires_executed_green_tests(
         "ui.V022PreviewStateTest",
         "service.refinement.VisibleEvidencePlanTest",
         "service.refinement.RefinementAcquisitionTest",
+        "PublicRefinementMemoryTest",
+        "service.refinement.RefinementSourcePreparationTest",
         "ui.RefinementControlsTest",
         "ui.RefinementReviewLifecycleTest",
         "actions.StepwiseRefinementApplyTest",

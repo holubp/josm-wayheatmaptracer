@@ -9,6 +9,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.openstreetmap.josm.data.projection.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEvidenceCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
@@ -53,11 +54,14 @@ class PublicRefinementMemoryTest {
                     long released=ledger.peakBytes()-ledger.currentBytes();assertEquals(41943040L,released);
                     if(legacyLifetime)owner.reserve(released).adopt(new Object());
                     var entries=new AtomicInteger();var firstEntryBytes=new AtomicLong(-1);
-                    var sources=RefinementPipeline.managedSources(acquired.value(),coordinator);
+                    var budget=RefinementPipeline.OperationBudget.production(completed.authority().request().budgets());
+                    var sourceWork=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(
+                        64_000_000L,AttemptMemoryLedger.MAX_BYTES,budget.finalDeadlineNanos(),CancellationProbe.NONE,owner);
+                    var sources=RefinementPipeline.managedSources(acquired.value(),coordinator,sourceWork);
                     try(var observed=PipelineAdmissionObserver.openForTesting(value->{})) {
                         var result=new RefinementPipeline().run(actual.ticket(),actual.parent(),actual.plan(),new RefinementPipeline.Adapters(
                             sources,RefinementPipeline.productionRunner(t->{if(entries.getAndIncrement()==0)firstEntryBytes.set(owner.currentBytes());}),owner),
-                            RefinementPipeline.OperationBudget.production(completed.authority().request().budgets()),CancellationProbe.NONE);
+                            budget,CancellationProbe.NONE);
                         System.out.println("public-memory legacyLifetime="+legacyLifetime+" outcome="+result.outcome()+" entries="+entries.get()+" assessed="+result.candidates().size()+" peakBytes="+ledger.peakBytes());
                         assertEquals(6,result.sourceOutcomes().size());assertTrue(ledger.peakBytes()<=AttemptMemoryLedger.MAX_BYTES);
                         if(legacyLifetime) {
@@ -96,6 +100,9 @@ class PublicRefinementMemoryTest {
                             assertEquals(actual.parent().root().network().snapshotId(),request.networkSnapshotId());
                             var evidence=sources.evidence(first.source(),CancellationProbe.NONE);
                             var source=sources.retentionDescriptor(first.source(),evidence).orElseThrow();assertTrue(source.hasFactualInputHash());
+                            assertFalse(first.source().aggregate());
+                            assertEquals(RasterEvidenceCapture.ORIGINAL_ARGB_PROTOCOL,source.inputHashProtocol());
+                            assertTrue(sourceWork.counters().get(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.HASH)>0);
                             var binding=List.<Object>of(request.selectedWayKey(),request.selectedRange(),request.engine(),request.geometryMode(),request.permissions(),request.budgets(),request.configuredSampleStepMeters(),request.profileChainage().cumulativeGroundMeters(),request.evidenceResolution());
                             if(legacyLifetime){heldEntryBytes=firstEntryBytes.get();heldInputHash=source.inputByteHash();heldRequestBinding=binding;}
                             else if(heldEntryBytes!=null){assertEquals(41943040L,heldEntryBytes-firstEntryBytes.get());assertEquals(heldInputHash,source.inputByteHash());assertEquals(heldRequestBinding,binding);}
