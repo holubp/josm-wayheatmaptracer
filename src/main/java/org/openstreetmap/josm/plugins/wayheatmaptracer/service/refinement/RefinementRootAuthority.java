@@ -359,25 +359,62 @@ public final class RefinementRootAuthority {
         var inventory=new Inventory();for(Object value:values)inventory.visit(value);
         return inventory.owned;
     }
-    private static final class Inventory {
+    /** Caller admits metadata capacity before walking; borrowed leaves are pinned actual producer groups. */
+    static Map<Object,Long> completedCharges(Map<Object,Long> borrowed,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe probe,int metadataEntries,Object... values) {
+        var traversal=new Inventory.Traversal(probe,metadataEntries,true);
+        return completedCharges(borrowed,traversal,values);
+    }
+    static Map<Object,Long> completedCharges(Map<Object,Long> borrowed,Inventory.Traversal traversal,Object... values) {
+        var inventory=new Inventory(traversal,borrowed,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES);
+        for(Object value:values)inventory.visit(value);return inventory.owned;
+    }
+    static final class Inventory {
+        /** One admitted traversal capacity shared by nested receipt inventories; no new deadline. */
+        static final class Traversal {
+            private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe probe;
+            private final long maximum;private final boolean strict;private long entries;
+            Traversal(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe probe,long maximum,boolean strict) {
+                this.probe=Objects.requireNonNull(probe);if(maximum<0)throw new IllegalArgumentException("Negative metadata capacity");this.maximum=maximum;this.strict=strict;
+            }
+            void allocate(long count) {
+                probe.checkpoint();entries=Math.addExact(entries,count);
+                if(entries>maximum)throw new RefinementSession.Refused(RefinementModels.RefusalReason.PAYLOAD_LIMIT);
+            }
+        }
         private final IdentityHashMap<Object,Long> owned=new IdentityHashMap<>();
         private final Map<Class<?>,RecordComponent[]> records=new HashMap<>();
+        private final IdentityHashMap<Object,Long> borrowed=new IdentityHashMap<>();
+        private final Traversal traversal;
+        private final long maximumBytes;
         private long total;
+        Map<Object,Long> ownedValues(){return owned;}
+        Inventory(){this(new Traversal(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE,Long.MAX_VALUE,false),Map.of(),RefinementLimits.defaults().maxPayloadBytes());}
+        Inventory(Traversal traversal,Map<Object,Long> borrowed,long maximumBytes) {
+            this.traversal=traversal;this.maximumBytes=maximumBytes;
+            for(var entry:borrowed.entrySet()){traversal.allocate(1);this.borrowed.put(entry.getKey(),entry.getValue());}
+        }
         void put(Object value,long bytes) {
+            traversal.allocate(1);if(bytes<0)throw new IllegalArgumentException("Negative retained value bound");
+            if(borrowed.containsKey(value)){if(borrowed.get(value)<bytes)throw new IllegalArgumentException("Borrowed retained group is insufficient");return;}
             if(owned.putIfAbsent(value,bytes)!=null)return;
             total=RefinementPayload.add(total,bytes);
-            if(total>RefinementLimits.defaults().maxPayloadBytes())
+            if(total>maximumBytes)
                 throw new RefinementSession.Refused(RefinementModels.RefusalReason.PAYLOAD_LIMIT);
         }
         void visit(Object value) {
-            if(value==null||value instanceof Enum<?>||owned.containsKey(value))return;
+            traversal.probe.checkpoint();
+            if(value==null||value instanceof Enum<?>||owned.containsKey(value)||borrowed.containsKey(value))return;
+            if(value instanceof ParentTraceReference reference){reference.inventoryInto(this);return;}
+            if(value instanceof RefinementEngineAdapter.NativeExecution execution){execution.inventoryInto(this);return;}
+            if(value instanceof FinalControlBasis basis){basis.inventoryInto(this);return;}
             if(value instanceof UUID){put(value,64);return;}
             if(value instanceof String text){put(value,96L+2L*text.length());return;}
             if(value instanceof Number||value instanceof Boolean||value instanceof Character){put(value,64);return;}
             if(value instanceof Optional<?> optional){put(value,64);optional.ifPresent(this::visit);return;}
             if(value instanceof OptionalDouble||value instanceof OptionalInt||value instanceof OptionalLong){put(value,64);return;}
             if(value instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorExecutionReceipt receipt) {
-                put(value,ModernReviewRoot.nativeReceiptBytes(receipt));return;
+                put(value,ModernReviewRoot.nativeReceiptBytes(receipt,traversal,maximumBytes));return;
             }
             if(value instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer.CompositeNoChangeProof proof) {
                 // Producer-only metadata references the already-owned actual interval batch.
@@ -398,7 +435,12 @@ public final class RefinementRootAuthority {
             if(value instanceof Map<?,?> map){put(value,128L+80L*map.size());map.forEach((key,item)->{visit(key);visit(item);});return;}
             if(value instanceof Collection<?> collection){put(value,128L+24L*collection.size());collection.forEach(this::visit);return;}
             if(value.getClass().isRecord()) {
-                var components=records.computeIfAbsent(value.getClass(),Class::getRecordComponents);
+                var components=records.get(value.getClass());
+                if(components==null) {
+                    traversal.allocate(traversal.strict?129:1);components=value.getClass().getRecordComponents();
+                    if(traversal.strict&&components.length>128)throw new IllegalArgumentException("Unsupported retained record metadata size");
+                    records.put(value.getClass(),components);
+                }
                 put(value,192L+16L*components.length);
                 for(var component:components)if(!component.getType().isPrimitive()) {
                     try {visit(component.getAccessor().invoke(value));}

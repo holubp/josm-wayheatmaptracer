@@ -988,17 +988,28 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             public Optional<RetainedSmoothingSource> retentionDescriptor(RefinementSourcePlanner.SourceRequest source,EvidenceSnapshot actual){return sources.retentionDescriptor(source,actual);}
         };
         progress.phase=RefinementAttemptDiagnostics.Phase.PIPELINE;
-        var outcome=new RefinementPipeline().run(ticket,parent,plan,new RefinementPipeline.Adapters(wrapped,RefinementPipeline.productionRunner(actual->{
+        var retentionCancelled=new java.util.concurrent.atomic.AtomicBoolean();
+        RefinementPipeline.Result outcome;
+        try(var registration=probe.onCancellation(()->retentionCancelled.set(true))) {
+        probe.checkpoint();
+        outcome=new RefinementPipeline().run(ticket,parent,plan,new RefinementPipeline.Adapters(wrapped,RefinementPipeline.productionRunner(actual->{
                 if(!actual.equals(ticket))throw new IllegalStateException("Native entry ticket changed");
                 if(entry.entered.compareAndSet(false,true))SwingUtilities.invokeLater(()->firstNativeEntry.complete(entry));
             }),operation),
-            budget,probe);
-        progress.pipelineOutcome=outcome.outcome();progress.nativeWork=Optional.of(RefinementAttemptDiagnostics.NativeWork.capture(outcome));
-        progress.receipt=progress.slot==null?Optional.empty():progress.slot.receipt(progress.binding,parent,outcome);
-        actualNativeCalls+=outcome.attempts().stream().flatMap(a->a.run().stream()).mapToInt(RefinementEngineAdapter.Run::nativeCalls).sum();
+            budget,probe,retentionCancelled::get,actualResult->{
+                progress.pipelineOutcome=actualResult.outcome();progress.nativeWork=Optional.of(RefinementAttemptDiagnostics.NativeWork.capture(actualResult));
+                actualNativeCalls+=actualResult.attempts().stream().flatMap(a->a.run().stream()).mapToInt(RefinementEngineAdapter.Run::nativeCalls).sum();
+                // Original native binding capacity has settled. Meter the same complete bound
+                // around the remaining canonical receipt/network inventory before copying it.
+                try(var binding=operation.reserve(parent.bindingScratchBytes(parent.root().evidence()))) {
+                    progress.receipt=progress.slot==null?Optional.empty():progress.slot.receipt(progress.binding,parent,actualResult);
+                }
+            });
+        }
         computationEvidence="outcome="+outcome.outcome()+" full="+outcome.candidates().size()+" rejected="+outcome.rejected().size()+" attempts="+outcome.attempts().stream().map(a->a.kind()+":"+a.reason()+":"+a.nativeCallAvailability()).toList()
             +" rejectedFindings="+outcome.rejected().stream().map(a->a.quality().findings().stream().map(f->f.code().name()).toList()).toList();
-        var computed=materialize(ticket,parent,outcome,evidence,sourcePayload,original,allowance,probe,progress,publication,baseline);
+        CancellationProbe finalProbe=()->{probe.checkpoint();budget.requireFinalTime();return false;};
+        var computed=materialize(ticket,parent,outcome,evidence,sourcePayload,original,allowance,finalProbe,progress,publication,baseline);
         computationEvidence+=" plan-refusals="+progress.materializationRefusals+" auxiliary-source-hash-visits="+hashWork.visits()+" auxiliary-source-hash-counts="+hashWork.counters();return computed;
         } catch(RuntimeException failure) {
             if(progress.phase==RefinementAttemptDiagnostics.Phase.ACQUISITION) {

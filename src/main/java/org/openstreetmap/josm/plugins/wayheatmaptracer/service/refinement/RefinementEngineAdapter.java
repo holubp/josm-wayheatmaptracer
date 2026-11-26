@@ -8,6 +8,21 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
 
 /** Explicit production A/B call and parent-aware finalization; source acquisition belongs to its caller. */
 public final class RefinementEngineAdapter {
+    /** Producer-only handle to the dedicated invocation subtree, never an acquisition owner. */
+    public static final class CompletedRun {
+        private final Accounted<Run> accounted;
+        private final Thread worker=Thread.currentThread();
+        private CompletedRun(Accounted<Run> accounted){this.accounted=accounted;}
+        public Run run(){return accounted.value();}
+        AttemptMemoryLedger.Owner completedOwner(){
+            if(worker!=Thread.currentThread()||accounted.owner().isClosed())throw new IllegalStateException("Completed native ownership is unavailable");
+            return accounted.owner();
+        }
+    }
+    public CompletedRun runCompleted(RefinementModels.OperationTicket ticket,ParentTraceReference parent,EvidenceSnapshot evidence,
+            TraceBudgets remaining,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner) {
+        return new CompletedRun(run(ticket,parent,evidence,remaining,cancellation,owner));
+    }
     /** Sealed live caller-output coverage; only this adapter can issue the certificate. */
     public static final class NativeOutputAllowance implements AutoCloseable {
         private final AttemptMemoryLedger.Owner owner;
@@ -46,6 +61,10 @@ public final class RefinementEngineAdapter {
             this.reference=reference;this.request=request;this.evidence=evidence;this.network=network;this.nativeRun=nativeRun;this.field=field;
         }
         public TraceEngineRun nativeRun(){return nativeRun;}
+        void inventoryInto(RefinementRootAuthority.Inventory inventory) {
+            inventory.put(this,256);inventory.visit(reference);inventory.visit(request);inventory.visit(evidence);
+            inventory.visit(network);inventory.visit(nativeRun);inventory.visit(field);
+        }
         public String fieldName(){return field;}
         public void requireBinding(ParentTraceReference parent,TraceRequest derived,EvidenceSnapshot acquired,NetworkSnapshot root) {
             if(reference!=parent||!request.equals(derived)||evidence!=acquired||network!=root)

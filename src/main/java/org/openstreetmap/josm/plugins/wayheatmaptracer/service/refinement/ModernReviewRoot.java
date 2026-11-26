@@ -278,9 +278,16 @@ public final class ModernReviewRoot implements RefinementReviewRoot {
         return bytes;
     }
     static long nativeReceiptBytes(CorridorExecutionReceipt receipt) {
-        var values=RefinementRootAuthority.detachedCharges(receipt.requestHash(),receipt.evidenceHash(),receipt.networkHash(),receipt.resultHash(),receipt.networkSnapshotId(),receipt.settingsHash(),receipt.certificateStatus(),receipt.certificateIdentity(),receipt.sampling(),receipt.tracks(),receipt.totals());
+        return nativeReceiptBytes(receipt,new RefinementRootAuthority.Inventory.Traversal(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE,Long.MAX_VALUE,false),RefinementLimits.defaults().maxPayloadBytes());
+    }
+    static long nativeReceiptBytes(CorridorExecutionReceipt receipt,RefinementRootAuthority.Inventory.Traversal traversal,long maximumBytes) {
+        var inventory=new RefinementRootAuthority.Inventory(traversal,Map.of(),maximumBytes);
+        inventory.visit(receipt.requestHash());inventory.visit(receipt.evidenceHash());inventory.visit(receipt.networkHash());inventory.visit(receipt.resultHash());
+        inventory.visit(receipt.networkSnapshotId());inventory.visit(receipt.settingsHash());inventory.visit(receipt.certificateStatus());inventory.visit(receipt.certificateIdentity());
+        inventory.visit(receipt.sampling());inventory.visit(receipt.tracks());inventory.visit(receipt.totals());
+        var values=inventory.ownedValues();
         long bytes=4096;for(long value:values.values())bytes=Math.addExact(bytes,value);
-        for(var provenance:receipt.candidates().values())bytes=Math.addExact(bytes,Math.addExact(1024L,8L*(provenance.hypothesisId().length()+provenance.trackId().length())));
+        for(var provenance:receipt.candidates().values()){traversal.allocate(1);bytes=Math.addExact(bytes,Math.addExact(1024L,8L*(provenance.hypothesisId().length()+provenance.trackId().length())));}
         if(receipt.originalCostPolicies().isPresent())bytes=Math.addExact(bytes,receipt.originalCostPolicyMetadataBytes().orElseThrow(()->new IllegalArgumentException("Native original cost ownership unavailable")));
         return bytes;
     }

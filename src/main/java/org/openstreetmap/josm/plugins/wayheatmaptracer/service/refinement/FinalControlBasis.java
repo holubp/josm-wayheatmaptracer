@@ -37,6 +37,12 @@ public final class FinalControlBasis {
     private final Set<Integer> protectedIndices;
     private final boolean[] independent;
     private final long scratchReservationBytes;
+    /** Retains the complete existing basis bound plus its actual immutable coordinate/row graph. */
+    void inventoryInto(RefinementRootAuthority.Inventory inventory) {
+        inventory.put(this,Math.max(scratchReservationBytes,Math.addExact(256L,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.arrayBytes(independent.length,1))));
+        inventory.visit(initialCoordinates);inventory.visit(rows);inventory.visit(independentIndices);inventory.visit(protectedIndices);
+    }
 
     /**
      * @param initialCoordinates full ordered final geometry (one entry per slot)

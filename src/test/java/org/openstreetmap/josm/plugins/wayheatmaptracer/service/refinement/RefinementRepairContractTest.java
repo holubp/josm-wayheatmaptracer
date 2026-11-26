@@ -8,6 +8,76 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 class RefinementRepairContractTest {
+ @Test void retainedNativeReceiptIncludesRealNonemptyWorkRowsAndOffsets() throws Exception {
+  // Reuse the existing production R4 gap fixture. Refinement A deliberately uses a
+  // different policy, so its empty optional domain diagnostics cannot prove this case.
+  var fixtures=Class.forName("org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorGapProductionTest");
+  var factory=fixtures.getDeclaredMethod("strands");factory.setAccessible(true);
+  var fixture=(CorridorPolicyFixture.Fixture)factory.invoke(null);
+  try(var owner=AttemptMemoryLedger.production().rootOwner()) {
+   var run=new CorridorEngineAdapter("native").traceWithUsage(fixture.request(),fixture.evidence(),fixture.network(),CancellationProbe.NONE);
+   var receipt=run.corridorReceipt().orElseThrow();
+   assertTrue(receipt.tracks().values().stream().anyMatch(t->t.preparation().gapWork().map(w->!w.rows().isEmpty()).orElse(false)
+       ||t.preparation().observedWork().map(w->!w.rows().isEmpty()).orElse(false)),"Use actual nonempty retained domain diagnostics");
+   var work=run.usage();var geometry=run.result().hypotheses().stream().map(TraceHypothesis::points).toList();
+   long completeReceipt=ModernReviewRoot.nativeReceiptBytes(receipt);
+   var inventory=new RefinementRootAuthority.Inventory(new RefinementRootAuthority.Inventory.Traversal(CancellationProbe.NONE,262_144,true),Map.of(),256L*1024*1024);
+   for(var track:receipt.tracks().values())inventory.visit(track.preparation());
+   long domainBytes=inventory.ownedValues().values().stream().mapToLong(Long::longValue).sum();
+   assertTrue(completeReceipt>=domainBytes,"The full receipt bound includes all actual domain rows and offset lists");
+   var measured=RefinementRootAuthority.completedCharges(Map.of(),CancellationProbe.NONE,262_144,receipt);
+   assertEquals(completeReceipt,measured.get(receipt));
+   owner.reserve(completeReceipt).adopt(receipt);
+   try(var proof=owner.child("actual-retained-receipt-proof")){assertEquals(completeReceipt,proof.retain(receipt).bytes());}
+   assertEquals(work,run.usage());assertEquals(geometry,run.result().hypotheses().stream().map(TraceHypothesis::points).toList());
+   assertSame(receipt,run.corridorReceipt().orElseThrow());
+  }
+ }
+ @Test void completedRunSettlementKeepsTheExactGraphAndSharedInputsBetweenOperations() throws Exception {
+  var root=largeRoot();var parent=new ParentReferenceBinder().bind(root,new StageId(UUID.randomUUID()),RefinementParentFixtures.parent(root,"blue"));
+  var ledger=AttemptMemoryLedger.production();var owner=ledger.rootOwner();
+  try {
+   var inputs=owner.child("actual-admitted-inputs");for(var charge:root.charges().entrySet())inputs.reserve(charge.getValue()).adopt(charge.getKey());
+   var retention=CompletedGraphRetention.open(root,owner);long expected=owner.currentBytes();
+   var session=new SessionId(UUID.randomUUID());List<List<MetricPoint>> geometry=null;TraceWorkUsage usage=null;
+   for(int sequence=1;sequence<=3;sequence++) {
+    var ticket=new OperationTicket(session,sequence,parent.parentStage(),parent.parentChoice(),TrackerMode.CORRIDOR_AWARE,AlignmentMode.PRECISE_SHAPE);
+    var completed=new RefinementEngineAdapter(TrackerMode.CORRIDOR_AWARE,"native").runCompleted(ticket,parent,root.evidence(),TraceBudgets.defaults(),CancellationProbe.NONE,owner);
+    var run=completed.run();assertEquals(Outcome.COMPLETE,run.outcome());assertTrue(run.actualWork().transitions()>0);
+    run.execution().orElseThrow().requireBinding(run.reference(),run.request(),root.evidence(),root.network());
+    long before=owner.currentBytes();retention.settleRun(completed,Optional.empty(),CancellationProbe.NONE);
+    assertEquals(CompletedGraphRetention.Status.SETTLED,retention.status());
+    long measured;
+    try(var workspace=owner.reserve(64L*1024*1024)) {
+     var graph=RefinementRootAuthority.completedCharges(root.charges(),CancellationProbe.NONE,262_144,run);
+     measured=256L+64L*graph.size();for(long value:graph.values())measured=Math.addExact(measured,value);
+    }
+    try(var observer=owner.child("result-owner-proof")){assertEquals(measured,observer.retain(run).bytes());}
+    expected=Math.addExact(expected,measured);assertEquals(expected,owner.currentBytes());assertTrue(owner.currentBytes()<before);
+    var actual=run.nativeRun().orElseThrow();var points=actual.result().hypotheses().stream().map(TraceHypothesis::points).toList();
+    if(geometry!=null){assertEquals(geometry,points);assertEquals(usage,actual.usage());}geometry=points;usage=actual.usage();
+   }
+  } finally {javax.swing.SwingUtilities.invokeAndWait(owner::close);}
+  assertEquals(0,ledger.currentBytes());
+ }
+ @Test void completedRunInventoryCoversOpaqueBasisAndExecutionAndRejectsUnknownOrCancelledTraversal() {
+  var root=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);var parent=new ParentReferenceBinder().bind(root,new StageId(UUID.randomUUID()),RefinementParentFixtures.parent(root,"blue"));
+  try(var owner=AttemptMemoryLedger.production().rootOwner()) {
+   var run=new RefinementEngineAdapter(TrackerMode.CORRIDOR_AWARE,"native").run(parent,root.evidence(),TraceBudgets.defaults(),CancellationProbe.NONE,owner).value();
+   var borrowed=new IdentityHashMap<Object,Long>();borrowed.putAll(root.charges());
+   var basis=new FinalControlBasis(List.of(new MetricPoint(0,0),new MetricPoint(1,0)),List.of(FinalControlBasis.Row.independent(0),FinalControlBasis.Row.independent(1)),Set.of(0,1));
+   long before=owner.currentBytes();
+   var measured=RefinementRootAuthority.completedCharges(borrowed,CancellationProbe.NONE,262_144,run,basis);
+   assertTrue(measured.containsKey(run));assertTrue(measured.containsKey(run.reference()));assertTrue(measured.containsKey(run.execution().orElseThrow()));
+   assertTrue(measured.get(basis)>=basis.scratchReservationBytes());assertTrue(measured.containsKey(basis.initialCoordinates()));
+   assertFalse(measured.containsKey(root));assertFalse(measured.containsKey(root.network()));assertFalse(measured.containsKey(root.evidence()));
+   var receipt=run.nativeRun().orElseThrow().corridorReceipt().orElseThrow();assertTrue(measured.get(receipt)>=ModernReviewRoot.nativeReceiptBytes(receipt));
+   assertThrows(IllegalArgumentException.class,()->RefinementRootAuthority.completedCharges(borrowed,CancellationProbe.NONE,262_144,new Object()));
+   assertThrows(java.util.concurrent.CancellationException.class,()->RefinementRootAuthority.completedCharges(borrowed,()->true,262_144,run));
+   assertThrows(RefinementSession.Refused.class,()->RefinementRootAuthority.completedCharges(borrowed,CancellationProbe.NONE,1,run));
+   assertEquals(before,owner.currentBytes(),"Inventory failures never retire the original working owner");assertFalse(owner.isClosed());
+  }
+ }
  @Test void nativeOutputAllowanceRequiresItsLiveExactBackingAndWorker() throws Exception {
   var root=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);
   var parent=new ParentReferenceBinder().bind(root,new StageId(UUID.randomUUID()),RefinementParentFixtures.parent(root,"blue"));

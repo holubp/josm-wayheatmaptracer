@@ -4,10 +4,70 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import org.junit.jupiter.api.Test;
 
 class V022AttemptMemoryLedgerTest {
+    @Test void retainedGroupPreflightRefusesReentrantMutationAndResetsItsGuard() {
+        var ledger=new AttemptMemoryLedger(100);
+        try(var root=ledger.rootOwner();var source=root.child("work");var target=root.child("retained")) {
+            var capacity=source.reserve(80);
+            assertThrows(IllegalStateException.class,()->source.replaceWithRetainedGroup(target,new Object(),30,()->{source.reserve(0);return false;}));
+            assertEquals(80,ledger.currentBytes());assertTrue(capacity.isActiveFor(source));assertFalse(source.isClosed());
+            source.replaceWithRetainedGroup(target,new Object(),30);assertEquals(30,ledger.currentBytes());
+        }
+    }
+    @Test void retainedGroupExchangeUsesPostTotalAndPreservesBorrowedCoowners() {
+        var ledger=new AttemptMemoryLedger(100);
+        try(var root=ledger.rootOwner();var source=root.child("completed-work");var target=root.child("retained");var other=root.child("borrowed")) {
+            source.reserve(80);Object borrowed=new Object();source.reserve(10).adopt(borrowed);
+            other.retain(borrowed);target.retain(borrowed);
+            Object result=new Object();source.replaceWithRetainedGroup(target,result,30);
+            assertTrue(source.isClosed());assertEquals(40,ledger.currentBytes());assertEquals(90,ledger.peakBytes());
+            assertEquals(30,target.retainIfAbsent(result).bytes());assertEquals(10,target.retainIfAbsent(borrowed).bytes());
+            other.close();assertEquals(40,ledger.currentBytes());target.close();assertEquals(0,ledger.currentBytes());
+        }
+    }
+    @Test void retainedGroupRefusalConflictAndCancellationLeaveOriginalOwnershipIntact() {
+        var ledger=new AttemptMemoryLedger(100);
+        try(var root=ledger.rootOwner();var source=root.child("completed-work");var target=root.child("retained");var other=root.child("shared")) {
+            Object shared=new Object();source.reserve(60).adopt(shared);other.retain(shared);other.reserve(30);
+            assertThrows(AttemptMemoryLedger.ResourceLimitException.class,()->source.replaceWithRetainedGroup(target,new Object(),20));
+            assertFalse(source.isClosed());assertEquals(90,ledger.currentBytes());assertEquals(60,source.retainIfAbsent(shared).bytes());
+            assertThrows(IllegalArgumentException.class,()->source.replaceWithRetainedGroup(target,shared,59));
+            assertFalse(source.isClosed());assertEquals(90,ledger.currentBytes());
+            assertThrows(java.util.concurrent.CancellationException.class,()->source.replaceWithRetainedGroup(target,new Object(),1,()->true));
+            assertFalse(source.isClosed());assertEquals(90,ledger.currentBytes());
+        }
+        assertEquals(0,ledger.currentBytes());
+    }
+    @Test void retainedGroupExchangeRejectsInvalidOwnerRelationsAndOverflowWithoutMutation() {
+        var ledger=new AttemptMemoryLedger(100);var foreignLedger=new AttemptMemoryLedger(100);
+        try(var root=ledger.rootOwner();var source=root.child("work");var target=root.child("retained");var inside=source.child("inside");var foreign=foreignLedger.rootOwner()) {
+            var reservation=source.reserve(80);
+            assertThrows(IllegalArgumentException.class,()->source.replaceWithRetainedGroup(source,new Object(),1));
+            assertThrows(IllegalArgumentException.class,()->source.replaceWithRetainedGroup(inside,new Object(),1));
+            assertThrows(IllegalArgumentException.class,()->source.replaceWithRetainedGroup(foreign,new Object(),1));
+            assertThrows(IllegalArgumentException.class,()->source.replaceWithRetainedGroup(target,new Object(),-1));
+            assertThrows(AttemptMemoryLedger.ResourceLimitException.class,()->source.replaceWithRetainedGroup(target,new Object(),Long.MAX_VALUE));
+            assertTrue(reservation.isActiveFor(source));assertFalse(source.isClosed());assertEquals(80,ledger.currentBytes());
+        }
+    }
+    @Test void concurrentObservationNeverSeesUnmeteredRetainedGroupDuringExchange() throws Exception {
+        var ledger=new AttemptMemoryLedger(100);
+        try(var root=ledger.rootOwner();var source=root.child("work");var target=root.child("retained")) {
+            source.reserve(90);var started=new java.util.concurrent.CountDownLatch(1);var replaced=new java.util.concurrent.CountDownLatch(1);
+            var stop=new java.util.concurrent.atomic.AtomicBoolean();var failure=new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var observer=new Thread(()->{try{while(!stop.get()) {long current=ledger.currentBytes();if(current!=90&&current!=30)throw new AssertionError("Unmetered exchange state");started.countDown();if(current==30)replaced.countDown();}}catch(Throwable problem){failure.set(problem);started.countDown();replaced.countDown();}});
+            observer.start();try {
+                assertTrue(started.await(5,java.util.concurrent.TimeUnit.SECONDS));source.replaceWithRetainedGroup(target,new Object(),30);
+                assertTrue(replaced.await(5,java.util.concurrent.TimeUnit.SECONDS));assertEquals(null,failure.get());
+            } finally {stop.set(true);observer.join(5000);assertFalse(observer.isAlive());}
+            assertEquals(30,ledger.currentBytes());
+        }
+    }
     @Test
     void admitsBelowAndExactlyAtLimitAndTracksPeakSeparately() {
         AttemptMemoryLedger ledger = new AttemptMemoryLedger(10);

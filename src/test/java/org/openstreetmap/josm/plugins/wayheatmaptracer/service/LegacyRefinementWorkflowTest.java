@@ -194,7 +194,19 @@ class LegacyRefinementWorkflowTest {
             assertTrue(completed.get().await(90,TimeUnit.SECONDS),"Actual refinement did not settle");
             if(diagnostic&&engine==TrackerMode.CORRIDOR_AWARE) {
                 assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Outcome.RESOURCE_LIMIT,diagnosticResult[0].outcome());
-                assertTrue(diagnosticResult[0].attempts().stream().filter(a->a.source().palette().equals("hot")&&!a.source().mapping().equals("hot")).allMatch(a->a.kind()==RefinementPipeline.AttemptKind.UNATTEMPTED));
+                assertTrue(diagnosticResult[0].truncated());
+                var variants=diagnosticResult[0].attempts().stream().filter(a->a.source().palette().equals("hot")&&!a.source().mapping().equals("hot")).toList();
+                assertTrue(variants.stream().anyMatch(a->a.kind()==RefinementPipeline.AttemptKind.UNATTEMPTED),"Shared alternative exhaustion must leave explicit later rows");
+                for(var attempt:variants) {
+                    if(attempt.kind()==RefinementPipeline.AttemptKind.UNATTEMPTED) {
+                        assertEquals(0,attempt.nativeCallAvailability().orElseThrow());assertTrue(attempt.issuedBudgets().isEmpty());assertTrue(attempt.run().isEmpty());
+                    } else {
+                        assertEquals(RefinementPipeline.AttemptKind.WHOLE,attempt.kind());assertTrue(attempt.issuedBudgets().isPresent());
+                        var actual=attempt.run().orElseThrow();assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Outcome.COMPLETE,actual.outcome());
+                        assertEquals(1,actual.nativeCalls());assertTrue(actual.actualWorkAvailability().isPresent());assertTrue(actual.actualWork().transitions()>0);
+                    }
+                }
+                assertEquals(8,diagnosticResult[0].actualWork().orElseThrow().distinctAlternatives(),"The unchanged shared distinct limit is exhausted without another pool");
             }
             assertRetainedBinderConsumesPublishedSources(workflow[0],alternatives&&!diagnostic);
             if(alternatives||aggregate) {

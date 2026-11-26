@@ -34,6 +34,13 @@ public final class ParentTraceReference {
     private final String operationIdentity;
     private final Optional<ProfileChainage> measuredSampling;
 
+    /** Reads the producer's actual fields; the private chainage buffer is charged without cloning. */
+    void inventoryInto(RefinementRootAuthority.Inventory inventory) {
+        inventory.put(this,Math.addExact(256L,AttemptMemoryLedger.arrayBytes(chainage.length,8)));
+        inventory.visit(root);inventory.visit(stage);inventory.visit(choice);inventory.visit(nativeId);inventory.visit(palette);
+        inventory.visit(parentIdentity);inventory.visit(identity);inventory.visit(points);inventory.visit(arcs);inventory.visit(byOccurrence);
+        inventory.visit(frozen);inventory.visit(missing);inventory.visit(ambiguous);inventory.visit(range);inventory.visit(operationIdentity);inventory.visit(measuredSampling);
+    }
     // Package-private: the validating binder is the only public construction entry.
     ParentTraceReference(RefinementRootAuthority root,StageId stage,CandidateId choice,String nativeId,
             String palette,String parentIdentity,List<MetricPoint> points,List<ParentArc> arcs) {

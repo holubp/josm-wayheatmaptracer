@@ -7,6 +7,20 @@
 
 ## Current shortest path to the next RC
 
+**Current candidate follow-up:** `c7011d42` actually published the visible
+post-Smooth A child (60,680,995/64M visits, one native call), then completed its
+stored command/history checks. B also published before an A-only harness oracle
+rejected legitimate covered-input reuse. The scoped harness correction keeps
+the representative full-A fresh-input proof and every stored-command assertion.
+The managed five-palette case exposed retained completed working capacity.
+The controller-approved typed Run/Result inventory and atomic same-ledger
+settlement are implemented; source acquisition/currentness owners stay alive,
+all diagnostic rows remain charged, and all original caps and kernels remain.
+Local atomic/ownership/harness guards pass; new candidate CI must qualify the
+four c701 full-suite failures and actual managed/visible full/interval commands.
+The c701 full public run was terminal RED:3293 tests, four failures. No full
+workflow, performance replacement, independent final audit or RC claim is made.
+
 **Verified Nov26:** bounded Apply diagnostic labels and saved Strong
 Apply/Undo/Redo now pass. CI45786197532/job139793448688/artifact15101025813
 is source-bound to `4df8d118`: actual original repeat, expected8M recapture

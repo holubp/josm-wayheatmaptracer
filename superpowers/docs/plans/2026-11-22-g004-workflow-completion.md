@@ -14,6 +14,18 @@
 
 ## Current remaining work —2026-11-26
 
+Current integration implements the approved post-frame Run/Result retained-graph
+settlement and full native diagnostic receipt accounting. Only dedicated completed
+invocation/assembly capacity is retired atomically; source ownership, useful prior
+results, original resource limits and eight frozen numerical kernels remain.
+Actual c701 visible post-Smooth A and B children published; A stored command/history
+passed before the B harness oracle failed. The corrected oracle preserves strict
+fresh full-A proof and accepts factual covered B/interval reuse. Qualify this batch
+in CI against c701's four full-suite failures, managed palettes and actual visible
+full/interval A/B stored commands, followed by coherent performance/source freeze,
+the controller's one independent final audit and verified RC. Original400m stays
+unchanged. Local checks qualify ownership mechanics, not the complete workflow.
+
 Follow the [G004 current shortest RC path](../goals/2026-11-10-g004-stepwise-refinement.md):
 Nov26 diagnostic encoding and actual saved Strong Apply/Undo/Redo are verified
 at `7b7d230d` (CI45783248767/job139783593631). An intermediate diagnostic

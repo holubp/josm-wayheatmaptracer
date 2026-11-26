@@ -58,6 +58,9 @@ import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.data.UndoRedoHandler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyRefinementWorkflow;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.PipelineAdmissionObserver;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageId;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.CandidateId;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.OperationTicket;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageKind;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
@@ -1995,6 +1998,27 @@ public final class PublicGuiSmokeMain {
             onEventThread(()->{dialog.dispatchEvent(new WindowEvent(dialog,WindowEvent.WINDOW_CLOSING));return null;});requireUnchanged(fixture,original,originalUndo);
         }finally{onEventThread(()->{Config.getPref().put("wayheatmaptracer.color",color);return null;});Toolkit.getDefaultToolkit().removeAWTEventListener(listener);}
     }
+    static void requireVisiblePreparationWitness(RefinementAttemptDiagnostics diagnostic,StageId parent,CandidateId choice,
+            StageKind kind,AlignmentMode mode,boolean requireFreshBeyond8M) {
+        var ticket=diagnostic.binding().ticket();
+        var work=diagnostic.sourcePreparation().orElseThrow(()->new IllegalStateException("Actual visible preparation work is unavailable"));
+        var facts=work.sourceFacts().orElseThrow(()->new IllegalStateException("Actual visible source facts are unavailable"));
+        var nativeWork=work.nativeWork().orElseThrow(()->new IllegalStateException("Actual visible native work is unavailable"));
+        boolean covered=facts.coverage()==RefinementAttemptDiagnostics.Coverage.COVERED
+            &&facts.frameRole()==RefinementAttemptDiagnostics.InputFrameRole.ORIGINAL_INPUT&&facts.captureAuxiliaryVisits().isEmpty();
+        boolean recaptured=facts.coverage()==RefinementAttemptDiagnostics.Coverage.RECAPTURED
+            &&facts.frameRole()==RefinementAttemptDiagnostics.InputFrameRole.CAPTURED_INPUT&&facts.captureAuxiliaryVisits().orElse(0)>0;
+        // Diagnostic construction already binds the checksummed source identity to this ticket/root.
+        // Covered input reuse has no capture-work receipt and need not spend beyond the old ceiling.
+        if(diagnostic.publication()!=RefinementAttemptDiagnostics.Publication.PUBLISHED||diagnostic.cause()!=RefinementAttemptDiagnostics.Cause.NONE
+                ||work.cause()!=RefinementAttemptDiagnostics.Cause.NONE||work.failedSource().isPresent()
+                ||!ticket.parent().equals(parent)||!ticket.choice().equals(choice)||ticket.kind()!=kind||ticket.mode()!=mode
+                ||kind!=StageKind.REFINE_A&&kind!=StageKind.REFINE_B||!facts.ticket().equals(ticket)
+                ||facts.sourceKind()!=RefinementAttemptDiagnostics.SourceKind.VISIBLE||work.maximumVisits().orElse(-1)!=64_000_000L
+                ||work.visits()>64_000_000L||nativeWork.nativeCalls().orElse(0)<=0||nativeWork.actualWork().isEmpty()
+                ||!covered&&!recaptured||requireFreshBeyond8M&&(!recaptured||work.visits()<=8_000_000L))
+            throw new IllegalStateException("Actual visible continuation lacks its bound64M source/native publication proof");
+    }
     private static void exerciseSmoothThenRefineGui(Path report,AlignWayAction action,PreviewSessionController<?> session,
             PublicGuiSmokeFixture fixture,List<String> original,int originalUndo,StageKind continuation) throws Exception {
         exerciseSmoothThenRefineGui(report,action,session,fixture,original,originalUndo,continuation,false);
@@ -2076,14 +2100,13 @@ public final class PublicGuiSmokeMain {
                         ||!owner.currentStage().parentChoice().orElseThrow().equals(smooth.selected())||owner.actualNativeCalls()<=calls)
                     throw new IllegalStateException("Post-smoothing refinement did not use its displayed smoothed parent");
                 if(isVisibleGuiScenario()) {
-                    var work=owner.latestAttemptDiagnostics().orElseThrow().sourcePreparation().orElseThrow();
+                    var diagnostic=owner.latestAttemptDiagnostics().orElseThrow();var work=diagnostic.sourcePreparation().orElseThrow();
                     var facts=work.sourceFacts().orElseThrow();
-                    if(work.maximumVisits().orElseThrow()!=64_000_000L||work.visits()<=8_000_000L
-                            ||facts.coverage()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Coverage.RECAPTURED
-                            ||facts.frameRole()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.InputFrameRole.CAPTURED_INPUT
-                            ||facts.ticket().kind()!=continuation||facts.captureAuxiliaryVisits().orElseThrow()<=0)
-                        throw new IllegalStateException("Actual visible continuation must prove the selected64M phase and spent work beyond8M");
-                    System.err.println("GUI_SMOKE_VISIBLE_PREPARATION maximumVisits="+work.maximumVisits().orElseThrow()+" actualVisits="+work.visits()+" actualNativeCalls="+owner.actualNativeCalls()+" kind="+continuation.name());
+                    var originalComputation=(LiveBPreviewService.Computed)session.currentAttempt().result();
+                    requireVisiblePreparationWitness(diagnostic,smooth.id(),smooth.selected(),continuation,originalComputation.request().geometryMode(),
+                        continuation==StageKind.REFINE_A&&!originalComputation.partitioned());
+                    System.err.println("GUI_SMOKE_VISIBLE_PREPARATION maximumVisits="+work.maximumVisits().orElseThrow()+" actualVisits="+work.visits()+" actualNativeCalls="+owner.actualNativeCalls()+" kind="+continuation.name()
+                        +" coverage="+facts.coverage().name()+" frameRole="+facts.frameRole().name()+" captureAuxiliaryVisits="+diagnosticNumber(facts.captureAuxiliaryVisits()));
                 }
                 return owner.currentNative().orElseThrow().plan();
             });

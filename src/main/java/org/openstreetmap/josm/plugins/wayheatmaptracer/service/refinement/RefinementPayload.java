@@ -358,10 +358,10 @@ public final class RefinementPayload {
             span.nativeProvenance().ifPresent(provenance->{
                 values.put(provenance,256L);
                 values.putAll(RefinementRootAuthority.detachedCharges(provenance.pointIds(),provenance.referenceChainages(),provenance.quality(),provenance.nativeTrace()));
-                provenance.nativeBasis().ifPresent(basis->values.put(basis,basis.scratchReservationBytes()));
+                provenance.nativeBasis().ifPresent(basis->values.putAll(RefinementRootAuthority.detachedCharges(basis)));
                 provenance.corridorReceipt().ifPresent(receipt->{
                     // Bounded native record (<=512 track rows), including its factual policy map.
-                    long bytes=Math.addExact(1_048_576L,receipt.originalCostPolicyMetadataBytes().orElse(0));
+                    long bytes=Math.max(Math.addExact(1_048_576L,receipt.originalCostPolicyMetadataBytes().orElse(0)),ModernReviewRoot.nativeReceiptBytes(receipt));
                     values.put(receipt,bytes);
                 });
             });

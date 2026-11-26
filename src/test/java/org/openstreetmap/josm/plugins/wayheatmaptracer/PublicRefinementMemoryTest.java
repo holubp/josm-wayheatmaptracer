@@ -26,6 +26,7 @@ class PublicRefinementMemoryTest {
         var cache=new ManagedTileCache(temporary.resolve("cache"),decoder);fixture.seedRefinementTiles(cache);
         try(var coordinator=new TileFetchCoordinator((r,c)->{throw new AssertionError("the unchanged public fixture must remain offline");},cache,decoder,TileReliabilityPolicy.defaults())) {
             var config=AlignmentConfig.withoutCleanup(PublicGuiSmokeMain.stepwiseConfig(AlignmentMode.PRECISE_SHAPE));
+            Long heldEntryBytes=null;String heldInputHash=null;List<Object> heldRequestBinding=null;
             for(boolean legacyLifetime:List.of(true,false)) {
                 var ledger=AttemptMemoryLedger.production();var original=new AtomicReference<Trial>();var operation=new AtomicReference<Operation>();
                 try(var owner=ledger.rootOwner()) {
@@ -51,20 +52,50 @@ class PublicRefinementMemoryTest {
                         actual.plan(),CredentialSnapshot.fromConfig(config.heatmap()),CancellationProbe.NONE,owner);
                     long released=ledger.peakBytes()-ledger.currentBytes();assertEquals(41943040L,released);
                     if(legacyLifetime)owner.reserve(released).adopt(new Object());
-                    var entries=new AtomicInteger();
+                    var entries=new AtomicInteger();var firstEntryBytes=new AtomicLong(-1);
+                    var sources=RefinementPipeline.managedSources(acquired.value(),coordinator);
                     try(var observed=PipelineAdmissionObserver.openForTesting(value->{})) {
                         var result=new RefinementPipeline().run(actual.ticket(),actual.parent(),actual.plan(),new RefinementPipeline.Adapters(
-                            RefinementPipeline.managedSources(acquired.value(),coordinator),RefinementPipeline.productionRunner(t->entries.incrementAndGet()),owner),
+                            sources,RefinementPipeline.productionRunner(t->{if(entries.getAndIncrement()==0)firstEntryBytes.set(owner.currentBytes());}),owner),
                             RefinementPipeline.OperationBudget.production(completed.authority().request().budgets()),CancellationProbe.NONE);
                         System.out.println("public-memory legacyLifetime="+legacyLifetime+" outcome="+result.outcome()+" entries="+entries.get()+" assessed="+result.candidates().size()+" peakBytes="+ledger.peakBytes());
                         assertEquals(6,result.sourceOutcomes().size());assertTrue(ledger.peakBytes()<=AttemptMemoryLedger.MAX_BYTES);
                         if(legacyLifetime) {
-                            assertEquals(0,entries.get());assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());assertTrue(result.candidates().isEmpty());
-                            assertEquals(PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH,observed.latest(actual.ticket()).orElseThrow().gate());
+                            assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());assertTrue(result.candidates().isEmpty());
+                            assertTrue(result.attempts().stream().anyMatch(a->a.kind()==RefinementPipeline.AttemptKind.UNATTEMPTED),"Actual refusal retains explicit later unattempted work");
+                            if(entries.get()==0) {
+                                var refusal=observed.latest(actual.ticket()).orElseThrow();
+                                assertTrue(refusal.requestedBytes().orElseThrow()>refusal.limitBytes().orElseThrow()-refusal.currentBytes().orElseThrow());
+                                assertEquals(TraceWorkUsage.none(),result.actualWork().orElseThrow());
+                            } else {
+                                assertTrue(result.actualWork().isPresent());
+                                assertTrue(result.attempts().stream().anyMatch(a->a.nativeCallAvailability().orElse(0)>0&&a.run().orElseThrow().actualWorkAvailability().isPresent()));
+                                boolean nativeRefusal=result.attempts().stream().flatMap(a->a.run().stream()).flatMap(r->r.nativeRun().stream()).anyMatch(r->r.result().status()==TraceHypothesisSet.Status.RESOURCE_LIMIT);
+                                if(nativeRefusal) {
+                                    var refusal=observed.latestNative(actual.ticket()).orElseThrow();
+                                    assertTrue(refusal.family()!=PipelineAdmissionObserver.NativeFamily.UNAVAILABLE);assertTrue(refusal.phase().isPresent());
+                                } else {
+                                    // A COMPLETE native result may truthfully fail the later assessment admission.
+                                    var refusal=observed.latest(actual.ticket()).orElseThrow();assertEquals(PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH,refusal.gate());
+                                    assertTrue(refusal.requestedBytes().orElseThrow()>refusal.limitBytes().orElseThrow()-refusal.currentBytes().orElseThrow());
+                                }
+                            }
                         } else {
                             assertTrue(entries.get()>0,"completed validation workspace must be released before actual engine entry");
                             if(result.candidates().isEmpty())assertTrue(result.attempts().stream().flatMap(a->a.run().stream()).flatMap(r->r.nativeRun().stream())
                                 .anyMatch(r->r.result().status()==TraceHypothesisSet.Status.RESOURCE_LIMIT),"missing geometry requires an actual subsequent native resource receipt");
+                        }
+                        if(entries.get()>0) {
+                            var first=result.attempts().stream().filter(a->a.nativeCallAvailability().orElse(0)>0).findFirst().orElseThrow();
+                            var run=first.run().orElseThrow();var request=run.request();var nativeReceipt=run.nativeRun().orElseThrow().corridorReceipt().orElseThrow();
+                            assertEquals(request.evidenceContentHash(),nativeReceipt.evidenceHash());assertEquals(request.networkContentHash(),nativeReceipt.networkHash());
+                            assertEquals(actual.parent().root().request().networkContentHash(),request.networkContentHash());
+                            assertEquals(actual.parent().root().network().snapshotId(),request.networkSnapshotId());
+                            var evidence=sources.evidence(first.source(),CancellationProbe.NONE);
+                            var source=sources.retentionDescriptor(first.source(),evidence).orElseThrow();assertTrue(source.hasFactualInputHash());
+                            var binding=List.<Object>of(request.selectedWayKey(),request.selectedRange(),request.engine(),request.geometryMode(),request.permissions(),request.budgets(),request.configuredSampleStepMeters(),request.profileChainage().cumulativeGroundMeters(),request.evidenceResolution());
+                            if(legacyLifetime){heldEntryBytes=firstEntryBytes.get();heldInputHash=source.inputByteHash();heldRequestBinding=binding;}
+                            else if(heldEntryBytes!=null){assertEquals(41943040L,heldEntryBytes-firstEntryBytes.get());assertEquals(heldInputHash,source.inputByteHash());assertEquals(heldRequestBinding,binding);}
                         }
                     }
                 }finally{SwingUtilities.invokeAndWait(()->{if(operation.get()!=null)operation.get().session().close();if(original.get()!=null)original.get().review().close();});}

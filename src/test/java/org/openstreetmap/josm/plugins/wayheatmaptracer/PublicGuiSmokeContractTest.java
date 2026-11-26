@@ -13,6 +13,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.EnumMap;
+import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.OptionalLong;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -29,6 +34,11 @@ import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
@@ -52,6 +62,50 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 import org.openstreetmap.josm.tools.PlatformManager;
 
 class PublicGuiSmokeContractTest {
+    @Test void visiblePreparationWitnessAcceptsFreshAAndCoveredBWithoutInventingCaptureWork() throws Exception {
+        var a=preparationTicket(StageKind.REFINE_A);var b=preparationTicket(StageKind.REFINE_B);
+        var fresh=preparationDiagnostic(a,true,9_000_000,64_000_000,1);
+        PublicGuiSmokeMain.requireVisiblePreparationWitness(fresh,a.parent(),a.choice(),a.kind(),a.mode(),true);
+        var covered=preparationDiagnostic(b,false,12,64_000_000,1);
+        PublicGuiSmokeMain.requireVisiblePreparationWitness(covered,b.parent(),b.choice(),b.kind(),b.mode(),false);
+        assertTrue(covered.sourcePreparation().orElseThrow().sourceFacts().orElseThrow().captureAuxiliaryVisits().isEmpty());
+        // An interval may already have complete source coverage for A too.
+        var interval=preparationDiagnostic(a,false,12,64_000_000,1);
+        PublicGuiSmokeMain.requireVisiblePreparationWitness(interval,a.parent(),a.choice(),a.kind(),a.mode(),false);
+    }
+    @Test void visiblePreparationWitnessRejectsMissingFreshProofOrForeignOperation() throws Exception {
+        var a=preparationTicket(StageKind.REFINE_A);var b=preparationTicket(StageKind.REFINE_B);
+        for(var bad:List.of(preparationDiagnostic(a,false,12,64_000_000,1),preparationDiagnostic(a,true,8_000_000,64_000_000,1)))
+            assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireVisiblePreparationWitness(bad,a.parent(),a.choice(),a.kind(),a.mode(),true));
+        var good=preparationDiagnostic(b,false,12,64_000_000,1);
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireVisiblePreparationWitness(good,a.parent(),b.choice(),b.kind(),b.mode(),false));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireVisiblePreparationWitness(good,b.parent(),a.choice(),b.kind(),b.mode(),false));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireVisiblePreparationWitness(good,b.parent(),b.choice(),a.kind(),b.mode(),false));
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireVisiblePreparationWitness(good,b.parent(),b.choice(),b.kind(),AlignmentMode.PRECISE_SHAPE,false));
+        for(var bad:List.of(preparationDiagnostic(b,false,12,8_000_000,1),preparationDiagnostic(b,false,12,64_000_000,0)))
+            assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireVisiblePreparationWitness(bad,b.parent(),b.choice(),b.kind(),b.mode(),false));
+        var noChild=new RefinementAttemptDiagnostics(good.binding(),good.pipeline(),RefinementAttemptDiagnostics.Publication.NO_CHILD,
+            good.phase(),good.cause(),0,true,good.sourcePreparation());
+        assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.requireVisiblePreparationWitness(noChild,b.parent(),b.choice(),b.kind(),b.mode(),false));
+        var old=good.binding();var foreignSource=new RefinementAttemptDiagnostics.Binding(old.ticket(),old.rootStage(),"other-synthetic-source",old.originalNetworkHash(),old.rootParameterHash(),old.frozenGeometryIdentity(),old.parentIdentity());
+        assertThrows(IllegalArgumentException.class,()->new RefinementAttemptDiagnostics(foreignSource,good.pipeline(),good.publication(),good.phase(),good.cause(),0,true,good.sourcePreparation()));
+    }
+    private static OperationTicket preparationTicket(StageKind kind) {
+        return new OperationTicket(new SessionId(UUID.randomUUID()),1,new StageId(UUID.randomUUID()),new CandidateId("synthetic-"+UUID.randomUUID()),
+            kind==StageKind.REFINE_A?TrackerMode.CORRIDOR_AWARE:TrackerMode.PROBABILISTIC,AlignmentMode.MOVE_EXISTING_NODES,kind,Optional.empty());
+    }
+    private static RefinementAttemptDiagnostics preparationDiagnostic(OperationTicket ticket,boolean fresh,long visits,long ceiling,int calls) throws Exception {
+        String source="synthetic-visible-source";String hash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(source.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        var facts=new RefinementAttemptDiagnostics.SourceFacts(ticket,hash,RefinementAttemptDiagnostics.SourceKind.VISIBLE,
+            fresh?RefinementAttemptDiagnostics.Coverage.RECAPTURED:RefinementAttemptDiagnostics.Coverage.COVERED,"a".repeat(64),"b".repeat(64),"c".repeat(64),
+            fresh?RefinementAttemptDiagnostics.InputFrameRole.CAPTURED_INPUT:RefinementAttemptDiagnostics.InputFrameRole.ORIGINAL_INPUT,8,8,6,6,1,fresh?OptionalLong.of(1):OptionalLong.empty());
+        var counts=new EnumMap<GeometryWorkContext.Kind,Long>(GeometryWorkContext.Kind.class);
+        for(var kind:GeometryWorkContext.Kind.values())counts.put(kind,kind==GeometryWorkContext.Kind.COPY?visits:0L);
+        var nativeWork=new RefinementAttemptDiagnostics.NativeWork(Outcome.COMPLETE,Optional.of(new TraceWorkUsage(1,2,1,1)),OptionalInt.of(calls));
+        var work=new RefinementAttemptDiagnostics.SourcePreparationWork(RefinementAttemptDiagnostics.Cause.NONE,visits,counts,Optional.empty(),Optional.of(nativeWork),Optional.of(facts),OptionalLong.of(ceiling));
+        var binding=new RefinementAttemptDiagnostics.Binding(ticket,ticket.parent(),source,"network","parameters","frozen","parent");
+        return new RefinementAttemptDiagnostics(binding,Optional.empty(),RefinementAttemptDiagnostics.Publication.PUBLISHED,RefinementAttemptDiagnostics.Phase.PUBLICATION,RefinementAttemptDiagnostics.Cause.NONE,0,true,Optional.of(work));
+    }
     @Test void intermediateDiagnosticWritesKeepTheVisibleFixtureAlive(@TempDir Path directory) throws Exception {
         var fixtureField=PublicGuiSmokeMain.class.getDeclaredField("visiblePainterFixture");fixtureField.setAccessible(true);
         var write=PublicGuiSmokeMain.class.getDeclaredMethod("writeSummary",Path.class,String.class);write.setAccessible(true);

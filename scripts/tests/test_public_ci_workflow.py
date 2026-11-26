@@ -103,6 +103,7 @@ def test_focused_xml_gate_uses_suite_identity_and_requires_executed_green_tests(
         "service.refinement.SourcePreparationCeilingTest",
         "service.refinement.WorkflowSourcePreparationDiagnosticsTest",
         "service.refinement.RefinementRepairContractTest",
+        "service.tracing.V022AttemptMemoryLedgerTest",
         "service.refinement.RetainedSmoothingRootTest",
         "service.ModernRefinementBootstrapTest",
         "service.tracing.V022FixedIntervalEditPlanComposerTest",

@@ -92,6 +92,7 @@ jobs:
               filters+=(--tests '*GeometryWorkContextPhaseTest' --tests '*SourcePreparationCeilingTest')
               filters+=(--tests '*WorkflowSourcePreparationDiagnosticsTest')
               filters+=(--tests '*RefinementRepairContractTest')
+              filters+=(--tests '*V022AttemptMemoryLedgerTest')
               filters+=(--tests '*RefinementAcquisitionTest.frozenVisiblePlanConvertsSameEpochPixelsAndRejectsShortFrameBeforeScalarWork')
               filters+=(--tests '*BenchmarkDecisionComparatorIntegrationTest.selectedObservationRejectsAbsentStaleAndSameCoreMissingWitnessOwners' --tests '*AlignWayActionTest.ordinaryBRouteFreezesSupportedSettingsWithoutChangingRequestedPreferences' --tests '*V022PreviewStateTest.t116SupportedLiveEnginePersistsWhileOtherSettingsAndHistoricalIdentityRemain' --tests '*VisibleEvidencePlanTest.pointsAndDecisionFitDoNotProveCompleteEngineSupport')
               ;;
@@ -136,6 +137,7 @@ jobs:
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.SourcePreparationCeilingTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.WorkflowSourcePreparationDiagnosticsTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementRepairContractTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.V022AttemptMemoryLedgerTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RetainedSmoothingRootTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.ModernRefinementBootstrapTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.V022FixedIntervalEditPlanComposerTest.xml",
@@ -204,6 +206,7 @@ jobs:
           classes["refs/heads/codex/g004-stepwise-20261119"].append("VisibleRenderPolicyTest")
           classes["refs/heads/codex/g004-stepwise-20261119"].extend(["GeometryWorkContextPhaseTest", "SourcePreparationCeilingTest", "WorkflowSourcePreparationDiagnosticsTest", "PublicGuiSmokeContractTest"])
           classes["refs/heads/codex/g004-stepwise-20261119"].append("RefinementRepairContractTest")
+          classes["refs/heads/codex/g004-stepwise-20261119"].append("V022AttemptMemoryLedgerTest")
           classes["refs/heads/codex/g004-stepwise-20261119"].extend(["BenchmarkDecisionComparatorIntegrationTest", "V022PreviewStateTest", "VisibleEvidencePlanTest", "RefinementAcquisitionTest"])
           selected = classes[os.environ["FOCUSED_REF"]]
           source = Path("build/test-results/test")
@@ -243,6 +246,7 @@ jobs:
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/SourcePreparationCeilingTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/WorkflowSourcePreparationDiagnosticsTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RefinementRepairContractTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/V022AttemptMemoryLedgerTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RetainedSmoothingRootTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/ModernRefinementBootstrapTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/V022FixedIntervalEditPlanComposerTest.java",

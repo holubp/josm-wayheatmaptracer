@@ -26,7 +26,8 @@ public final class AttemptMemoryLedger {
     private static final long REFERENCE_BYTES = 8;
 
     private final long limitBytes;
-    private final Map<IdentityKey, Charge> charges = new HashMap<>();
+    private Map<IdentityKey, Charge> charges = new HashMap<>();
+    private Thread exchangePreflight;
     private long currentBytes;
     private long peakBytes;
     private Owner root;
@@ -50,6 +51,7 @@ public final class AttemptMemoryLedger {
 
     /** Returns the unique root owner for this attempt. */
     public synchronized Owner rootOwner() {
+        rejectExchangeMutation();
         if (root != null) {
             throw new IllegalStateException("attempt root owner already created");
         }
@@ -99,6 +101,7 @@ public final class AttemptMemoryLedger {
         return reserveWithin(owner,limitBytes,bytes);
     }
     private synchronized Reservation reserveWithin(Owner owner,long maximumAttemptBytes,long bytes) {
+        rejectExchangeMutation();
         owner.ensureOpen();
         if (bytes < 0 || maximumAttemptBytes<0) {
             throw new IllegalArgumentException("reservation bytes must be non-negative");
@@ -115,6 +118,7 @@ public final class AttemptMemoryLedger {
     }
 
     private synchronized MemoryLease adopt(Reservation reservation, Object identity) {
+        rejectExchangeMutation();
         reservation.owner.ensureOpen();
         reservation.ensureActive();
         Objects.requireNonNull(identity, "newlyAllocatedIdentity");
@@ -135,6 +139,7 @@ public final class AttemptMemoryLedger {
     }
 
     private synchronized void release(Reservation reservation) {
+        rejectExchangeMutation();
         if (reservation.state == Reservation.State.ADOPTED) {
             return;
         }
@@ -147,6 +152,7 @@ public final class AttemptMemoryLedger {
     }
 
     private synchronized MemoryLease retain(Owner owner, Object identity) {
+        rejectExchangeMutation();
         owner.ensureOpen();
         Objects.requireNonNull(identity, "identity");
         Charge charge = charges.get(new IdentityKey(identity));
@@ -184,6 +190,7 @@ public final class AttemptMemoryLedger {
     }
 
     private synchronized void transfer(Owner source, Owner destination) {
+        rejectExchangeMutation();
         source.ensureOpen();
         destination.ensureOpen();
         if (source.ledger != destination.ledger) {
@@ -253,6 +260,81 @@ public final class AttemptMemoryLedger {
         }
     }
 
+    private void rejectExchangeMutation() {
+        if(exchangePreflight==Thread.currentThread())throw new IllegalStateException("Ledger mutation during retained-group preflight");
+    }
+
+    /** All validation/allocation precedes the one monitored, nonthrowing state transition. */
+    private synchronized MemoryLease replace(Owner source,Owner destination,Object identity,long bytes,CancellationProbe probe) {
+        rejectExchangeMutation();source.ensureOpen();Objects.requireNonNull(destination).ensureOpen();
+        Objects.requireNonNull(identity);Objects.requireNonNull(probe);
+        if(bytes<0||source==destination||destination.ledger!=this)throw new IllegalArgumentException("Retained-group exchange requires distinct same-ledger owners and nonnegative bytes");
+        for(var ancestor=destination;ancestor!=null;ancestor=ancestor.parent)
+            if(ancestor==source)throw new IllegalArgumentException("Retained destination cannot be inside completed work");
+        var owners=new ArrayList<Owner>();var reservations=new ArrayList<Reservation>();var leases=new ArrayList<MemoryLease>();
+        var references=new IdentityHashMap<Charge,Integer>();long reclaimable=0;
+        Map<IdentityKey,Charge> stagedCharges;Map<IdentityKey,MemoryLease> stagedDestination;
+        MemoryLease replacement;Charge retainedCharge;boolean addReference=false;long post;
+        exchangePreflight=Thread.currentThread();
+        try {
+            probe.checkpoint();owners.add(source);
+            for(int index=0;index<owners.size();index++) {
+                probe.checkpoint();var owner=owners.get(index);owner.ensureOpen();owners.addAll(owner.children);
+                for(var reservation:owner.reservations) {
+                    probe.checkpoint();reservation.ensureActive();
+                    if(reservation.owner!=owner||reservation.ledger!=this)throw new IllegalStateException("Invalid completed reservation owner");
+                    reclaimable=Math.addExact(reclaimable,reservation.bytes);reservations.add(reservation);
+                }
+                for(var lease:owner.leases.values()) {
+                    probe.checkpoint();lease.ensureActive();
+                    if(lease.owner!=owner||charges.get(lease.charge)!=lease.charge)throw new IllegalStateException("Invalid completed retained lease");
+                    references.merge(lease.charge,1,Math::addExact);leases.add(lease);
+                }
+            }
+            for(var entry:references.entrySet()) {
+                probe.checkpoint();var charge=entry.getKey();
+                if(entry.getValue()>charge.references)throw new IllegalStateException("Completed lease reference count underflow");
+                if(entry.getValue()==charge.references)reclaimable=Math.addExact(reclaimable,charge.bytes);
+            }
+            if(reclaimable>currentBytes)throw new IllegalStateException("Completed retained accounting underflow");
+            var existing=charges.get(new IdentityKey(identity));
+            boolean outside=existing!=null&&existing.references>references.getOrDefault(existing,0);
+            if(outside&&existing.bytes!=bytes)throw new IllegalArgumentException("Retained group conflicts with an existing co-owned charge");
+            long added=outside?0:bytes;long base=currentBytes-reclaimable;
+            if(added>limitBytes-base)throw new ResourceLimitException(added-reclaimable,currentBytes,limitBytes);
+            post=Math.addExact(base,added);
+            stagedCharges=new HashMap<>();
+            for(var entry:charges.entrySet()) {
+                probe.checkpoint();var charge=entry.getValue();
+                if(charge.references<=0)throw new IllegalStateException("Invalid global retained charge");
+                if(references.getOrDefault(charge,0)!=charge.references)stagedCharges.put(entry.getKey(),charge);
+            }
+            retainedCharge=outside?existing:new Charge(identity,bytes);stagedCharges.put(retainedCharge,retainedCharge);
+            stagedDestination=new HashMap<>();
+            for(var entry:destination.leases.entrySet()) {
+                probe.checkpoint();var lease=entry.getValue();lease.ensureActive();
+                if(lease.owner!=destination||charges.get(lease.charge)!=lease.charge)throw new IllegalStateException("Invalid destination retained lease");
+                stagedDestination.put(entry.getKey(),lease);
+            }
+            replacement=stagedDestination.get(retainedCharge);
+            if(replacement==null) {
+                if(outside)Math.addExact(retainedCharge.references,1);
+                replacement=new MemoryLease(this,destination,identity,retainedCharge);stagedDestination.put(retainedCharge,replacement);addReference=outside;
+            }
+            probe.checkpoint();
+        } finally {exchangePreflight=null;}
+        // No callbacks, allocations, arithmetic admission or potentially rejecting operations below.
+        for(int index=0;index<reservations.size();index++)reservations.get(index).state=Reservation.State.CLOSED;
+        for(int index=0;index<leases.size();index++){var lease=leases.get(index);lease.active=false;lease.charge.references--;}
+        for(int index=owners.size()-1;index>=0;index--) {
+            var owner=owners.get(index);owner.reservations.clear();owner.leases.clear();owner.children.clear();owner.closed=true;
+            if(owner.parent!=null)owner.parent.children.remove(owner);
+        }
+        if(addReference)retainedCharge.references++;
+        charges=stagedCharges;destination.leases=stagedDestination;currentBytes=post;peakBytes=Math.max(peakBytes,post);
+        return replacement;
+    }
+
     private static void collectOwners(Owner owner, List<Owner> output) {
         output.add(owner);
         for (Owner child : owner.children) {
@@ -261,6 +343,7 @@ public final class AttemptMemoryLedger {
     }
 
     private synchronized void close(Owner owner) {
+        rejectExchangeMutation();
         if (owner.closed) {
             return;
         }
@@ -281,6 +364,7 @@ public final class AttemptMemoryLedger {
     }
 
     private synchronized void close(MemoryLease lease) {
+        rejectExchangeMutation();
         lease.ensureActive();
         Owner owner = lease.owner;
         Charge charge = lease.charge;
@@ -314,7 +398,7 @@ public final class AttemptMemoryLedger {
         private final String name;
         private final Set<Owner> children = Collections.newSetFromMap(new IdentityHashMap<>());
         private final Set<Reservation> reservations = Collections.newSetFromMap(new IdentityHashMap<>());
-        private final Map<IdentityKey, MemoryLease> leases = new HashMap<>();
+        private Map<IdentityKey, MemoryLease> leases = new HashMap<>();
         private boolean closed;
 
         private Owner(AttemptMemoryLedger ledger, Owner parent, String name) {
@@ -329,6 +413,7 @@ public final class AttemptMemoryLedger {
                 throw new IllegalArgumentException("childName must not be blank");
             }
             synchronized (ledger) {
+                ledger.rejectExchangeMutation();
                 ensureOpen();
                 Owner child = new Owner(ledger, this, childName);
                 children.add(child);
@@ -338,6 +423,14 @@ public final class AttemptMemoryLedger {
 
         public Reservation reserve(long bytes) {
             return ledger.reserve(this, bytes);
+        }
+        /** Atomically retires completed work after its exact retained graph and borrowed groups are pinned. */
+        public MemoryLease replaceWithRetainedGroup(Owner destination,Object identity,long bytes) {
+            return replaceWithRetainedGroup(destination,identity,bytes,CancellationProbe.NONE);
+        }
+        /** The caller supplies its same operation's nonblocking cancellation/deadline probe. */
+        public MemoryLease replaceWithRetainedGroup(Owner destination,Object identity,long bytes,CancellationProbe probe) {
+            return ledger.replace(this,destination,identity,bytes,probe);
         }
         /** Atomic tighter total-attempt admission; never raises the attempt's production cap. */
         public Reservation reserveWithin(long maximumAttemptBytes,long bytes) {

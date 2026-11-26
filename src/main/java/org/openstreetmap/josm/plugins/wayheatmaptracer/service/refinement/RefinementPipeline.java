@@ -78,6 +78,16 @@ public final class RefinementPipeline {
     @FunctionalInterface public interface NativeRunner {
         RefinementEngineAdapter.Run run(OperationTicket ticket,ParentTraceReference parent,EvidenceSnapshot evidence,
             TraceBudgets remaining,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner);
+        default NativeInvocation invokeAccounted(OperationTicket ticket,ParentTraceReference parent,EvidenceSnapshot evidence,
+                TraceBudgets remaining,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner) {
+            return new NativeInvocation(run(ticket,parent,evidence,remaining,cancellation,owner),Optional.empty());
+        }
+    }
+    public record NativeInvocation(RefinementEngineAdapter.Run run,Optional<RefinementEngineAdapter.CompletedRun> completed) {
+        public NativeInvocation {
+            Objects.requireNonNull(run);Objects.requireNonNull(completed);
+            if(completed.isPresent()&&completed.orElseThrow().run()!=run)throw new IllegalArgumentException("Completed ownership belongs to another Run");
+        }
     }
     public record Adapters(Sources sources,NativeRunner nativeRunner,AttemptMemoryLedger.Owner owner) {
         public Adapters {Objects.requireNonNull(sources);Objects.requireNonNull(nativeRunner);Objects.requireNonNull(owner);}
@@ -126,6 +136,8 @@ public final class RefinementPipeline {
         public static OperationBudget production(TraceBudgets maximum) {return new OperationBudget(maximum,System::nanoTime,300_000_000_000L,5_000_000_000L);}
         /** Absolute final deadline in the supplied clock's units; production uses System.nanoTime. */
         public long finalDeadlineNanos(){return Math.addExact(started,duration);}
+        /** Final publication work consumes the same original clock/deadline after graph settlement. */
+        void requireFinalTime(){if(finalExpired())throw new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached();}
         private void claim(TraceBudgets root) {
             if(claimed||maximum.maximumStatesPerProfile()!=root.maximumStatesPerProfile()||maximum.maximumPairVisits()>root.maximumPairVisits()
                 ||maximum.maximumTransitions()>root.maximumTransitions()||maximum.maximumRawAlternatives()>root.maximumRawAlternatives()
@@ -165,11 +177,52 @@ public final class RefinementPipeline {
     }
     public static NativeRunner productionRunner() {return productionRunner(ticket->{});}
     public static NativeRunner productionRunner(java.util.function.Consumer<OperationTicket> nativeEntry) {
-        Objects.requireNonNull(nativeEntry);return (ticket,parent,evidence,remaining,cancellation,owner)->
-        new RefinementEngineAdapter(ticket.engine(),"native",()->nativeEntry.accept(ticket)).run(ticket,parent,evidence,remaining,cancellation,owner).value();
+        Objects.requireNonNull(nativeEntry);return new NativeRunner() {
+            public RefinementEngineAdapter.Run run(OperationTicket ticket,ParentTraceReference parent,EvidenceSnapshot evidence,
+                    TraceBudgets remaining,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner) {
+                return new RefinementEngineAdapter(ticket.engine(),"native",()->nativeEntry.accept(ticket)).run(ticket,parent,evidence,remaining,cancellation,owner).value();
+            }
+            @Override public NativeInvocation invokeAccounted(OperationTicket ticket,ParentTraceReference parent,EvidenceSnapshot evidence,
+                    TraceBudgets remaining,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner) {
+                var completed=new RefinementEngineAdapter(ticket.engine(),"native",()->nativeEntry.accept(ticket)).runCompleted(ticket,parent,evidence,remaining,cancellation,owner);
+                return new NativeInvocation(completed.run(),Optional.of(completed));
+            }
+        };
+    }
+    private static final class AssemblyCompletion {
+        AttemptMemoryLedger.Owner capacity;CompletedGraphRetention retention;
     }
     public Result run(OperationTicket ticket,ParentTraceReference parent,RefinementSourcePlanner.Plan sourcePlan,
             Adapters adapters,OperationBudget budget,CancellationProbe cancellation) {
+        return run(ticket,parent,sourcePlan,adapters,budget,cancellation,cancellation);
+    }
+    /** Retention cancellation must be nonblocking; source/currentness checks remain outside the ledger monitor. */
+    public Result run(OperationTicket ticket,ParentTraceReference parent,RefinementSourcePlanner.Plan sourcePlan,
+            Adapters adapters,OperationBudget budget,CancellationProbe cancellation,CancellationProbe retentionCancellation) {
+        return run(ticket,parent,sourcePlan,adapters,budget,cancellation,retentionCancellation,result->{});
+    }
+    Result run(OperationTicket ticket,ParentTraceReference parent,RefinementSourcePlanner.Plan sourcePlan,
+            Adapters adapters,OperationBudget budget,CancellationProbe cancellation,CancellationProbe retentionCancellation,
+            java.util.function.Consumer<Result> beforeRetention) {
+        // The work method must return before retiring its alternative-capacity workspace.
+        var completed=new AssemblyCompletion();
+        CancellationProbe retentionProbe=()->{retentionCancellation.checkpoint();if(budget.finalExpired())throw new DeadlineReached();return false;};
+        var result=runWork(ticket,parent,sourcePlan,adapters,budget,cancellation,retentionProbe,completed);
+        // The UI owner captures actual work before any later retention/currentness refusal.
+        beforeRetention.accept(result);
+        if(completed.retention!=null&&budget.expiredGate==null&&result.outcome()!=Outcome.CANCELLED&&result.outcome()!=Outcome.STALE&&result.outcome()!=Outcome.FAILED) {
+            requireCurrent(adapters.sources());
+            try{completed.retention.settleResult(result,completed.capacity,retentionProbe);}
+            catch(AttemptMemoryLedger.ResourceLimitException|RefinementSession.Refused|IllegalArgumentException|CancellationException unavailable) {
+                // No exchange occurred: the actual Result identity and full original capacity remain charged.
+                if(completed.capacity.isClosed())throw unavailable;completed.retention.unavailable();
+            }
+            finally{requireCurrent(adapters.sources());}
+        }
+        return result;
+    }
+    private Result runWork(OperationTicket ticket,ParentTraceReference parent,RefinementSourcePlanner.Plan sourcePlan,
+            Adapters adapters,OperationBudget budget,CancellationProbe cancellation,CancellationProbe retentionProbe,AssemblyCompletion completion) {
         Objects.requireNonNull(ticket);Objects.requireNonNull(parent);Objects.requireNonNull(sourcePlan);Objects.requireNonNull(adapters);Objects.requireNonNull(budget);Objects.requireNonNull(cancellation);
         if(ticket.kind()==StageKind.SMOOTH||!sourcePlan.ticket().equals(ticket)||sourcePlan.parent()!=parent
                 ||!ticket.parent().equals(parent.parentStage())||!ticket.choice().equals(parent.parentChoice())
@@ -204,7 +257,9 @@ public final class RefinementPipeline {
             // Reserve every possible retained assembled alternative before any engine entry. Native
             // receipts keep their own same-ledger owners; no source/interval receives a fresh pool.
             vertices=maximumAssembledVertices(parent,intervals.size());
-            retained=owner.reserve(Math.addExact(1_048_576L,Math.multiplyExact(32L,Math.multiplyExact(vertices,2048L))));
+            var capacity=owner.child("assembled-result-capacity");
+            retained=capacity.reserve(Math.addExact(1_048_576L,Math.multiplyExact(32L,Math.multiplyExact(vertices,2048L))));
+            completion.capacity=capacity;completion.retention=CompletedGraphRetention.forPipeline(parent.root(),adapters.owner(),capacity,retained);
             for(;sourceIndex<sourcePlan.requests().size();sourceIndex++) {
                 var source=sourcePlan.requests().get(sourceIndex);
                 if(!source.unavailableReason().isEmpty()) {attempts.add(new Attempt(source,AttemptKind.UNAVAILABLE,parent.originalRange(),Optional.empty(),source.unavailableReason()));continue;}
@@ -229,7 +284,7 @@ public final class RefinementPipeline {
                     admissionGate=null; // Native failures own their receipt; each later assessment admission is attributed separately.
                     long futureSources=sourcePlan.requests().subList(sourceIndex+1,sourcePlan.requests().size()).stream().filter(r->r.unavailableReason().isEmpty()).count();
                     var sourceAssessments=new ArrayList<ParentBackedComposer.Assessed>();assessedBySource.put(source,sourceAssessments);
-                    var whole=invoke(ticket,parent,evidence,source,AttemptKind.WHOLE,adapters,budget,nativeProbe,owner,attempts,(1+futureSources)*(1+fallbackCalls));
+                    var whole=invoke(ticket,parent,evidence,source,AttemptKind.WHOLE,adapters,budget,nativeProbe,owner,attempts,(1+futureSources)*(1+fallbackCalls),completion.retention,retentionProbe);
                     if(aborts(whole,budget))throw terminal(whole,budget);
                     var candidates=new ArrayList<ParentBackedComposer.Assessed>();
                     if(whole.finalized().isPresent())for(var route:whole.finalized().get().routes()) {
@@ -255,7 +310,7 @@ public final class RefinementPipeline {
                         if(stopped||budget.exhausted()||budget.inferenceExpired()) {
                             stopped=true;outcome=Outcome.RESOURCE_LIMIT;attempts.add(unattempted(source,interval.range(),"operation-budget-stopped"));continue;
                         }
-                        var local=invoke(ticket,interval.reference().orElseThrow(),evidence,source,AttemptKind.INTERVAL,adapters,budget,nativeProbe,owner,attempts,potentialCalls);
+                        var local=invoke(ticket,interval.reference().orElseThrow(),evidence,source,AttemptKind.INTERVAL,adapters,budget,nativeProbe,owner,attempts,potentialCalls,completion.retention,retentionProbe);
                         if(aborts(local,budget))throw terminal(local,budget);
                         if(local.outcome()==Outcome.RESOURCE_LIMIT){stopped=true;outcome=Outcome.RESOURCE_LIMIT;partial=true;continue;}
                         var usable=local.finalized().stream().flatMap(r->r.routes().stream()).filter(r->r.quality().disposition()!=FinalGeometryEvaluator.Disposition.HARD_BLOCKED).toList();
@@ -341,10 +396,11 @@ public final class RefinementPipeline {
     }
     private static RefinementEngineAdapter.Run invoke(OperationTicket ticket,ParentTraceReference parent,EvidenceSnapshot evidence,
             RefinementSourcePlanner.SourceRequest source,AttemptKind kind,Adapters adapters,OperationBudget budget,CancellationProbe cancellation,
-            AttemptMemoryLedger.Owner owner,List<Attempt> attempts,long potentialCalls) {
+            AttemptMemoryLedger.Owner owner,List<Attempt> attempts,long potentialCalls,CompletedGraphRetention retention,CancellationProbe retentionProbe) {
         cancellation.checkpoint();var remaining=budget.remaining(potentialCalls);
         RefinementEngineAdapter.Run run;
-        try {run=Objects.requireNonNull(adapters.nativeRunner().run(ticket,parent,evidence,remaining,cancellation,owner));}
+        NativeInvocation invocation;
+        try {invocation=Objects.requireNonNull(adapters.nativeRunner().invokeAccounted(ticket,parent,evidence,remaining,cancellation,owner));run=invocation.run();}
         catch(RuntimeException failure) {
             budget.unknown=true;attempts.add(new Attempt(source,kind,parent.originalRange(),Optional.empty(),"native-receipt-unavailable",Optional.of(remaining),AllocationPolicy.BASE_COVERAGE_ORDERED_EXTRAS_V2));throw failure;
         }
@@ -353,6 +409,11 @@ public final class RefinementPipeline {
         if(run.reference().root()!=parent.root()||!run.reference().originalRange().equals(parent.originalRange())
                 ||!run.reference().points().equals(parent.points()))throw new IllegalArgumentException("Native run belongs to another parent range");
         if(run.execution().isPresent())run.execution().get().requireBinding(run.reference(),run.request(),evidence,parent.root().network());
+        if(invocation.completed().isPresent()) {
+            requireCurrent(adapters.sources());
+            try{retention.settleRun(invocation.completed().orElseThrow(),adapters.sources().retentionDescriptor(source,evidence),retentionProbe);}
+            finally{requireCurrent(adapters.sources());}
+        }
         return run;
     }
     private static boolean aborts(RefinementEngineAdapter.Run run,OperationBudget budget){return budget.unknown||run.outcome()==Outcome.CANCELLED||run.outcome()==Outcome.STALE;}
