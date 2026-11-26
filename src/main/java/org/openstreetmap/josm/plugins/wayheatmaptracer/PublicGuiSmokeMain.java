@@ -277,7 +277,7 @@ public final class PublicGuiSmokeMain {
             stage = "settings-save";
             verifySilentSettingsSave();
             requireUnchanged(fixture, original, originalUndo);
-            writeSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
+            writeTerminalSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
                     + "\"status\":\"PASS\",\"source\":\"public-analytic-hot\","
                     + "\"engine\":\"" + engine.name() + "\",\"ordinaryAction\":true,"
                     + "\"visiblePreview\":true,\"selectedRouteIndex\":" + selectedRouteIndex + ","
@@ -287,7 +287,7 @@ public final class PublicGuiSmokeMain {
                     +(visibleGui?",\"visibleInferenceMode\":\""+(isRawVisibleGuiScenario()?"RAW_HIGH_RESOLUTION":"STABLE_FIXED_SCALE")+"\",\"rawRecaptureResourceRetained\":"+rawVisibleResourceRetained:"")+"}\n");
             System.exit(0);
         } catch (Exception | LinkageError failure) {
-            writeSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
+            writeTerminalSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
                     + "\"status\":\"FAIL\",\"stage\":\"" + safeToken(stage)
                     + "\",\"errorType\":\"" + safeToken(failure.getClass().getSimpleName())
                     + "\"" + (intervalEvidence==null?"":",\"nativeInterval\":"+intervalEvidence)
@@ -393,7 +393,7 @@ public final class PublicGuiSmokeMain {
         requireUnchanged(fixture,original,originalUndo);
         onEventThread(()->{if(owner.actualNativeCalls()!=calls)throw new IllegalStateException("Cached interval navigation performed inference");preview.dispatchEvent(new WindowEvent(preview,WindowEvent.WINDOW_CLOSING));return null;});
         requireUnchanged(fixture,original,originalUndo);
-        writeSummary(report,"{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\",\"status\":\"PASS\",\"engine\":\"PROBABILISTIC\",\"nativeInterval\":true,\"sparseNoChildRetained\":true,\"modeless\":true,\"cachedUndoRedo\":true,\"rootSourceChoice\":\""+rootChoice+"\",\"actualNativeCalls\":"+calls+"}\n");
+        writeTerminalSummary(report,"{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\",\"status\":\"PASS\",\"engine\":\"PROBABILISTIC\",\"nativeInterval\":true,\"sparseNoChildRetained\":true,\"modeless\":true,\"cachedUndoRedo\":true,\"rootSourceChoice\":\""+rootChoice+"\",\"actualNativeCalls\":"+calls+"}\n");
     }
     private static void awaitIntervalSelection(JDialog dialog,LegacyRefinementWorkflow owner,Runnable choose) throws Exception {
         var ready=new CompletableFuture<Void>();var observed=new AtomicBoolean();
@@ -603,7 +603,7 @@ public final class PublicGuiSmokeMain {
             exerciseSmoothThenRefineGui(report,action,session,fixture,original,originalUndo,StageKind.REFINE_B);
         String entryEvidence = savedEngine == TrackerMode.LEGACY_V02 ? "" :
             ",\"keyboardEntry\":\"" + entryActionKey(savedEngine) + "\",\"settingsAcceptedWithoutNotice\":true";
-        writeSummary(report,"{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\",\"status\":\"PASS\",\"engine\":\"LEGACY_V02\",\"savedEngine\":\""+savedEngine.name()+"\""+entryEvidence+",\"stepwise\":true,\"order\":\""+(bFirst?"B_A":"A_B")+"\",\"mode\":\""+appliedMode+"\",\"firstOutcome\":\""+firstOutcome+"\",\"secondOutcome\":\""+secondOutcome+"\",\"actualNativeCalls\":"+owner.actualNativeCalls()+",\"modeless\":true,\"cachedUndoRedo\":true,\"panZoomOverlay\":true,\"oneCommandApply\":true,\"commandUndoRedo\":true,\"cancelSettled\":true,\"nativeCancellationEntered\":true,\"nativeCancellationObserved\":true,\"nativePhysicalReturned\":true,\"noninitialLegacyParent\":true,\"allStageFindingsRestored\":true,\"archiveBuild\":\"runtime-stepwise-refinement-v1\",\"appliedArchive\":\"stepwise-applied.zip\",\"cancelledArchive\":\"stepwise-cancelled.zip\",\"appliedArchiveSha256\":\""+appliedArchive+"\",\"cancelledArchiveSha256\":\""+cancelledArchive+"\"}\n");
+        writeTerminalSummary(report,"{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\",\"status\":\"PASS\",\"engine\":\"LEGACY_V02\",\"savedEngine\":\""+savedEngine.name()+"\""+entryEvidence+",\"stepwise\":true,\"order\":\""+(bFirst?"B_A":"A_B")+"\",\"mode\":\""+appliedMode+"\",\"firstOutcome\":\""+firstOutcome+"\",\"secondOutcome\":\""+secondOutcome+"\",\"actualNativeCalls\":"+owner.actualNativeCalls()+",\"modeless\":true,\"cachedUndoRedo\":true,\"panZoomOverlay\":true,\"oneCommandApply\":true,\"commandUndoRedo\":true,\"cancelSettled\":true,\"nativeCancellationEntered\":true,\"nativeCancellationObserved\":true,\"nativePhysicalReturned\":true,\"noninitialLegacyParent\":true,\"allStageFindingsRestored\":true,\"archiveBuild\":\"runtime-stepwise-refinement-v1\",\"appliedArchive\":\"stepwise-applied.zip\",\"cancelledArchive\":\"stepwise-cancelled.zip\",\"appliedArchiveSha256\":\""+appliedArchive+"\",\"cancelledArchiveSha256\":\""+cancelledArchive+"\"}\n");
     }
 
     private record ExpectedExport(AlignmentMode mode,
@@ -1442,7 +1442,7 @@ public final class PublicGuiSmokeMain {
             }
             if (!finished.compareAndSet(false, true)) return;
             try {
-                writeSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
+                writeTerminalSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
                         + "\"status\":\"FAIL\",\"stage\":\"josm-startup\","
                         + "\"errorType\":\"StartupTimeout\"}\n");
             } catch (Throwable reportFailure) {
@@ -1936,6 +1936,7 @@ public final class PublicGuiSmokeMain {
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.begin();
             try{System.err.println("GUI_SMOKE_STORED_APPLY_BEGIN");apply.doClick();}
             finally{System.err.println("GUI_SMOKE_STORED_APPLY_COUNTERS "+org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.snapshot());System.err.println("GUI_SMOKE_SYNTHETIC_APPLY_PAINT registered="+visiblePainterRegistered.getAsBoolean()+" paintCalls="+(visiblePaintCalls.get()-paintsBefore));org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.end();}
+            if(isVisibleGuiScenario()&&visiblePaintCalls.get()<=paintsBefore)throw new IllegalStateException("Stored visible Apply did not enter the actual synthetic source painter");
             return null;
         });}finally{Toolkit.getDefaultToolkit().removeAWTEventListener(dismiss);}
         if(rejected.get()||onEventThread(dialog::isDisplayable)||UndoRedoHandler.getInstance().getUndoCommands().size()!=undo+1)throw new IllegalStateException("Stored visible Apply was refused or did not publish one command");
@@ -2044,9 +2045,11 @@ public final class PublicGuiSmokeMain {
                 authority.prepareExecution(false).run();
                 System.err.println("GUI_SMOKE_SYNTHETIC_BEFORE_RECAPTURE originalRepeat=true");return null;
             });
+            int paintsBeforeContinuation=visiblePaintCalls.get();
             try{clickAndAwaitStage(report,dialog,owner,continuation==StageKind.REFINE_A?"refineA":"refineB",continuation);}
             catch(Exception failure){
                 if(!isRawVisibleGuiScenario())throw failure;
+                if(!visiblePainterRegistered.getAsBoolean()||visiblePaintCalls.get()<=paintsBeforeContinuation)throw new IllegalStateException("Raw visible recapture did not retain its actual synthetic source painter",failure);
                 requireRawVisibleResourceRetention(dialog,owner,smooth,smoothGeometry,historyBefore,calls);
                 requireUnchanged(fixture,original,originalUndo);Format15ArchiveReader.read(exportThroughActualMenu());
                 var retainedPlan=onEventThread(()->owner.currentNative().orElseThrow().plan());
@@ -2349,8 +2352,14 @@ public final class PublicGuiSmokeMain {
                 ? symbol : "unknown";
     }
 
-    private static void writeSummary(Path report, String json) throws Exception {
+    /** Only the final run outcome releases the synthetic source, even when its report write fails. */
+    private static void writeTerminalSummary(Path report,String json) throws Exception {
         var fixture=visiblePainterFixture;visiblePainterFixture=null;if(fixture!=null)onEventThread(()->{fixture.close();return null;});
+        writeSummary(report,json);
+    }
+
+    /** Intermediate diagnostics are atomic writes, not terminal fixture-lifetime transitions. */
+    private static void writeSummary(Path report, String json) throws Exception {
         Files.createDirectories(report.getParent());
         Path temporary = Files.createTempFile(report.getParent(), ".public-gui-", ".tmp");
         try {

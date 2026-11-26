@@ -88,6 +88,7 @@ jobs:
               filters+=(--tests '*AlignWayActionTest.noRouteFromManualJunctionShowsInstructionWhileOrdinaryNoRouteKeepsItsReason' --tests '*AlignWayActionTest.intervalExportFailureRetainsActualBatchWorkWithoutClaimingFullWayInference')
               filters+=(--tests '*VisibleRenderPolicyTest')
               filters+=(--tests '*AlignWayActionTest.refinementApplyFailureDiagnosticsKeepBoundedSafeCauseAndBoundary')
+              filters+=(--tests '*PublicGuiSmokeContractTest.intermediateDiagnosticWritesKeepTheVisibleFixtureAlive' --tests '*PublicGuiSmokeContractTest.terminalReportWriteFailureStillReleasesTheVisibleFixture')
               filters+=(--tests '*RefinementAcquisitionTest.frozenVisiblePlanConvertsSameEpochPixelsAndRejectsShortFrameBeforeScalarWork')
               filters+=(--tests '*BenchmarkDecisionComparatorIntegrationTest.selectedObservationRejectsAbsentStaleAndSameCoreMissingWitnessOwners' --tests '*AlignWayActionTest.ordinaryBRouteFreezesSupportedSettingsWithoutChangingRequestedPreferences' --tests '*V022PreviewStateTest.t116SupportedLiveEnginePersistsWhileOtherSettingsAndHistoricalIdentityRemain' --tests '*VisibleEvidencePlanTest.pointsAndDecisionFitDoNotProveCompleteEngineSupport')
               ;;
@@ -132,6 +133,7 @@ jobs:
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.ModernRefinementBootstrapTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.V022FixedIntervalEditPlanComposerTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayActionTest.xml",
+                  "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.PublicGuiSmokeContractTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleRenderPolicyTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.BenchmarkDecisionComparatorIntegrationTest.xml",
                   "TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.ui.V022PreviewStateTest.xml",
@@ -217,6 +219,7 @@ jobs:
           test_names = {
               "refs/heads/codex/g004-stepwise-20261119": [
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/VisibleRefinementWorkflowTest.java",
+                  "org/openstreetmap/josm/plugins/wayheatmaptracer/PublicGuiSmokeContractTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RefinementAttemptDiagnosticsTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/diagnostics/replay/format15/RefinementLineageCodecTest.java",
                   "org/openstreetmap/josm/plugins/wayheatmaptracer/service/refinement/RefinementSessionTest.java",

@@ -52,6 +52,37 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 import org.openstreetmap.josm.tools.PlatformManager;
 
 class PublicGuiSmokeContractTest {
+    @Test void intermediateDiagnosticWritesKeepTheVisibleFixtureAlive(@TempDir Path directory) throws Exception {
+        var fixtureField=PublicGuiSmokeMain.class.getDeclaredField("visiblePainterFixture");fixtureField.setAccessible(true);
+        var write=PublicGuiSmokeMain.class.getDeclaredMethod("writeSummary",Path.class,String.class);write.setAccessible(true);
+        Object previous=fixtureField.get(null);var closes=new java.util.concurrent.atomic.AtomicInteger();
+        AutoCloseable fixture=closes::incrementAndGet;fixtureField.set(null,fixture);
+        try {
+            var report=directory.resolve("later-refinement-diagnostics.json");
+            write.invoke(null,report,"{\"synthetic\":true}\n");
+            assertEquals("{\"synthetic\":true}\n",Files.readString(report));
+            assertEquals(0,closes.get(),"An expected operation diagnostic must preserve its actual visible source");
+            org.junit.jupiter.api.Assertions.assertSame(fixture,fixtureField.get(null));
+            var terminal=PublicGuiSmokeMain.class.getDeclaredMethod("writeTerminalSummary",Path.class,String.class);terminal.setAccessible(true);
+            terminal.invoke(null,directory.resolve("summary.json"),"{\"status\":\"PASS\"}\n");
+            assertEquals(1,closes.get());org.junit.jupiter.api.Assertions.assertNull(fixtureField.get(null));
+            terminal.invoke(null,directory.resolve("summary.json"),"{\"status\":\"FAIL\"}\n");
+            assertEquals(1,closes.get(),"Terminal report replacement must not close the source twice");
+        } finally {fixtureField.set(null,previous);}
+    }
+
+    @Test void terminalReportWriteFailureStillReleasesTheVisibleFixture(@TempDir Path directory) throws Exception {
+        var fixtureField=PublicGuiSmokeMain.class.getDeclaredField("visiblePainterFixture");fixtureField.setAccessible(true);
+        var terminal=PublicGuiSmokeMain.class.getDeclaredMethod("writeTerminalSummary",Path.class,String.class);terminal.setAccessible(true);
+        Object previous=fixtureField.get(null);var closes=new java.util.concurrent.atomic.AtomicInteger();fixtureField.set(null,(AutoCloseable)closes::incrementAndGet);
+        try {
+            Path parent=directory.resolve("regular-file");Files.writeString(parent,"synthetic");
+            var failure=assertThrows(java.lang.reflect.InvocationTargetException.class,()->terminal.invoke(null,parent.resolve("summary.json"),"{}\n"));
+            assertTrue(failure.getCause() instanceof java.io.IOException);
+            assertEquals(1,closes.get());org.junit.jupiter.api.Assertions.assertNull(fixtureField.get(null));
+        } finally {fixtureField.set(null,previous);}
+    }
+
     @Test void settingsControlLookupRejectsMissingOrAmbiguousControls() {
         var panel = new JPanel(); var nested = new JPanel(); panel.add(nested);
         var box = new javax.swing.JCheckBox("Verbose logging"); nested.add(box);
