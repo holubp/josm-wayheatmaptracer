@@ -134,29 +134,70 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     private ExportUnavailable exportUnavailable=ExportUnavailable.NONE;
     private String legacyContextAvailability="unavailable-not-retained";
     private boolean preparingExport,diagnosticSealed;
-    private record BootstrapDiagnostic(UUID attempt,TrackerMode requestedEngine,String operation,String strength,String cause,OptionalLong workVisits) { }
+    record BootstrapConsumerFrame(String className,String methodName,int line) { }
+    record BootstrapFailureTrace(String boundary,List<BootstrapConsumerFrame> consumers,boolean unavailable,boolean truncated) { }
+    private static final String PLUGIN_STACK_PREFIX="org.openstreetmap.josm.plugins.wayheatmaptracer.";
+    private static final long BOOTSTRAP_DIAGNOSTIC_BYTES=4096;
+    private static boolean stackIdentifier(String value,int maximum,boolean qualified) {
+        if(value==null||value.isEmpty()||value.length()>maximum)return false;
+        boolean first=true;
+        for(int index=0;index<value.length();index++) {
+            char c=value.charAt(index);
+            if(qualified&&c=='.'){if(first)return false;first=true;continue;}
+            if(!(c>='A'&&c<='Z'||c>='a'&&c<='z'||c=='_'||c=='$'||!first&&c>='0'&&c<='9'))return false;
+            first=false;
+        }
+        return !first;
+    }
+    /** One bounded view of the already-created exception; never retains a Throwable or file name. */
+    static BootstrapFailureTrace bootstrapFailureTrace(StackTraceElement[] stack,boolean firstLimit) {
+        var consumers=new ArrayList<BootstrapConsumerFrame>(4);String boundary="";boolean truncated=firstLimit&&stack.length>64;
+        long retainedBytes=640; // Both diagnostic records, UUID/optional values and bounded list metadata.
+        for(int index=0;index<Math.min(64,stack.length);index++) {
+            var frame=stack[index];if(frame==null)continue;
+            String type=frame.getClassName(),method=frame.getMethodName();
+            if(!type.startsWith(PLUGIN_STACK_PREFIX)||!stackIdentifier(type,192,true)||!stackIdentifier(method,96,false))continue;
+            if(boundary.isEmpty()&&!type.contains("AttemptMemoryLedger"))boundary=type.substring(type.lastIndexOf('.')+1)+"."+method+":"+frame.getLineNumber();
+            if(!firstLimit||method.startsWith("lambda$"))continue;
+            if(type.equals(PLUGIN_STACK_PREFIX+"service.quality.GeometryWorkContext")
+                    &&(method.equals("debit")||method.equals("visit")||method.equals("reserve")||method.equals("reserveOn")))continue;
+            if(type.equals(PLUGIN_STACK_PREFIX+"service.quality.PostprocessingValidationWork")
+                    &&(method.equals("visit")||method.equals("charge")||method.equals("comparator")||method.equals("naturalOrder")))continue;
+            long bytes=320L+2L*(type.length()+method.length()); // Conservative frame/two-string headers and UTF16 payloads.
+            if(consumers.size()<4&&bytes<=BOOTSTRAP_DIAGNOSTIC_BYTES-retainedBytes){consumers.add(new BootstrapConsumerFrame(type,method,frame.getLineNumber()));retainedBytes+=bytes;}
+            else truncated=true;
+        }
+        return new BootstrapFailureTrace(boundary,List.copyOf(consumers),consumers.isEmpty(),truncated);
+    }
+    private record BootstrapDiagnostic(UUID attempt,TrackerMode requestedEngine,String operation,String strength,String cause,OptionalLong workVisits,
+            List<BootstrapConsumerFrame> consumers,boolean consumerFramesUnavailable,boolean consumerFramesTruncated,boolean limitStackObserved) { }
     private BootstrapDiagnostic bootstrapDiagnostic;
     private AttemptMemoryLedger.Owner bootstrapDiagnosticMemory;
     private void beginBootstrapDiagnostics(TrackerMode engine,RefinementControls.Strength strength) {
         if(legacyContextSupplier==null)return;
         if(bootstrapDiagnosticMemory!=null)bootstrapDiagnosticMemory.close();
-        bootstrapDiagnostic=new BootstrapDiagnostic(UUID.randomUUID(),engine,strength==null?"REFINE":"SMOOTH",strength==null?"unavailable":strength.name(),"RUNNING",OptionalLong.empty());
+        bootstrapDiagnostic=new BootstrapDiagnostic(UUID.randomUUID(),engine,strength==null?"REFINE":"SMOOTH",strength==null?"unavailable":strength.name(),"RUNNING",OptionalLong.empty(),List.of(),true,false,false);
         bootstrapDiagnosticMemory=rootMemory.child("bootstrap-diagnostic-slot");
-        try{bootstrapDiagnosticMemory.reserve(4096).adopt(bootstrapDiagnostic);}catch(AttemptMemoryLedger.ResourceLimitException limited){bootstrapDiagnosticMemory.close();bootstrapDiagnosticMemory=null;}
+        try{bootstrapDiagnosticMemory.reserve(BOOTSTRAP_DIAGNOSTIC_BYTES).adopt(bootstrapDiagnostic);}catch(AttemptMemoryLedger.ResourceLimitException limited){bootstrapDiagnosticMemory.close();bootstrapDiagnosticMemory=null;}
         if(diagnosticOwner==null)diagnosticOwner=DiagnosticsRegistry.claimRefinement(this);
         DiagnosticsRegistry.invalidateRefinement(diagnosticOwner);
     }
     private void bootstrapFailed(RuntimeException failure,boolean workerReturned) {
+        boolean firstLimit=failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached
+            &&(bootstrapDiagnostic==null||!bootstrapDiagnostic.limitStackObserved());
+        var trace=bootstrapFailureTrace(failure.getStackTrace(),firstLimit);
         computationEvidence="bootstrap; failed="+failure.getClass().getSimpleName()+"; phase=PREPARATION";
-        for(var frame:failure.getStackTrace())if(frame.getClassName().startsWith("org.openstreetmap.josm.plugins.wayheatmaptracer.")&&!frame.getClassName().contains("AttemptMemoryLedger")) {
-            computationEvidence+="; boundary="+frame.getClassName().substring(frame.getClassName().lastIndexOf('.')+1)+"."+frame.getMethodName()+":"+frame.getLineNumber();break;
-        }
+        if(!trace.boundary().isEmpty())computationEvidence+="; boundary="+trace.boundary();
         if(bootstrapDiagnostic==null)return;
         String cause=cancellation!=null&&cancellation.isCancelled()?"CANCELLED":review.invalidated()?"STALE":
             failure instanceof java.util.concurrent.RejectedExecutionException?"EXECUTOR_REJECTED":
             failure instanceof AttemptMemoryLedger.ResourceLimitException||failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached?"RESOURCE_LIMIT":"FAILED";
         var visits=workerReturned&&initialVisibleWork!=null?OptionalLong.of(initialVisibleWork.visits()):OptionalLong.empty();
-        var old=bootstrapDiagnostic;bootstrapDiagnostic=new BootstrapDiagnostic(old.attempt(),old.requestedEngine(),old.operation(),old.strength(),cause,visits);
+        var old=bootstrapDiagnostic;
+        // Four bounded ASCII class/method pairs stay inside the existing4096-byte diagnostic slot.
+        bootstrapDiagnostic=new BootstrapDiagnostic(old.attempt(),old.requestedEngine(),old.operation(),old.strength(),cause,visits,
+            old.limitStackObserved()?old.consumers():trace.consumers(),old.limitStackObserved()?old.consumerFramesUnavailable():trace.unavailable(),
+            old.limitStackObserved()?old.consumerFramesTruncated():trace.truncated(),old.limitStackObserved()||firstLimit);
         if(diagnosticOwner!=null)DiagnosticsRegistry.invalidateRefinement(diagnosticOwner);
     }
     private Format15Bundle bootstrapBundle(boolean terminal) {
@@ -176,7 +217,9 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         String cause=terminal&&busy?"CANCELLED":attempt.cause();
         String json="{\"schema\":1,\"attempt\":\""+attempt.attempt()+"\",\"phase\":\"BOOTSTRAP\",\"cause\":\""+cause
             +"\",\"operation\":\""+attempt.operation()+"\",\"requestedEngine\":"+(attempt.requestedEngine()==null?"null":"\""+attempt.requestedEngine().name()+"\"")
-            +",\"strength\":\""+attempt.strength()+"\",\"publication\":\"NO_PREPARED_ROOT\",\"nativeCalls\":0,\"nativeCallScope\":\"requested-optional-operation\",\"nativeFrozenInputs\":\"unavailable\",\"originalNativeWork\":\""+(originalWork==null?"unavailable":"available")+"\",\"chainReplay\":\"unavailable\",\"originalGeometryScope\":\"immutable-original-selected-segment\",\"auxiliaryWorkVisits\":"+(attempt.workVisits().isPresent()?attempt.workVisits().getAsLong():"null")+"}\n";
+            +",\"strength\":\""+attempt.strength()+"\",\"publication\":\"NO_PREPARED_ROOT\",\"nativeCalls\":0,\"nativeCallScope\":\"requested-optional-operation\",\"nativeFrozenInputs\":\"unavailable\",\"originalNativeWork\":\""+(originalWork==null?"unavailable":"available")+"\",\"chainReplay\":\"unavailable\",\"originalGeometryScope\":\"immutable-original-selected-segment\",\"auxiliaryWorkVisits\":"+(attempt.workVisits().isPresent()?attempt.workVisits().getAsLong():"null")
+            +",\"consumerFrames\":["+attempt.consumers().stream().map(frame->"{\"class\":\""+frame.className()+"\",\"method\":\""+frame.methodName()+"\",\"line\":"+frame.line()+"}").collect(java.util.stream.Collectors.joining(","))
+            +"],\"consumerFramesUnavailable\":"+attempt.consumerFramesUnavailable()+",\"consumerFramesTruncated\":"+attempt.consumerFramesTruncated()+"}\n";
         var status=Format15Artifact.text("latest-operation.json",json);
         // This fallback deliberately has no authority receipt, generated geometry or lineage.
         var artifacts=new LinkedHashMap<String,Format15Artifact>();artifacts.put(geometry.name(),geometry);artifacts.put(settings.name(),settings);artifacts.put(status.name(),status);

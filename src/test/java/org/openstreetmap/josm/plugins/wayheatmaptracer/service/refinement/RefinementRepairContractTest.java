@@ -8,6 +8,42 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 class RefinementRepairContractTest {
+ @Test void bootstrapConsumerMetadataFitsTheExistingDiagnosticAdmission() {
+  String prefix="org.openstreetmap.josm.plugins.wayheatmaptracer.";
+  String type=prefix+"C".repeat(192-prefix.length()),method="m".repeat(96);
+  var stack=new StackTraceElement[4];Arrays.fill(stack,new StackTraceElement(type,method,"synthetic-secret",Integer.MAX_VALUE));
+  var trace=LegacyRefinementWorkflow.bootstrapFailureTrace(stack,true);
+  long conservative=640;for(var frame:trace.consumers())conservative+=320L+2L*(frame.className().length()+frame.methodName().length());
+  assertTrue(conservative<=4096);assertFalse(trace.unavailable());assertTrue(trace.truncated());assertTrue(trace.consumers().size()<=4);
+ }
+ @Test void bootstrapConsumerStackSkipsOnlySpecifiedWrappersAndNeverRetainsFileText() {
+  String prefix="org.openstreetmap.josm.plugins.wayheatmaptracer.";
+  var stack=new StackTraceElement[]{
+   new StackTraceElement(prefix+"service.quality.GeometryWorkContext","debit","synthetic-cookie=secret",54),
+   new StackTraceElement(prefix+"service.quality.GeometryWorkContext","visit","private-synthetic-path",49),
+   new StackTraceElement(prefix+"service.quality.PostprocessingValidationWork","charge","synthetic-secret",20),
+   new StackTraceElement("java.util.stream.ReferencePipeline","forEach","synthetic-secret",7),
+   new StackTraceElement(prefix+"service.refinement.ModernReviewRoot","lambda$prepare$1","synthetic-secret",203),
+   new StackTraceElement(prefix+"service.ImageCostField","fromEvidence","synthetic-cookie=secret",321),
+   new StackTraceElement(prefix+"service.refinement.NativeRefinementSourceContext","intervalQuality","synthetic-secret",184),
+   new StackTraceElement(prefix+"service.quality.GeometryWorkContext","phaseView","synthetic-secret",34)};
+  var trace=LegacyRefinementWorkflow.bootstrapFailureTrace(stack,true);
+  assertEquals(List.of("fromEvidence","intervalQuality","phaseView"),trace.consumers().stream().map(LegacyRefinementWorkflow.BootstrapConsumerFrame::methodName).toList());
+  assertFalse(trace.unavailable());assertFalse(trace.truncated());assertFalse(trace.toString().contains("secret"));assertFalse(trace.toString().contains("private-synthetic"));
+  var other=LegacyRefinementWorkflow.bootstrapFailureTrace(stack,false);assertTrue(other.consumers().isEmpty());assertTrue(other.unavailable());assertFalse(other.truncated());
+ }
+ @Test void bootstrapConsumerStackBoundsScanFramesAndAsciiNames() {
+  String prefix="org.openstreetmap.josm.plugins.wayheatmaptracer.";
+  var frames=new ArrayList<StackTraceElement>();
+  for(String type:List.of("foreign.Consumer",prefix+"X".repeat(193),prefix+"Invalid-Name",prefix+"Private."))frames.add(new StackTraceElement(type,"consume","synthetic-secret",1));
+  for(String method:List.of("x".repeat(97),"lambda$consume$1","bad.method","secret=coordinate"))frames.add(new StackTraceElement(prefix+"Safe",method,"synthetic-secret",1));
+  for(int index=0;index<5;index++)frames.add(new StackTraceElement(prefix+"Safe","consume"+index,"synthetic-secret",index));
+  var trace=LegacyRefinementWorkflow.bootstrapFailureTrace(frames.toArray(StackTraceElement[]::new),true);
+  assertEquals(4,trace.consumers().size());assertTrue(trace.truncated());assertFalse(trace.unavailable());
+  var longStack=new StackTraceElement[65];Arrays.fill(longStack,new StackTraceElement("java.util.stream.Stream","forEach","synthetic-secret",1));
+  longStack[64]=new StackTraceElement(prefix+"Hidden","afterLimit","synthetic-secret",1);
+  var hidden=LegacyRefinementWorkflow.bootstrapFailureTrace(longStack,true);assertTrue(hidden.consumers().isEmpty());assertTrue(hidden.unavailable());assertTrue(hidden.truncated());
+ }
  @Test void retainedNativeReceiptIncludesRealNonemptyWorkRowsAndOffsets() throws Exception {
   // Reuse the existing production R4 gap fixture. Refinement A deliberately uses a
   // different policy, so its empty optional domain diagnostics cannot prove this case.

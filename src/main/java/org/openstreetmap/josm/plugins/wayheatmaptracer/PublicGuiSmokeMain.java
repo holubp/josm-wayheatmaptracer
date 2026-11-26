@@ -824,7 +824,31 @@ public final class PublicGuiSmokeMain {
             if(actual<0||actual>8_000_000L)throw new IllegalStateException("Actual bootstrap work exceeds its unchanged ceiling");
             visits=Long.toString(actual);
         }
-        return "{\"phase\":\"BOOTSTRAP\",\"cause\":\""+cause+"\",\"publication\":\"NO_PREPARED_ROOT\",\"nativeCalls\":0,\"nativeCallScope\":\"requested-optional-operation\",\"nativeFrozenInputs\":\"unavailable\",\"chainReplay\":\"unavailable\",\"auxiliaryWorkVisits\":"+visits+"}";
+        var frames=new ArrayList<String>(4);boolean unavailable=true;String truncated="null";
+        if(value.containsKey("consumerFrames")) {
+            var actual=value.getJsonArray("consumerFrames");
+            if(actual==null||actual.size()>4||!value.containsKey("consumerFramesUnavailable")||!value.containsKey("consumerFramesTruncated"))
+                throw new IllegalStateException("Actual bounded bootstrap consumer fields are unavailable");
+            unavailable=value.getBoolean("consumerFramesUnavailable");truncated=Boolean.toString(value.getBoolean("consumerFramesTruncated"));
+            if(unavailable!=actual.isEmpty())throw new IllegalStateException("Bootstrap consumer availability differs from actual frames");
+            for(var item:actual) {
+                if(!(item instanceof jakarta.json.JsonObject frame))throw new IllegalStateException("Actual bootstrap consumer frame is unavailable");
+                String type=frame.getString("class",""),method=frame.getString("method","");
+                if(!bootstrapConsumerIdentifier(type,method)||!(frame.get("line") instanceof jakarta.json.JsonNumber number))
+                    throw new IllegalStateException("Actual bootstrap consumer identifier is unavailable");
+                final int line;try{line=number.intValueExact();}catch(ArithmeticException invalid){throw new IllegalStateException("Actual bootstrap consumer line is unavailable");}
+                frames.add("{\"class\":\""+type+"\",\"method\":\""+method+"\",\"line\":"+line+"}");
+            }
+        }
+        return "{\"phase\":\"BOOTSTRAP\",\"cause\":\""+cause+"\",\"publication\":\"NO_PREPARED_ROOT\",\"nativeCalls\":0,\"nativeCallScope\":\"requested-optional-operation\",\"nativeFrozenInputs\":\"unavailable\",\"chainReplay\":\"unavailable\",\"auxiliaryWorkVisits\":"+visits
+            +",\"consumerFrames\":["+String.join(",",frames)+"],\"consumerFramesUnavailable\":"+unavailable+",\"consumerFramesTruncated\":"+truncated+"}";
+    }
+    private static boolean bootstrapConsumerIdentifier(String type,String method) {
+        String prefix="org.openstreetmap.josm.plugins.wayheatmaptracer.";
+        if(type.length()>192||method.length()>96||!type.startsWith(prefix)
+                ||!type.matches("[A-Za-z_$][A-Za-z0-9_$]*(\\.[A-Za-z_$][A-Za-z0-9_$]*)*")||!method.matches("[A-Za-z_$][A-Za-z0-9_$]*")||method.startsWith("lambda$"))return false;
+        if(type.equals(prefix+"service.quality.GeometryWorkContext")&&(method.equals("debit")||method.equals("visit")||method.equals("reserve")||method.equals("reserveOn")))return false;
+        return !type.equals(prefix+"service.quality.PostprocessingValidationWork")||!(method.equals("visit")||method.equals("charge")||method.equals("comparator")||method.equals("naturalOrder"));
     }
     static boolean isPublishedAttemptDiagnostic(
             java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics> diagnostic,

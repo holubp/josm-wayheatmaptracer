@@ -62,6 +62,18 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 import org.openstreetmap.josm.tools.PlatformManager;
 
 class PublicGuiSmokeContractTest {
+    @Test void visibleIntervalBootstrapConsumerFramesRequireBoundedPluginIdentifiers() {
+        String older="{\"phase\":\"BOOTSTRAP\",\"cause\":\"RESOURCE_LIMIT\",\"publication\":\"NO_PREPARED_ROOT\",\"nativeCalls\":0,\"nativeCallScope\":\"requested-optional-operation\",\"nativeFrozenInputs\":\"unavailable\",\"chainReplay\":\"unavailable\",\"auxiliaryWorkVisits\":8000000}";
+        assertTrue(PublicGuiSmokeMain.bootstrapFailureFacts(older).contains("\"consumerFramesUnavailable\":true"),"Missing older consumer fields remain unavailable");
+        String prefix="org.openstreetmap.josm.plugins.wayheatmaptracer.";
+        String frame="{\"class\":\""+prefix+"service.refinement.NativeRefinementSourceContext\",\"method\":\"intervalQuality\",\"line\":184,\"file\":\"synthetic-cookie=secret\"}";
+        String current=older.substring(0,older.length()-1)+",\"consumerFrames\":["+frame+"],\"consumerFramesUnavailable\":false,\"consumerFramesTruncated\":false}";
+        String safe=PublicGuiSmokeMain.bootstrapFailureFacts(current);assertTrue(safe.contains("intervalQuality"));assertFalse(safe.contains("secret"));assertFalse(safe.contains("\"file\""));
+        for(String invalid:List.of(current.replace(prefix,"java."),current.replace("intervalQuality","lambda$prepare$1"),current.replace("intervalQuality","x".repeat(97)),
+                current.replace("NativeRefinementSourceContext","X".repeat(193)),current.replace("refinement.NativeRefinementSourceContext","quality.GeometryWorkContext").replace("intervalQuality","debit"),
+                current.replace("["+frame+"]","["+String.join(",",java.util.Collections.nCopies(5,frame))+"]")))
+            assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.bootstrapFailureFacts(invalid));
+    }
     @Test void visibleIntervalBootstrapFailureKeepsActualRootlessFactsAndUnavailableWork() {
         String actual="{\"phase\":\"BOOTSTRAP\",\"cause\":\"RESOURCE_LIMIT\",\"publication\":\"NO_PREPARED_ROOT\",\"nativeCalls\":0,\"nativeCallScope\":\"requested-optional-operation\",\"nativeFrozenInputs\":\"unavailable\",\"chainReplay\":\"unavailable\",\"auxiliaryWorkVisits\":7999999}";
         var facts=PublicGuiSmokeMain.bootstrapFailureFacts(actual);assertTrue(facts.contains("\"auxiliaryWorkVisits\":7999999"));assertTrue(facts.contains("\"cause\":\"RESOURCE_LIMIT\""));
