@@ -894,6 +894,8 @@ public final class PublicGuiSmokeMain {
     /** Continuous public imagery painted through the actual JOSM visible-layer capture port. */
     private static final class AnalyticVisibleLayer extends org.openstreetmap.josm.gui.layer.ImageryLayer {
         private int captureReceipts;
+        private record PaintReceipt(int width,int height,double scale,double left,double top,double east,double north,int[] pixels) { }
+        private final java.util.ArrayDeque<PaintReceipt> repeatReceipts=new java.util.ArrayDeque<>();
         private final PublicGuiSmokeFixture.VisibleTile source;
         AnalyticVisibleLayer(PublicGuiSmokeFixture.VisibleTile source){super(new org.openstreetmap.josm.data.imagery.ImageryInfo("Strava public analytic visible heatmap"));this.source=source;}
         @Override public void paint(java.awt.Graphics2D graphics,org.openstreetmap.josm.gui.MapView view,org.openstreetmap.josm.data.Bounds bounds) {
@@ -913,6 +915,21 @@ public final class PublicGuiSmokeMain {
                 int gray=source.gray(point);
                 maximumGray=Math.max(maximumGray,gray);
                 image.setRGB(x,y,gray<<16|gray<<8|gray);
+            }
+            if(graphics.getTransform().getScaleX()>=5.5){
+                var boundsNow=view.getProjectionBounds(new java.awt.Rectangle(0,0,width,height));var centerNow=view.getCenter();
+                var pixelsNow=image.getRGB(0,0,width,height,null,0,width);
+                PaintReceipt previous=null;
+                for(var candidate:repeatReceipts)if(candidate.width()==width&&candidate.height()==height&&candidate.scale()==view.getScale()
+                        &&Math.abs(candidate.left()-boundsNow.minEast)<1e-8&&Math.abs(candidate.top()-boundsNow.maxNorth)<1e-8){previous=candidate;break;}
+                if(previous!=null){
+                    int changed=0,maximum=0,first=-1;
+                    for(int i=0;i<pixelsNow.length;i++)if(pixelsNow[i]!=previous.pixels()[i]){changed++;if(first<0)first=i;maximum=Math.max(maximum,Math.abs((pixelsNow[i]&255)-(previous.pixels()[i]&255)));}
+                    if(captureReceipts<96)System.err.println("GUI_SMOKE_SYNTHETIC_REPEAT width="+width+" height="+height+" changedPixels="+changed+" maximumGrayDifference="+maximum
+                        +" firstLocalX="+(first<0?-1:first%width)+" firstLocalY="+(first<0?-1:first/width)
+                        +" leftDelta="+(boundsNow.minEast-previous.left())+" topDelta="+(boundsNow.maxNorth-previous.top())
+                        +" centerEastDelta="+(centerNow.east()-previous.east())+" centerNorthDelta="+(centerNow.north()-previous.north()));
+                }else{if(repeatReceipts.size()==16)repeatReceipts.removeFirst();repeatReceipts.addLast(new PaintReceipt(width,height,view.getScale(),boundsNow.minEast,boundsNow.maxNorth,centerNow.east(),centerNow.north(),pixelsNow));}
             }
             if(graphics.getTransform().getScaleX()>=5.5&&captureReceipts++<4){
                 var projected=view.getProjectionBounds();var base=new LatLon(PublicGuiSmokeOracle.BASE_LATITUDE,PublicGuiSmokeOracle.BASE_LONGITUDE);var baseProjected=view.getProjection().latlon2eastNorth(base);
@@ -2015,6 +2032,13 @@ public final class PublicGuiSmokeMain {
             try{Format15ArchiveReader.read(exportThroughActualMenu());}
             catch(Exception unavailable){throw new IllegalStateException("Actual smoothing export unavailable: "+fixedFailureBoundary(onEventThread(owner::computationEvidence)),unavailable);}
             var historyBefore=onEventThread(()->retainedHistory(owner));var smoothGeometry=onEventThread(owner::selectedGeometry);
+            if(isRawVisibleGuiScenario())onEventThread(()->{
+                var field=LegacyRefinementWorkflow.class.getDeclaredField("sourceContext");field.setAccessible(true);
+                var context=(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementSourceContext)field.get(owner);
+                var authority=(org.openstreetmap.josm.plugins.wayheatmaptracer.util.PreparedCommandSource)context.detachedCommandGeneration();
+                authority.prepareExecution(false).run();
+                System.err.println("GUI_SMOKE_SYNTHETIC_BEFORE_RECAPTURE originalRepeat=true");return null;
+            });
             try{clickAndAwaitStage(report,dialog,owner,continuation==StageKind.REFINE_A?"refineA":"refineB",continuation);}
             catch(Exception failure){
                 if(!isRawVisibleGuiScenario())throw failure;
