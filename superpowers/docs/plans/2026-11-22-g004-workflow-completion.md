@@ -14,6 +14,15 @@
 
 ## Current remaining work —2026-11-26
 
+Combined64M optional-operation budget proposal remains UNAPPROVED. Current8M
+bootstrap/Smoothen and64M A/B preparation are unchanged. Independently approved
+repairs preserve inherited cancellation and meter the original managed-Legacy
+conversion plus authority validation without rerouting conversion or changing its
+output/old memory bounds. Fourteen local checks pass; qualify these repairs and
+the actual-root later-HASH test fixture in CI. Actual b21 raw/stable8M bootstrap
+still refuses before the complete-quality oracle or changed interval commands;
+no additional cache/fixture/quality trial is authorized while the decision waits.
+
 Qualify the approved exact RouteSample memo on the actual unchanged visible
 two-interval bootstrap within its original8M context, compare complete quality
 with an independent uncached oracle, and finish real changed A/post-Smooth A/B

@@ -17,6 +17,16 @@ import java.security.*;
 
 /** Factual immutable root capture; retained detached data is owned by the bounded history. */
 public final class RefinementRootAuthority {
+    /** Ordinary authority validation with the caller's existing operation work and owner. */
+    public static RefinementRootAuthority validateOriginalWithWork(NetworkSnapshot network,TraceRequest request,EvidenceSnapshot evidence,
+            AlignmentConfig config,String projection,String sourceIdentity,SelectedWayIntervalPartitioner.Partition partition,
+            GeometryWorkContext work,AttemptMemoryLedger.Owner owner) {
+        Objects.requireNonNull(work);if(work.owner()!=owner)throw new IllegalArgumentException("Original validation owner differs");
+        work.visit(GeometryWorkContext.Kind.BIND,1);
+        try(var scope=org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.open(work)) {
+            return new RefinementRootAuthority(network,request,evidence,config,projection,sourceIdentity,partition,null,null,null,null,work);
+        }
+    }
     public enum FrozenGeometryProofKind { DERIVED_CLOSED_TOPOLOGY, CAPTURED_PARTITION }
     public record FrozenGeometryProof(FrozenGeometryProofKind kind,List<OccurrenceRange> ranges,
             Optional<SelectedWayIntervalPartitioner.Partition> capturedPartition,String identity) {
@@ -69,6 +79,12 @@ public final class RefinementRootAuthority {
     private RefinementRootAuthority(NetworkSnapshot network,TraceRequest request,EvidenceSnapshot evidence,
             AlignmentConfig effectiveConfig,String projectionCode,String sourceIdentity,SelectedWayIntervalPartitioner.Partition capturedPartition,
             RetainedSmoothingSource source,GeometryWorkContext work,AttemptMemoryLedger.Owner owner,String producedHash) {
+        this(network,request,evidence,effectiveConfig,projectionCode,sourceIdentity,capturedPartition,source,work,owner,producedHash,null);
+    }
+    private RefinementRootAuthority(NetworkSnapshot network,TraceRequest request,EvidenceSnapshot evidence,
+            AlignmentConfig effectiveConfig,String projectionCode,String sourceIdentity,SelectedWayIntervalPartitioner.Partition capturedPartition,
+            RetainedSmoothingSource source,GeometryWorkContext work,AttemptMemoryLedger.Owner owner,String producedHash,GeometryWorkContext validationWork) {
+        var hashWork=work!=null?work:validationWork;
         Objects.requireNonNull(network); Objects.requireNonNull(request); Objects.requireNonNull(evidence);
         Objects.requireNonNull(effectiveConfig);
         nativeAcquisitions=Map.of();
@@ -96,7 +112,7 @@ public final class RefinementRootAuthority {
                 || !request.networkSnapshotId().equals(network.snapshotId())
                 || !request.networkContentHash().equals(network.canonicalHash())
                 || !request.evidenceSnapshotId().equals(evidence.snapshotId())
-                || !request.evidenceContentHash().equals(producedHash!=null?producedHash:work==null?evidence.canonicalHash():evidence.canonicalHash(work))
+                || !request.evidenceContentHash().equals(producedHash!=null?producedHash:hashWork==null?evidence.canonicalHash():evidence.canonicalHash(hashWork))
                 || !request.evidenceResolution().equals(evidence.resolution())
                 || request.geometryMode() != effectiveConfig.heatmap().alignmentMode()
                 || effectiveConfig.heatmap().trackerMode()!=request.engine() || request.selectedRange().size()<2

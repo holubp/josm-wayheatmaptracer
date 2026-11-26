@@ -702,6 +702,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             if(session==null) {
                 var work=beginOwnedWork();
                 var bootstrapMemory=rootMemory.child("lazy-original-root");
+                LegacyRefinementBootstrap.ManagedPreparation managedPreparation=null;
                 try {
                     if(review instanceof ModernReviewRoot modern) {
                         cancellation=new CancellationToken();initialVisibleBudget=RefinementPipeline.OperationBudget.production(TraceBudgets.defaults());
@@ -713,7 +714,12 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                         seed=new LegacyRefinementBootstrap().capture((LegacyReviewOwner)review,coordinator,initialVisibleWork);
                         var original=seed.originalSource();preparingSourceCurrent=()->original.requireCurrent(coordinator);
                     } else {
-                        seed=new LegacyRefinementBootstrap().capture((LegacyReviewOwner)review,coordinator,bootstrapMemory);
+                        cancellation=new CancellationToken();initialVisibleBudget=RefinementPipeline.OperationBudget.production(TraceBudgets.defaults());
+                        var managedReview=(LegacyReviewOwner)review;var receipt=managedReview.managedReceipt();var originalResult=managedReview.originalResult();
+                        preparingSourceCurrent=()->receipt.requireCurrent(coordinator,originalResult.tileMosaics());
+                        initialVisibleWork=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(sourcePreparationControl.visits(),sourcePreparationControl.bytes(),initialVisibleBudget.finalDeadlineNanos(),probe(cancellation),bootstrapMemory);
+                        managedPreparation=new LegacyRefinementBootstrap().captureManaged((LegacyReviewOwner)review,coordinator,initialVisibleWork);
+                        seed=managedPreparation.seed();
                         var original=seed.originalSource();preparingSourceCurrent=()->original.requireCurrent(coordinator);
                     }
                 }
@@ -721,11 +727,13 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                 busy=true;if(initialVisibleWork==null)cancellation=new CancellationToken();
                 try{present();}catch(RuntimeException failed){busy=false;bootstrapMemory.close();settleWork(work);completeLifecycle(work,false);throw failed;}
                 var captured=seed;var probe=probe(cancellation);
+                var capturedManaged=managedPreparation;
                 var bootstrapWork=initialVisibleWork;
                 CompletableFuture<PreparedRefinementRoot> bootstrap;
                 try{bootstrap=CompletableFuture.supplyAsync(()->{
                     if(review instanceof ModernReviewRoot modern)return new ModernRefinementBootstrap().complete(modern,bootstrapWork,visibleCapture);
-                    var completed=captured.context()==null?new LegacyRefinementBootstrap().complete(captured,coordinator,probe):new LegacyRefinementBootstrap().complete(captured,coordinator,captured.context());
+                    var completed=capturedManaged!=null?new LegacyRefinementBootstrap().completeManaged(capturedManaged,coordinator,bootstrapWork)
+                        :captured.context()==null?new LegacyRefinementBootstrap().complete(captured,coordinator,probe):new LegacyRefinementBootstrap().complete(captured,coordinator,captured.context());
                     return new PreparedRefinementRoot(completed,captured.settings(),captured.original(),new LegacyRefinementSourceContext(captured,completed,coordinator,visibleCapture),captured.memory(),captured.payloadLimit());
                 },executor);}catch(RuntimeException rejected){bootstrap=CompletableFuture.failedFuture(rejected);}
                 bootstrap
@@ -890,7 +898,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         var operation=rootMemory.child("smoothing-"+ticket.sequence());var publication=rootMemory.child("smoothing-publication-"+ticket.sequence());
         parent.payload().retainSmoothingSources(operation);if(source!=null)source.retainInto(operation);
         var baseline=session.admissionInventories();
-        cancellation=new CancellationToken();var entry=new NativeEntry(ticket);activeEntry=entry;var probe=probe(cancellation,entry);
+        if(initialVisibleWork==null)cancellation=new CancellationToken();var entry=new NativeEntry(ticket);activeEntry=entry;var probe=probe(cancellation,entry);
         var budget=initialVisibleBudget!=null?initialVisibleBudget:RefinementPipeline.OperationBudget.production(root.authority().request().budgets());
         var inherited=initialVisibleWork;initialVisibleWork=null;initialVisibleBudget=null;
         var workContext=inherited!=null?inherited:new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(sourcePreparationControl.visits(),sourcePreparationControl.bytes(),budget.finalDeadlineNanos(),probe,operation);

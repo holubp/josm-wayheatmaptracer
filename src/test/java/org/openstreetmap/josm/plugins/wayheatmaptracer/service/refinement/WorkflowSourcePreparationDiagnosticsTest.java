@@ -40,11 +40,12 @@ class WorkflowSourcePreparationDiagnosticsTest {
     @ParameterizedTest @MethodSource("failures")
     void actualHashFailureExportsItsCurrentOwnedWorkAndPriorNativeFacts(RefinementAttemptDiagnostics.Cause cause,boolean afterNative) throws Exception {
         var decoder=new TileDecoderClassifier();var work=new LinkedBlockingQueue<Runnable>();var publications=new LinkedBlockingQueue<Runnable>();
-        var workflow=new LegacyRefinementWorkflow[1];var review=new LegacyReviewOwner[1];var data=new DataSet[1];var fired=new AtomicBoolean();
+        var workflow=new LegacyRefinementWorkflow[1];var review=new LegacyReviewOwner[1];var data=new DataSet[1];var fired=new AtomicBoolean();var firstCheckpoint=new java.util.concurrent.atomic.AtomicLong(-1);
         try(var coordinator=new TileFetchCoordinator((request,credentials)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",ridge(request.address()),null,Duration.ZERO,""),new ManagedTileCache(temp.resolve(cause.name()+afterNative),decoder),decoder,TileReliabilityPolicy.defaults())) {
             long limit=cause==RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT?(afterNative?262_200:0):8_000_000;
             long trigger=afterNative?262_400:256;
             var control=new LegacyRefinementWorkflow.SourcePreparationControl(limit,AttemptMemoryLedger.MAX_BYTES,visits->{
+                firstCheckpoint.compareAndSet(-1,visits);
                 if(cause==RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT||visits<trigger||!fired.compareAndSet(false,true))return;
                 if(cause==RefinementAttemptDiagnostics.Cause.STALE)coordinator.updateActiveGeneration(new ManagedTileGeneration(8));
                 else try{SwingUtilities.invokeAndWait(()->((JButton)find(workflow[0].controls(),"cancel")).doClick());}catch(Exception failure){throw new AssertionError(failure);}
@@ -58,13 +59,30 @@ class WorkflowSourcePreparationDiagnosticsTest {
                     review[0]=LegacyReviewOwner.begin(data[0],selection,config);var receipt=new TileHeatmapSampler.AcquisitionReceipt[1];
                     var original=new AlignmentService(new TileHeatmapSampler(coordinator)).alignLegacyReviewed(selection,null,null,config,new AlignmentService.LegacyCaptureObserver(){public void managed(TileHeatmapSampler.AcquisitionReceipt actual){receipt[0]=actual;}});
                     review[0].captured(original,null,receipt[0]);review[0].select(original.candidates().get(0));
-                    workflow[0]=new LegacyRefinementWorkflow(review[0],coordinator,review[0]::select,shown->{},status->{},work::add,publications::add,control);workflow[0].enableRuntimeDiagnostics(()->null);
+                    workflow[0]=new LegacyRefinementWorkflow(review[0],coordinator,review[0]::select,shown->{},status->{},work::add,publications::add,LegacyRefinementWorkflow.SourcePreparationControl.production());workflow[0].enableRuntimeDiagnostics(()->null);
                     ((JButton)find(workflow[0].controls(),"refineB")).doClick();
                 });
-                work.remove().run();SwingUtilities.invokeAndWait(publications.remove());work.remove().run();
+                // Warm the actual root under production limits, then cancel the queued
+                // optional worker. This test intentionally targets a later HASH phase.
+                work.remove().run();SwingUtilities.invokeAndWait(publications.remove());
+                SwingUtilities.invokeAndWait(workflow[0]::cancel);work.remove().run();SwingUtilities.invokeAndWait(publications.remove());
+                SwingUtilities.invokeAndWait(()->{
+                    assertFalse(workflow[0].busy());assertTrue(workflow[0].atRoot());assertEquals(0,workflow[0].actualNativeCalls());
+                    assertEquals(RefinementModels.StageKind.ROOT_LEGACY,workflow[0].currentStage().kind());assertFalse(data[0].isModified());review[0].requireOriginalAttemptCurrent();
+                    assertEquals(RefinementAttemptDiagnostics.Cause.CANCELLED,workflow[0].latestAttemptDiagnostics().orElseThrow().cause());
+                    assertTrue(work.isEmpty());assertTrue(publications.isEmpty());
+                    try {
+                        for(var name:java.util.List.of("initialVisibleWork","initialVisibleBudget")){var field=LegacyRefinementWorkflow.class.getDeclaredField(name);field.setAccessible(true);assertNull(field.get(workflow[0]),"Next click cannot inherit the settled warm operation's counter or absolute deadline");}
+                        var policy=LegacyRefinementWorkflow.class.getDeclaredField("sourcePreparationControl");policy.setAccessible(true);policy.set(workflow[0],control);assertSame(control,policy.get(workflow[0]));
+                        var token=LegacyRefinementWorkflow.class.getDeclaredField("cancellation");token.setAccessible(true);var previous=token.get(workflow[0]);
+                        ((JButton)find(workflow[0].controls(),"refineB")).doClick();assertNotSame(previous,token.get(workflow[0]),"New explicit click has its own cancellation token");
+                    }catch(ReflectiveOperationException failure){throw new AssertionError(failure);}
+                });
+                work.remove().run();
                 assertTrue(workflow[0].ownedBytes()>0,"Returned worker still owns queued inputs/results");assertFalse(publications.isEmpty());
                 SwingUtilities.invokeAndWait(publications.remove());
                 var diagnostic=workflow[0].latestAttemptDiagnostics().orElseThrow();var auxiliary=diagnostic.sourcePreparation().orElseThrow();
+                assertEquals(0,firstCheckpoint.get(),"New explicit click starts fresh work, unlike an inherited same-click phase");assertEquals(limit,auxiliary.maximumVisits().orElseThrow());
                 assertEquals(cause,auxiliary.cause());assertEquals(afterNative?"blue":"hot",auxiliary.failedSource().orElseThrow().palette());
                 assertTrue(auxiliary.visits()<=limit);assertEquals(auxiliary.visits(),auxiliary.counters().values().stream().mapToLong(Long::longValue).sum());
                 var nativeWork=auxiliary.nativeWork().orElseThrow();assertEquals(afterNative,nativeWork.nativeCalls().orElseThrow()>0);assertEquals(afterNative,workflow[0].actualNativeCalls()>0);

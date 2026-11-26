@@ -27,6 +27,43 @@ class VisibleRefinementWorkflowTest {
     @TempDir Path temp;
     @BeforeAll static void setup(){Config.setPreferencesInstance(new MemoryPreferences());ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));}
     static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> cells(){return LegacyRefinementWorkflowTest.modes();}
+    @Test void directSmoothCancellationStillTargetsItsInheritedBootstrapWorkAndGuard() throws Exception {
+        var workers=new LinkedBlockingQueue<Runnable>();var publications=new LinkedBlockingQueue<Runnable>();
+        var owner=new LegacyReviewOwner[1];var workflow=new LegacyRefinementWorkflow[1];
+        SwingUtilities.invokeAndWait(()->{
+            var data=new DataSet();var nodes=new ArrayList<Node>();var projection=ProjectionRegistry.getProjection();
+            for(int i=0;i<5;i++){var node=new Node(projection.eastNorth2latlon(new EastNorth(-60+30*i,0)));data.addPrimitive(node);nodes.add(node);}
+            var way=new Way();way.setNodes(nodes);data.addPrimitive(way);var selection=new SelectionContext(way,0,4,nodes,Set.of(nodes.get(0),nodes.get(4)));
+            var config=AlignmentConfig.withoutCleanup(new ManagedHeatmapConfig("","","","","all","hot","",".*",AlignmentMode.MOVE_EXISTING_NODES,TrackerMode.LEGACY_V02,false,false,false,false,false,false,false,true,false,false,7,4,3,InferenceMode.RAW_HIGH_RESOLUTION,15,15,7.01,1.56,IntensitySamplingMode.COLOR_MAPPING,7));
+            owner[0]=LegacyReviewOwner.begin(data,selection,config);var original=nodes.stream().map(Node::getEastNorth).toList();var preview=new ArrayList<EastNorth>(original);
+            for(int i=1;i<4;i++)preview.set(i,new EastNorth(original.get(i).east(),3));
+            var image=new BufferedImage(200,100,BufferedImage.TYPE_INT_ARGB);
+            for(int y=0;y<100;y++){int gray=(int)Math.round(255*(.02+.8*Math.exp(-.5*Math.pow((y-50)/1.2,2))));for(int x=0;x<200;x++)image.setRGB(x,y,0xff000000|gray<<16|gray<<8|gray);}
+            var candidate=new CenterlineCandidate("supported-bend",1,List.of(),List.of()).withFinalPreviewPoints(preview);
+            var result=new AlignmentResult(selection,image,List.of(candidate),original,preview,List.of(),null,null,List.of(new DetectorAttempt("hot","hot",TrackerMode.LEGACY_V02,DetectorAttemptStatus.APPLICABLE,List.of(candidate.id()),"","")),List.of(candidate));
+            var source=new LegacyVisibleSource(-100,-50,100,50,6,6,OptionalDouble.of(2),"EPSG:3857",new VisibleSourceEpoch().captureStable(),OptionalDouble.of(7.01),OptionalDouble.of(1.56));
+            owner[0].captured(result,LegacyVisibleRefinementBootstrapTest.factualFrame(source,200,100,0,0));
+            workflow[0]=new LegacyRefinementWorkflow(owner[0],null,owner[0]::select,d->{},s->{},workers::add,publications::add);
+            workflow[0].smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.MEDIUM);
+        });
+        try {
+            var field=LegacyRefinementWorkflow.class.getDeclaredField("initialVisibleWork");field.setAccessible(true);
+            var inherited=(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext)field.get(workflow[0]);assertNotNull(inherited);
+            var tokenField=LegacyRefinementWorkflow.class.getDeclaredField("cancellation");tokenField.setAccessible(true);var originalToken=tokenField.get(workflow[0]);
+            workers.remove().run();SwingUtilities.invokeAndWait(publications.remove());
+            assertTrue(workflow[0].busy());assertFalse(workers.isEmpty());assertNull(field.get(workflow[0]));long visits=inherited.visits();
+            SwingUtilities.invokeAndWait(workflow[0]::cancel);
+            assertThrows(java.util.concurrent.CancellationException.class,()->inherited.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.BIND,1));
+            assertSame(originalToken,tokenField.get(workflow[0]));assertEquals(visits,inherited.visits());
+            workers.remove().run();SwingUtilities.invokeAndWait(publications.remove());
+            assertEquals(RefinementAttemptDiagnostics.Cause.CANCELLED,workflow[0].latestAttemptDiagnostics().orElseThrow().cause());
+            assertEquals(visits,inherited.visits(),"The actual smoothing guard spends no work after cancellation");
+            SwingUtilities.invokeAndWait(()->{assertEquals(0,workflow[0].actualNativeCalls());assertTrue(workflow[0].atRoot());assertFalse(workflow[0].busy());});
+        } finally {
+            SwingUtilities.invokeAndWait(()->workflow[0].close());while(!workers.isEmpty())workers.remove().run();while(!publications.isEmpty())SwingUtilities.invokeAndWait(publications.remove());
+            SwingUtilities.invokeAndWait(owner[0]::close);assertEquals(0,workflow[0].ownedBytes());
+        }
+    }
     @Test void usefulSmoothingStrengthsUseOneUnsmoothedParentAndPermitNativeContinuation() throws Exception {
         for(var mode:AlignmentMode.values()) {
             var workers=new LinkedBlockingQueue<Runnable>();var publications=new LinkedBlockingQueue<Runnable>();

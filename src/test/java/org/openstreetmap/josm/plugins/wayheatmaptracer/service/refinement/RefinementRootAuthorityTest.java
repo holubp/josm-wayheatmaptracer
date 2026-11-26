@@ -10,6 +10,22 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 
 class RefinementRootAuthorityTest {
+    @Test void ordinaryValidationWorkMetersTheRealHashWithoutRegroupingAuthority() {
+        var root=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);
+        try(var owner=AttemptMemoryLedger.production().rootOwner();var foreign=owner.child("foreign")) {
+            var zero=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(0,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,owner);
+            assertThrows(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached.class,()->RefinementRootAuthority.validateOriginalWithWork(root.network(),root.request(),root.evidence(),root.effectiveConfig(),root.projectionCode(),root.sourceIdentity(),null,zero,owner));
+            var work=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,owner);
+            assertThrows(IllegalArgumentException.class,()->RefinementRootAuthority.validateOriginalWithWork(root.network(),root.request(),root.evidence(),root.effectiveConfig(),root.projectionCode(),root.sourceIdentity(),null,work,foreign));
+            var actual=RefinementRootAuthority.validateOriginalWithWork(root.network(),root.request(),root.evidence(),root.effectiveConfig(),root.projectionCode(),root.sourceIdentity(),null,work,owner);
+            assertSame(root.network(),actual.network());assertSame(root.evidence(),actual.evidence());assertSame(root.request(),actual.request());
+            assertEquals(root.retainedBytes(),actual.retainedBytes());
+            assertEquals(root.charges().values().stream().sorted().toList(),actual.charges().values().stream().sorted().toList());
+            assertTrue(work.counters().get(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.HASH)>0);
+            var r=root.request();var invalid=new TraceRequest(r.selectedWayKey(),r.selectedRange(),r.engine(),r.geometryMode(),r.permissions(),r.budgets(),r.evidenceSnapshotId(),"0".repeat(64),r.networkSnapshotId(),r.networkContentHash(),r.settingsHash(),r.parameterHash(),r.samplerId(),r.configuredSampleStepMeters(),r.profileChainage(),r.evidenceResolution());
+            assertThrows(IllegalArgumentException.class,()->RefinementRootAuthority.validateOriginalWithWork(root.network(),invalid,root.evidence(),root.effectiveConfig(),root.projectionCode(),root.sourceIdentity(),null,work,owner));
+        }
+    }
     @Test void registeredHashLookupChargesAndCancelsBeforeInspectingAliases() {
         var root=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);var candidate=RefinementParentFixtures.parent(root,"blue");
         try(var owner=AttemptMemoryLedger.production().rootOwner()) {

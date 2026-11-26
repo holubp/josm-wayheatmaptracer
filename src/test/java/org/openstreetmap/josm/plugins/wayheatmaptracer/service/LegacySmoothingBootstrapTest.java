@@ -28,6 +28,90 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.*;
 class LegacySmoothingBootstrapTest {
     @TempDir Path temp;
     @BeforeAll static void setup(){Config.setPreferencesInstance(new MemoryPreferences());ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));}
+    @Test void managedCompatibilityBodyChargesActualCopyMapHashWithoutChangingItsOutput() throws Exception {
+        var decoder=new TileDecoderClassifier();
+        try(var coordinator=new TileFetchCoordinator((r,c)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",ridge(r.address(),49.998),null,Duration.ZERO,""),new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())) {
+            var review=managedWorkReview(coordinator);var ledger=AttemptMemoryLedger.production();
+            try(var owner=ledger.rootOwner();var metered=owner.child("metered");var compatibility=owner.child("compatibility")) {
+                var work=new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,metered);
+                var captured=new AtomicReference<LegacyRefinementBootstrap.ManagedPreparation>();
+                SwingUtilities.invokeAndWait(()->captured.set(new LegacyRefinementBootstrap().captureManaged(review,coordinator,work)));
+                var seed=captured.get().seed();long before=work.visits();
+                var historical=new LegacyRefinementBootstrap.Seed(seed.facts(),seed.original(),seed.config(),seed.receipt(),seed.settings(),seed.selectedChoice(),compatibility,seed.payloadLimit());
+                var expected=new LegacyRefinementBootstrap().complete(historical,coordinator,CancellationProbe.NONE);
+                assertThrows(IllegalArgumentException.class,()->new LegacyRefinementBootstrap().completeManaged(captured.get(),coordinator,
+                    new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,metered)));
+                assertThrows(IllegalArgumentException.class,()->new LegacyRefinementBootstrap().completeManaged(captured.get(),coordinator,
+                    new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,compatibility)));
+                var actual=new LegacyRefinementBootstrap().completeManaged(captured.get(),coordinator,work);
+                assertSame(seed.facts().network(),actual.authority().network());assertSame(seed.facts().receipt(),actual.receipt());
+                var a=expected.authority().evidence();var b=actual.authority().evidence();
+                assertEquals(a.transform(),b.transform());assertEquals(a.coordinateFrame(),b.coordinateFrame());assertEquals(a.resolution(),b.resolution());assertEquals(a.resampling(),b.resampling());
+                assertEquals(a.canonicalHash(),b.canonicalHash());assertEquals(expected.authority().request(),actual.authority().request());
+                assertArrayEquals(a.fields().get("native").copiedValues(),b.fields().get("native").copiedValues());
+                assertArrayEquals(a.fields().get("native").copiedValidity(),b.fields().get("native").copiedValidity());
+                assertArrayEquals(a.fields().get("native").copiedInterpolationValidity(),b.fields().get("native").copiedInterpolationValidity());
+                assertEquals(expected.stage().candidates().stream().map(c->c.result().previewPolyline()).toList(),actual.stage().candidates().stream().map(c->c.result().previewPolyline()).toList());
+                assertTrue(work.visits()>before);for(var kind:List.of(GeometryWorkContext.Kind.COPY,GeometryWorkContext.Kind.MAP,GeometryWorkContext.Kind.HASH))assertTrue(work.counters().get(kind)>0,kind.name());
+                long spent=work.visits();var inherited=work.phaseView(8_000_000);assertTrue(inherited.visits()>spent);assertTrue(inherited.sharesAccountingWith(work));
+                assertTrue(ledger.peakBytes()<=AttemptMemoryLedger.MAX_BYTES);
+            }finally{SwingUtilities.invokeAndWait(review::close);}
+            assertEquals(0,ledger.currentBytes());
+        }
+    }
+    @Test void managedCompatibilityCaptureRefusesZeroWorkBeforeDetachedTraversal() throws Exception {
+        var decoder=new TileDecoderClassifier();
+        try(var coordinator=new TileFetchCoordinator((r,c)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",ridge(r.address(),49.998),null,Duration.ZERO,""),new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())) {
+            var review=managedWorkReview(coordinator);var ledger=AttemptMemoryLedger.production();
+            try(var owner=ledger.rootOwner()) {
+                var work=new GeometryWorkContext(0,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,owner);
+                SwingUtilities.invokeAndWait(()->assertThrows(GeometryWorkContext.LimitReached.class,()->new LegacyRefinementBootstrap().captureManaged(review,coordinator,work)));
+                assertEquals(0,work.visits());assertEquals(0,ledger.currentBytes());
+            }finally{SwingUtilities.invokeAndWait(review::close);}
+        }
+    }
+    @Test void managedCompatibilityFailuresSettleTheirOperationWithoutClosingTheOriginalSource() throws Exception {
+        var decoder=new TileDecoderClassifier();
+        try(var coordinator=new TileFetchCoordinator((r,c)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",ridge(r.address(),49.998),null,Duration.ZERO,""),new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())) {
+            var review=managedWorkReview(coordinator);
+            try {
+                for(boolean cancel:List.of(false,true)) {
+                    var ledger=AttemptMemoryLedger.production();
+                    try(var parent=ledger.rootOwner()) {
+                        parent.reserve(128).adopt(new Object());
+                        try(var operation=parent.child("actual-managed-operation")) {
+                            var armed=new AtomicBoolean();var copyBaseline=new AtomicLong();var reference=new AtomicReference<GeometryWorkContext>();
+                            var work=new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,
+                                ()->armed.get()&&reference.get().counters().get(GeometryWorkContext.Kind.COPY)>copyBaseline.get(),operation);reference.set(work);
+                            var captured=new AtomicReference<LegacyRefinementBootstrap.ManagedPreparation>();
+                            SwingUtilities.invokeAndWait(()->captured.set(new LegacyRefinementBootstrap().captureManaged(review,coordinator,work)));
+                            long before=work.counters().get(GeometryWorkContext.Kind.COPY);copyBaseline.set(before);
+                            if(cancel) {
+                                armed.set(true);
+                                assertThrows(java.util.concurrent.CancellationException.class,()->new LegacyRefinementBootstrap().completeManaged(captured.get(),coordinator,work));
+                                assertTrue(work.counters().get(GeometryWorkContext.Kind.COPY)>before,"Cancellation follows real partial copy work");
+                            } else try(var pressure=parent.reserve(AttemptMemoryLedger.MAX_BYTES-ledger.currentBytes()-1)) {
+                                assertThrows(AttemptMemoryLedger.ResourceLimitException.class,()->new LegacyRefinementBootstrap().completeManaged(captured.get(),coordinator,work));
+                                assertEquals(before,work.counters().get(GeometryWorkContext.Kind.COPY),"Capacity refuses before the validity/pixel traversal");
+                            }
+                        }
+                        assertEquals(128,ledger.currentBytes());assertFalse(parent.isClosed());
+                        SwingUtilities.invokeAndWait(review::requireOriginalAttemptCurrent);
+                    }
+                    assertEquals(0,ledger.currentBytes());
+                }
+            }finally{SwingUtilities.invokeAndWait(review::close);}
+        }
+    }
+    private static LegacyReviewOwner managedWorkReview(TileFetchCoordinator coordinator) throws Exception {
+        var review=new AtomicReference<LegacyReviewOwner>();
+        SwingUtilities.invokeAndWait(()->{
+            var data=new DataSet();var selection=selection(data,49.998);var cfg=config(AlignmentMode.PRECISE_SHAPE,true);
+            var current=LegacyReviewOwner.begin(data,selection,cfg);review.set(current);var receipt=new AtomicReference<TileHeatmapSampler.AcquisitionReceipt>();
+            var result=new AlignmentService(new TileHeatmapSampler(coordinator)).alignLegacyReviewed(selection,null,null,cfg,new AlignmentService.LegacyCaptureObserver(){public void managed(TileHeatmapSampler.AcquisitionReceipt actual){receipt.set(actual);}});
+            current.captured(result,null,receipt.get());current.select(result.candidates().get(0));
+        });return review.get();
+    }
     private static AlignmentConfig config(AlignmentMode mode,boolean managed) {
         return config(mode,managed,false);
     }

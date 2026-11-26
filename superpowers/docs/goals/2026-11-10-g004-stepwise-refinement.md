@@ -7,16 +7,27 @@
 
 ## Current shortest path to the next RC
 
+The combined64M bootstrap/Smoothen optional-operation proposal is PENDING user
+approval. Current8M bootstrap/Smoothen and64M A/B preparation remain unchanged.
+Separately authorized correctness repairs retain the inherited Smoothen cancel
+token and meter the existing managed-Legacy bootstrap conversion and authority
+validation on the same work/owner. The original conversion grid/scalars/hash and
+all old memory bounds remain; additional helper coverage is conservative. Local
+fourteen checks pass. The later-HASH diagnostic fixture warms an actual root,
+cancels its queued worker, then starts a new explicit tightly bounded operation;
+its actual native/export checks and the repair batch still require CI.
+
 The actual visible full post-Smooth A/B stored commands and ten ordinary GUI
 rows pass. The remaining visible interval bootstrap exhausts its unchanged8M
 allowance during full-quality scalar profile convolution. The controller-approved
 exact-query memo is implemented only around interval full-quality evaluation:
 2048 raw-bit point/tangent entries, additional1,114,624-byte admitted scratch,
 same work/deadline/cancellation, original miss arithmetic and eight kernels.
-Local duplicate-work and complete-quality/negative tests pass; actual unchanged
-two-interval8M bootstrap, uncached full-quality parity, changed A descendant and
-post-Smooth A/B stored commands still require fresh CI. No cap/fixture/quality
-bypass is approved if this exact engineering reuse is insufficient.
+Local duplicate-work and complete-quality/negative tests pass. Actual b21 raw
+and stable GUI still stop at8M before publishing an interval root; the complete
+quality oracle, changed A descendant and post-Smooth A/B interval commands remain
+unreached. No further cache/fixture/quality attempt or cap change is authorized
+without the pending explicit decision.
 
 The public memory control now uses the real shared hashing context. Its two
 original roots have different pre-hold accounting baselines; actual preparation
