@@ -946,6 +946,7 @@ public final class PublicGuiSmokeMain {
     }
 
     private static volatile AutoCloseable visiblePainterFixture;
+    private static java.util.function.BooleanSupplier visiblePainterRegistered=()->false;
     private static boolean rawVisibleResourceRetained;
     private static boolean isVisibleGuiScenario(){return System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder","").startsWith("VISIBLE_B_A");}
     private static boolean isRawVisibleGuiScenario(){return "VISIBLE_B_A".equals(System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder"));}
@@ -1113,7 +1114,8 @@ public final class PublicGuiSmokeMain {
             public void detachFromMapView(org.openstreetmap.josm.gui.layer.MapViewPaintable.MapViewEvent event){original.detachFromMapView(event);}
         };
         painters.put(layer,replacement);
-        return ()->{if(painters.get(layer)==replacement)painters.put(layer,original);analytic.destroy();};
+        visiblePainterRegistered=()->painters.get(layer)==replacement;
+        return ()->{visiblePainterRegistered=()->false;if(painters.get(layer)==replacement)painters.put(layer,original);analytic.destroy();};
     }
 
     private static void requirePaintOutsideDatasetLock(org.openstreetmap.josm.data.osm.DataSet data) {
@@ -1929,9 +1931,11 @@ public final class PublicGuiSmokeMain {
         Toolkit.getDefaultToolkit().addAWTEventListener(dismiss,AWTEvent.WINDOW_EVENT_MASK);
         try{onEventThread(()->{
             var apply=labelledButton(dialog.getContentPane(),"Apply");if(!apply.isEnabled())throw new IllegalStateException("Stored visible interval plan is not applicable");
+            if(isVisibleGuiScenario()&&!visiblePainterRegistered.getAsBoolean())throw new IllegalStateException("Public synthetic source painter registration changed before stored Apply");
+            int paintsBefore=visiblePaintCalls.get();
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.begin();
             try{System.err.println("GUI_SMOKE_STORED_APPLY_BEGIN");apply.doClick();}
-            finally{System.err.println("GUI_SMOKE_STORED_APPLY_COUNTERS "+org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.snapshot());org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.end();}
+            finally{System.err.println("GUI_SMOKE_STORED_APPLY_COUNTERS "+org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.snapshot());System.err.println("GUI_SMOKE_SYNTHETIC_APPLY_PAINT registered="+visiblePainterRegistered.getAsBoolean()+" paintCalls="+(visiblePaintCalls.get()-paintsBefore));org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.end();}
             return null;
         });}finally{Toolkit.getDefaultToolkit().removeAWTEventListener(dismiss);}
         if(rejected.get()||onEventThread(dialog::isDisplayable)||UndoRedoHandler.getInstance().getUndoCommands().size()!=undo+1)throw new IllegalStateException("Stored visible Apply was refused or did not publish one command");
@@ -2033,6 +2037,7 @@ public final class PublicGuiSmokeMain {
             catch(Exception unavailable){throw new IllegalStateException("Actual smoothing export unavailable: "+fixedFailureBoundary(onEventThread(owner::computationEvidence)),unavailable);}
             var historyBefore=onEventThread(()->retainedHistory(owner));var smoothGeometry=onEventThread(owner::selectedGeometry);
             if(isRawVisibleGuiScenario())onEventThread(()->{
+                if(!visiblePainterRegistered.getAsBoolean())throw new IllegalStateException("Public synthetic source painter registration changed before recapture");
                 var field=LegacyRefinementWorkflow.class.getDeclaredField("sourceContext");field.setAccessible(true);
                 var context=(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementSourceContext)field.get(owner);
                 var authority=(org.openstreetmap.josm.plugins.wayheatmaptracer.util.PreparedCommandSource)context.detachedCommandGeneration();
