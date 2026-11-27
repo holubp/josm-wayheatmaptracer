@@ -1106,7 +1106,7 @@ public class AlignWayAction extends JosmAction {
         JDialog dialog = new JDialog(MainApplication.getMainFrame(),
                 tr("Interval Alignment Preview"), false);
         JPanel panel = new JPanel(new BorderLayout(4,4));
-        JPanel body=new JPanel();body.setLayout(new javax.swing.BoxLayout(body,javax.swing.BoxLayout.Y_AXIS));
+        JPanel body=new JPanel(new BorderLayout(4,4));
         JPanel footer=new JPanel(new BorderLayout(4,4));JPanel buttons=new JPanel(new java.awt.GridLayout(0, 2, 4, 4));
         JPanel intervalControls = new JPanel(new java.awt.GridLayout(0, 2));
         List<JComboBox<String>> choices = new java.util.ArrayList<>();
@@ -1125,11 +1125,13 @@ public class AlignWayAction extends JosmAction {
                     run.interval().range().firstIndex(), run.interval().range().lastIndex())));
             JComboBox<String> choice = new JComboBox<>();
             choice.setName("refinement-root-interval-"+index);
+            choice.setPrototypeDisplayValue(tr("Detector and candidate selection"));
             populateIntervalRouteChoices(choice, run.routes());
             intervalControls.add(choice);
             choices.add(choice);
         }
         JTextArea quality = new JTextArea(8, 78);
+        quality.setName("modern-quality");
         quality.setEditable(false);
         quality.setLineWrap(true);
         quality.setWrapStyleWord(true);
@@ -1137,10 +1139,13 @@ public class AlignWayAction extends JosmAction {
         qualityScroll.setPreferredSize(new Dimension(680, 170));
         JButton confirm = new JButton(tr("Confirm review"));
         JButton apply = new JButton(tr("Apply"));
+        confirm.setName("modern-confirm"); apply.setName("modern-apply");
         JButton close = new JButton(tr("Close preview"));
+        close.setName("modern-close");
         boolean[] applying = {false};
         boolean[] completed = {false};
         JButton disconnect = new JButton(tr("Disconnect selected way at shared nodes…"));
+        disconnect.setName("modern-disconnect");
         disconnect.addActionListener(event -> showDisconnectionChooser(owner, dialog, dataSet,
                 selection, imageryLayer, mapView, slideConfig, persistedSlideConfig, tracingAtCapture,
                 computed, diagnosticAttemptIdentity, previewSourceOwner, () -> completed[0] = true));
@@ -1148,14 +1153,20 @@ public class AlignWayAction extends JosmAction {
         intervalScroll.setPreferredSize(new Dimension(680, 180));
         String settingsNotice = modernSettingsNotice(persistedSlideConfig, slideConfig);
         if (!settingsNotice.isEmpty()) {
-            body.add(settingsNoticeComponent(settingsNotice));
+            body.add(settingsNoticeComponent(settingsNotice), BorderLayout.NORTH);
         }
         sourceChoices.setPrototypeDisplayValue(tr("Selected raster: detector and source"));
-        if (sourceChoices.getItemCount() > 1) panel.add(sourceChoices, BorderLayout.NORTH);
-        body.add(intervalScroll);body.add(qualityScroll);
+        sourceChoices.setVisible(sourceChoices.getItemCount() > 1);
+        panel.add(sourceChoices, BorderLayout.NORTH);
+        intervalScroll.setName("interval-route-scroll");
+        qualityScroll.setName("interval-quality-scroll");
+        var split = new javax.swing.JSplitPane(javax.swing.JSplitPane.VERTICAL_SPLIT, intervalScroll, qualityScroll);
+        split.setResizeWeight(0.5);
+        split.setPreferredSize(new Dimension(680, 260));
+        body.add(split, BorderLayout.CENTER);
         buttons.add(disconnect);buttons.add(confirm);buttons.add(apply);buttons.add(close);
         footer.add(buttons,BorderLayout.SOUTH);panel.add(footer,BorderLayout.SOUTH);
-        var reviewScroll=new JScrollPane(body);reviewScroll.setPreferredSize(new Dimension(710,380));panel.add(reviewScroll,BorderLayout.CENTER);
+        panel.add(body,BorderLayout.CENTER);
         dialog.setContentPane(panel);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
         packReviewDialog(dialog);
@@ -1436,7 +1447,7 @@ public class AlignWayAction extends JosmAction {
             }catch(RuntimeException unavailable) {
                 if(refinement[0]!=null){footer.remove(refinement[0].controls());refinement[0].close();}if(refinementRoot[0]!=null)refinementRoot[0].close();refinement[0]=null;refinementRoot[0]=null;
                 if(livePreviewSession.isCurrent(owner))livePreviewSession.replaceWindow(owner,dialog::dispose);
-                body.add(new JLabel(tr("Optional refinement preparation is unavailable for this capture.")));
+                body.add(new JLabel(tr("Optional refinement preparation is unavailable for this capture.")), BorderLayout.SOUTH);
                 PluginLog.verbose("Native interval refinement attachment unavailable: %s",unavailable.getClass().getSimpleName());
             }
         }
@@ -1740,6 +1751,7 @@ public class AlignWayAction extends JosmAction {
                 return new Dimension(Math.min(size.width, 480), size.height);
             }
         };
+        choices.setName("modern-root-choice");
         choices.setRenderer(new DefaultListCellRenderer() {
             @Override public java.awt.Component getListCellRendererComponent(JList<?> list,
                     Object value, int index, boolean selected, boolean focused) {
@@ -1753,6 +1765,7 @@ public class AlignWayAction extends JosmAction {
         LiveBPreviewService.PreviewChoice firstChoice = previewChoices.get(0);
         JTextArea quality = new JTextArea(liveBQualitySummary(firstChoice.owner(),
                 firstChoice.localRouteIndex()), 5, 76);
+        quality.setName("modern-quality");
         quality.setEditable(false);
         quality.setLineWrap(true);
         quality.setWrapStyleWord(true);
@@ -1772,12 +1785,16 @@ public class AlignWayAction extends JosmAction {
         ModernReviewRoot[] refinementRoot = {null};
         JButton confirm = new JButton(tr("Confirm review"));
         JButton apply = new JButton(tr("Apply"));
+        confirm.setName("modern-confirm"); apply.setName("modern-apply");
         JButton preciseRerun = new JButton(tr("Rerun once with Precise Shape"));
+        preciseRerun.setName("modern-precise-rerun");
         JButton disconnect = new JButton(tr("Disconnect selected way at shared nodes…"));
+        disconnect.setName("modern-disconnect");
         confirm.setEnabled(false);
         apply.setEnabled(false);
         preciseRerun.setVisible(false);
         JButton close = new JButton(tr("Close preview"));
+        close.setName("modern-close");
         JPanel header = new JPanel();
         header.setLayout(new javax.swing.BoxLayout(header, javax.swing.BoxLayout.Y_AXIS));
         choices.setPrototypeDisplayValue(firstChoice);
@@ -4046,10 +4063,10 @@ public class AlignWayAction extends JosmAction {
         configureRetryButton(retry, initial, slideConfig, result);
 
         double currentSearchHalfWidth = retrySearchBounds(slideConfig, result).currentMeters();
-        JLabel selectedCoverageStatus = new JLabel(coverageStatus(
+        JTextArea selectedCoverageStatus = reviewStatus(coverageStatus(
             initial, currentSearchHalfWidth, initialAssessment, false));
-        JLabel selectedCleanupStatus = new JLabel(cleanupStatus(initial));
-        JLabel selectedCandidateDetail = new JLabel(cleanupDetail(initial));
+        JTextArea selectedCleanupStatus = reviewStatus(cleanupStatus(initial));
+        JTextArea selectedCandidateDetail = reviewStatus(cleanupDetail(initial));
         selectedCoverageStatus.setName("legacy-coverage");
         selectedCleanupStatus.setName("legacy-cleanup");
         selectedCandidateDetail.setName("legacy-detail");
@@ -4095,9 +4112,9 @@ public class AlignWayAction extends JosmAction {
         JPanel panel = buildSummaryPanel(
             current[0].result(), initial, config, cleanupConfig, null,
             ratingMode ? ratingBox : null, offTheLine, jumping, unnecessaryKinks, badJunctionShapes);
-        panel.add(selectedCoverageStatus, GBC.eol());
-        panel.add(selectedCleanupStatus, GBC.eol());
-        panel.add(selectedCandidateDetail, GBC.eol());
+        panel.add(new JScrollPane(selectedCoverageStatus), GBC.eol().fill(GBC.HORIZONTAL));
+        panel.add(new JScrollPane(selectedCleanupStatus), GBC.eol().fill(GBC.HORIZONTAL));
+        panel.add(new JScrollPane(selectedCandidateDetail), GBC.eol().fill(GBC.HORIZONTAL));
         comboBox.addActionListener(event -> {
             CenterlineCandidate selected = (CenterlineCandidate) comboBox.getSelectedItem();
             if (selected == null) {
@@ -4848,6 +4865,14 @@ public class AlignWayAction extends JosmAction {
             chosenResult, chosen, preview.initialCandidate(),
             reviewConfirmation == null ? "applied" : "applied-after-review",
             PluginLog.currentSlideLog()+(notificationFailed?"\ncommand-publication=committed-notification-failed\n":""), candidateRatings));
+    }
+
+    private static JTextArea reviewStatus(String text) {
+        JTextArea status = new JTextArea(text, 2, 50);
+        status.setEditable(false);
+        status.setLineWrap(true);
+        status.setWrapStyleWord(true);
+        return status;
     }
 
     private JPanel buildSummaryPanel(

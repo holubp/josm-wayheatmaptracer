@@ -177,6 +177,9 @@ public final class PublicGuiSmokeMain {
                 if (ready == null || ready.state() != AlignmentJob.State.PREVIEW_READY) {
                     throw new IllegalStateException("Production preview attempt is not ready");
                 }
+                if (onEventThread(() -> preview.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner") != null)) {
+                    checkModernLayout(preview, intervalGui, false);
+                }
                 if(intervalGui){runNativeIntervalGui(report,fixture,preview,session,original,originalUndo,action);System.exit(0);return;}
                 String initialStatus = artifactText(latestArchive(report.getParent()),
                         "attempt-status.json");
@@ -391,7 +394,9 @@ public final class PublicGuiSmokeMain {
             for(String name:List.of("refineA","refineB","smooth"))if(!requiredNamed(preview.getContentPane(),name,javax.swing.JButton.class).isShowing())throw new IllegalStateException("Native interval optional control unavailable");
             return workflow;
         });
+        checkModernLayout(preview, true, false);
         clickAndAwaitStage(report,preview,owner,"refineA",StageKind.REFINE_A);
+        checkModernLayout(preview, true, true);
         var firstParent=onEventThread(()->owner.currentStage().parentChoice().orElseThrow());int calls=owner.actualNativeCalls();
         onEventThread(()->{requiredNamed(preview.getContentPane(),"undo",javax.swing.JButton.class).doClick();return null;});
         awaitIntervalSelection(preview,owner,()->{
@@ -778,9 +783,9 @@ public final class PublicGuiSmokeMain {
     }
     private static List<String> displayedFindings(JDialog dialog) {
         return List.of(requiredNamed(dialog.getContentPane(),"quality",javax.swing.JTextArea.class).getText(),
-            requiredNamed(dialog.getContentPane(),"legacy-coverage",javax.swing.JLabel.class).getText(),
-            requiredNamed(dialog.getContentPane(),"legacy-cleanup",javax.swing.JLabel.class).getText(),
-            requiredNamed(dialog.getContentPane(),"legacy-detail",javax.swing.JLabel.class).getText());
+            requiredNamed(dialog.getContentPane(),"legacy-coverage",javax.swing.JTextArea.class).getText(),
+            requiredNamed(dialog.getContentPane(),"legacy-cleanup",javax.swing.JTextArea.class).getText(),
+            requiredNamed(dialog.getContentPane(),"legacy-detail",javax.swing.JTextArea.class).getText());
     }
     private static void requireExactLegacyParent(LegacyRefinementWorkflow owner,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyReviewOwner review,String choice,
@@ -910,6 +915,14 @@ public final class PublicGuiSmokeMain {
                 SwingUtilities.invokeLater(check);return null;
             });
             ready.get(180,TimeUnit.SECONDS);
+            if (!expectBootstrapRefusal && expected != StageKind.ROOT_NATIVE) {
+                boolean modern = onEventThread(() -> {
+                    List<javax.swing.JButton> found = new ArrayList<>();
+                    collectNamed(dialog.getContentPane(), "modern-apply", javax.swing.JButton.class, found);
+                    return !found.isEmpty();
+                });
+                if (modern) checkModernLayout(dialog, false, true);
+            }
         } catch(Exception failure) {
             try {
                 // Bootstrap can fail before a Stage exists. Preserve its producer's
@@ -1485,6 +1498,13 @@ public final class PublicGuiSmokeMain {
         var reviewScroll = requiredNamed(root, "legacy-review-scroll", javax.swing.JScrollPane.class);
         var quality = requiredNamed(root, "quality", javax.swing.JTextArea.class);
         var undo = requiredNamed(root, "undo", javax.swing.JButton.class);
+        var candidate = requiredNamed(root, "candidate", JComboBox.class);
+        requireFooterHierarchy(root, candidate, candidate.isShowing());
+        for (String statusName : List.of("legacy-coverage", "legacy-cleanup", "legacy-detail")) {
+            var status = requiredNamed(root, statusName, javax.swing.JTextArea.class);
+            if (!status.getLineWrap() || !status.getWrapStyleWord() || !(status.getParent() instanceof javax.swing.JViewport))
+                throw new IllegalStateException("Legacy status must wrap in a scroll viewport");
+        }
         if (!quality.getLineWrap() || !quality.getWrapStyleWord() || !(quality.getParent() instanceof javax.swing.JViewport))
             throw new IllegalStateException("Reasons must wrap in a scroll viewport");
         if (!undo.isEnabled() && (undo.getToolTipText() == null || undo.getToolTipText().isBlank()
@@ -1519,6 +1539,69 @@ public final class PublicGuiSmokeMain {
         requireFooterHierarchy(root, cancel, cancel != null && cancel.isShowing());
         requireFooterHierarchy(root, apply, apply.isShowing());
         if (confirm.isVisible()) requireFooterHierarchy(root, confirm, confirm.isShowing());
+    }
+
+    private static void checkModernLayout(JDialog dialog, boolean interval, boolean descendant) throws Exception {
+        onEventThread(() -> {
+            var original = dialog.getSize();
+            try {
+                dialog.setSize(800, 600); dialog.validate();
+                var root = dialog.getContentPane();
+                for (String name : List.of("modern-apply", "refineA", "refineB", "smooth", "redo")) {
+                    var button = requiredNamed(root, name, javax.swing.JButton.class);
+                    requireFooterHierarchy(root, button, button.isShowing());
+                    if (button.getWidth() < button.getPreferredSize().width)
+                        throw new IllegalStateException("Review button text is clipped: " + name);
+                }
+                for (String name : List.of("modern-disconnect", "modern-confirm", "modern-close", "modern-precise-rerun")) {
+                    List<javax.swing.JButton> found = new ArrayList<>();
+                    collectNamed(root, name, javax.swing.JButton.class, found);
+                    for (var button : found) if (button.isVisible()) {
+                        requireFooterHierarchy(root, button, button.isShowing());
+                        if (button.getWidth() < button.getPreferredSize().width)
+                            throw new IllegalStateException("Review button text is clipped: " + name);
+                    }
+                }
+                if (descendant) {
+                    var choice = requiredNamed(root, "candidate", JComboBox.class);
+                    requireFooterHierarchy(root, choice, choice.isShowing());
+                } else if (interval) {
+                    var source = requiredNamed(root, "refinement-root-source", JComboBox.class);
+                    if (source.isVisible()) requireFooterHierarchy(root, source, source.isShowing());
+                    var routes = requiredNamed(root, "interval-route-scroll", javax.swing.JScrollPane.class);
+                    int routeCount = 0;
+                    for (int index = 0; ; index++) {
+                        List<JComboBox> matches = new ArrayList<>();
+                        collectNamed(root, "refinement-root-interval-" + index, JComboBox.class, matches);
+                        if (matches.isEmpty()) break;
+                        var route = matches.get(0);
+                        route.scrollRectToVisible(new java.awt.Rectangle(0, 0, route.getWidth(), route.getHeight()));
+                        var rect = SwingUtilities.convertRectangle(route, new java.awt.Rectangle(0, 0, route.getWidth(), route.getHeight()), routes.getViewport());
+                        requireFooterBounds(new java.awt.Rectangle(0, 0, routes.getViewport().getWidth(), routes.getViewport().getHeight()), rect);
+                        if (!route.isShowing()) throw new IllegalStateException("Interval choice is inaccessible");
+                        routeCount++;
+                    }
+                    if (!routes.isShowing() || routeCount == 0) throw new IllegalStateException("Interval choices are inaccessible");
+                    var quality = requiredNamed(root, "modern-quality", javax.swing.JTextArea.class);
+                    if (!quality.getLineWrap() || !(quality.getParent() instanceof javax.swing.JViewport))
+                        throw new IllegalStateException("Interval diagnostics must wrap and scroll");
+                    var scroll = requiredNamed(root, "interval-quality-scroll", javax.swing.JScrollPane.class);
+                    String old = quality.getText();
+                    try {
+                        quality.setText("Long interval diagnostic with retained factual evidence. ".repeat(100));
+                        quality.setCaretPosition(quality.getDocument().getLength());
+                        scroll.validate();
+                        if (scroll.getVerticalScrollBar().getMaximum() <= scroll.getVerticalScrollBar().getVisibleAmount())
+                            throw new IllegalStateException("Long interval diagnostics do not scroll");
+                    } finally { quality.setText(old); quality.setCaretPosition(0); }
+                } else {
+                    List<JComboBox> roots = new ArrayList<>();
+                    collectNamed(root, "modern-root-choice", JComboBox.class, roots);
+                    for (var choice : roots) if (choice.isVisible()) requireFooterHierarchy(root, choice, choice.isShowing());
+                }
+            } finally { dialog.setSize(original); dialog.validate(); }
+            return null;
+        });
     }
 
     static void requireDisplay(boolean headless) {
