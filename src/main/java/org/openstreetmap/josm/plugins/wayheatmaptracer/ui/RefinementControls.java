@@ -34,6 +34,7 @@ public final class RefinementControls extends JPanel {
         setLayout(new BorderLayout(4, 4));
         JPanel top = new JPanel(new BorderLayout(4, 4));
         stage.setName("stage"); top.add(stage, BorderLayout.NORTH);
+        candidate.setPrototypeDisplayValue(new Choice("", "A reasonably long detector and candidate"));
         candidate.setName("candidate"); candidate.getAccessibleContext().setAccessibleName("Candidate and color tracer");
         top.add(candidate, BorderLayout.CENTER); add(top, BorderLayout.NORTH);
         quality.setName("quality"); quality.setEditable(false); quality.setLineWrap(true); quality.setWrapStyleWord(true);
@@ -42,12 +43,11 @@ public final class RefinementControls extends JPanel {
         add(scroll, BorderLayout.CENTER);
         JPanel actions = new JPanel(); actions.setLayout(new BoxLayout(actions, BoxLayout.Y_AXIS));
         JPanel navigation = new JPanel(new FlowLayout(FlowLayout.LEADING)); navigation.add(undo); navigation.add(redo); navigation.add(cancel);
-        JPanel refinementA = new JPanel(new FlowLayout(FlowLayout.LEADING)); refinementA.add(a);
-        JPanel refinementB = new JPanel(new FlowLayout(FlowLayout.LEADING)); refinementB.add(b);
+        JPanel refinement = new JPanel(new FlowLayout(FlowLayout.LEADING)); refinement.add(a); refinement.add(b);
         JPanel smoothing = new JPanel(new FlowLayout(FlowLayout.LEADING));
         strength.setName("strength"); strength.getAccessibleContext().setAccessibleName("Smoothing strength");
         smoothing.add(strength); smoothing.add(smooth);
-        actions.add(navigation); actions.add(refinementA); actions.add(refinementB); actions.add(smoothing); add(actions, BorderLayout.SOUTH);
+        actions.add(navigation); actions.add(refinement); actions.add(smoothing); add(actions, BorderLayout.SOUTH);
         candidate.addActionListener(e -> { if (!presenting && candidate.getSelectedItem() != null) listener.selected(((Choice) candidate.getSelectedItem()).id()); });
         strength.addActionListener(e -> { if (!presenting && strength.getSelectedItem() != null) listener.strengthSelected((Strength) strength.getSelectedItem()); });
         undo.addActionListener(e -> listener.undo()); redo.addActionListener(e -> listener.redo());

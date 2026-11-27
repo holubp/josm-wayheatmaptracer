@@ -64,6 +64,15 @@ class RefinementControlsTest {
             assertEquals(List.of("cancel"), e.events);
         });
     }
+    @Test void refinementActionsShareCompactRowAndLongChoiceDoesNotWidenDialog() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            RefinementControls p = new RefinementControls(new Events());
+            p.present(new ViewState("Stage", List.of(new Choice("a", "Long detector ".repeat(100))), "a",
+                "Long finding ".repeat(500), Strength.MEDIUM, false, YES, NO, YES, YES, YES, YES));
+            assertSame(find(p, "refineA").getParent(), find(p, "refineB").getParent());
+            assertTrue(p.getPreferredSize().width < 700, "long detector label must not widen dialog");
+        });
+    }
     private static void layoutTree(Container c) {
         c.doLayout();
         for (Component child : c.getComponents()) if (child instanceof Container nested) layoutTree(nested);

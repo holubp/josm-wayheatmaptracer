@@ -1107,7 +1107,7 @@ public class AlignWayAction extends JosmAction {
                 tr("Interval Alignment Preview"), false);
         JPanel panel = new JPanel(new BorderLayout(4,4));
         JPanel body=new JPanel();body.setLayout(new javax.swing.BoxLayout(body,javax.swing.BoxLayout.Y_AXIS));
-        JPanel footer=new JPanel(new BorderLayout(4,4));JPanel buttons=new JPanel();
+        JPanel footer=new JPanel(new BorderLayout(4,4));JPanel buttons=new JPanel(new java.awt.GridLayout(0, 2, 4, 4));
         JPanel intervalControls = new JPanel(new java.awt.GridLayout(0, 2));
         List<JComboBox<String>> choices = new java.util.ArrayList<>();
         JComboBox<String> sourceChoices = new JComboBox<>(state.sourceRuns().stream()
@@ -1150,14 +1150,15 @@ public class AlignWayAction extends JosmAction {
         if (!settingsNotice.isEmpty()) {
             body.add(settingsNoticeComponent(settingsNotice));
         }
-        if (sourceChoices.getItemCount() > 1) body.add(sourceChoices);
+        sourceChoices.setPrototypeDisplayValue(tr("Selected raster: detector and source"));
+        if (sourceChoices.getItemCount() > 1) panel.add(sourceChoices, BorderLayout.NORTH);
         body.add(intervalScroll);body.add(qualityScroll);
         buttons.add(disconnect);buttons.add(confirm);buttons.add(apply);buttons.add(close);
         footer.add(buttons,BorderLayout.SOUTH);panel.add(footer,BorderLayout.SOUTH);
         var reviewScroll=new JScrollPane(body);reviewScroll.setPreferredSize(new Dimension(710,380));panel.add(reviewScroll,BorderLayout.CENTER);
         dialog.setContentPane(panel);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
-        dialog.pack();
+        packReviewDialog(dialog);
         dialog.setLocationRelativeTo(MainApplication.getMainFrame());
         activePreviewDialog = dialog;
         livePreviewSession.replaceWindow(owner, dialog::dispose);
@@ -1429,7 +1430,9 @@ public class AlignWayAction extends JosmAction {
                 dialog.getRootPane().putClientProperty("wayheatmaptracer.refinementOwner",refinement[0]);
                 livePreviewSession.replaceWindow(owner,()->{refinement[0].close();dialog.dispose();overlay.hide();});
                 refinement[0].attachOwnership(livePreviewSession.workGate(),owner,()->{livePreviewSession.close(owner);dialog.dispose();overlay.hide();});
-                attachRefinementLifecycle(dialog,refinement[0]);dialog.pack();
+                attachRefinementLifecycle(dialog,refinement[0]);
+                panel.setPreferredSize(new Dimension(700, 600));
+                packReviewDialog(dialog);
             }catch(RuntimeException unavailable) {
                 if(refinement[0]!=null){footer.remove(refinement[0].controls());refinement[0].close();}if(refinementRoot[0]!=null)refinementRoot[0].close();refinement[0]=null;refinementRoot[0]=null;
                 if(livePreviewSession.isCurrent(owner))livePreviewSession.replaceWindow(owner,dialog::dispose);
@@ -1731,7 +1734,12 @@ public class AlignWayAction extends JosmAction {
         List<CenterlineCandidate> candidates = previewChoices.stream()
                 .map(LiveBPreviewService.PreviewChoice::candidate).toList();
         JComboBox<LiveBPreviewService.PreviewChoice> choices = new JComboBox<>(
-                previewChoices.toArray(LiveBPreviewService.PreviewChoice[]::new));
+                previewChoices.toArray(LiveBPreviewService.PreviewChoice[]::new)) {
+            @Override public Dimension getPreferredSize() {
+                Dimension size = super.getPreferredSize();
+                return new Dimension(Math.min(size.width, 480), size.height);
+            }
+        };
         choices.setRenderer(new DefaultListCellRenderer() {
             @Override public java.awt.Component getListCellRendererComponent(JList<?> list,
                     Object value, int index, boolean selected, boolean focused) {
@@ -1771,6 +1779,8 @@ public class AlignWayAction extends JosmAction {
         preciseRerun.setVisible(false);
         JButton close = new JButton(tr("Close preview"));
         JPanel header = new JPanel();
+        header.setLayout(new javax.swing.BoxLayout(header, javax.swing.BoxLayout.Y_AXIS));
+        choices.setPrototypeDisplayValue(firstChoice);
         header.add(new JLabel(tr("{0} final geometry",
                 livePreviewEngineLabel(slideConfig.heatmap().trackerMode()))));
         String settingsNotice = modernSettingsNotice(persistedSlideConfig, slideConfig);
@@ -1803,7 +1813,7 @@ public class AlignWayAction extends JosmAction {
                         livePreviewEngineLabel(slideConfig.heatmap().trackerMode())), false);
         dialog.setContentPane(panel);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
-        dialog.pack();
+        packReviewDialog(dialog);
         dialog.setLocationRelativeTo(MainApplication.getMainFrame());
         activePreviewDialog = dialog;
         livePreviewSession.replaceWindow(previewOwner, dialog::dispose);
@@ -2182,7 +2192,9 @@ public class AlignWayAction extends JosmAction {
                 dialog.getRootPane().putClientProperty("wayheatmaptracer.refinementOwner",refinement[0]);
                 livePreviewSession.replaceWindow(previewOwner,()->{refinement[0].close();dialog.dispose();overlay.hide();});
                 refinement[0].attachOwnership(livePreviewSession.workGate(),previewOwner,()->{livePreviewSession.close(previewOwner);dialog.dispose();overlay.hide();});
-                attachRefinementLifecycle(dialog,refinement[0]);dialog.pack();
+                attachRefinementLifecycle(dialog,refinement[0]);
+                panel.setPreferredSize(new Dimension(700, 600));
+                packReviewDialog(dialog);
             } catch(RuntimeException unavailable) {
                 if(refinement[0]!=null)refinement[0].close();if(refinementRoot[0]!=null)refinementRoot[0].close();refinement[0]=null;refinementRoot[0]=null;
                 panel.add(originalReviewBody,BorderLayout.CENTER);choices.setVisible(candidates.size()>1);
@@ -2604,6 +2616,17 @@ public class AlignWayAction extends JosmAction {
                         + "\nReasons: {4}\nConfirmation: {5}\nApply: {6}",
                 engine, source, disposition, affected, reasonText,
                 confirmation, applyAvailability);
+    }
+
+    /** Packs review controls once, bounded by the usable monitor area. */
+    private static void packReviewDialog(JDialog dialog) {
+        dialog.pack();
+        java.awt.GraphicsConfiguration configuration = dialog.getGraphicsConfiguration();
+        java.awt.Rectangle bounds = configuration.getBounds();
+        java.awt.Insets insets = java.awt.Toolkit.getDefaultToolkit().getScreenInsets(configuration);
+        int width = Math.max(1, bounds.width - insets.left - insets.right);
+        int height = Math.max(1, bounds.height - insets.top - insets.bottom);
+        dialog.setSize(Math.min(dialog.getWidth(), width), Math.min(dialog.getHeight(), height));
     }
 
     /** Builds a fixed-height scrollable review body with controls outside the scroll region. */
@@ -4070,7 +4093,7 @@ public class AlignWayAction extends JosmAction {
         refreshButtons.run();
         RefinementControls refinementControls = workflow[0].controls();
         JPanel panel = buildSummaryPanel(
-            current[0].result(), initial, config, cleanupConfig, refinementControls,
+            current[0].result(), initial, config, cleanupConfig, null,
             ratingMode ? ratingBox : null, offTheLine, jumping, unnecessaryKinks, badJunctionShapes);
         panel.add(selectedCoverageStatus, GBC.eol());
         panel.add(selectedCleanupStatus, GBC.eol());
@@ -4091,10 +4114,6 @@ public class AlignWayAction extends JosmAction {
                     selected, currentSearchHalfWidth, assessment, false));
                 selectedCleanupStatus.setText(cleanupStatus(selected));
                 refreshButtons.run();
-                java.awt.Window previewWindow = SwingUtilities.getWindowAncestor(confirm);
-                if (previewWindow != null) {
-                    previewWindow.pack();
-                }
                 selectedCandidateDetail.setText(cleanupDetail(selected));
                 configureRetryButton(retry, selected, slideConfig, result);
                 comboBox.repaint();
@@ -4121,7 +4140,7 @@ public class AlignWayAction extends JosmAction {
         badJunctionShapes.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes, workflow[0]));
 
         JButton cancel = new JButton(tr("Cancel"));
-        JPanel buttons = new JPanel();
+        JPanel buttons = new JPanel(new java.awt.GridLayout(0, 2, 4, 4));
         buttons.add(confirm);
         buttons.add(apply);
         buttons.add(retry);
@@ -4135,6 +4154,7 @@ public class AlignWayAction extends JosmAction {
         Dimension preferred = panel.getPreferredSize();
         reviewScroll.setPreferredSize(new Dimension(Math.max(300, Math.min(preferred.width + 24, screen.width - 80)),
             Math.max(220, Math.min(preferred.height + 12, screen.height - 180))));
+        contents.add(refinementControls, BorderLayout.NORTH);
         contents.add(reviewScroll, BorderLayout.CENTER);
         contents.add(buttons, BorderLayout.SOUTH);
 
@@ -4144,7 +4164,7 @@ public class AlignWayAction extends JosmAction {
         activePreviewDialog = dialog;
         dialog.setContentPane(contents);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
-        dialog.pack();
+        packReviewDialog(dialog);
         dialog.setLocationRelativeTo(MainApplication.getMainFrame());
         livePreviewSession.replaceWindow(rootOwner,()->{workflow[0].close();dialog.dispose();overlay.hide();});
         workflow[0].attachOwnership(livePreviewSession.workGate(),rootOwner,()->{
@@ -4847,8 +4867,6 @@ public class AlignWayAction extends JosmAction {
             panel.add(new JLabel(tr("Detected ridge")), GBC.std());
             panel.add(candidates, GBC.eol().fill(GBC.HORIZONTAL));
             panel.add(new JLabel(tr("Changing the ridge updates the map preview immediately.")), GBC.eol());
-        } else {
-            panel.add(new JLabel(tr("Candidate: {0}", chosen.toString())), GBC.eol());
         }
         if (ratingBox != null) {
             panel.add(new JLabel(tr("Visual rating")), GBC.std());
