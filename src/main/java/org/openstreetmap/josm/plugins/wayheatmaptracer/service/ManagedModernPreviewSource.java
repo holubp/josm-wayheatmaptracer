@@ -812,12 +812,14 @@ public final class ManagedModernPreviewSource {
             }
             pixels=Math.multiplyExact(pixels,request.requiredPalettes().size());
             if(pixels>MAX_INPUT_PIXELS)throw new IllegalArgumentException("Refinement capture exceeds source input-pixel cap");
-            // Admit the unchanged all-zoom peak before acquiring any palette. Only inference
-            // rasters survive; secondary zooms return receipts after physical verification.
-            // Keep the existing 32-byte inference allowance and all-zoom metadata bound.
+            // The result owns only inference images and their validity masks. Budget eight
+            // bytes per retained pixel for these arrays, with separate metadata headroom.
+            // Palette mosaics and validation receipts are built serially, so the conversion
+            // workspace is needed for one frame at a time. The all-zoom pixel cap still applies.
             long retainedPixels=Math.multiplyExact(preparedGrids.get(request.zoom()).pixels(),request.requiredPalettes().size());
-            var reservation=memory.reserve(Math.addExact(262144L,Math.multiplyExact(retainedPixels,32L)));
-            try(var validationWorkspace=memory.reserve(Math.multiplyExact(Math.subtractExact(pixels,retainedPixels),32L))) {
+            long largestFrame=preparedGrids.values().stream().mapToLong(ZoomGrid::pixels).max().orElseThrow();
+            var reservation=memory.reserve(Math.addExact(262144L,Math.multiplyExact(retainedPixels,8L)));
+            try(var workspace=memory.reserve(Math.multiplyExact(largestFrame,32L))) {
             var acquired=new LinkedHashMap<String,SourceRasters>();
             for(String palette:request.requiredPalettes()) {
                 cancellation.checkpoint();requireActiveGeneration(request);

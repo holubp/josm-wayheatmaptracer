@@ -547,7 +547,8 @@ public final class SelectedWayIntervalPartitioner {
                         || new LinkedHashSet<>(way.nodeKeys()).size() != way.nodeKeys().size()) return null;
                 for (PrimitiveKey key : way.nodeKeys()) {
                     if (!proof.charge(1) || !(snapshot.primitives().get(key) instanceof DetachedNode node)
-                            || node.deleted() || !incomingComplete(snapshot, key)) return null;
+                            || node.deleted() || (!incomingComplete(snapshot, key)
+                            && !watchCollisionExcludedReceiverNode(snapshot,specification,selected,way,node))) return null;
                     proof.add(key);
                     localProofKeys.add(key);
                 }
@@ -593,6 +594,23 @@ public final class SelectedWayIntervalPartitioner {
         proof.addAll(localProofKeys);
         proof.ports.addAll(localPorts);
         return new ManualFootprint(new OccurrenceRange(first, last), localProofKeys, localPorts);
+    }
+
+    private static boolean watchCollisionExcludedReceiverNode(NetworkSnapshot snapshot,
+            NetworkSnapshotCapture.Specification specification,DetachedWay selected,DetachedWay receiver,
+            DetachedNode node) {
+        if(specification.permissions().junctionPolicy()!=org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy.FIXED
+                ||selected.nodeKeys().contains(node.key())||!snapshot.closure().nearbyGeometryComplete())return false;
+        var watch=snapshot.incomingReferrerWatches().get(node.key());
+        if(watch==null||!watch.contains(receiver.key())||watch.stream().anyMatch(key->
+                key.type()!=PrimitiveKey.Type.WAY&&!snapshot.primitives().containsKey(key)))return false;
+        // The complete collision query certifies the entire edit envelope within the frame.
+        // A distant receiver remains an exact geographic chord and its watch is still compared.
+        try {
+            return !specification.collisionEnvelope().contains(specification.metricFrame().toMetric(node.coordinate()));
+        } catch(IllegalArgumentException outsideCertifiedFrame) {
+            return true;
+        }
     }
 
     private static ArmProof proveArm(NetworkSnapshot snapshot,

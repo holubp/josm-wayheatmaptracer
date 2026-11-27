@@ -179,6 +179,23 @@ class V022SelectedWayIntervalPartitionerTest {
     }
 
     @Test
+    void fixedReceiverKeepsWatchForDistantCollisionExcludedWay() {
+        Fixture base=pathWithJunctions(12,0,-1,false);
+        Fixture distant=base.withReceiverArmLengthAt(0,1200).withUnmaterializedReceiverNodeReferrer(0)
+                .withFixedPolicy().withFixedReceiverGeometry();
+        var result=partition(distant);
+
+        assertFalse(result.slideIntervals().isEmpty());
+        assertFalse(result.junctionDispositions().get(0).automaticEligible());
+        assertTrue(SelectedWayIntervalPartitioner.verifyFrozenParity(result,distant.snapshot));
+        assertFalse(SelectedWayIntervalPartitioner.verifyFrozenParity(result,
+                base.withReceiverArmLengthAt(0,1200).snapshot),"A changed distant referrer watch invalidates parity");
+        assertTrue(partition(base.withReceiverArmLengthAt(0,120).withUnmaterializedReceiverNodeReferrer(0)
+                .withFixedPolicy().withFixedReceiverGeometry())
+                .slideIntervals().isEmpty(),"Missing geometry within the collision envelope remains a refusal");
+    }
+
+    @Test
     void fixedWalkingRouteWithCompletePayloadCanPreserveItsReadOnlyReceiver() {
         Fixture fixture = routePayload("route", "foot", Optional.of(true), true, true);
         var result = partition(fixture);
@@ -902,6 +919,16 @@ class V022SelectedWayIntervalPartitionerTest {
             Set<PrimitiveKey> refs = new LinkedHashSet<>(snapshot.incomingReferrerWatches().get(receiver));
             refs.add(PrimitiveKey.existing(PrimitiveKey.Type.RELATION, 9191));
             return rebuild(snapshot.primitives(), Map.of(receiver, refs));
+        }
+        Fixture withUnmaterializedReceiverNodeReferrer(int index) {
+            PrimitiveKey junction=selectedNodes.get(index);
+            DetachedWay receiver=snapshot.incomingReferrerWatches().get(junction).stream()
+                    .filter(key->key.type()==PrimitiveKey.Type.WAY&&!key.equals(selected))
+                    .map(key->(DetachedWay)snapshot.primitives().get(key)).findFirst().orElseThrow();
+            PrimitiveKey distant=receiver.nodeKeys().get(0);
+            Set<PrimitiveKey> refs=new LinkedHashSet<>(snapshot.incomingReferrerWatches().get(distant));
+            refs.add(wayKey(99999));
+            return rebuild(snapshot.primitives(),Map.of(distant,refs));
         }
         Fixture withReceiverRelationWitness(int index, boolean complete) {
             PrimitiveKey receiver = snapshot.incomingReferrerWatches().get(selectedNodes.get(index))

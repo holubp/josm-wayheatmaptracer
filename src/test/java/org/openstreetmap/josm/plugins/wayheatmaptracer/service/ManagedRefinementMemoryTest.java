@@ -25,10 +25,10 @@ class ManagedRefinementMemoryTest {
         for(int y=0;y<512;y++)for(int x=0;x<512;x++)image.setRGB(x,y,0xff000000|((x+y)%200+20)<<16);
         var bytes=new ByteArrayOutputStream();assertTrue(ImageIO.write(image,"png",bytes));return bytes.toByteArray();
     }
-    @Test void validationWorkspaceLeavesTheUnchangedPeakOnlyAfterAcquisitionReturns() throws Exception {
+    @Test void serialPaletteVerificationAdmitsAllFiveInOneBoundedWorkspace() throws Exception {
         var bytes=png();
         for(var zooms:List.of(Set.of(15),Set.of(15,14))) {
-            var decoder=new TileDecoderClassifier();var ledger=AttemptMemoryLedger.production();
+            var decoder=new TileDecoderClassifier();var ledger=new AttemptMemoryLedger(24L*1024*1024);
             var observed=new ArrayList<Long>();var addresses=new ArrayList<ManagedTileAddress>();
             try(var coordinator=new TileFetchCoordinator((r,c)->{
                 observed.add(ledger.currentBytes());addresses.add(r.address());
@@ -36,10 +36,10 @@ class ManagedRefinementMemoryTest {
             },new ManagedTileCache(temporary.resolve("success-"+zooms.size()),decoder),decoder,TileReliabilityPolicy.defaults());var owner=ledger.rootOwner()) {
                 coordinator.updateActiveGeneration(new ManagedTileGeneration(9));
                 var acquired=new ManagedModernPreviewSource(coordinator).acquireRefinementSources(request(),zooms,true,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,owner);
-                // Two source coordinates: geometry264192; five512² inference frames42205184.
-                long peak=zooms.size()==1?42469376L:84412416L;
+                long retained=264192L+262144L+5L*512*512*8;
+                long peak=retained+512L*512*32;
                 assertEquals(5*zooms.size(),addresses.size());assertTrue(observed.stream().allMatch(value->value==peak));
-                assertEquals(peak,ledger.peakBytes());assertEquals(42469376L,ledger.currentBytes(),"completed validation workspace must not become retained pixel ownership");
+                assertEquals(peak,ledger.peakBytes());assertEquals(retained,ledger.currentBytes(),"completed workspace must not become retained pixel ownership");
                 var actual=acquired.value();assertTrue(actual.completeAggregate());assertEquals(Set.copyOf(request().requiredPalettes()),actual.palettes());
                 for(String palette:request().requiredPalettes()) {
                     assertEquals(zooms,actual.sourceReceipts().get(palette).keySet());
@@ -60,15 +60,16 @@ class ManagedRefinementMemoryTest {
                 new ManagedTileCache(temporary,decoder),decoder,TileReliabilityPolicy.defaults());var owner=ledger.rootOwner()) {
             coordinator.updateActiveGeneration(wide.generation());
             var acquired=new ManagedModernPreviewSource(coordinator).acquireRefinementSources(wide,Set.of(15,14),true,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,owner);
-            assertEquals(15,count.get());assertEquals(126355456L,ledger.peakBytes());assertEquals(84412416L,ledger.currentBytes());
+            long retained=264192L+262144L+5L*1024*512*8;
+            assertEquals(15,count.get());assertEquals(retained+1024L*512*32,ledger.peakBytes());assertEquals(retained,ledger.currentBytes());
             assertEquals(1024,acquired.value().raster("hot",coordinator).image().getWidth());assertTrue(acquired.value().completeAggregate());
             acquired.owner().close();assertEquals(0,ledger.currentBytes());
         }
     }
-    @Test void retainedCapacityAloneCannotBypassTheAllZoomPeakAndFailureRollsBack() throws Exception {
+    @Test void retainedCapacityAloneCannotBypassSerialScratchAndFailureRollsBack() throws Exception {
         var count=new AtomicInteger();var decoder=new TileDecoderClassifier();
-        // Caller4096 + geometry264192 + unchanged all-zoom peak84148224, minus one byte.
-        var ledger=new AttemptMemoryLedger(84416511L);
+        long required=4096L+264192L+262144L+5L*512*512*8+512L*512*32;
+        var ledger=new AttemptMemoryLedger(required-1);
         try(var coordinator=new TileFetchCoordinator((r,c)->{count.incrementAndGet();throw new AssertionError("peak refusal must precede transport");},
                 new ManagedTileCache(temporary,decoder),decoder,TileReliabilityPolicy.defaults());var owner=ledger.rootOwner()) {
             coordinator.updateActiveGeneration(new ManagedTileGeneration(9));owner.reserve(4096).adopt(new Object());
@@ -92,7 +93,7 @@ class ManagedRefinementMemoryTest {
                 if(failure.equals("error"))assertThrows(AssertionError.class,()->source.acquireRefinementSources(request(),Set.of(15,14),true,CredentialSnapshot.fromConfig(null),probe,owner));
                 else if(failure.equals("cancel"))assertThrows(java.util.concurrent.CancellationException.class,()->source.acquireRefinementSources(request(),Set.of(15,14),true,CredentialSnapshot.fromConfig(null),probe,owner));
                 else assertThrows(IllegalStateException.class,()->source.acquireRefinementSources(request(),Set.of(15,14),true,CredentialSnapshot.fromConfig(null),probe,owner));
-                assertTrue(count.get()>0);assertEquals(84412416L,ledger.peakBytes());assertEquals(0,ledger.currentBytes());
+                assertTrue(count.get()>0);assertEquals(264192L+262144L+5L*512*512*8+512L*512*32,ledger.peakBytes());assertEquals(0,ledger.currentBytes());
             }
         }
     }
