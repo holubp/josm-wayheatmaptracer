@@ -1804,9 +1804,8 @@ public class AlignWayAction extends JosmAction {
         if (!settingsNotice.isEmpty()) {
             header.add(settingsNoticeComponent(settingsNotice));
         }
-        if (candidates.size() > 1) {
-            header.add(choices);
-        }
+        choices.setVisible(candidates.size() > 1);
+        header.add(choices);
         header.add(diagnostics);
         JPanel buttons = new JPanel(new java.awt.GridLayout(0, 2, 6, 4));
         buttons.add(confirm);

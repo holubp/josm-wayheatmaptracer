@@ -65,6 +65,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.Refine
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.StageKind;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedImageryService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls;
 
 /** Runs a public analytic fixture through the registered ordinary JOSM GUI action. */
 public final class PublicGuiSmokeMain {
@@ -475,7 +476,7 @@ public final class PublicGuiSmokeMain {
                 throw new IllegalStateException("Shortcut changed saved alignment or source settings");
             requireLegacyMigrationRoot(() -> rootReview.originalConfig().heatmap().trackerMode());
         }
-        checkConstrainedDetectorKeyboard(preview);
+        checkConstrainedDetectorKeyboard(preview, owner);
         String initialChoice=onEventThread(owner::selectedChoiceIdentity);
         String rootChoice=onEventThread(()->{
             var choices=requiredNamed(preview.getContentPane(),"candidate",JComboBox.class);
@@ -493,6 +494,9 @@ public final class PublicGuiSmokeMain {
         checkDialogLayout(preview);
         keyboardAndAwaitStage(report,preview,owner,bFirst?"refineB":"refineA",first);
         checkDialogLayout(preview);
+        if (onEventThread(() -> requiredNamed(preview.getContentPane(), "candidate", JComboBox.class).getItemCount() > 1)) {
+            checkConstrainedDetectorKeyboard(preview, owner);
+        }
         onEventThread(()->{
             checkedMode(requestedMode,owner.currentNative().orElseThrow().operation().orElseThrow().ticket().mode());
             requireExactLegacyParent(owner,rootReview,rootChoice,rootCandidate,rootGeometry);
@@ -1482,13 +1486,18 @@ public final class PublicGuiSmokeMain {
         return match.find()?match.group(1)+":"+match.group(2)+":"+match.group(3):"unavailable";
     }
     /** Exercises the real detector chooser after scrolling long diagnostics at a constrained size. */
-    private static void checkConstrainedDetectorKeyboard(JDialog dialog) throws Exception {
+    private static void checkConstrainedDetectorKeyboard(JDialog dialog, LegacyRefinementWorkflow owner) throws Exception {
         var focused = new CompletableFuture<Void>();
         var changed = new CompletableFuture<Void>();
         var target = onEventThread(() -> requiredNamed(dialog.getContentPane(), "candidate", JComboBox.class));
         var quality = onEventThread(() -> requiredNamed(dialog.getContentPane(), "quality", javax.swing.JTextArea.class));
         var size = onEventThread(dialog::getSize);
         int initial = onEventThread(target::getSelectedIndex);
+        int count = onEventThread(target::getItemCount);
+        if (count < 2 || initial < 0) throw new IllegalStateException("Keyboard fixture needs multiple detectors");
+        int expectedIndex = initial + 1 < count ? initial + 1 : initial - 1;
+        String originalChoice = onEventThread(owner::selectedChoiceIdentity);
+        String expectedChoice = onEventThread(() -> ((RefinementControls.Choice) target.getItemAt(expectedIndex)).id());
         String originalText = onEventThread(quality::getText);
         int originalCaret = onEventThread(quality::getCaretPosition);
         var viewport = onEventThread(() -> (javax.swing.JViewport) quality.getParent());
@@ -1497,11 +1506,10 @@ public final class PublicGuiSmokeMain {
             @Override public void focusGained(java.awt.event.FocusEvent event) { focused.complete(null); }
         };
         java.awt.event.ActionListener selection = event -> {
-            if (target.getSelectedIndex() != initial) changed.complete(null);
+            if (target.getSelectedIndex() == expectedIndex) changed.complete(null);
         };
         try {
             int key = onEventThread(() -> {
-                if (target.getItemCount() < 2 || initial < 0) throw new IllegalStateException("Keyboard fixture needs multiple detectors");
                 dialog.setSize(800, 600); dialog.validate();
                 quality.setText("Long detector diagnostic with retained evidence. ".repeat(100));
                 quality.setCaretPosition(quality.getDocument().getLength());
@@ -1511,11 +1519,11 @@ public final class PublicGuiSmokeMain {
                 if (bar.getMaximum() <= bar.getVisibleAmount()) throw new IllegalStateException("Long diagnostics do not scroll");
                 bar.setValue(bar.getMaximum());
                 if (bar.getValue() <= bar.getMinimum()) throw new IllegalStateException("Long diagnostics cannot be scrolled");
-                requireFooterHierarchy(dialog.getContentPane(), target, target.isShowing());
+                requireSelectableReviewChoice(dialog.getContentPane(), target);
                 target.addFocusListener(focus); target.addActionListener(selection);
                 dialog.toFront();
                 if (target.isFocusOwner()) focused.complete(null); else target.requestFocusInWindow();
-                return initial + 1 < target.getItemCount() ? java.awt.event.KeyEvent.VK_DOWN : java.awt.event.KeyEvent.VK_UP;
+                return expectedIndex > initial ? java.awt.event.KeyEvent.VK_DOWN : java.awt.event.KeyEvent.VK_UP;
             });
             focused.get(10, TimeUnit.SECONDS);
             onEventThread(() -> {
@@ -1527,12 +1535,19 @@ public final class PublicGuiSmokeMain {
             robot.keyPress(key); robot.keyRelease(key);
             robot.keyPress(java.awt.event.KeyEvent.VK_ENTER); robot.keyRelease(java.awt.event.KeyEvent.VK_ENTER);
             changed.get(10, TimeUnit.SECONDS);
+            robot.waitForIdle();
+            onEventThread(() -> {
+                if (target.isPopupVisible() || !expectedChoice.equals(owner.selectedChoiceIdentity()))
+                    throw new IllegalStateException("Keyboard input did not commit the expected detector choice");
+                return null;
+            });
         } finally {
             onEventThread(() -> {
                 target.hidePopup();
                 target.removeFocusListener(focus); target.removeActionListener(selection);
                 target.setSelectedIndex(initial);
-                if (target.getSelectedIndex() != initial) throw new IllegalStateException("Detector selection was not restored");
+                if (target.getSelectedIndex() != initial || !originalChoice.equals(owner.selectedChoiceIdentity()))
+                    throw new IllegalStateException("Detector selection was not restored");
                 quality.setText(originalText); quality.setCaretPosition(Math.min(originalCaret, quality.getDocument().getLength()));
                 viewport.setViewPosition(originalPosition);
                 dialog.setSize(size); dialog.validate();
@@ -1625,10 +1640,10 @@ public final class PublicGuiSmokeMain {
                 }
                 if (descendant) {
                     var choice = requiredNamed(root, "candidate", JComboBox.class);
-                    requireFooterHierarchy(root, choice, choice.isShowing());
+                    requireSelectableReviewChoice(root, choice);
                 } else if (interval) {
                     var source = requiredNamed(root, "refinement-root-source", JComboBox.class);
-                    if (source.isVisible()) requireFooterHierarchy(root, source, source.isShowing());
+                    requireSelectableReviewChoice(root, source);
                     var routes = requiredNamed(root, "interval-route-scroll", javax.swing.JScrollPane.class);
                     int routeCount = 0;
                     for (int index = 0; ; index++) {
@@ -1656,13 +1671,17 @@ public final class PublicGuiSmokeMain {
                             throw new IllegalStateException("Long interval diagnostics do not scroll");
                     } finally { quality.setText(old); quality.setCaretPosition(0); }
                 } else {
-                    List<JComboBox> roots = new ArrayList<>();
-                    collectNamed(root, "modern-root-choice", JComboBox.class, roots);
-                    for (var choice : roots) if (choice.isVisible()) requireFooterHierarchy(root, choice, choice.isShowing());
+                    requireSelectableReviewChoice(root, requiredNamed(root, "modern-root-choice", JComboBox.class));
                 }
             } finally { dialog.setSize(original); dialog.validate(); }
             return null;
         });
+    }
+
+    private static void requireSelectableReviewChoice(Container root, JComboBox<?> choice) {
+        if (choice.getItemCount() < 2) return;
+        if (!choice.isEnabled()) throw new IllegalStateException("Review detector selection is disabled");
+        requireFooterHierarchy(root, choice, choice.isShowing());
     }
 
     static void requireDisplay(boolean headless) {
