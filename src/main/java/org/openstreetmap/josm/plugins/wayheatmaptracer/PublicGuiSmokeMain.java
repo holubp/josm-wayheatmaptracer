@@ -1670,8 +1670,6 @@ public final class PublicGuiSmokeMain {
                         if (scroll.getVerticalScrollBar().getMaximum() <= scroll.getVerticalScrollBar().getVisibleAmount())
                             throw new IllegalStateException("Long interval diagnostics do not scroll");
                     } finally { quality.setText(old); quality.setCaretPosition(0); }
-                } else {
-                    requireSelectableReviewChoice(root, requiredNamed(root, "modern-root-choice", JComboBox.class));
                 }
             } finally { dialog.setSize(original); dialog.validate(); }
             return null;
@@ -2852,6 +2850,15 @@ public final class PublicGuiSmokeMain {
         }
         if (choices.getItemCount() != production.size()) {
             throw new IllegalStateException("Displayed routes differ from the production run");
+        }
+        var originalSize = preview.getSize();
+        try {
+            preview.setSize(800, 600);
+            preview.validate();
+            requireSelectableReviewChoice(preview.getContentPane(), choices);
+        } finally {
+            preview.setSize(originalSize);
+            preview.validate();
         }
         List<LiveBPreviewService.PreviewChoice> actual = new ArrayList<>();
         for (int index = 0; index < choices.getItemCount(); index++) {
