@@ -1421,7 +1421,7 @@ class AlignWayActionTest {
             for (var button : List.of(disconnect, apply, close, confirm)) {
                 button.setFont(button.getFont().deriveFont(18f));
             }
-            var footer = AlignWayAction.reviewActions(List.of(confirm, apply, close), disconnect);
+            var footer = AlignWayAction.reviewActions(List.of(apply, close), disconnect, confirm);
             footer.setSize(640, footer.getPreferredSize().height);
             footer.doLayout();
             apply.getParent().doLayout();
@@ -1429,6 +1429,8 @@ class AlignWayActionTest {
             for (var button : List.of(apply, close, confirm)) {
                 assertTrue(button.getWidth() >= button.getPreferredSize().width, button.getText());
             }
+            assertTrue(confirm.getY() >= disconnect.getY() + disconnect.getHeight());
+            assertEquals(disconnect.getWidth(), confirm.getWidth());
             assertTrue(apply.getParent().getY() >= disconnect.getY() + disconnect.getHeight());
         });
     }

@@ -2640,15 +2640,8 @@ public class AlignWayAction extends JosmAction {
         line.weightx = 1;
         line.fill = GridBagConstraints.HORIZONTAL;
         for (JButton action : longActions) controls.add(action, line);
-        var primaryRow = new JPanel(new GridBagLayout());
-        var cell = new GridBagConstraints();
-        cell.fill = GridBagConstraints.HORIZONTAL;
-        cell.weightx = 1;
-        for (int index = 0; index < primary.size(); index++) {
-            cell.gridx = index;
-            cell.insets = new Insets(0, 0, 0, index + 1 < primary.size() ? 4 : 0);
-            primaryRow.add(primary.get(index), cell);
-        }
+        var primaryRow = new JPanel(new java.awt.GridLayout(1, 0, 4, 4));
+        primary.forEach(primaryRow::add);
         controls.add(primaryRow, line);
         return controls;
     }
@@ -4208,7 +4201,7 @@ public class AlignWayAction extends JosmAction {
         badJunctionShapes.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes, workflow[0]));
 
         JButton cancel = new JButton(tr("Cancel"));
-        JPanel buttons = reviewActions(List.of(confirm, apply, cancel), retry);
+        JPanel buttons = reviewActions(List.of(apply, cancel), retry, confirm);
         JPanel contents = new JPanel(new BorderLayout(4, 4));
         JScrollPane reviewScroll = new JScrollPane(panel);
         reviewScroll.setName("legacy-review-scroll");

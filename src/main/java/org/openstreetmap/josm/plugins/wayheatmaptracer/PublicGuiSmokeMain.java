@@ -1708,7 +1708,12 @@ public final class PublicGuiSmokeMain {
                     var actions = new ArrayList<JButton>();
                     collectNamed(root, name, JButton.class, actions);
                     for (var action : actions) if (action.isShowing()) {
-                        requireFooterHierarchy(root, action, true);
+                        try {
+                            requireFooterHierarchy(root, action, true);
+                        } catch (IllegalStateException clipped) {
+                            throw new IllegalStateException("Enlarged review action bounds are clipped: " + name
+                                    + " " + action.getBounds() + " within " + root.getSize(), clipped);
+                        }
                         if (action.getWidth() < action.getPreferredSize().width)
                             throw new IllegalStateException("Enlarged review action text is clipped: " + name);
                     }
