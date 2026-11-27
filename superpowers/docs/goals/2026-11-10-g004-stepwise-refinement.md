@@ -16,6 +16,10 @@ quality parity/changed descendants/commands and current full/performance gates
 remain required, followed by the controller's ONE final audit and verified RC16.
 The older pending/block status below is historical and superseded.
 
+The user subsequently authorized a fixture-only adjustment. The unchanged
+oversized z15 interval is the actual refusal control and a smaller z17 visible
+interval case carries the existing end-to-end success requirements.
+
 ### Historical Nov26 budget checkpoint
 
 The combined64M bootstrap/Smoothen optional-operation proposal is PENDING user

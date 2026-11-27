@@ -1349,10 +1349,10 @@ public class AlignWayAction extends JosmAction {
                 var generation=detachedNativeCommandGeneration(computed.captured(),previewSourceOwner,detachedCommandContext(dataSet,computed.captured().managedRaster()==null?imageryLayer:null,computed.captured().managedRaster()!=null?previewSourceOwner:null));
                 LiveNetworkSnapshotValidator network = new LiveNetworkSnapshotValidator(receipt,
                         currentPlan,generation);
-                ManagedSourceReceipt managedReceipt = ManagedSourceReceipt.forCurrentPlugin(
-                        previewSourceOwner, computed.captured(), slideConfig.heatmap(),
-                        state.batch().options().sourceTier());
-                managedReceipt.requireCurrent();
+                if (computed.captured().managedRaster() != null) {
+                    ManagedSourceReceipt.forCurrentPlugin(previewSourceOwner, computed.captured(),
+                            slideConfig.heatmap(), state.batch().options().sourceTier()).requireCurrent();
+                }
                 ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(dataSet,
                         currentPlan,detachedNativeApplyValidator(network,generation,detachedSourceFailureReporter()),
                         tr("Apply modern interval alignment"));

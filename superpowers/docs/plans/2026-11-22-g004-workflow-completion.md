@@ -22,6 +22,12 @@ historical missing ceilings unavailable/original8M. Qualify actual unchanged
 full/interval/directSmooth/postSmoothA/B quality parity/changed children/stored
 commands, coherent full public/performance/source freeze, ONE final audit and RC16.
 
+The maintainer approved a fixture-only adjustment after the z15 interval's
+actual scalar memory refusal and the measured lower bound on its work. Keep that
+exact workload as the 8M and 64M refusal control. Prove the successful raw and
+stable visible interval workflows on the compact z17 fixture with unchanged
+quality, changed-child, currentness and stored-command oracles.
+
 ### Historical Nov26 pending decision — superseded by approval above
 
 Combined64M optional-operation budget proposal remains UNAPPROVED. Current8M

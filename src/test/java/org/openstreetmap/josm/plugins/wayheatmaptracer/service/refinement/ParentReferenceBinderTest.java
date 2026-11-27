@@ -3,8 +3,44 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.*;
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.MetricCorridorRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.*;
 class ParentReferenceBinderTest {
+ @Test void exactCapturedIntervalPolygonsProveCoverageWithoutRelaxingFallback(){
+  // First eligible exterior and one neighboring segment from the public visible interval capture.
+  var points=List.of(
+      new MetricPoint(-39.39999999972607,-3.973222481332367),
+      new MetricPoint(-37.55104772616998,-4.125240458888852),
+      new MetricPoint(-35.69999999975167,-4.222712326434083),
+      new MetricPoint(-33.848952273333346,-4.125240458888852),
+      new MetricPoint(-31.999999999777252,-3.973222481332367),
+      new MetricPoint(-27.99999999980517,-3.973222481332367));
+  var whole=MetricCorridorRegion.aroundPolyline(points,7.01);
+  var interval=MetricCorridorRegion.aroundPolyline(points.subList(0,5),7.01);
+  assertTrue(whole.polygons().containsAll(interval.polygons()));
+  assertTrue(ParentTraceReference.decisionRegionContains(whole,interval,CancellationProbe.NONE),
+      "Every interval polygon is already present in the captured decision corridor");
+  var missing=new ArrayList<>(interval.polygons());missing.addAll(MetricRegion.rectangle(100,100,102,102).polygons());
+  assertFalse(ParentTraceReference.decisionRegionContains(whole,new MetricRegion(missing),CancellationProbe.NONE));
+  var inset=MetricRegion.rectangle(-36,-4.5,-34,-3.5);
+  assertFalse(whole.polygons().containsAll(inset.polygons()));
+  assertTrue(ParentTraceReference.decisionRegionContains(whole,inset,CancellationProbe.NONE),"Area still proves nonidentical subsets");
+  var scans=new java.util.concurrent.atomic.AtomicInteger();
+  assertThrows(java.util.concurrent.CancellationException.class,
+      ()->ParentTraceReference.decisionRegionContains(whole,interval,()->scans.incrementAndGet()==2));
+  try(var owner=AttemptMemoryLedger.production().rootOwner()) {
+   var work=new GeometryWorkContext(1,4096,Long.MAX_VALUE,CancellationProbe.NONE,owner);
+   try(var scope=PostprocessingValidationWork.open(work)) {
+    assertThrows(GeometryWorkContext.LimitReached.class,
+        ()->ParentTraceReference.decisionRegionContains(whole,interval,CancellationProbe.NONE));
+    assertEquals(1,work.visits());
+   }
+  }
+ }
  @Test void pinsExactNonTopCandidateAndPaletteWithoutDefaultPreviewSubstitution(){
   var root=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);var id=new StageId(UUID.randomUUID());var blue=new ParentReferenceBinder().bind(root,id,RefinementParentFixtures.parent(root,"blue"));
   assertEquals("blue",blue.parentPalette());assertEquals("blue-native",blue.nativeCandidateId());assertEquals(53,blue.points().get(2).yMeters(),1e-7);assertSame(root.network(),blue.root().network());

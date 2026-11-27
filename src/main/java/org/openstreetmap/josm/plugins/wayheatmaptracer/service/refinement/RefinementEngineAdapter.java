@@ -137,7 +137,7 @@ public final class RefinementEngineAdapter {
             // deriving operation/reference identities or requesting any hashes/profile containers.
             var bindingWorkspace=unscoped.reserveBindingWorkspace(evidence,invocation);
             parent=unscoped.forOperation(operation);
-            request=parent.request(engine,evidence,remaining,evidence.resolution().outputRasterPitchMeters());
+            request=parent.request(engine,evidence,remaining,evidence.resolution().outputRasterPitchMeters(),cancellation);
             if(!evidence.fields().containsKey(field))throw new IllegalArgumentException("Requested scalar field unavailable");
             for(int occurrence:parent.frozenAnchors().keySet())
                 if(occurrence!=parent.originalRange().firstIndex()&&occurrence!=parent.originalRange().lastIndex())

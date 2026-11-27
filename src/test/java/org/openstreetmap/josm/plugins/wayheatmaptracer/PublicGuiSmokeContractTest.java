@@ -112,7 +112,7 @@ class PublicGuiSmokeContractTest {
             var service=new LiveBPreviewService();fixture.dataSet().setSelected(fixture.selectedWay());
             seed[0]=service.captureManagedSeed(fixture.dataSet(),SelectionResolver.resolve(fixture.dataSet(),false),config,"public-compact-negative");
             branch.setNodes(List.of());fixture.dataSet().removePrimitive(branch);fixture.dataSet().removePrimitive(remote);
-            PublicGuiSmokeMain.configureVisibleIntervalFixture(fixture);
+            PublicGuiSmokeMain.configureOversizedVisibleIntervalFixture(fixture);
             seed[1]=service.captureManagedSeed(fixture.dataSet(),SelectionResolver.resolve(fixture.dataSet(),false),config,"public-existing-interval-positive");
         });
         assertEquals(1,seed[0].intervalPartition().fixedIslands().size());
@@ -122,6 +122,47 @@ class PublicGuiSmokeContractTest {
         assertFalse(seed[1].intervalPartition().slideIntervals().isEmpty());
         assertTrue(seed[1].intervalPartition().slideIntervals().stream().allMatch(value->value.traceRange().size()>2));
         assertEquals(21,fixture.selectedWay().getNodesCount(),"Reuse the existing interval midpoint fixture without changing its polyline");
+    }
+    @Test void visibleIntervalCompactPositiveKeepsTwoEditableArmsBeyondAFixedJunction() throws Exception {
+        ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+        var fixture=PublicGuiSmokeFixture.create(temporary);
+        var configMethod=PublicGuiSmokeMain.class.getDeclaredMethod("config",boolean.class,boolean.class);configMethod.setAccessible(true);
+        var config=((ManagedHeatmapConfig)configMethod.invoke(null,true,false)).withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES);
+        var compactConfig=AlignmentConfig.withoutCleanup(config.withSearchHalfWidthMeters(PublicGuiSmokeMain.COMPACT_VISIBLE_INTERVAL_HALF_WIDTH_METERS));
+        var seed=new LiveBPreviewService.ManagedCaptureSeed[2];
+        SwingUtilities.invokeAndWait(()->{
+            PublicGuiSmokeMain.configureVisibleIntervalFixture(fixture);
+            var service=new LiveBPreviewService();
+            var selection=SelectionResolver.resolve(fixture.dataSet(),false);
+            seed[0]=service.captureManagedSeed(fixture.dataSet(),selection,compactConfig,"public-compact-interval-positive");
+            seed[1]=service.captureManagedSeed(fixture.dataSet(),selection,AlignmentConfig.withoutCleanup(config),"public-compact-interval-reference-width");
+        });
+        var part=seed[0].intervalPartition();
+        var reference=seed[1].intervalPartition();
+        assertEquals(reference.fixedIslands(),part.fixedIslands());
+        assertEquals(reference.slideIntervals(),part.slideIntervals());
+        assertEquals(reference.junctionDispositions(),part.junctionDispositions());
+        assertEquals(1,part.fixedIslands().size());
+        assertEquals(3,part.fixedIslands().get(0).range().size(),
+            "Two real fixed center arms keep the compact attempt inventory within its diagnostic ceiling");
+        assertEquals(2,part.slideIntervals().size());
+        var points=seed[0].sourceMetric();
+        double span=points.get(0).distanceTo(points.get(points.size()-1));
+        assertTrue(span>=76&&span<79,"Compact fixture must leave traced exteriors beyond a real fixed island");
+        for(var interval:part.slideIntervals()) {
+            var range=interval.traceRange();
+            assertTrue(interval.range().size()>2,"Refinement fallback needs more than two owned occurrences even before adding a frozen trace boundary");
+            var first=points.get(range.firstIndex());var last=points.get(range.lastIndex());
+            assertTrue(first.distanceTo(last)>=7);
+            assertTrue(points.subList(range.firstIndex()+1,range.lastIndex()).stream().anyMatch(point->point.yMeters()>Math.max(first.yMeters(),last.yMeters())+.35),
+                "Smoothen needs an editable bend inside each supported exterior");
+        }
+        var tile=fixture.compactIntervalTile();
+        assertEquals(17,tile.address().zoom());
+        var crest=PublicGuiSmokeOracle.point(35.7,PublicGuiSmokeFixture.compactIntervalBend(35.7));
+        var background=PublicGuiSmokeOracle.point(35.7,15);
+        assertTrue(tile.gray(new org.openstreetmap.josm.data.coor.LatLon(crest.latitudeDegrees(),crest.longitudeDegrees()))>128);
+        assertTrue(tile.gray(new org.openstreetmap.josm.data.coor.LatLon(background.latitudeDegrees(),background.longitudeDegrees()))<64);
     }
     @Test void visiblePreparationWitnessAcceptsFreshAAndCoveredBWithoutInventingCaptureWork() throws Exception {
         var a=preparationTicket(StageKind.REFINE_A);var b=preparationTicket(StageKind.REFINE_B);

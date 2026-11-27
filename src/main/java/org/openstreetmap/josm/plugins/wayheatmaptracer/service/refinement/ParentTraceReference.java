@@ -4,6 +4,7 @@ import java.util.*;
 import java.nio.charset.StandardCharsets;
 import java.security.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
@@ -270,6 +271,9 @@ public final class ParentTraceReference {
 
     /** Request preparation acquires nothing and allocates no new authority or solver work. */
     public TraceRequest request(TrackerMode engine,EvidenceSnapshot evidence,TraceBudgets remaining,double lateralStep) {
+        return request(engine,evidence,remaining,lateralStep,CancellationProbe.NONE);
+    }
+    TraceRequest request(TrackerMode engine,EvidenceSnapshot evidence,TraceBudgets remaining,double lateralStep,CancellationProbe cancellation) {
         requireRefinementGeometryAuthority();requireComplete();
         if(engine!=TrackerMode.CORRIDOR_AWARE&&engine!=TrackerMode.PROBABILISTIC)throw new IllegalArgumentException("Only A/B refine a parent");
         var original=root.request();var maximum=original.budgets();
@@ -279,7 +283,7 @@ public final class ParentTraceReference {
         root.requireAcquisitionEvidence(evidence);
         if(evidence.resolution().spatialPitchSamples().size()!=1)throw new UnavailableException(Unavailable.SPATIAL_RESOLUTION_UNAVAILABLE);
         var corridor=MetricCorridorRegion.aroundPolyline(points,original.permissions().ordinaryRadiusMeters());
-        if(!evidence.decisionRegion().containsRegion(corridor)||!evidence.evidenceRegion().containsRegion(corridor))
+        if(!decisionRegionContains(evidence.decisionRegion(),corridor,cancellation)||!evidence.evidenceRegion().containsRegion(corridor))
             throw new UnavailableException(Unavailable.EVIDENCE_COVERAGE);
         if(engine==TrackerMode.PROBABILISTIC&&measuredSampling.isPresent())
             throw new IllegalArgumentException("B requires its unchanged deterministic profile resampling");
@@ -290,11 +294,27 @@ public final class ParentTraceReference {
             evidence.snapshotId(),evidence.canonicalHash(),original.networkSnapshotId(),original.networkContentHash(),original.settingsHash(),
             parameterHash(engine,evidence),original.samplerId()+SAMPLER_SUFFIX,original.configuredSampleStepMeters(),profiles,evidence.resolution(),input,original.disconnectionSource());
     }
+    static boolean decisionRegionContains(MetricRegion decision,MetricRegion corridor,CancellationProbe cancellation) {
+        // A local occurrence cut usually keeps these exact segment rectangles in their original order.
+        // Matching them proves containment even if subtracting the differently ordered Area unions leaves a rounding sliver.
+        var localPolygons=corridor.polygons();
+        int matched=0;
+        for(var polygon:decision.polygons()) {
+            cancellation.checkpoint();
+            PostprocessingValidationWork.visit();
+            if(localPolygons.get(matched).equals(polygon)) {
+                matched++;
+                if(matched==localPolygons.size())return true;
+            }
+        }
+        cancellation.checkpoint();
+        return decision.containsRegion(corridor);
+    }
     public void requireBinding(TraceRequest request,EvidenceSnapshot evidence,NetworkSnapshot network,CancellationProbe cancel) {
         cancel.checkpoint();
         if(network!=root.network())throw new IllegalArgumentException("Refinement must retain factual original network object");
         double step=request.corridorInput().map(CorridorTraceInput::lateralStepMeters).orElse(1.0);
-        if(!request.equals(request(request.engine(),evidence,request.budgets(),step)))throw new IllegalArgumentException("Derived request differs from exact parent binding");
+        if(!request.equals(request(request.engine(),evidence,request.budgets(),step,cancel)))throw new IllegalArgumentException("Derived request differs from exact parent binding");
     }
     private String parameterHash(TrackerMode engine,EvidenceSnapshot evidence){return hash(root.request().parameterHash()+"\n"+identity+"\n"+engine+"\nR7/reference-v1\n"+evidence.canonicalHash());}
     public static MetricPoint interpolate(MetricPoint a,MetricPoint b,double f){return f==0?a:f==1?b:new MetricPoint(a.xMeters()+f*(b.xMeters()-a.xMeters()),a.yMeters()+f*(b.yMeters()-a.yMeters()));}

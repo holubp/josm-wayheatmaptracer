@@ -319,9 +319,12 @@ public final class PublicGuiSmokeMain {
             nodes.get(i).setCoor(new org.openstreetmap.josm.data.coor.LatLon(point.latitudeDegrees(),point.longitudeDegrees()));
         }
         nodes.get(3).put("note","public fixed island boundary");nodes.get(7).put("note","public fixed island boundary");
-        var point=PublicGuiSmokeOracle.point(0,34);var other=new Node(new org.openstreetmap.josm.data.coor.LatLon(point.latitudeDegrees(),point.longitudeDegrees()));other.setOsmId(9001,1);fixture.dataSet().addPrimitive(other);
-        var branch=new org.openstreetmap.josm.data.osm.Way();branch.setOsmId(9002,1);branch.setNodes(List.of(nodes.get(5),other));branch.put("highway","path");fixture.dataSet().addPrimitive(branch);
+        addIntervalJunction(fixture,nodes.get(5));
         fixture.dataSet().allPrimitives().forEach(value->value.setModified(false));
+    }
+    private static void addIntervalJunction(PublicGuiSmokeFixture fixture,Node junction) {
+        var point=PublicGuiSmokeOracle.point(0,34);var other=new Node(new LatLon(point.latitudeDegrees(),point.longitudeDegrees()));other.setOsmId(9001,1);fixture.dataSet().addPrimitive(other);
+        var branch=new org.openstreetmap.josm.data.osm.Way();branch.setOsmId(9002,1);branch.setNodes(List.of(junction,other));branch.put("highway","path");fixture.dataSet().addPrimitive(branch);
     }
     private static volatile String intervalEvidence;
     private static void runNativeIntervalGui(Path report,PublicGuiSmokeFixture fixture,JDialog preview,PreviewSessionController<?> session,List<String> original,int originalUndo,AlignWayAction action) throws Exception {
@@ -880,76 +883,84 @@ public final class PublicGuiSmokeMain {
     private static void clickAndAwaitStage(Path report,JDialog dialog,LegacyRefinementWorkflow owner,String button,StageKind expected,
             boolean expectBootstrapRefusal) throws Exception {
         try(var admissions=PipelineAdmissionObserver.openForTesting(value->{})) {
-            var ready=new CompletableFuture<Void>();
-            Runnable check=()->{
-                if(owner.busy()){requireComputingView(dialog);return;}
-                if(expectBootstrapRefusal?owner.ownsPublication()&&!owner.nativeSelected():owner.nativeSelected()&&owner.currentStage().kind()==expected)ready.complete(null);
-                else ready.completeExceptionally(new IllegalStateException("Requested live refinement did not publish a child"));
-            };
-            java.beans.PropertyChangeListener listener=event->SwingUtilities.invokeLater(check);
-            var actionObserved=new AtomicBoolean();
-            java.awt.event.ActionListener actionListener=event->actionObserved.set(true);
-            try {
-                onEventThread(()->{
-                    requiredNamed(dialog.getContentPane(),"stage",javax.swing.JLabel.class).addPropertyChangeListener(listener);
-                    requiredNamed(dialog.getContentPane(),"refineA",javax.swing.JButton.class).addPropertyChangeListener(listener);
-                    var target=requiredNamed(dialog.getContentPane(),button,javax.swing.JButton.class);
-                    target.addActionListener(actionListener);
-                    if(!target.isEnabled())throw new IllegalStateException("Requested refinement button is disabled");target.doClick();if(owner.busy())requireComputingView(dialog);SwingUtilities.invokeLater(check);return null;
-                });
-                ready.get(180,TimeUnit.SECONDS);
-            } catch(Exception failure) {
-                try {
-                    // Bootstrap can fail before a Stage exists. Preserve its producer's
-                    // safe boundary and rootless export before asking for a stage/choice.
-                    String boundary=onEventThread(()->fixedFailureBoundary(owner.computationEvidence()));
-                    System.err.println("GUI_SMOKE_OPTIONAL_PREPARE_BOUNDARY "+boundary);
-                    boolean rootAvailable=onEventThread(()->{
-                        try{owner.currentStage();return true;}
-                        catch(IllegalStateException missing){if("Refinement root has not been captured".equals(missing.getMessage()))return false;throw missing;}
-                    });
-                    if(!rootAvailable) {
-                        Path archive=report.resolveSibling("bootstrap-refinement-failure.zip");DiagnosticsRegistry.writeLatest(archive.toFile());
-                        var read=Format15ArchiveReader.read(archive);
-                        var actual=read.artifact("latest-operation.json").orElseThrow();
-                        String facts=bootstrapFailureFacts(new String(actual.bytes(),StandardCharsets.UTF_8));
-                        System.err.println("GUI_SMOKE_ACTUAL_BOOTSTRAP "+facts);
-                        laterRefinementFailureEvidence="{\"schema\":\"wayheatmaptracer-rootless-refinement-1\",\"expected\":\""+expected.name()+"\",\"rootAvailable\":false,\"failureBoundary\":\""+boundary+"\",\"registryExport\":\"AVAILABLE\",\"actual\":"+facts+"}";
-                        writeSummary(report.resolveSibling("later-refinement-diagnostics.json"),laterRefinementFailureEvidence+"\n");
-                    } else {
-                    var observed=onEventThread(()->laterExportSnapshot(owner,expected,actionObserved.get(),admissions));
-                    System.err.println("GUI_SMOKE_ACTUAL_AUXILIARY_WORK "+observed.diagnostic().flatMap(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics::sourcePreparation));
-                    System.err.println("GUI_SMOKE_NATIVE_REFUSAL "+observed.diagnostic().flatMap(d->admissions.latestNative(d.binding().ticket())));
-                    String evidence=observed.evidence();
-                    String exportStatus="UNAVAILABLE"; String archiveHash=null;
-                    try {
-                        Path archive=report.resolveSibling("later-refinement-failure.zip");
-                        DiagnosticsRegistry.writeLatest(archive.toFile());
-                        var read=Format15ArchiveReader.read(archive);
-                        if(expected==StageKind.SMOOTH)read.artifact("latest-smoothing-attempt.json").ifPresent(actual->System.err.println("GUI_SMOKE_ACTUAL_SMOOTHING "+new String(actual.bytes(),StandardCharsets.UTF_8)));
-                        if(read.formatVersion()!=15)throw new IllegalStateException("Refinement format unavailable");
-                        var bundle=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle(read.buildIdentity(),read.sourceIdentityHash(),read.parameterHash(),read.artifacts());
-                        var lineage=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.readBound(bundle,observed.stage(),observed.choice()).orElseThrow();
-                        String status=new String(read.artifact("review-state.json").orElseThrow().bytes(),StandardCharsets.UTF_8);
-                        String availability=parseReviewStatus(status).getString("latestAttemptAvailability");
-                        var selection=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.CandidateKey(observed.stage(),observed.choice());
-                        boolean currentAttempt=observed.currentAttempt();
-                        requireLatestAttemptBinding(observed.diagnostic(),observed.availability(),lineage.latestPublication(),lineage.latestAttempt(),availability,currentAttempt?selection:null);
-                        var after=onEventThread(()->laterExportSnapshot(owner,expected,actionObserved.get(),admissions));
-                        if(!observed.owned()||!after.owned()||observed.busy()!=after.busy()||observed.currentAttempt()!=after.currentAttempt()||!observed.stage().equals(after.stage())
-                            ||!observed.choice().equals(after.choice())||observed.availability()!=after.availability()
-                            ||!observed.diagnostic().equals(after.diagnostic()))throw new IllegalStateException("Refinement owner changed during export");
-                        archiveHash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(archive)));
-                        exportStatus=currentAttempt?"AVAILABLE":"CURRENT_ATTEMPT_UNAVAILABLE";
-                    } catch(Exception unavailable) { exportStatus="UNAVAILABLE"; }
-                    laterRefinementFailureEvidence=evidence.substring(0,evidence.length()-1)+",\"registryExport\":\""+exportStatus+"\",\"archiveSha256\":"+(archiveHash==null?"null":"\""+archiveHash+"\"")+"}";
-                    System.err.println("Later refinement diagnostics: "+laterRefinementFailureEvidence);
-                    writeSummary(report.resolveSibling("later-refinement-diagnostics.json"),laterRefinementFailureEvidence+"\n");
-                    }
-                } catch(Exception diagnosticFailure) { failure.addSuppressed(diagnosticFailure); }
-                throw failure;
-            } finally {onEventThread(()->{requiredNamed(dialog.getContentPane(),"stage",javax.swing.JLabel.class).removePropertyChangeListener(listener);requiredNamed(dialog.getContentPane(),"refineA",javax.swing.JButton.class).removePropertyChangeListener(listener);requiredNamed(dialog.getContentPane(),button,javax.swing.JButton.class).removeActionListener(actionListener);return null;});}
+            clickAndAwaitStage(report,dialog,owner,button,expected,expectBootstrapRefusal,admissions,null);
         }
+    }
+    private static void clickAndAwaitStage(Path report,JDialog dialog,LegacyRefinementWorkflow owner,String button,StageKind expected,
+            boolean expectBootstrapRefusal,PipelineAdmissionObserver.Scope admissions,Callable<Void> afterClick) throws Exception {
+        var ready=new CompletableFuture<Void>();
+        Runnable check=()->{
+            if(owner.busy()){requireComputingView(dialog);return;}
+            if(expectBootstrapRefusal?owner.ownsPublication()&&!owner.nativeSelected():owner.nativeSelected()&&owner.currentStage().kind()==expected)ready.complete(null);
+            else ready.completeExceptionally(new IllegalStateException("Requested live refinement did not publish a child"));
+        };
+        java.beans.PropertyChangeListener listener=event->SwingUtilities.invokeLater(check);
+        var actionObserved=new AtomicBoolean();
+        java.awt.event.ActionListener actionListener=event->actionObserved.set(true);
+        try {
+            onEventThread(()->{
+                requiredNamed(dialog.getContentPane(),"stage",javax.swing.JLabel.class).addPropertyChangeListener(listener);
+                requiredNamed(dialog.getContentPane(),"refineA",javax.swing.JButton.class).addPropertyChangeListener(listener);
+                var target=requiredNamed(dialog.getContentPane(),button,javax.swing.JButton.class);
+                target.addActionListener(actionListener);
+                if(!target.isEnabled())throw new IllegalStateException("Requested refinement button is disabled");
+                target.doClick();
+                if(afterClick!=null)afterClick.call();
+                if(owner.busy())requireComputingView(dialog);
+                SwingUtilities.invokeLater(check);return null;
+            });
+            ready.get(180,TimeUnit.SECONDS);
+        } catch(Exception failure) {
+            try {
+                // Bootstrap can fail before a Stage exists. Preserve its producer's
+                // safe boundary and rootless export before asking for a stage/choice.
+                String boundary=onEventThread(()->fixedFailureBoundary(owner.computationEvidence()));
+                System.err.println("GUI_SMOKE_OPTIONAL_PREPARE_BOUNDARY "+boundary);
+                boolean rootAvailable=onEventThread(()->{
+                    try{owner.currentStage();return true;}
+                    catch(IllegalStateException missing){if("Refinement root has not been captured".equals(missing.getMessage()))return false;throw missing;}
+                });
+                if(!rootAvailable) {
+                    Path archive=report.resolveSibling("bootstrap-refinement-failure.zip");DiagnosticsRegistry.writeLatest(archive.toFile());
+                    var read=Format15ArchiveReader.read(archive);
+                    var actual=read.artifact("latest-operation.json").orElseThrow();
+                    String facts=bootstrapFailureFacts(new String(actual.bytes(),StandardCharsets.UTF_8));
+                    System.err.println("GUI_SMOKE_ACTUAL_BOOTSTRAP "+facts);
+                    laterRefinementFailureEvidence="{\"schema\":\"wayheatmaptracer-rootless-refinement-1\",\"expected\":\""+expected.name()+"\",\"rootAvailable\":false,\"failureBoundary\":\""+boundary+"\",\"registryExport\":\"AVAILABLE\",\"actual\":"+facts+"}";
+                    writeSummary(report.resolveSibling("later-refinement-diagnostics.json"),laterRefinementFailureEvidence+"\n");
+                } else {
+                var observed=onEventThread(()->laterExportSnapshot(owner,expected,actionObserved.get(),admissions));
+                System.err.println("GUI_SMOKE_ACTUAL_AUXILIARY_WORK "+observed.diagnostic().flatMap(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics::sourcePreparation));
+                System.err.println("GUI_SMOKE_NATIVE_REFUSAL "+observed.diagnostic().flatMap(d->admissions.latestNative(d.binding().ticket())));
+                String evidence=observed.evidence();
+                String exportStatus="UNAVAILABLE"; String archiveHash=null;
+                try {
+                    Path archive=report.resolveSibling("later-refinement-failure.zip");
+                    DiagnosticsRegistry.writeLatest(archive.toFile());
+                    var read=Format15ArchiveReader.read(archive);
+                    if(expected==StageKind.SMOOTH)read.artifact("latest-smoothing-attempt.json").ifPresent(actual->System.err.println("GUI_SMOKE_ACTUAL_SMOOTHING "+new String(actual.bytes(),StandardCharsets.UTF_8)));
+                    if(read.formatVersion()!=15)throw new IllegalStateException("Refinement format unavailable");
+                    var bundle=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle(read.buildIdentity(),read.sourceIdentityHash(),read.parameterHash(),read.artifacts());
+                    var lineage=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.readBound(bundle,observed.stage(),observed.choice()).orElseThrow();
+                    String status=new String(read.artifact("review-state.json").orElseThrow().bytes(),StandardCharsets.UTF_8);
+                    String availability=parseReviewStatus(status).getString("latestAttemptAvailability");
+                    var selection=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.CandidateKey(observed.stage(),observed.choice());
+                    boolean currentAttempt=observed.currentAttempt();
+                    requireLatestAttemptBinding(observed.diagnostic(),observed.availability(),lineage.latestPublication(),lineage.latestAttempt(),availability,currentAttempt?selection:null);
+                    var after=onEventThread(()->laterExportSnapshot(owner,expected,actionObserved.get(),admissions));
+                    if(!observed.owned()||!after.owned()||observed.busy()!=after.busy()||observed.currentAttempt()!=after.currentAttempt()||!observed.stage().equals(after.stage())
+                        ||!observed.choice().equals(after.choice())||observed.availability()!=after.availability()
+                        ||!observed.diagnostic().equals(after.diagnostic()))throw new IllegalStateException("Refinement owner changed during export");
+                    archiveHash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(archive)));
+                    exportStatus=currentAttempt?"AVAILABLE":"CURRENT_ATTEMPT_UNAVAILABLE";
+                } catch(Exception unavailable) { exportStatus="UNAVAILABLE"; }
+                laterRefinementFailureEvidence=evidence.substring(0,evidence.length()-1)+",\"registryExport\":\""+exportStatus+"\",\"archiveSha256\":"+(archiveHash==null?"null":"\""+archiveHash+"\"")+"}";
+                System.err.println("Later refinement diagnostics: "+laterRefinementFailureEvidence);
+                writeSummary(report.resolveSibling("later-refinement-diagnostics.json"),laterRefinementFailureEvidence+"\n");
+                }
+            } catch(Exception diagnosticFailure) { failure.addSuppressed(diagnosticFailure); }
+            throw failure;
+        } finally {onEventThread(()->{requiredNamed(dialog.getContentPane(),"stage",javax.swing.JLabel.class).removePropertyChangeListener(listener);requiredNamed(dialog.getContentPane(),"refineA",javax.swing.JButton.class).removePropertyChangeListener(listener);requiredNamed(dialog.getContentPane(),button,javax.swing.JButton.class).removeActionListener(actionListener);return null;});}
     }
     private static void confirmStepwise(JDialog dialog) throws Exception {
         var accepted=new AtomicBoolean();
@@ -979,7 +990,7 @@ public final class PublicGuiSmokeMain {
         private int captureReceipts;
         private record PaintReceipt(int width,int height,double scale,double left,double top,double east,double north,int[] pixels) { }
         private final java.util.ArrayDeque<PaintReceipt> repeatReceipts=new java.util.ArrayDeque<>();
-        private final PublicGuiSmokeFixture.VisibleTile source;
+        private PublicGuiSmokeFixture.VisibleTile source;
         AnalyticVisibleLayer(PublicGuiSmokeFixture.VisibleTile source){super(new org.openstreetmap.josm.data.imagery.ImageryInfo("Strava public analytic visible heatmap"));this.source=source;}
         @Override public void paint(java.awt.Graphics2D graphics,org.openstreetmap.josm.gui.MapView view,org.openstreetmap.josm.data.Bounds bounds) {
             int width=view.getWidth(),height=view.getHeight();if(width<1||height<1)return;
@@ -1028,7 +1039,19 @@ public final class PublicGuiSmokeMain {
         @Override protected List<org.openstreetmap.josm.gui.layer.ImageryLayer.OffsetMenuEntry> getOffsetMenuEntries(){return List.of();}
     }
 
-    private static volatile AutoCloseable visiblePainterFixture;
+    private record VisiblePainterFixture(org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer layer,
+            AnalyticVisibleLayer painter,AutoCloseable cleanup) implements AutoCloseable {
+        void selectTile(PublicGuiSmokeFixture.VisibleTile tile) {
+            if(!SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Fixture tile selection requires EDT");
+            layer.sourceEpoch().sourceChanged();
+            layer.setZoomLevel(tile.address().zoom());
+            if(layer.getZoomLevel()!=tile.address().zoom())throw new IllegalStateException("Actual public visible zoom differs from its tile");
+            painter.source=tile;
+            painter.repeatReceipts.clear();
+        }
+        @Override public void close() throws Exception {cleanup.close();}
+    }
+    private static volatile VisiblePainterFixture visiblePainterFixture;
     private static java.util.function.BooleanSupplier visiblePainterRegistered=()->false;
     private static boolean rawVisibleResourceRetained;
     private static boolean isVisibleGuiScenario(){return System.getProperty("wayheatmaptracer.guiSmoke.refinementOrder","").startsWith("VISIBLE_B_A");}
@@ -1183,9 +1206,9 @@ public final class PublicGuiSmokeMain {
     }
     /** Keeps actual managed epoch/lifecycle and production paintLayer while replacing only public imagery. */
     @SuppressWarnings("unchecked")
-    private static AutoCloseable installOfflineVisiblePainter(PublicGuiSmokeFixture fixture) throws Exception {
+    private static VisiblePainterFixture installOfflineVisiblePainter(PublicGuiSmokeFixture fixture) throws Exception {
         var retained=new java.util.concurrent.atomic.AtomicReference<org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer>();
-        addOfflineManagedLayer(config(true,false),layer->{MainApplication.getLayerManager().addLayer(layer);layer.getDisplaySettings().setAutoZoom(false);layer.setZoomLevel(15);retained.set(layer);});
+        addOfflineManagedLayer(config(true,false),17,layer->{MainApplication.getLayerManager().addLayer(layer);layer.getDisplaySettings().setAutoZoom(false);layer.setZoomLevel(15);retained.set(layer);});
         var layer=retained.get();var view=MainApplication.getMap().mapView;
         if(layer.getZoomLevel()!=15)throw new IllegalStateException("Public native z15 source metadata was not installed after actual layer registration");
         var field=org.openstreetmap.josm.gui.MapView.class.getDeclaredField("registeredLayers");field.setAccessible(true);
@@ -1193,12 +1216,12 @@ public final class PublicGuiSmokeMain {
         var original=painters.get(layer);if(original==null)throw new IllegalStateException("Actual visible source painter is not registered");
         var analytic=new AnalyticVisibleLayer(fixture.visibleTile());
         var replacement=new org.openstreetmap.josm.gui.layer.MapViewPaintable.LayerPainter(){
-            public void paint(org.openstreetmap.josm.gui.layer.MapViewGraphics graphics){requirePaintOutsideDatasetLock(fixture.dataSet());visiblePaintCalls.incrementAndGet();var fault=visiblePaintFault.getAndSet(null);if(fault!=null)fault.run();if(layer.getZoomLevel()!=15)throw new IllegalStateException("Public visible painter metadata differs from its actual z15 pixels");analytic.paint(graphics.getDefaultGraphics(),graphics.getMapView(),graphics.getClipBounds().getLatLonBoundsBox());if(visiblePixelFault.get()){var g=graphics.getDefaultGraphics();g.setColor(java.awt.Color.BLACK);g.fillRect(0,0,graphics.getMapView().getWidth(),graphics.getMapView().getHeight());}}
+            public void paint(org.openstreetmap.josm.gui.layer.MapViewGraphics graphics){requirePaintOutsideDatasetLock(fixture.dataSet());visiblePaintCalls.incrementAndGet();var fault=visiblePaintFault.getAndSet(null);if(fault!=null)fault.run();if(layer.getZoomLevel()!=analytic.source.address().zoom())throw new IllegalStateException("Public visible painter zoom differs from its actual native pixels");analytic.paint(graphics.getDefaultGraphics(),graphics.getMapView(),graphics.getClipBounds().getLatLonBoundsBox());if(visiblePixelFault.get()){var g=graphics.getDefaultGraphics();g.setColor(java.awt.Color.BLACK);g.fillRect(0,0,graphics.getMapView().getWidth(),graphics.getMapView().getHeight());}}
             public void detachFromMapView(org.openstreetmap.josm.gui.layer.MapViewPaintable.MapViewEvent event){original.detachFromMapView(event);}
         };
         painters.put(layer,replacement);
         visiblePainterRegistered=()->painters.get(layer)==replacement;
-        return ()->{visiblePainterRegistered=()->false;if(painters.get(layer)==replacement)painters.put(layer,original);analytic.destroy();};
+        return new VisiblePainterFixture(layer,analytic,()->{visiblePainterRegistered=()->false;if(painters.get(layer)==replacement)painters.put(layer,original);analytic.destroy();});
     }
 
     private static void requirePaintOutsideDatasetLock(org.openstreetmap.josm.data.osm.DataSet data) {
@@ -1208,6 +1231,10 @@ public final class PublicGuiSmokeMain {
     }
     static void addOfflineManagedLayer(ManagedHeatmapConfig config,
             java.util.function.Consumer<org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer> add) {
+        addOfflineManagedLayer(config,15,add);
+    }
+    private static void addOfflineManagedLayer(ManagedHeatmapConfig config,int maximumZoom,
+            java.util.function.Consumer<org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer> add) {
         if (!config.hasManagedAccessValues()) throw new IllegalStateException("Managed heatmap access values are incomplete");
         String activity = config.activity().trim().toLowerCase(java.util.Locale.ROOT);
         String color = config.color().trim().toLowerCase(java.util.Locale.ROOT);
@@ -1216,7 +1243,7 @@ public final class PublicGuiSmokeMain {
         var info = new org.openstreetmap.josm.data.imagery.ImageryInfo(
             ManagedImageryService.MANAGED_LAYER_NAME + " (" + activity + "/" + color + ")", template,
             "tms", null, config.toCookieHeader(), ManagedImageryService.MANAGED_LAYER_ID);
-        info.setDefaultMaxZoom(15);
+        info.setDefaultMaxZoom(maximumZoom);
         var layer = new org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer(info);
         layer.getDisplaySettings().setAutoLoad(false);
         add.accept(layer);
@@ -1995,24 +2022,80 @@ public final class PublicGuiSmokeMain {
             default -> "UNAVAILABLE";
         };
     }
-    static void configureVisibleIntervalFixture(PublicGuiSmokeFixture fixture) {
+    static final double COMPACT_VISIBLE_INTERVAL_HALF_WIDTH_METERS = 4.0;
+
+    static void configureOversizedVisibleIntervalFixture(PublicGuiSmokeFixture fixture) {
         fixture.restoreOriginalSelectionGeometry();
         configureIntervalFixture(fixture);
         densifyIntervalFixture(fixture);
     }
+    static void configureVisibleIntervalFixture(PublicGuiSmokeFixture fixture) {
+        fixture.restoreOriginalSelectionGeometry();
+        var nodes=fixture.selectedWay().getNodes();
+        var left=nodes.get(1);var junction=nodes.get(5);var right=nodes.get(9);
+        left.put("note","public fixed island boundary");
+        right.put("note","public fixed island boundary");
+        var center=PublicGuiSmokeOracle.point(0,4);
+        junction.setCoor(new LatLon(center.latitudeDegrees(),center.longitudeDegrees()));
+        addIntervalJunction(fixture,junction);
+
+        // Preserve both supported exterior bends and use the two real arms as the fixed center.
+        var first=nodes.get(0);var last=nodes.get(10);
+        first.setCoor(compactIntervalPoint(-39.4));
+        last.setCoor(compactIntervalPoint(39.4));
+        var selected=new ArrayList<Node>();
+        selected.add(first);
+        addCompactExterior(fixture,selected,9200,new double[]{-37.55,-35.7,-33.85});
+        selected.addAll(List.of(left,junction,right));
+        addCompactExterior(fixture,selected,9203,new double[]{33.85,35.7,37.55});
+        selected.add(last);
+        fixture.selectedWay().setNodes(selected);
+        fixture.dataSet().allPrimitives().forEach(value->value.setModified(false));
+        fixture.dataSet().setSelected(fixture.selectedWay());
+    }
+    private static void addCompactExterior(PublicGuiSmokeFixture fixture,List<Node> selected,int firstId,double[] east) {
+        for(int i=0;i<east.length;i++) {
+            var point=new Node(compactIntervalPoint(east[i]));
+            point.setOsmId(firstId+i,1);
+            fixture.dataSet().addPrimitive(point);
+            selected.add(point);
+        }
+    }
+    private static LatLon compactIntervalPoint(double east) {
+        var point=PublicGuiSmokeOracle.point(east,PublicGuiSmokeFixture.compactIntervalBend(east));
+        return new LatLon(point.latitudeDegrees(),point.longitudeDegrees());
+    }
     private static void exerciseVisibleIntervalApplyAndDescendant(Path report,AlignWayAction action,PreviewSessionController<?> session,
             PublicGuiSmokeFixture fixture,List<String> original,int originalUndo) throws Exception {
+        exerciseVisibleIntervalCase(report,action,session,fixture,original,originalUndo,false);
+        var originalTile=fixture.visibleTile();
+        var compactTile=fixture.compactIntervalTile();
+        try {
+            onEventThread(()->{visiblePainterFixture.selectTile(compactTile);return null;});
+            exerciseVisibleIntervalCase(report,action,session,fixture,original,originalUndo,true);
+        } finally {
+            onEventThread(()->{visiblePainterFixture.selectTile(originalTile);return null;});
+        }
+    }
+    private static void exerciseVisibleIntervalCase(Path report,AlignWayAction action,PreviewSessionController<?> session,
+            PublicGuiSmokeFixture fixture,List<String> original,int originalUndo,boolean compact) throws Exception {
         var originalNodes=fixture.selectedWay().getNodes();
         var coordinates=originalNodes.stream().map(Node::getCoor).toList();
         var keys=originalNodes.stream().map(Node::getKeys).toList();
         var primitives=java.util.Set.copyOf(fixture.dataSet().allPrimitives());
         var flags=new java.util.IdentityHashMap<org.openstreetmap.josm.data.osm.OsmPrimitive,Boolean>();primitives.forEach(value->flags.put(value,value.isModified()));
+        var priorConfig=onEventThread(PluginPreferences::load);
+        double halfWidth=compact?COMPACT_VISIBLE_INTERVAL_HALF_WIDTH_METERS:7.01;
         var opened=new CompletableFuture<JDialog>();
         AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog dialog&&isPreview(dialog))opened.complete(dialog);};
         Toolkit.getDefaultToolkit().addAWTEventListener(listener,AWTEvent.WINDOW_EVENT_MASK);
         try {
-            onEventThread(()->{
-                configureVisibleIntervalFixture(fixture);
+            var expectedPartition=onEventThread(()->{
+                if(compact){
+                    PluginPreferences.save(priorConfig.withSearchHalfWidthMeters(halfWidth));
+                    configureVisibleIntervalFixture(fixture);
+                }
+                else configureOversizedVisibleIntervalFixture(fixture);
                 var selection=org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver.resolve(fixture.dataSet(),false);
                 // Geometry-only seed, never acquired. Synthetic access satisfies this
                 // existing capture API; the actual action still uses its visible source.
@@ -2020,15 +2103,24 @@ public final class PublicGuiSmokeMain {
                 var geometryConfig=config(true,false).withTrackerMode(actual.trackerMode()).withAlignmentMode(actual.alignmentMode());
                 var seed=new LiveBPreviewService().captureManagedSeed(fixture.dataSet(),selection,org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig.withoutCleanup(geometryConfig),"public-visible-interval-geometry-only");
                 if(seed.intervalPartition()==null||seed.intervalPartition().fixedIslands().isEmpty()
-                        ||seed.intervalPartition().slideIntervals().isEmpty()||seed.intervalPartition().slideIntervals().stream().anyMatch(value->value.traceRange().size()<=2))
+                        ||seed.intervalPartition().slideIntervals().size()<2||seed.intervalPartition().slideIntervals().stream().anyMatch(value->value.traceRange().size()<=2))
                     throw new IllegalStateException("Public visible interval fixture lacks eligible original occurrence ranges before inference");
-                return null;
+                return seed.intervalPartition();
             });
             var baseline=wayState(fixture);
             onEventThread(()->{action.actionPerformed(null);return null;});var dialog=opened.get(180,TimeUnit.SECONDS);
             var computed=onEventThread(()->(LiveBPreviewService.Computed)session.currentAttempt().result());
             System.err.println("GUI_SMOKE_VISIBLE_INTERVAL_SOURCE partitioned="+computed.partitioned()+" producer="+computed.captured().visibleInputReceipt().isPresent()+" runs="+(computed.partitioned()?computed.intervalBatch().runs().size():0));
-            if(!computed.partitioned()||computed.captured().visibleInputReceipt().isEmpty()||computed.intervalBatch().runs().isEmpty())throw new IllegalStateException("Actual producer-backed visible interval source is unavailable");
+            if(!computed.partitioned()||computed.captured().visibleInputReceipt().isEmpty()||computed.intervalBatch().runs().size()<2)throw new IllegalStateException("Actual producer-backed visible interval source is unavailable");
+            var actualPartition=computed.captured().intervalPartition();
+            if(computed.captured().searchRadiusMeters()!=halfWidth
+                    ||compact&&(!actualPartition.fixedIslands().equals(expectedPartition.fixedIslands())
+                    ||!actualPartition.slideIntervals().equals(expectedPartition.slideIntervals())
+                    ||!actualPartition.junctionDispositions().equals(expectedPartition.junctionDispositions())))
+                throw new IllegalStateException("Actual interval decision width or protected occurrence partition differs from the fixture");
+            System.err.println("GUI_SMOKE_VISIBLE_INTERVAL halfWidthMeters="+halfWidth+" fixedPartitionPreserved=true");
+            if(compact&&computed.captured().raster().nativePitchMeters().orElseThrow()>=.65)
+                throw new IllegalStateException("Compact interval case lacks its factual z17 native pitch");
             var initial=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer().compose(computed.intervalBatch(),java.util.Map.of());
             System.err.println("GUI_SMOKE_VISIBLE_INTERVAL_ASSESSMENT plan="+initial.plan().isPresent()+" noChange="+initial.noChangeProof().isPresent()
                 +" statuses="+computed.intervalBatch().runs().stream().limit(16).map(value->value.result().inference().status().name()).toList()
@@ -2056,7 +2148,11 @@ public final class PublicGuiSmokeMain {
                 if(modal.get()||onEventThread(dialog::isDisplayable))throw new IllegalStateException("Safe original unchanged interval acceptance did not close its modeless review");
                 requireUnchanged(fixture,baseline,originalUndo);
             }
-            exerciseTightVisibleIntervalBootstrap(report,action,session,fixture,baseline,originalUndo,computed);
+            if(!compact) {
+                exerciseTightVisibleIntervalBootstrap(report,action,session,fixture,baseline,originalUndo,computed);
+                exerciseOversizedVisibleIntervalRefusal(report,action,session,fixture,baseline,originalUndo,computed);
+                return;
+            }
             var descendantOpened=new CompletableFuture<JDialog>();
             AWTEventListener descendantListener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog next&&isPreview(next))descendantOpened.complete(next);};
             Toolkit.getDefaultToolkit().addAWTEventListener(descendantListener,AWTEvent.WINDOW_EVENT_MASK);
@@ -2064,26 +2160,41 @@ public final class PublicGuiSmokeMain {
                 onEventThread(()->{action.actionPerformed(null);return null;});var next=descendantOpened.get(180,TimeUnit.SECONDS);
                 var descendant=onEventThread(()->(LegacyRefinementWorkflow)next.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner"));
                 requireSameVisibleIntervalInput(session,computed);
-                clickAndAwaitStage(report,next,descendant,"refineA",StageKind.REFINE_A);
-                var work=onEventThread(()->descendant.latestAttemptDiagnostics().orElseThrow().sourcePreparation().orElseThrow());
-                if(work.maximumVisits().orElseThrow()!=64_000_000||work.visits()<=8_000_000)
-                    throw new IllegalStateException("Actual interval descendant lacks its inherited cumulative64M work");
-                System.err.println("GUI_SMOKE_VISIBLE_INTERVAL descendantMaximumVisits="+work.maximumVisits().orElseThrow()+" descendantActualVisits="+work.visits());
-                if(!originalChanged) {
-                    var root=onEventThread(()->{
-                        var child=descendant.currentStage();int calls=descendant.actualNativeCalls();
-                        requiredNamed(next.getContentPane(),"undo",javax.swing.JButton.class).doClick();
-                        var actual=descendant.currentNoChangeRoot().orElseThrow();
-                        requiredNamed(next.getContentPane(),"redo",javax.swing.JButton.class).doClick();
-                        if(!child.equals(descendant.currentStage())||calls!=descendant.actualNativeCalls())throw new IllegalStateException("Interval quality oracle navigation did not preserve its cached child");
-                        if(!(actual instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementPayload.RootIntervalNoChangeReview interval))throw new IllegalStateException("Actual interval no-change quality owner unavailable");
-                        return interval;
+                var shared=new java.util.concurrent.atomic.AtomicReference<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext>();
+                try(var admissions=PipelineAdmissionObserver.openForTesting(value->{})) {
+                    clickAndAwaitStage(report,next,descendant,"refineA",StageKind.REFINE_A,false,admissions,()->{
+                        var initialWorkField=LegacyRefinementWorkflow.class.getDeclaredField("initialVisibleWork");initialWorkField.setAccessible(true);
+                        var actual=(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext)initialWorkField.get(descendant);
+                        if(actual==null||actual.maximumVisits()!=64_000_000||!descendant.busy())
+                            throw new IllegalStateException("Actual interval click did not enter its original cumulative work scope");
+                        shared.set(actual);return null;
                     });
-                    requireUncachedIntervalQualityParity(root);
-                    System.err.println("GUI_SMOKE_VISIBLE_INTERVAL fullQualityUncachedParity=true cachedChildRestored=true");
                 }
+                var work=onEventThread(()->descendant.latestAttemptDiagnostics().orElseThrow().sourcePreparation().orElseThrow());
+                if(work.maximumVisits().orElseThrow()!=64_000_000||work.visits()<=0||work.visits()>64_000_000
+                        ||shared.get().visits()!=work.visits()||!shared.get().counters().equals(work.counters()))
+                    throw new IllegalStateException("Actual interval descendant lacks its inherited cumulative64M work");
+                System.err.println("GUI_SMOKE_VISIBLE_INTERVAL descendantMaximumVisits="+work.maximumVisits().orElseThrow()+" descendantActualVisits="+work.visits()
+                    +" sharedBootstrapAccounting=true outputGrid="+work.sourceFacts().orElseThrow().outputGridWidth()+"x"+work.sourceFacts().orElseThrow().outputGridHeight());
+                var actualOriginal=onEventThread(()->(LiveBPreviewService.Computed)session.currentAttempt().result());
+                var rootAssessment=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer().compose(actualOriginal.intervalBatch(),java.util.Map.of());
+                var root=onEventThread(()->{
+                    var child=descendant.currentStage();int calls=descendant.actualNativeCalls();
+                    requiredNamed(next.getContentPane(),"undo",javax.swing.JButton.class).doClick();
+                    var selected=descendant.currentStage().candidates().stream().filter(choice->choice.id().equals(descendant.currentStage().selected())).findFirst().orElseThrow();
+                    requiredNamed(next.getContentPane(),"redo",javax.swing.JButton.class).doClick();
+                    if(!child.equals(descendant.currentStage())||calls!=descendant.actualNativeCalls())throw new IllegalStateException("Interval quality oracle navigation did not preserve its cached child");
+                    return selected.payload();
+                });
+                if(root.rootNoChangeReview().orElse(null) instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementPayload.RootIntervalNoChangeReview noChange)
+                    requireUncachedIntervalQualityParity(noChange);
+                else requireUncachedChangedIntervalQualityParity(actualOriginal,rootAssessment,root.nativeReview().orElseThrow());
+                System.err.println("GUI_SMOKE_VISIBLE_INTERVAL fullQualityUncachedParity=true cachedChildRestored=true");
                 var plan=onEventThread(()->descendant.currentNative().orElseThrow().plan());
                 if(descendant.actualNativeCalls()==0)throw new IllegalStateException("Visible interval descendant did not enter actual native inference");
+                var originalWay=fixture.selectedWay().getNodes().stream().map(node->new GeographicPoint(node.lat(),node.lon())).toList();
+                if(plan.finalPreviewWays().get(plan.selectedWayKey()).equals(originalWay))
+                    throw new IllegalStateException("Visible interval descendant did not change the selected geometry");
                 Format15ArchiveReader.read(exportThroughActualMenu());applyStoredNativePlan(next,fixture,plan,baseline,originalUndo);
             }finally{Toolkit.getDefaultToolkit().removeAWTEventListener(descendantListener);}
             exerciseSmoothThenRefineGui(report,action,session,fixture,baseline,originalUndo,StageKind.REFINE_A);
@@ -2093,6 +2204,7 @@ public final class PublicGuiSmokeMain {
             Toolkit.getDefaultToolkit().removeAWTEventListener(listener);
             onEventThread(()->{
                 for(Window window:Window.getWindows())if(window instanceof JDialog dialog&&isPreview(dialog))dialog.dispatchEvent(new WindowEvent(dialog,WindowEvent.WINDOW_CLOSING));
+                if(compact)PluginPreferences.save(priorConfig);
                 var added=fixture.dataSet().allPrimitives().stream().filter(value->!primitives.contains(value)).toList();
                 for(var value:added)if(value instanceof org.openstreetmap.josm.data.osm.Way way)way.setNodes(List.of());
                 fixture.selectedWay().setNodes(originalNodes);
@@ -2100,8 +2212,8 @@ public final class PublicGuiSmokeMain {
                 for(var value:added)fixture.dataSet().removePrimitive(value);
                 flags.forEach((value,modified)->value.setModified(modified));fixture.dataSet().setSelected(fixture.selectedWay());return null;
             });
+            requireUnchanged(fixture,original,originalUndo);
         }
-        requireUnchanged(fixture,original,originalUndo);
     }
     private static void exerciseTightVisibleIntervalBootstrap(Path report,AlignWayAction action,PreviewSessionController<?> session,
             PublicGuiSmokeFixture fixture,List<String> baseline,int undo,LiveBPreviewService.Computed expected) throws Exception {
@@ -2131,6 +2243,70 @@ public final class PublicGuiSmokeMain {
         }
         requireUnchanged(fixture,baseline,undo);
     }
+    private static void exerciseOversizedVisibleIntervalRefusal(Path report,AlignWayAction action,PreviewSessionController<?> session,
+            PublicGuiSmokeFixture fixture,List<String> baseline,int undo,LiveBPreviewService.Computed expected) throws Exception {
+        var opened=new CompletableFuture<JDialog>();
+        AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog dialog&&isPreview(dialog))opened.complete(dialog);};
+        Toolkit.getDefaultToolkit().addAWTEventListener(listener,AWTEvent.WINDOW_EVENT_MASK);
+        JDialog dialog=null;
+        try(var admissions=PipelineAdmissionObserver.openForTesting(value->{})) {
+            onEventThread(()->{action.actionPerformed(null);return null;});
+            dialog=opened.get(180,TimeUnit.SECONDS);
+            requireSameVisibleIntervalInput(session,expected);
+            var actualDialog=dialog;
+            var owner=onEventThread(()->(LegacyRefinementWorkflow)actualDialog.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner"));
+            var choice=onEventThread(owner::selectedChoiceIdentity);
+            var geometry=onEventThread(owner::selectedGeometry);
+            clickAndAwaitStage(report,dialog,owner,"refineA",StageKind.ROOT_NATIVE,false,admissions,null);
+            var diagnostic=onEventThread(()->{
+                var actual=owner.latestAttemptDiagnostics().orElseThrow();
+                var root=owner.currentStage();var ticket=actual.binding().ticket();
+                var work=actual.sourcePreparation().orElseThrow();
+                var refusal=admissions.latest(ticket).orElseThrow();var nativeWork=work.nativeWork().orElseThrow();
+                long requested=refusal.requestedBytes().orElseThrow(),current=refusal.currentBytes().orElseThrow();
+                long limit=refusal.limitBytes().orElseThrow();
+                if(!owner.ownsPublication()||!owner.atRoot()||!actualDialog.isShowing()
+                        ||owner.actualNativeCalls()!=0||!retainedHistory(owner).equals(List.of(root))
+                        ||owner.currentNoChangeRoot().isEmpty()
+                        ||!choice.equals(owner.selectedChoiceIdentity())||!geometry.equals(owner.selectedGeometry())
+                        ||!root.id().equals(ticket.parent())||!root.selected().equals(ticket.choice())||ticket.kind()!=StageKind.REFINE_A
+                        ||actual.phase()!=RefinementAttemptDiagnostics.Phase.SOURCE_PREPARATION
+                        ||actual.cause()!=RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT
+                        ||actual.publication()!=RefinementAttemptDiagnostics.Publication.NO_CHILD
+                        ||work.cause()!=RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT||work.maximumVisits().orElseThrow()!=64_000_000
+                        ||work.visits()<=0||work.visits()>=64_000_000
+                        ||nativeWork.nativeCalls().orElseThrow()!=0||!nativeWork.actualWork().orElseThrow().equals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage.none())
+                        ||refusal.gate()!=PipelineAdmissionObserver.Gate.SCALAR_PREPARATION
+                        ||limit!=268_435_456L||requested<=0||current<=0||current>limit||requested<=limit-current)
+                    throw new IllegalStateException("Oversized interval did not preserve its exact parent after scalar memory refusal");
+                System.err.println("GUI_SMOKE_VISIBLE_INTERVAL oversizedScalarRefusal=true currentBytes="+current+" requestedBytes="+requested
+                    +" limitBytes="+limit+" actualVisits="+work.visits()+" optionalNativeCalls=0");
+                return actual;
+            });
+            var archive=Format15ArchiveReader.read(exportThroughActualMenu());
+            var bundle=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle(
+                archive.buildIdentity(),archive.sourceIdentityHash(),archive.parameterHash(),archive.artifacts());
+            var ticket=diagnostic.binding().ticket();
+            var lineage=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.readBound(bundle,ticket.parent(),ticket.choice()).orElseThrow();
+            var status=parseReviewStatus(artifactText(archive,"review-state.json")).getString("latestAttemptAvailability");
+            var selection=new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.RefinementLineageCodec.CandidateKey(ticket.parent(),ticket.choice());
+            requireLatestAttemptBinding(java.util.Optional.of(diagnostic),RefinementAttemptDiagnostics.Availability.AVAILABLE,
+                lineage.latestPublication(),lineage.latestAttempt(),status,selection);
+            if(!onEventThread(()->owner.ownsPublication()&&owner.latestAttemptDiagnostics().orElseThrow().equals(diagnostic)))
+                throw new IllegalStateException("Oversized interval refusal owner changed during export");
+            var root=onEventThread(owner::currentNoChangeRoot).orElseThrow();
+            if(!(root instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementPayload.RootIntervalNoChangeReview noChange))
+                throw new IllegalStateException("Oversized interval no-change proof unavailable after memory refusal");
+            requireUncachedIntervalQualityParity(noChange);
+            System.err.println("GUI_SMOKE_VISIBLE_INTERVAL oversizedNoChangeQualityParity=true");
+            requireUnchanged(fixture,baseline,undo);
+        } finally {
+            var actualDialog=dialog;
+            if(actualDialog!=null)onEventThread(()->{actualDialog.dispatchEvent(new WindowEvent(actualDialog,WindowEvent.WINDOW_CLOSING));return null;});
+            Toolkit.getDefaultToolkit().removeAWTEventListener(listener);
+        }
+        requireUnchanged(fixture,baseline,undo);
+    }
     private static void requireSameVisibleIntervalInput(PreviewSessionController<?> session,LiveBPreviewService.Computed expected) throws Exception {
         var actual=onEventThread(()->(LiveBPreviewService.Computed)session.currentAttempt().result());
         if(!actual.partitioned()||actual.captured().visibleInputReceipt().isEmpty()
@@ -2142,19 +2318,41 @@ public final class PublicGuiSmokeMain {
     }
     private static void requireUncachedIntervalQualityParity(
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementPayload.RootIntervalNoChangeReview root) {
-        if(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.current()!=null)
-            throw new IllegalStateException("Independent interval quality oracle entered live operation work");
         var run=root.owner();var proof=root.assessment().noChangeProof().orElseThrow();
         proof.requireMatches(run.intervalBatch(),root.routeChoices(),run.captured().network());root.source().requireCurrent();
-        var ids=proof.finalSelection().pointIds();var points=ids.stream().map(root.assessment().assignments()::get).toList();
+        requireUncachedIntervalQualityParity(run,root.assessment(),proof.finalSelection().pointIds(),proof.compositionIdentity(),root.quality());
+    }
+    private static void requireUncachedChangedIntervalQualityParity(LiveBPreviewService.Computed run,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer.Assessment assessment,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementPayload.NativeReview root) {
+        var plan=assessment.plan().orElseThrow();
+        if(root.operation().isPresent()||!root.plan().equals(plan)||run.request().geometryMode()!=AlignmentMode.MOVE_EXISTING_NODES)
+            throw new IllegalStateException("Actual changed root does not match its original interval producer plan");
+        var way=(org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay)plan.before().primitives().get(plan.selectedWayKey());
+        var after=(org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay)plan.after().primitives().get(plan.selectedWayKey());
+        if(!way.nodeKeys().equals(after.nodeKeys()))throw new IllegalStateException("Move interval changed original occurrence identities");
+        var ids=new ArrayList<org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId>();
+        for(int i=plan.selectedRange().firstIndex();i<=plan.selectedRange().lastIndex();i++)
+            ids.add(new org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.ExistingWayNodeOccurrence(way.key(),way.nodeKeys().get(i),i));
+        if(ids.size()!=assessment.assignments().size()||!assessment.assignments().keySet().containsAll(ids))
+            throw new IllegalStateException("Changed interval quality lacks exact selected occurrences");
+        requireUncachedIntervalQualityParity(run,assessment,ids,plan.routeIdentity(),root.quality());
+    }
+    private static void requireUncachedIntervalQualityParity(LiveBPreviewService.Computed run,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer.Assessment assessment,
+            List<org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId> ids,String routeIdentity,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Result actual) {
+        if(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.current()!=null)
+            throw new IllegalStateException("Independent interval quality oracle entered live operation work");
+        var points=ids.stream().map(assessment.assignments()::get).toList();
         var protectedPoints=new java.util.LinkedHashMap<Integer,org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint>();
         for(int i=0;i<ids.size();i++)if(ids.get(i) instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.ExistingWayNodeOccurrence existing
                 &&run.captured().network().closure().protectedExistingNodeKeys().contains(existing.nodeKey()))protectedPoints.put(i,points.get(i));
         var image=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.fromEvidence(run.evidence(),run.options().fieldName());
         var expected=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator().evaluate(
-            new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Request(proof.compositionIdentity(),points,ids,image,
+            new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Request(routeIdentity,points,ids,image,
                 run.evidence().resolution().effectivePitchMeters(),protectedPoints,List.of(),false,false,false,false));
-        if(!expected.equals(root.quality()))throw new IllegalStateException("Actual complete interval quality differs from uncached oracle");
+        if(!expected.equals(actual))throw new IllegalStateException("Actual complete interval quality differs from uncached oracle");
     }
     private static void applyStoredNativePlan(JDialog dialog,PublicGuiSmokeFixture fixture,org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan plan,List<String> original,int undo) throws Exception {
         boolean legacy="legacy-review".equals(dialog.getName());

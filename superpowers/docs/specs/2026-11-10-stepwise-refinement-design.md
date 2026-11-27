@@ -19,6 +19,20 @@ work without an explicit ceiling retain their original 8M validation bound.
 This supersedes only the earlier bootstrap/Smoothen8M allowance below. Sufficiency
 requires actual unchanged GUI/full/performance qualification, final audit and RC.
 
+The approved visible fixture amendment keeps the original z15 interval input
+as the resource-refusal control. At 8M it must refuse bootstrap without a
+prepared root. At 64M it must preserve the prepared parent and current-owner
+diagnostics when scalar preparation exceeds the unchanged attempt memory cap.
+The oversized original also exercises its producer-backed no-change proof,
+zero writes, and complete uncached quality parity. A separate compact case
+uses real visible paint from a public z17 tile, a 4 m ordinary search half-width,
+two eligible portions of the
+selected way, and two fixed arms meeting at the protected junction. Both raw
+and stable modes must verify the compact producer's safe original review and
+complete uncached quality parity, changed refinement descendants, Smoothen
+followed by A and B, and stored Apply, Undo and Redo. The original 400 m
+regression remains binding.
+
 ## Historical preparation policy amendment — approved 2026-11-26, superseded above
 
 The user explicitly approved64,000,000 auxiliary preparation visits for an

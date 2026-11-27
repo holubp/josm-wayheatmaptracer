@@ -52,36 +52,43 @@ final class PublicGuiSmokeFixture {
         }
         Map<Integer, Tile> tiles = new LinkedHashMap<>();
         for (int zoom : ZOOMS) {
-            double centerX = worldPixelX(zoom, PublicGuiSmokeOracle.BASE_LONGITUDE);
-            double centerY = worldPixelY(zoom, PublicGuiSmokeOracle.BASE_LATITUDE);
-            int x = (int) Math.floor(centerX / TILE_SIZE);
-            int y = (int) Math.floor(centerY / TILE_SIZE);
-            BufferedImage image = new BufferedImage(TILE_SIZE, TILE_SIZE,
-                    BufferedImage.TYPE_INT_ARGB);
-            for (int row = 0; row < TILE_SIZE; row++) {
-                for (int column = 0; column < TILE_SIZE; column++) {
-                    double pixelPitchMeters = 2.0 * Math.PI
-                            * PublicGuiSmokeOracle.EARTH_RADIUS_METERS /
-                            (TILE_SIZE * (1 << zoom));
-                    double east = (x * TILE_SIZE + column + 0.5 - centerX)
-                            * pixelPitchMeters;
-                    double bend = 4.0 * Math.max(0.0, Math.cos(Math.PI * east / 64.0));
-                    double ridgeY = worldPixelY(zoom,
-                            PublicGuiSmokeOracle.point(0, bend).latitudeDegrees());
-                    double distance = y * TILE_SIZE + row + 0.5 - ridgeY;
-                    double strength = Math.exp(-0.5 * distance * distance / 1.44);
-                    int background = 3 + (column * 7 + row * 3) % 29;
-                    int gray = (int) Math.round(background + strength * (253 - background));
-                    image.setRGB(column, row, 0xff000000 | gray << 16 | gray << 8 | gray);
-                }
-            }
-            Path png = directory.resolve("public-hot-z" + zoom + ".png");
-            if (!ImageIO.write(image, "png", png.toFile())) {
-                throw new IllegalStateException("PNG writer is unavailable");
-            }
-            tiles.put(zoom, new Tile(new ManagedTileAddress("all", "hot", zoom, x, y), png));
+            tiles.put(zoom, writeAnalyticTile(directory, zoom));
         }
         return new PublicGuiSmokeFixture(dataSet, selected, tiles);
+    }
+
+    private static Tile writeAnalyticTile(Path directory, int zoom) throws java.io.IOException {
+        double centerX = worldPixelX(zoom, PublicGuiSmokeOracle.BASE_LONGITUDE);
+        double centerY = worldPixelY(zoom, PublicGuiSmokeOracle.BASE_LATITUDE);
+        int x = (int) Math.floor(centerX / TILE_SIZE);
+        int y = (int) Math.floor(centerY / TILE_SIZE);
+        BufferedImage image = new BufferedImage(TILE_SIZE, TILE_SIZE,
+                BufferedImage.TYPE_INT_ARGB);
+        // Keep the compact ridge width in ground metres when its real native pitch halves.
+        double variance=zoom==17?5.76:1.44;
+        for (int row = 0; row < TILE_SIZE; row++) {
+            for (int column = 0; column < TILE_SIZE; column++) {
+                double pixelPitchMeters = 2.0 * Math.PI
+                        * PublicGuiSmokeOracle.EARTH_RADIUS_METERS /
+                        (TILE_SIZE * (1 << zoom));
+                double east = (x * TILE_SIZE + column + 0.5 - centerX)
+                        * pixelPitchMeters;
+                double bend = 4.0 * Math.max(0.0, Math.cos(Math.PI * east / 64.0));
+                if(zoom==17)bend+=compactIntervalBend(east);
+                double ridgeY = worldPixelY(zoom,
+                        PublicGuiSmokeOracle.point(0, bend).latitudeDegrees());
+                double distance = y * TILE_SIZE + row + 0.5 - ridgeY;
+                double strength = Math.exp(-0.5 * distance * distance / variance);
+                int background = 3 + (column * 7 + row * 3) % 29;
+                int gray = (int) Math.round(background + strength * (253 - background));
+                image.setRGB(column, row, 0xff000000 | gray << 16 | gray << 8 | gray);
+            }
+        }
+        Path png = directory.resolve("public-hot-z" + zoom + ".png");
+        if (!ImageIO.write(image, "png", png.toFile())) {
+            throw new IllegalStateException("PNG writer is unavailable");
+        }
+        return new Tile(new ManagedTileAddress("all", "hot", zoom, x, y), png);
     }
 
     DataSet dataSet() { return dataSet; }
@@ -103,8 +110,20 @@ final class PublicGuiSmokeFixture {
     int tileCount() { return tiles.size(); }
     /** Static public z15 pixels for the controlled JOSM visible painter; no tile loading is claimed. */
     VisibleTile visibleTile() throws Exception {var tile=tiles.get(15);return new VisibleTile(ImageIO.read(tile.path().toFile()),tile.address());}
+    /** Each exterior has a supported shallow bend between two fixed endpoints. */
+    static double compactIntervalBend(double east) {
+        double progress=(Math.abs(east)-32.0)/7.4;
+        if(progress<=0||progress>=1)return 0;
+        double sine=Math.sin(Math.PI*progress);
+        return .42*sine*sine;
+    }
+    /** A separate native z17 PNG for the compact real interval success case. */
+    VisibleTile compactIntervalTile() throws java.io.IOException {
+        var tile=writeAnalyticTile(tiles.get(15).path().getParent(),17);
+        return new VisibleTile(ImageIO.read(tile.path().toFile()),tile.address());
+    }
     record VisibleTile(BufferedImage image,ManagedTileAddress address) {
-        VisibleTile {if(image==null||image.getWidth()!=512||image.getHeight()!=512||address.zoom()!=15)throw new IllegalArgumentException("Actual public native z15 tile required");}
+        VisibleTile {if(image==null||image.getWidth()!=512||image.getHeight()!=512||address.zoom()!=15&&address.zoom()!=17)throw new IllegalArgumentException("Actual public native z15/z17 tile required");}
         int gray(org.openstreetmap.josm.data.coor.LatLon point) {
             double x=worldPixelX(address.zoom(),point.lon())-address.x()*512.-.5,y=worldPixelY(address.zoom(),point.lat())-address.y()*512.-.5;
             if(x<0||y<0||x>511||y>511)return 3;
