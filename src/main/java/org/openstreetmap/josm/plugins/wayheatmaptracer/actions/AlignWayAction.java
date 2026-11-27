@@ -3320,15 +3320,16 @@ public class AlignWayAction extends JosmAction {
             DiagnosticsRegistry.setLastModernBundle(createIntervalDiagnostics(computed, state, status));
         } catch (RuntimeException failure) {
             var facts = FailureFacts.capture(failure);
-            String terminal = facts.resourceLimited() ? "resource-limited" : "failed";
+            String code = format15FailureCode(failure);
+            String terminal = format15ExportStatus(facts, code);
             Format15Bundle fallback = Format15ProductionBundleFactory.createUnavailableLive(
                     LastSlideDebugBundle.buildIdentity(), terminal, computed.captured().managedRaster() == null
                             ? "visible-layer" : "managed-tiles", attemptIdentity);
             LiveBPreviewService.Computed selected = state.selectedRun() == null ? computed : state.selectedRun();
             DiagnosticsRegistry.setLastModernBundle(withFailureSummary(fallback, "DIAGNOSTIC_EXPORT",
-                    format15FailureCode(failure), selected, facts, "INTERVAL_DIAGNOSTIC_BUNDLE"));
+                    code, selected, facts, "INTERVAL_DIAGNOSTIC_BUNDLE"));
             PluginLog.verbose("Format15 interval export unavailable status=%s cause=%s",
-                    terminal, format15FailureCode(failure));
+                    terminal, code);
         }
     }
 
@@ -3438,14 +3439,15 @@ public class AlignWayAction extends JosmAction {
             DiagnosticsRegistry.setLastModernBundle(bundle);
         } catch (RuntimeException failure) {
             var facts = FailureFacts.capture(failure);
-            String diagnosticStatus = facts.resourceLimited() ? "resource-limited" : "failed";
+            String code = format15FailureCode(failure);
+            String diagnosticStatus = format15ExportStatus(facts, code);
             Format15Bundle fallback = Format15ProductionBundleFactory.createUnavailableLive(
                     LastSlideDebugBundle.buildIdentity(), diagnosticStatus, sourceLineage, attemptIdentity,
                     assessedManualReason);
             DiagnosticsRegistry.setLastModernBundle(withFailureSummary(fallback, "DIAGNOSTIC_EXPORT",
-                    format15FailureCode(failure), computed, facts, "FULL_ROUTE_DIAGNOSTIC_BUNDLE"));
+                    code, computed, facts, "FULL_ROUTE_DIAGNOSTIC_BUNDLE"));
             PluginLog.verbose("Format15 support export unavailable status=%s cause=%s",
-                    diagnosticStatus, format15FailureCode(failure));
+                    diagnosticStatus, code);
         }
     }
 
@@ -3466,6 +3468,20 @@ public class AlignWayAction extends JosmAction {
             case "Replay collection exceeds component budget" -> "frozen-component-budget";
             default -> "export-failed";
         };
+    }
+
+    static String format15ExportStatus(RuntimeException failure) {
+        return format15ExportStatus(FailureFacts.capture(failure), format15FailureCode(failure));
+    }
+
+    private static String format15ExportStatus(FailureFacts facts, String code) {
+        boolean exportBudget = switch (code) {
+            case "final-output-budget", "scalar-output-budget", "counter-budget",
+                    "frozen-scalar-artifact-budget", "frozen-aggregate-budget", "frozen-retention-budget",
+                    "frozen-input-byte-budget", "artifact-byte-limit", "frozen-component-budget" -> true;
+            default -> false;
+        };
+        return facts.resourceLimited() || exportBudget ? "resource-limited" : "failed";
     }
 
     private static Format15Bundle createModernDiagnostics(LiveBPreviewService.Computed computed,

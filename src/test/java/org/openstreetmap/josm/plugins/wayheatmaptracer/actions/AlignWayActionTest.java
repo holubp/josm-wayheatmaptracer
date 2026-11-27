@@ -783,6 +783,16 @@ class AlignWayActionTest {
     }
 
     @Test
+    void format15ResourceStatusUsesActualExportAdmissionRatherThanSubstringMatching() {
+        var limit = assertThrows(IllegalArgumentException.class,
+                () -> org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                    .Format15Artifact.binary("large.bin", new byte[16 * 1024 * 1024 + 1]));
+        assertEquals("resource-limited", AlignWayAction.format15ExportStatus(limit));
+        assertEquals("failed", AlignWayAction.format15ExportStatus(
+                new IllegalArgumentException("unrelated limit in an unrecognized exception")));
+    }
+
+    @Test
     void intervalExportFailureRetainsActualBatchWorkWithoutClaimingFullWayInference(@TempDir Path directory)
             throws Exception {
         var computed = computedIntervalFixture();
