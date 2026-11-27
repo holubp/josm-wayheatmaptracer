@@ -4,6 +4,10 @@ import static org.openstreetmap.josm.tools.I18n.tr;
 
 import java.awt.BorderLayout;
 import java.awt.Dimension;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
+import java.awt.Insets;
+import java.awt.Rectangle;
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.WindowAdapter;
@@ -1107,7 +1111,7 @@ public class AlignWayAction extends JosmAction {
                 tr("Interval Alignment Preview"), false);
         JPanel panel = new JPanel(new BorderLayout(4,4));
         JPanel body=new JPanel(new BorderLayout(4,4));
-        JPanel footer=new JPanel(new BorderLayout(4,4));JPanel buttons=new JPanel(new java.awt.GridLayout(0, 2, 4, 4));
+        JPanel footer=new JPanel(new BorderLayout(4,4));
         JPanel intervalControls = new JPanel(new java.awt.GridLayout(0, 2));
         List<JComboBox<String>> choices = new java.util.ArrayList<>();
         JComboBox<String> sourceChoices = new JComboBox<>(state.sourceRuns().stream()
@@ -1164,13 +1168,12 @@ public class AlignWayAction extends JosmAction {
         split.setResizeWeight(0.5);
         split.setPreferredSize(new Dimension(680, 260));
         body.add(split, BorderLayout.CENTER);
-        buttons.add(disconnect);buttons.add(confirm);buttons.add(apply);buttons.add(close);
+        var buttons = reviewActions(List.of(confirm, apply, close), disconnect);
         footer.add(buttons,BorderLayout.SOUTH);panel.add(footer,BorderLayout.SOUTH);
         panel.add(body,BorderLayout.CENTER);
         dialog.setContentPane(panel);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
         packReviewDialog(dialog);
-        dialog.setLocationRelativeTo(MainApplication.getMainFrame());
         activePreviewDialog = dialog;
         livePreviewSession.replaceWindow(owner, dialog::dispose);
 
@@ -1808,12 +1811,7 @@ public class AlignWayAction extends JosmAction {
             header.add(choices);
         }
         header.add(diagnostics);
-        JPanel buttons = new JPanel(new java.awt.GridLayout(0, 2, 6, 4));
-        buttons.add(confirm);
-        buttons.add(apply);
-        buttons.add(preciseRerun);
-        buttons.add(disconnect);
-        buttons.add(close);
+        JPanel buttons = reviewActions(List.of(confirm, apply, close), preciseRerun, disconnect);
         JPanel panel = modernReviewContent(quality, buttons);
         var hybridSections = new org.openstreetmap.josm.plugins.wayheatmaptracer.ui.HybridSectionReviewPanel(overlay);
         if (computed.legacyB() != null) {
@@ -1831,7 +1829,6 @@ public class AlignWayAction extends JosmAction {
         dialog.setContentPane(panel);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
         packReviewDialog(dialog);
-        dialog.setLocationRelativeTo(MainApplication.getMainFrame());
         activePreviewDialog = dialog;
         livePreviewSession.replaceWindow(previewOwner, dialog::dispose);
         disconnect.addActionListener(event -> showDisconnectionChooser(previewOwner, dialog,
@@ -2635,15 +2632,46 @@ public class AlignWayAction extends JosmAction {
                 confirmation, applyAvailability);
     }
 
-    /** Packs review controls once, bounded by the usable monitor area. */
+    /** Gives long actions their own row and groups the shorter primary actions. */
+    static JPanel reviewActions(List<JButton> primary, JButton... longActions) {
+        var controls = new JPanel(new GridBagLayout());
+        var line = new GridBagConstraints();
+        line.gridwidth = GridBagConstraints.REMAINDER;
+        line.weightx = 1;
+        line.fill = GridBagConstraints.HORIZONTAL;
+        for (JButton action : longActions) controls.add(action, line);
+        var primaryRow = new JPanel(new java.awt.GridLayout(1, 0, 4, 4));
+        primary.forEach(primaryRow::add);
+        controls.add(primaryRow, line);
+        return controls;
+    }
+
+    /** Fits and centres the final outer window on its owner's usable monitor. */
     private static void packReviewDialog(JDialog dialog) {
         dialog.pack();
-        java.awt.GraphicsConfiguration configuration = dialog.getGraphicsConfiguration();
-        java.awt.Rectangle bounds = configuration.getBounds();
-        java.awt.Insets insets = java.awt.Toolkit.getDefaultToolkit().getScreenInsets(configuration);
-        int width = Math.max(1, bounds.width - insets.left - insets.right);
-        int height = Math.max(1, bounds.height - insets.top - insets.bottom);
-        dialog.setSize(Math.min(dialog.getWidth(), width), Math.min(dialog.getHeight(), height));
+        var owner = dialog.getOwner();
+        var configuration = owner == null ? dialog.getGraphicsConfiguration() : owner.getGraphicsConfiguration();
+        Rectangle screen = configuration.getBounds();
+        Insets insets = java.awt.Toolkit.getDefaultToolkit().getScreenInsets(configuration);
+        var usable = new Rectangle(screen.x + insets.left, screen.y + insets.top,
+                Math.max(1, screen.width - insets.left - insets.right),
+                Math.max(1, screen.height - insets.top - insets.bottom));
+        var contentMinimum = dialog.getRootPane().getMinimumSize();
+        var frameInsets = dialog.getInsets();
+        var minimum = new Dimension(
+                Math.min(usable.width, contentMinimum.width + frameInsets.left + frameInsets.right),
+                Math.min(usable.height, contentMinimum.height + frameInsets.top + frameInsets.bottom));
+        dialog.setMinimumSize(minimum);
+        dialog.setBounds(reviewWindowBounds(owner == null ? usable : owner.getBounds(), usable,
+                dialog.getSize(), minimum));
+    }
+
+    static Rectangle reviewWindowBounds(Rectangle owner, Rectangle usable, Dimension packed, Dimension minimum) {
+        int width = Math.min(usable.width, Math.max(packed.width, minimum.width));
+        int height = Math.min(usable.height, Math.max(packed.height, minimum.height));
+        int x = Math.max(usable.x, Math.min(owner.x + (owner.width - width) / 2, usable.x + usable.width - width));
+        int y = Math.max(usable.y, Math.min(owner.y + (owner.height - height) / 2, usable.y + usable.height - height));
+        return new Rectangle(x, y, width, height);
     }
 
     /** Builds a fixed-height scrollable review body with controls outside the scroll region. */
@@ -4173,11 +4201,7 @@ public class AlignWayAction extends JosmAction {
         badJunctionShapes.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes, workflow[0]));
 
         JButton cancel = new JButton(tr("Cancel"));
-        JPanel buttons = new JPanel(new java.awt.GridLayout(0, 2, 4, 4));
-        buttons.add(confirm);
-        buttons.add(apply);
-        buttons.add(retry);
-        buttons.add(cancel);
+        JPanel buttons = reviewActions(List.of(confirm, apply, cancel), retry);
         JPanel contents = new JPanel(new BorderLayout(4, 4));
         JScrollPane reviewScroll = new JScrollPane(panel);
         reviewScroll.setName("legacy-review-scroll");
@@ -4198,7 +4222,6 @@ public class AlignWayAction extends JosmAction {
         dialog.setContentPane(contents);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
         packReviewDialog(dialog);
-        dialog.setLocationRelativeTo(MainApplication.getMainFrame());
         livePreviewSession.replaceWindow(rootOwner,()->{workflow[0].close();dialog.dispose();overlay.hide();});
         workflow[0].attachOwnership(livePreviewSession.workGate(),rootOwner,()->{
             livePreviewSession.close(rootOwner);dialog.dispose();overlay.hide();

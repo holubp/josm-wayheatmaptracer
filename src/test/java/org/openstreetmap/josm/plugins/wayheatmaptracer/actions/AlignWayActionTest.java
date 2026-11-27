@@ -1400,6 +1400,36 @@ class AlignWayActionTest {
     }
 
     @Test
+    void finalReviewBoundsStayOnAnOffsetUsableMonitorAfterGrowing() {
+        var usable = new java.awt.Rectangle(-800, 24, 800, 576);
+        var owner = new java.awt.Rectangle(-700, 100, 760, 440);
+        var bounds = AlignWayAction.reviewWindowBounds(owner, usable,
+                new java.awt.Dimension(920, 760), new java.awt.Dimension(530, 400));
+        assertEquals(usable, bounds);
+        assertEquals(new java.awt.Rectangle(-576, 120, 512, 400),
+                AlignWayAction.reviewWindowBounds(owner, usable,
+                        new java.awt.Dimension(420, 210), new java.awt.Dimension(512, 400)));
+    }
+
+    @Test
+    void longReviewActionsHaveTheirOwnRowAtLargerFonts() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            var disconnect = new JButton("Disconnect selected way at shared nodes…");
+            disconnect.setFont(disconnect.getFont().deriveFont(18f));
+            var apply = new JButton("Apply");
+            var close = new JButton("Close preview");
+            var confirm = new JButton("Confirm review");
+            var footer = AlignWayAction.reviewActions(List.of(confirm, apply, close), disconnect);
+            footer.setSize(640, footer.getPreferredSize().height);
+            footer.doLayout();
+            apply.getParent().doLayout();
+            assertTrue(disconnect.getWidth() >= disconnect.getPreferredSize().width);
+            assertTrue(apply.getWidth() >= apply.getPreferredSize().width);
+            assertTrue(apply.getParent().getY() >= disconnect.getY() + disconnect.getHeight());
+        });
+    }
+
+    @Test
     void hundredsOfReasonsKeepButtonsReachable() {
         JTextArea summary = new JTextArea(String.join(", ", java.util.stream.IntStream.range(0, 250)
                 .mapToObj(index -> "REASON_" + index + " × 1").toList()));

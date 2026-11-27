@@ -23,6 +23,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.swing.JDialog;
+import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JMenuItem;
 import javax.swing.SwingUtilities;
@@ -1557,6 +1558,7 @@ public final class PublicGuiSmokeMain {
     }
 
     private static void checkDialogLayout(JDialog dialog) throws Exception {
+        checkEnlargedReviewLayout(dialog);
         onEventThread(() -> {
             var size = dialog.getSize();
             try {
@@ -1618,6 +1620,7 @@ public final class PublicGuiSmokeMain {
     }
 
     private static void checkModernLayout(JDialog dialog, boolean interval, boolean descendant) throws Exception {
+        checkEnlargedReviewLayout(dialog);
         onEventThread(() -> {
             var original = dialog.getSize();
             try {
@@ -1672,6 +1675,61 @@ public final class PublicGuiSmokeMain {
                     } finally { quality.setText(old); quality.setCaretPosition(0); }
                 }
             } finally { dialog.setSize(original); dialog.validate(); }
+            return null;
+        });
+    }
+
+    private static void checkEnlargedReviewLayout(JDialog dialog) throws Exception {
+        onEventThread(() -> {
+            var configuration = dialog.getOwner().getGraphicsConfiguration();
+            var screen = new java.awt.Rectangle(configuration.getBounds());
+            var insets = Toolkit.getDefaultToolkit().getScreenInsets(configuration);
+            screen.x += insets.left;
+            screen.y += insets.top;
+            screen.width -= insets.left + insets.right;
+            screen.height -= insets.top + insets.bottom;
+            if (!screen.contains(dialog.getBounds())) throw new IllegalStateException("Review opens outside its usable monitor");
+            var size = dialog.getSize();
+            var fonts = new java.util.LinkedHashMap<Component, java.awt.Font>();
+            var components = new java.util.ArrayDeque<Component>();
+            var root = dialog.getContentPane();
+            components.add(root);
+            while (!components.isEmpty()) {
+                var part = components.removeFirst();
+                if (part instanceof Container container) components.addAll(List.of(container.getComponents()));
+                if (part.getFont() != null) fonts.put(part, part.getFont());
+            }
+            try {
+                fonts.forEach((part, font) -> part.setFont(font.deriveFont(Math.max(18f, font.getSize2D()))));
+                dialog.setSize(800, 600);
+                dialog.validate();
+                for (String name : List.of("modern-apply", "modern-close", "modern-confirm", "modern-disconnect",
+                        "modern-precise-rerun", "legacy-apply", "legacy-confirm", "refineA", "refineB", "smooth")) {
+                    var actions = new ArrayList<JButton>();
+                    collectNamed(root, name, JButton.class, actions);
+                    for (var action : actions) if (action.isShowing()) {
+                        requireFooterHierarchy(root, action, true);
+                        if (action.getWidth() < action.getPreferredSize().width)
+                            throw new IllegalStateException("Enlarged review action text is clipped: " + name);
+                    }
+                }
+                for (String name : List.of("candidate", "refinement-root-source", "modern-root-choice")) {
+                    var selectors = new ArrayList<JComboBox>();
+                    collectNamed(root, name, JComboBox.class, selectors);
+                    for (var selector : selectors) if (selector.isShowing()) requireSelectableReviewChoice(root, selector);
+                }
+                for (String name : List.of("quality", "modern-quality")) {
+                    var fields = new ArrayList<javax.swing.JTextArea>();
+                    collectNamed(root, name, javax.swing.JTextArea.class, fields);
+                    for (var field : fields) if (field.isShowing() && field.getParent() instanceof javax.swing.JViewport viewport
+                            && viewport.getHeight() < field.getFontMetrics(field.getFont()).getHeight())
+                        throw new IllegalStateException("Enlarged review details have no visible line: " + name);
+                }
+            } finally {
+                fonts.forEach(Component::setFont);
+                dialog.setSize(size);
+                dialog.validate();
+            }
             return null;
         });
     }
