@@ -22,7 +22,8 @@ public final class ParentTraceReference {
     private final RefinementRootAuthority root;
     private final StageId stage;
     private final CandidateId choice;
-    private final String nativeId,palette,parentIdentity,identity;
+    private final String nativeId,parentIdentity,identity;
+    private final RefinementSourcePlanner.SourceRequest selectedSource;
     private final List<MetricPoint> points;
     private final List<ParentArc> arcs;
     private final Map<Integer,ParentArc> byOccurrence;
@@ -38,22 +39,21 @@ public final class ParentTraceReference {
     /** Reads the producer's actual fields; the private chainage buffer is charged without cloning. */
     void inventoryInto(RefinementRootAuthority.Inventory inventory) {
         inventory.put(this,Math.addExact(256L,AttemptMemoryLedger.arrayBytes(chainage.length,8)));
-        inventory.visit(root);inventory.visit(stage);inventory.visit(choice);inventory.visit(nativeId);inventory.visit(palette);
+        inventory.visit(root);inventory.visit(stage);inventory.visit(choice);inventory.visit(nativeId);inventory.visit(selectedSource);
         inventory.visit(parentIdentity);inventory.visit(identity);inventory.visit(points);inventory.visit(arcs);inventory.visit(byOccurrence);
         inventory.visit(frozen);inventory.visit(missing);inventory.visit(ambiguous);inventory.visit(range);inventory.visit(operationIdentity);inventory.visit(measuredSampling);
     }
     // Package-private: the validating binder is the only public construction entry.
     ParentTraceReference(RefinementRootAuthority root,StageId stage,CandidateId choice,String nativeId,
             String palette,String parentIdentity,List<MetricPoint> points,List<ParentArc> arcs) {
-        this(root,stage,choice,nativeId,palette,parentIdentity,points,arcs,root.request().selectedRange(),"stage-reference");
+        this(root,stage,choice,nativeId,new RefinementSourcePlanner.SourceRequest(palette,palette,false,""),parentIdentity,points,arcs);
+    }
+    ParentTraceReference(RefinementRootAuthority root,StageId stage,CandidateId choice,String nativeId,
+            RefinementSourcePlanner.SourceRequest selectedSource,String parentIdentity,List<MetricPoint> points,List<ParentArc> arcs) {
+        this(root,stage,choice,nativeId,selectedSource,parentIdentity,points,arcs,root.request().selectedRange(),"stage-reference",Optional.empty());
     }
     private ParentTraceReference(RefinementRootAuthority root,StageId stage,CandidateId choice,String nativeId,
-            String palette,String parentIdentity,List<MetricPoint> points,List<ParentArc> arcs,
-            OccurrenceRange range,String operationIdentity) {
-        this(root,stage,choice,nativeId,palette,parentIdentity,points,arcs,range,operationIdentity,Optional.empty());
-    }
-    private ParentTraceReference(RefinementRootAuthority root,StageId stage,CandidateId choice,String nativeId,
-            String palette,String parentIdentity,List<MetricPoint> points,List<ParentArc> arcs,
+            RefinementSourcePlanner.SourceRequest selectedSource,String parentIdentity,List<MetricPoint> points,List<ParentArc> arcs,
             OccurrenceRange range,String operationIdentity,Optional<ProfileChainage> measuredSampling) {
         this.measuredSampling=Objects.requireNonNull(measuredSampling);
         this.range=Objects.requireNonNull(range);this.operationIdentity=Objects.requireNonNull(operationIdentity);
@@ -63,7 +63,8 @@ public final class ParentTraceReference {
         // tolerance. Original immovable vertices have one canonical captured coordinate;
         // do this before chainage, cuts and identity, never as a tolerant composition join.
         points=canonicalImmovableVertices(root,points,arcs);
-        this.root=root;this.stage=stage;this.choice=choice;this.nativeId=nativeId;this.palette=palette;
+        this.root=root;this.stage=stage;this.choice=choice;this.nativeId=nativeId;
+        this.selectedSource=Objects.requireNonNull(selectedSource);
         this.parentIdentity=parentIdentity;this.points=List.copyOf(points);this.arcs=List.copyOf(arcs);
         chainage=new double[points.size()];boolean zeroEdge=false;
         for(int i=1;i<points.size();i++) {
@@ -106,11 +107,12 @@ public final class ParentTraceReference {
         if(mapped.containsKey(originalRange().firstIndex())&&chainageAt(mapped.get(originalRange().firstIndex()))!=0
                 ||mapped.containsKey(originalRange().lastIndex())&&chainageAt(mapped.get(originalRange().lastIndex()))!=chainage[chainage.length-1])
             throw new IllegalArgumentException("Parent correspondence does not retain selected endpoints");
-        var canonical=new StringBuilder("stepwise-parent-reference-v1");
+        var canonical=new StringBuilder("stepwise-parent-reference-v2");
         for(String value:List.of(root.network().canonicalHash(),
                 root.frozenGeometryIdentity(),
                 org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec.canonicalRequestHash(root.request()),
-                stage.value().toString(),choice.value(),nativeId,palette,parentIdentity,range.firstIndex()+":"+range.lastIndex(),operationIdentity))
+                stage.value().toString(),choice.value(),nativeId,selectedSource.palette(),selectedSource.mapping(),
+                Boolean.toString(selectedSource.aggregate()),parentIdentity,range.firstIndex()+":"+range.lastIndex(),operationIdentity))
             field(canonical,value);
         field(canonical,Integer.toString(points.size()));field(canonical,Integer.toString(arcs.size()));
         for(var point:points){field(canonical,Double.toHexString(point.xMeters()));field(canonical,Double.toHexString(point.yMeters()));}
@@ -166,7 +168,8 @@ public final class ParentTraceReference {
     public StageId parentStage(){return stage;}
     public CandidateId parentChoice(){return choice;}
     public String nativeCandidateId(){return nativeId;}
-    public String parentPalette(){return palette;}
+    public String parentPalette(){return selectedSource.palette();}
+    public RefinementSourcePlanner.SourceRequest selectedSource(){return selectedSource;}
     public String parentIdentity(){return parentIdentity;}
     public String canonicalIdentity(){return identity;}
     public List<MetricPoint> points(){return points;}
@@ -180,10 +183,10 @@ public final class ParentTraceReference {
     public MetricPoint occurrencePosition(int occurrence){var arc=byOccurrence.get(occurrence);if(arc==null)throw new UnavailableException(Unavailable.MAPPING_UNAVAILABLE);return interpolate(points.get(arc.parentEdge()),points.get(arc.parentEdge()+1),arc.fraction());}
     /** Pins generated identities to one explicit operation without changing its selected parent. */
     public ParentTraceReference withSampling(ProfileChainage measured) {
-        return new ParentTraceReference(root,stage,choice,nativeId,palette,parentIdentity,points,arcs,range,operationIdentity,Optional.of(measured));
+        return new ParentTraceReference(root,stage,choice,nativeId,selectedSource,parentIdentity,points,arcs,range,operationIdentity,Optional.of(measured));
     }
     public ParentTraceReference forOperation(String operation) {
-        return new ParentTraceReference(root,stage,choice,nativeId,palette,parentIdentity,points,arcs,range,operation,measuredSampling);
+        return new ParentTraceReference(root,stage,choice,nativeId,selectedSource,parentIdentity,points,arcs,range,operation,measuredSampling);
     }
     /** Exact edge subdivision for an original-occurrence interval. Missing lineage remains local. */
     public ParentTraceReference slice(OccurrenceRange selected) {
@@ -200,7 +203,7 @@ public final class ParentTraceReference {
             double fraction=(target-positions.get(edge))/(positions.get(edge+1)-positions.get(edge));
             cuts.add(new ParentArc(arc.originalOccurrence(),edge,fraction));
         }
-        return new ParentTraceReference(root,stage,choice,nativeId,palette,parentIdentity,cutPoints,cuts,selected,operationIdentity);
+        return new ParentTraceReference(root,stage,choice,nativeId,selectedSource,parentIdentity,cutPoints,cuts,selected,operationIdentity,Optional.empty());
     }
     public void requireComplete(){
         if(!missing.isEmpty())throw new UnavailableException(Unavailable.MAPPING_UNAVAILABLE);

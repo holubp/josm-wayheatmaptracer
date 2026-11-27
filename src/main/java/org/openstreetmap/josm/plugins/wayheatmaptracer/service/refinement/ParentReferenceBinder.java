@@ -27,6 +27,13 @@ public final class ParentReferenceBinder {
             if(palettes.size()!=1)throw new Refused(Reason.PALETTE_UNAVAILABLE);
             palette=palettes.get(0);
         } else if(!palettes.contains(palette))throw new Refused(Reason.PALETTE_UNAVAILABLE);
+        final String selectedPalette=palette;
+        var sources=parent.payload().detectorAttempts().stream()
+            .filter(attempt->attempt.candidateIds().contains(selected.id())&&attempt.sourcePalette().equals(selectedPalette))
+            .map(attempt->new RefinementSourcePlanner.SourceRequest(selectedPalette,attempt.mappingName(),
+                    attempt.mappingName().equals("all-colors-combined"),""))
+            .distinct().toList();
+        if(sources.size()!=1||sources.get(0).mapping().isBlank())throw new Refused(Reason.SOURCE_PROVENANCE_UNAVAILABLE);
         if(selected.finalPreviewPoints().size()<2)throw new Refused(Reason.FINAL_PREVIEW_UNAVAILABLE);
         var projection=Projections.getProjectionByCode(root.projectionCode());
         if (projection==null) throw new IllegalArgumentException("Slide-time projection is unavailable");
@@ -34,7 +41,7 @@ public final class ParentReferenceBinder {
             var geographic=projection.eastNorth2latlon(point);
             return root.evidence().coordinateFrame().toMetric(new GeographicPoint(geographic.lat(),geographic.lon()));
         }).toList();
-        var bound=new ParentTraceReference(root,stage,parent.id(),selected.id(),palette,parent.immutableIdentity(),points,parent.correspondence());
+        var bound=new ParentTraceReference(root,stage,parent.id(),selected.id(),sources.get(0),parent.immutableIdentity(),points,parent.correspondence());
         var way=(DetachedWay)root.network().primitives().get(root.request().selectedWayKey());
         if(root.request().geometryMode()==AlignmentMode.MOVE_EXISTING_NODES) {
             if(points.size()!=root.request().selectedRange().size())throw new IllegalArgumentException("Move parent must preserve original occurrence count");

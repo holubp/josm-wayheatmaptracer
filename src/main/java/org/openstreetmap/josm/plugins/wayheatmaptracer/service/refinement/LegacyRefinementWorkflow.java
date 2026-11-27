@@ -763,13 +763,22 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                             if(closed||!ownsPublication())return;
                             if(failure!=null)throw unwrap(failure);
                             probe.checkpoint();review.requireOriginalAttemptCurrent();
-                            preparedRoot=completed;root=completed.root();sourceContext=completed.source();preparingSourceCurrent=sourceContext::requireCurrent;
-                            session=new RefinementSession(root.stage(),review.originalConfig(),review.sourceIdentity(),root.authority(),RefinementLimits.defaults());
+                            var admittedRoot=completed.root();
+                            var admittedSession=new RefinementSession(admittedRoot.stage(),review.originalConfig(),
+                                    review.sourceIdentity(),admittedRoot.authority(),RefinementLimits.defaults());
+                            preparedRoot=completed;root=admittedRoot;sourceContext=completed.source();
+                            preparingSourceCurrent=sourceContext::requireCurrent;session=admittedSession;
                             retainedStages.put(root.stage().id(),new RetainedStage(completed.memory(),root.stage()));
                             if(review instanceof LegacyReviewOwner)bindLegacyReview();
                             else showCurrent();
                             startDiagnostics();continueRefinement=true;
-                        }catch(RuntimeException refused){bootstrapFailed(refused,true);bootstrapMemory.close();seed=null;message=bootstrapFailureMessage(refused);}
+                        }catch(RuntimeException refused){
+                            bootstrapFailed(refused,true);
+                            if(session!=null){session.close();session=null;}
+                            if(root!=null)retainedStages.remove(root.stage().id());
+                            seed=null;root=null;preparedRoot=null;sourceContext=null;preparingSourceCurrent=()->{};
+                            bootstrapMemory.close();message=bootstrapFailureMessage(refused);
+                        }
                         finally {
                             busy=false;if(closed)releaseClosed();
                             settleWork(work);
@@ -906,11 +915,13 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         var input=ticket.smoothingInput().orElseThrow();
         var parentStage=session.history().stream().filter(s->s.id().equals(input.unsmoothedParent())).findFirst().orElseThrow();
         var parent=parentStage.candidates().stream().filter(c->c.id().equals(input.unsmoothedChoice())).findFirst().orElseThrow();
-        var source=parent.payload().nativeSourceBindings().values().stream().findFirst().orElse(root.originalConversion());
+        var reference=new ParentReferenceBinder().bind(root.authority(),parentStage.id(),parent);
+        var source=parent.payload().nativeSourceBindings().get(reference.selectedSource());
+        if(source==null&&root.originalConversion()!=null&&root.originalConversion().source().equals(reference.selectedSource()))
+            source=root.originalConversion();
         boolean legacyOriginal=parent.payload().nativeReview().isEmpty()&&parent.payload().rootNoChangeReview().isEmpty()&&review instanceof LegacyReviewOwner;
         if(legacyOriginal&&source!=null&&!source.legacyDisposition().map(value->value.nativeCandidateId().equals(parent.nativeCandidateId())).orElse(false))source=null;
         if(source==null&&!legacyOriginal)throw new SmoothingParentBinder.Unavailable(SmoothingParentBinder.Reason.SELECTED_SOURCE_NOT_RETAINED);
-        var reference=new ParentReferenceBinder().bind(root.authority(),parentStage.id(),parent);
         clearDiagnostics();long available=session.availablePayloadBytes();diagnosticsSlot=RefinementAttemptDiagnostics.Slot.open(rootMemory,available).orElse(null);
         diagnosticsAvailability=diagnosticsSlot==null?RefinementAttemptDiagnostics.Availability.UNAVAILABLE_BUDGET:RefinementAttemptDiagnostics.Availability.RUNNING;
         long allowance=available-(diagnosticsSlot==null?0:diagnosticsSlot.bytes());session.reserve(ticket,1,allowance);

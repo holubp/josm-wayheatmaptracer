@@ -248,8 +248,10 @@ public final class RefinementAcquisition {
             return mappingEvidence(mapping,cancellation,null);
         }
         public EvidenceSnapshot mappingEvidence(String mapping,CancellationProbe cancellation,GeometryWorkContext work) {
-            if(!plan.settings().intensity().usesColorMapping()||!plan.settings().alternatives().contains(mapping))throw new IllegalArgumentException("Detector mapping was not requested");
-            return evidence(plan.settings().selectedPalette(),mapping,false,cancellation,work);
+            var request=plan.requests().stream().filter(source->source.mapping().equals(mapping)
+                    &&!source.aggregate()&&source.unavailableReason().isEmpty()).findFirst()
+                    .orElseThrow(()->new IllegalArgumentException("Detector mapping was not requested"));
+            return evidence(request.palette(),mapping,false,cancellation,work);
         }
         public EvidenceSnapshot aggregateEvidence(CancellationProbe cancellation) {
             return aggregateEvidence(cancellation,null);
@@ -263,6 +265,9 @@ public final class RefinementAcquisition {
         }
         private EvidenceSnapshot evidence(String palette,String mapping,boolean aggregate,CancellationProbe cancellation,GeometryWorkContext work) {
             if(javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Evidence copies require worker thread");
+            var request=plan.requests().stream().filter(s->s.palette().equals(palette)&&s.mapping().equals(mapping)
+                    &&s.aggregate()==aggregate&&s.unavailableReason().isEmpty()).findFirst()
+                    .orElseThrow(()->new IllegalArgumentException("Detector source was not requested"));
             cancellation.checkpoint();requireCurrent();sources.requireCurrent(coordinator);
             if(work!=null) {
                 if(!owner.sharesLedgerWith(work.owner()))throw new IllegalArgumentException("Original hash owner belongs to another attempt");
@@ -300,8 +305,6 @@ public final class RefinementAcquisition {
                     plan.parent().root().request().permissions().ordinaryRadiusMeters(),raster.sourceIdentity(),
                     EvidenceFieldLineage.AcquisitionKind.MANAGED_TILE,"native",lineage,cancellation);
                 cancellation.checkpoint();requireCurrent();sources.requireCurrent(coordinator);
-                var request=plan.requests().stream().filter(s->s.palette().equals(aggregate?plan.settings().selectedPalette():palette)
-                    &&s.mapping().equals(mapping)&&s.aggregate()==aggregate&&s.unavailableReason().isEmpty()).findFirst().orElseThrow();
                 // Capture only the external generation owner, never the disposed five-palette acquisition.
                 var externalCoordinator=coordinator;var stamp=generationStamp;
                 var descriptor=new RetainedSmoothingSource(request,plan.settings().intensity(),"native",result,raster.transform(),

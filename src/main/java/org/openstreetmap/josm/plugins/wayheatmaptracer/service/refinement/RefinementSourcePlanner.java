@@ -58,22 +58,20 @@ public final class RefinementSourcePlanner {
         Objects.requireNonNull(ticket);Objects.requireNonNull(settings);Objects.requireNonNull(parent);
         if(!ticket.parent().equals(parent.parentStage())||!ticket.choice().equals(parent.parentChoice())
                 ||ticket.mode()!=parent.root().request().geometryMode())throw new IllegalArgumentException("Source plan must pin exact selected parent");
-        var ordered=new LinkedHashSet<String>();
-        if(BASE_PALETTES.contains(parent.parentPalette()))ordered.add(parent.parentPalette());
-        ordered.addAll(BASE_PALETTES);
-        var acquired=new ArrayList<String>();var requests=new ArrayList<SourceRequest>();
-        boolean smoothing=ticket.kind()==StageKind.SMOOTH;
-        boolean direct=!settings.intensity().usesColorMapping();
-        for(String palette:ordered) {
-            String unavailable=smoothing?"existing-parent-evidence-required":direct&&!settings.managed()?"visible-direct-intensity-unsupported":
-                !settings.managed()&&!palette.equals(settings.selectedPalette())?"visible-palette-unavailable":"";
-            requests.add(new SourceRequest(palette,palette,false,unavailable));
-            if(unavailable.isEmpty())acquired.add(palette);
+        var selected=parent.selectedSource();
+        if(!BASE_PALETTES.contains(selected.palette()))throw new IllegalArgumentException("Selected detector palette is unavailable");
+        String unavailable="";
+        if(ticket.kind()==StageKind.SMOOTH)unavailable="existing-parent-evidence-required";
+        else if(selected.aggregate()&&!settings.intensity().usesColorMapping())unavailable="direct-aggregate-unavailable";
+        else if(selected.aggregate()&&!settings.managed())unavailable="visible-aggregate-unavailable";
+        else if(!settings.managed()&&!settings.intensity().usesColorMapping())unavailable="visible-direct-intensity-unsupported";
+        else if(!settings.managed()&&!selected.palette().equals(settings.selectedPalette()))unavailable="visible-palette-unavailable";
+        var request=new SourceRequest(selected.palette(),selected.mapping(),selected.aggregate(),unavailable);
+        var acquired=new LinkedHashSet<String>();
+        if(unavailable.isEmpty()&&settings.managed()) {
+            acquired.add(selected.palette());
+            if(selected.aggregate())acquired.addAll(BASE_PALETTES);
         }
-        for(String mapping:settings.alternatives())requests.add(new SourceRequest(settings.selectedPalette(),mapping,false,
-            smoothing?"existing-parent-evidence-required":direct?"direct-mapping-variant-unavailable":""));
-        if(settings.aggregate())requests.add(new SourceRequest(settings.selectedPalette(),"all-colors-combined",true,
-            smoothing?"existing-parent-evidence-required":direct?"direct-aggregate-unavailable":settings.managed()?"":"visible-aggregate-unavailable"));
-        return new Plan(ticket,settings,parent,acquired,requests,settings.aggregate()&&settings.managed()&&!direct&&!smoothing);
+        return new Plan(ticket,settings,parent,List.copyOf(acquired),List.of(request),selected.aggregate()&&unavailable.isEmpty());
     }
 }
