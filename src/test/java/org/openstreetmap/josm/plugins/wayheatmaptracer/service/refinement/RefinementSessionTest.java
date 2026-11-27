@@ -83,6 +83,29 @@ class RefinementSessionTest {
             }
         });
     }
+    @Test void switchingLegacyChoicesRetainsOnlyCurrentAndExactForwardParent() throws Exception {
+        edt(()->{
+            try(var session=session(AlignmentMode.PRECISE_SHAPE)) {
+                var ticket=session.begin(TrackerMode.CORRIDOR_AWARE);
+                var forward=child(ticket,"forward");
+                assertTrue(publishReserved(session,ticket,forward));
+                session.workerSettled(ticket);
+                session.back();
+                for(int index=0;index<40;index++) {
+                    var selected=candidate("detector-"+index);
+                    session.selectLegacyChoice(selected,()->{});
+                    assertEquals(selected.id(),session.current().selected());
+                    assertEquals(List.of(ticket.choice(),selected.id()),
+                            session.current().candidates().stream().map(Candidate::id).toList());
+                }
+                var switched=session.history();
+                assertThrows(IllegalStateException.class,()->session.selectLegacyChoice(candidate("failed"),
+                        ()->{throw new IllegalStateException("Refused preview");}));
+                assertEquals(switched,session.history());
+                assertEquals(forward,session.redo().orElseThrow());
+            }
+        });
+    }
     @Test void cancelledPublicationPreparationCannotCommitAfterReturningNormally() throws Exception {
         edt(()->{
             var session=session(AlignmentMode.PRECISE_SHAPE);var parent=session.current();var ticket=session.begin(TrackerMode.CORRIDOR_AWARE);

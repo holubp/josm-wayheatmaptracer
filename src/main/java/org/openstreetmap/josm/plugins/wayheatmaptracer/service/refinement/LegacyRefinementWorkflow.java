@@ -658,9 +658,37 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         if(busy||closed||!ownsPublication())return;
         try {review.requireOriginalAttemptCurrent();confirmation=null;
             if(session==null){var candidate=review.candidateForChoice(id);showRoot(candidate,id);}
+            else if(session.current().kind()==StageKind.ROOT_LEGACY){selectLegacyRootChoice(id);}
             else{session.select(new CandidateId(id));if(nativeSelected())retainSelectionMetadata(session.current());showCurrent();}
         } catch(RuntimeException failure){message=failure.getMessage();}
         present();
+    }
+    private void selectLegacyRootChoice(String id) {
+        var choiceId=new CandidateId(id);
+        var displayed=review.candidateForChoice(id);
+        var previous=review.selectedCandidate();
+        var prepared=session.current().candidates().stream().filter(choice->choice.id().equals(choiceId)).findFirst();
+        var newOwner=prepared.isEmpty()?rootMemory.child("legacy-original-choice"):null;
+        boolean admitted=false;
+        try {
+            var choice=prepared.orElseGet(()->new LegacyRefinementBootstrap().materializeLegacyChoice(seed,id,newOwner));
+            session.selectLegacyChoice(choice,()->{
+                showRoot(displayed,id);
+                review.requireOriginalAttemptCurrent();
+            });
+            if(newOwner!=null)rootCompositionOwners.put(choiceId,newOwner);
+            admitted=true;
+            var live=session.current().candidates().stream().map(Candidate::id).collect(java.util.stream.Collectors.toSet());
+            rootCompositionOwners.entrySet().removeIf(entry->{
+                if(live.contains(entry.getKey()))return false;
+                entry.getValue().close();return true;
+            });
+        } catch (RuntimeException failure) {
+            if(review.selectedCandidate()!=previous&&!review.invalidated())showRoot(previous,review.choiceId(previous));
+            throw failure;
+        } finally {
+            if(newOwner!=null&&!admitted)newOwner.close();
+        }
     }
     private void navigate(boolean forward) {
         if(busy||session==null||closed||!ownsPublication())return;
@@ -936,7 +964,9 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         LegacyRefinementBootstrap.SmoothingSeed originalSeed;
         try{originalSeed=source==null?new LegacyRefinementBootstrap().captureForSmoothingFromOriginal((LegacyReviewOwner)review,coordinator,workContext,seed):null;}
         catch(RuntimeException failed){operation.close();publication.close();baseline.clear();activeEntry=null;entry.settlement.complete(null);throw failed;}
-        var retainedSource=source;var originalRoot=root;var completedSource=new java.util.concurrent.atomic.AtomicReference<RetainedSmoothingSource>(source);
+        var retainedSource=source;
+        var originalRoot=new LegacyRefinementBootstrap.Root(root.authority(),session.history().get(0),root.receipt(),root.originalConversion());
+        var completedSource=new java.util.concurrent.atomic.AtomicReference<RetainedSmoothingSource>(source);
         busy=true;message="";PreviewWorkGate.Work work;
         try{present();work=beginOwnedWork();if(lifecycle!=null)lifecycle.attachTicket(work,ticket);}
         catch(RuntimeException failed){operation.close();publication.close();baseline.clear();busy=false;throw failed;}
@@ -1249,7 +1279,9 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         var yes=new RefinementControls.Availability(!busy,"");
         List<RefinementControls.Choice> choices;String selected;String stage;boolean undo=false,redo=false;
         if(session==null){choices=review.choices().stream().map(c->new RefinementControls.Choice(c.id(),review.engine()+" / "+c.candidate().displayName())).toList();selected=review.choiceId(review.selectedCandidate());stage=review.engine()+" — stage 1";}
-        else{var current=session.current();String label=current.kind()==StageKind.SMOOTH?"Smoothen ("+current.smoothingInput().orElseThrow().preset()+")":current.engine().toString();choices=current.candidates().stream().map(c->new RefinementControls.Choice(c.id().value(),label+" / "+c.sourcePalette())).toList();selected=current.selected().value();int cursor=session.history().indexOf(current);undo=cursor>0;redo=cursor+1<session.history().size();stage=label+" — stage "+(cursor+1);}
+        else{var current=session.current();String label=current.kind()==StageKind.SMOOTH?"Smoothen ("+current.smoothingInput().orElseThrow().preset()+")":current.engine().toString();choices=current.kind()==StageKind.ROOT_LEGACY
+                ?review.choices().stream().map(c->new RefinementControls.Choice(c.id(),label+" / "+c.candidate().displayName())).toList()
+                :current.candidates().stream().map(c->new RefinementControls.Choice(c.id().value(),label+" / "+c.sourcePalette())).toList();selected=current.selected().value();int cursor=session.history().indexOf(current);undo=cursor>0;redo=cursor+1<session.history().size();stage=label+" — stage "+(cursor+1);}
         String quality=message;
         if(currentNoChangeRoot().isPresent()) {
             var noChange=currentNoChangeRoot().orElseThrow();quality="No edit is needed; this result exactly matches the original captured occurrences.\n"+noChange.validation().findingCodes();

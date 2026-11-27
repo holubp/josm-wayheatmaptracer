@@ -256,28 +256,50 @@ public final class LegacyRefinementBootstrap {
         var request=new TraceRequest(facts.specification().selectedWayKey(),facts.specification().selectedRange(),TrackerMode.LEGACY_V02,config.heatmap().alignmentMode(),facts.specification().permissions(),TraceBudgets.defaults(),
             evidence.snapshotId(),evidence.canonicalHash(work),facts.network().snapshotId(),facts.network().canonicalHash(),facts.settingsHash(),"original-legacy-authority-v1","original-legacy-reference-window-v1",facts.sampleStepMeters(),chainage,evidence.resolution());
         var authority=new RefinementRootAuthority(facts.network(),request,evidence,config,facts.projectionCode(),facts.sourceIdentity(),facts.partition(),source,work,owner);
-        var way=(DetachedWay)facts.network().primitives().get(request.selectedWayKey());var sourceNodes=new ArrayList<RefinementPayload.SourceNode>();
-        for(var key:way.nodeKeys()){work.visit(GeometryWorkContext.Kind.BIND,1);var node=(DetachedNode)facts.network().primitives().get(key);sourceNodes.add(new RefinementPayload.SourceNode(key.id(),node.coordinate().latitudeDegrees(),node.coordinate().longitudeDegrees()));}
-        var provenance=new RefinementPayload.SourceSelection(way.key().id(),request.selectedRange().firstIndex(),request.selectedRange().lastIndex(),sourceNodes,
-            way.nodeKeys().subList(request.selectedRange().firstIndex(),request.selectedRange().lastIndex()+1).stream().map(PrimitiveKey::id).toList());
-        long metadataBytes=Math.addExact(16384L,Math.multiplyExact(8192L,(long)way.nodeKeys().size()+seed.original().candidates().stream().mapToLong(c->c.finalPreviewPoints().size()).sum()));
-        try(var materialization=work.reserveOn(owner,"legacy-smoothing-root-choices",metadataBytes)) {
-            var choices=new ArrayList<Candidate>();int index=0;
-            for(var original:seed.original().candidates()) {
-                work.visit(GeometryWorkContext.Kind.BIND,1);
-                var id=new CandidateId("legacy-choice-"+index++);
-                if(original.finalPreviewPoints().size()<2)continue;
-                var one=new AlignmentResult(seed.original().selection(),null,List.of(original),seed.original().sourcePolyline(),original.finalPreviewPoints(),List.of(),null,null,
-                    seed.original().detectorAttempts().stream().filter(a->a.candidateIds().contains(original.id())).toList(),
-                    seed.original().applicableCandidates().contains(original)?List.of(original):List.of());
-                var payload=RefinementPayload.captureOriginal(one,provenance,seed.payloadLimit());
-                var projection=org.openstreetmap.josm.data.projection.Projections.getProjectionByCode(facts.projectionCode());
-                var points=original.finalPreviewPoints().stream().map(p->{work.visit(GeometryWorkContext.Kind.BIND,1);var ll=projection.eastNorth2latlon(p);return facts.frame().toMetric(new GeographicPoint(ll.lat(),ll.lon()));}).toList();
-                var arcs=correspondence(facts,original,points);var palettes=one.detectorAttempts().stream().map(DetectorAttempt::sourcePalette).distinct().toList();
-                if(palettes.size()!=1)throw new SmoothingUnavailable(SmoothingUnavailableReason.SOURCE_MAPPING_UNAVAILABLE);
-                choices.add(new Candidate(id,payload,arcs,facts.sourceIdentity()+"/"+id.value(),original.id(),palettes.get(0)));
+        var selected=materializeLegacyChoice(facts,seed.original(),seed.selectedChoice(),seed.payloadLimit(),owner,work);
+        return new Root(authority,Stage.root(List.of(selected),selected.id()),facts.receipt(),source);
+    }
+
+    /** Freezes one original detector choice on demand, using the existing Legacy capture authority. */
+    public Candidate materializeLegacyChoice(Seed seed,String choice,AttemptMemoryLedger.Owner owner) {
+        return materializeLegacyChoice(seed.facts(),seed.original(),choice,seed.payloadLimit(),owner,null);
+    }
+
+    private Candidate materializeLegacyChoice(LiveBPreviewService.LegacyRootSeed facts,AlignmentResult result,
+            String choice,long maximum,AttemptMemoryLedger.Owner owner,GeometryWorkContext work) {
+        var prefix="legacy-choice-";
+        if(!choice.startsWith(prefix))throw new IllegalArgumentException("Original Legacy choice required");
+        int index=Integer.parseInt(choice.substring(prefix.length()));
+        if(index<0||index>=result.candidates().size())throw new IllegalArgumentException("Original Legacy choice is unavailable");
+        var original=result.candidates().get(index);
+        if(original.finalPreviewPoints().size()<2)throw new SmoothingUnavailable(SmoothingUnavailableReason.SELECTED_FINAL_PREVIEW_UNAVAILABLE);
+        var way=(DetachedWay)facts.network().primitives().get(facts.specification().selectedWayKey());
+        var range=facts.specification().selectedRange();
+        long bytes=Math.addExact(16384L,Math.multiplyExact(8192L,(long)way.nodeKeys().size()+original.finalPreviewPoints().size()));
+        try(var memory=work==null?owner.reserve(bytes):work.reserveOn(owner,"legacy-original-choice",bytes)) {
+            var one=new AlignmentResult(result.selection(),null,List.of(original),result.sourcePolyline(),original.finalPreviewPoints(),
+                    List.of(),null,null,result.detectorAttempts().stream().filter(a->a.candidateIds().contains(original.id())).toList(),
+                    result.applicableCandidates().contains(original)?List.of(original):List.of());
+            var palettes=one.detectorAttempts().stream().map(DetectorAttempt::sourcePalette).distinct().toList();
+            if(palettes.size()!=1)throw new SmoothingUnavailable(SmoothingUnavailableReason.SOURCE_MAPPING_UNAVAILABLE);
+            var sourceNodes=new ArrayList<RefinementPayload.SourceNode>();
+            for(var key:way.nodeKeys()) {
+                if(work!=null)work.visit(GeometryWorkContext.Kind.BIND,1);
+                var node=(DetachedNode)facts.network().primitives().get(key);
+                sourceNodes.add(new RefinementPayload.SourceNode(key.id(),node.coordinate().latitudeDegrees(),node.coordinate().longitudeDegrees()));
             }
-            var stage=Stage.root(choices,new CandidateId(seed.selectedChoice()));materialization.adopt(stage);return new Root(authority,stage,facts.receipt(),source);
+            var provenance=new RefinementPayload.SourceSelection(way.key().id(),range.firstIndex(),range.lastIndex(),sourceNodes,
+                    way.nodeKeys().subList(range.firstIndex(),range.lastIndex()+1).stream().map(PrimitiveKey::id).toList());
+            var payload=RefinementPayload.captureOriginal(one,provenance,maximum);
+            var projection=org.openstreetmap.josm.data.projection.Projections.getProjectionByCode(facts.projectionCode());
+            var points=original.finalPreviewPoints().stream().map(point->{
+                if(work!=null)work.visit(GeometryWorkContext.Kind.BIND,1);
+                var coordinate=projection.eastNorth2latlon(point);
+                return facts.frame().toMetric(new GeographicPoint(coordinate.lat(),coordinate.lon()));
+            }).toList();
+            var candidate=new Candidate(new CandidateId(choice),payload,correspondence(facts,original,points),
+                    facts.sourceIdentity()+"/"+choice,original.id(),palettes.get(0));
+            memory.adopt(candidate);return candidate;
         }
     }
 
@@ -428,27 +450,9 @@ public final class LegacyRefinementBootstrap {
                 facts.sampleStepMeters(),chainage,evidence.resolution());
             var authority=work==null?new RefinementRootAuthority(facts.network(),request,evidence,config,facts.projectionCode(),facts.sourceIdentity(),facts.partition())
                 :RefinementRootAuthority.validateOriginalWithWork(facts.network(),request,evidence,config,facts.projectionCode(),facts.sourceIdentity(),facts.partition(),work,seed.memory());
-            var way=(DetachedWay)facts.network().primitives().get(request.selectedWayKey());
-            var sourceNodes=way.nodeKeys().stream().map(key->{var n=(DetachedNode)facts.network().primitives().get(key);return new RefinementPayload.SourceNode(key.id(),n.coordinate().latitudeDegrees(),n.coordinate().longitudeDegrees());}).toList();
-            var provenance=new RefinementPayload.SourceSelection(way.key().id(),request.selectedRange().firstIndex(),request.selectedRange().lastIndex(),sourceNodes,
-                way.nodeKeys().subList(request.selectedRange().firstIndex(),request.selectedRange().lastIndex()+1).stream().map(PrimitiveKey::id).toList());
-            var choices=new ArrayList<Candidate>();int index=0;
-            for(var original:seed.original().candidates()) {
-                cancellation.checkpoint();
-                var id=new CandidateId("legacy-choice-"+index++);
-                if(original.finalPreviewPoints().size()<2)continue;
-                // Per-choice payload isolates duplicate native IDs without relabeling the native geometry.
-                var one=new AlignmentResult(seed.original().selection(),null,List.of(original),seed.original().sourcePolyline(),original.finalPreviewPoints(),List.of(),null,null,
-                    seed.original().detectorAttempts().stream().filter(a->a.candidateIds().contains(original.id())).toList(),List.of(original));
-                var payload=RefinementPayload.captureOriginal(one,provenance,seed.payloadLimit());
-                var projected=original.finalPreviewPoints();
-                var points=projected.stream().map(p->{var ll=org.openstreetmap.josm.data.projection.Projections.getProjectionByCode(facts.projectionCode()).eastNorth2latlon(p);return facts.frame().toMetric(new GeographicPoint(ll.lat(),ll.lon()));}).toList();
-                var arcs=correspondence(facts,original,points);
-                var palettes=one.detectorAttempts().stream().map(DetectorAttempt::sourcePalette).distinct().toList();
-                if(palettes.size()!=1)throw new IllegalStateException("The original candidate source palette is ambiguous");
-                choices.add(new Candidate(id,payload,arcs,facts.sourceIdentity()+"/"+id.value(),original.id(),palettes.get(0)));
-            }
-            var stage=Stage.root(choices,new CandidateId(seed.selectedChoice()));
+            cancellation.checkpoint();
+            var selected=materializeLegacyChoice(facts,seed.original(),seed.selectedChoice(),seed.payloadLimit(),seed.memory(),work);
+            var stage=Stage.root(List.of(selected),selected.id());
             retained.adopt(authority);
             cancellation.checkpoint();seed.receipt().requireCurrent(coordinator,seed.original().tileMosaics());
             return new Root(authority,stage,facts.receipt());

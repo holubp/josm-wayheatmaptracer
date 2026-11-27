@@ -15,6 +15,30 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneratio
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 
 class RefinementPipelineTest {
+    @Test void scalarPreparationDoesNotReserveUncreatedAssembledCandidates() {
+        var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);
+        var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
+        var ledger=new AttemptMemoryLedger(4L*1024*1024);
+        var entered=new java.util.concurrent.atomic.AtomicBoolean();
+        try(var owner=ledger.rootOwner()) {
+            var source=new RefinementPipeline.Sources(){
+                public void requireCurrent(){}
+                public EvidenceSnapshot evidence(RefinementSourcePlanner.SourceRequest request,CancellationProbe probe){
+                    entered.set(true);
+                    assertEquals(1_048_576L,ledger.currentBytes(),"Only pipeline metadata is live during scalar preparation");
+                    throw new RefinementPipeline.SourceUnavailable();
+                }
+            };
+            var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),
+                    new RefinementPipeline.Adapters(source,(t,p,e,b,c,o)->{throw new AssertionError("No source");},owner),
+                    RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
+            assertTrue(entered.get());
+            assertEquals(Outcome.NO_USABLE_RESULT,result.outcome());
+            assertTrue(result.candidates().isEmpty());
+        }
+        assertEquals(0,ledger.currentBytes());
+    }
+
     @Test void completedNativeRetentionAdmissionHasItsOwnTypedBoundaryAndActualWork() {
         var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
         var ledger=new AttemptMemoryLedger(32L*1024*1024);
@@ -51,12 +75,13 @@ class RefinementPipelineTest {
     @Test void assessmentWorkspaceStartsAfterNativeAndRefusesBeforeComposition() throws Exception {
         var root=RefinementRepairContractTest.largeRoot();
         var parent=new ParentReferenceBinder().bind(root,new StageId(UUID.randomUUID()),RefinementParentFixtures.parent(root,"blue"));
-        var ticket=ticket(parent,TrackerMode.CORRIDOR_AWARE);var sourcePlan=plan(ticket,parent,false);
+        var ticket=ticket(parent,TrackerMode.CORRIDOR_AWARE);var sourcePlan=plan(ticket,parent,true);
         var vertexMethod=RefinementPipeline.class.getDeclaredMethod("maximumAssembledVertices",ParentTraceReference.class,int.class);vertexMethod.setAccessible(true);
         long vertices=(long)vertexMethod.invoke(null,parent,new RefinementIntervalPlanner().plan(parent).size());
         var scratchMethod=RefinementPipeline.class.getDeclaredMethod("assessmentScratchBytes",ParentTraceReference.class,EvidenceSnapshot.class,long.class);scratchMethod.setAccessible(true);
         long scratch=(long)scratchMethod.invoke(null,parent,root.evidence(),vertices);
-        long retention=1_048_576L+32L*vertices*2048L;
+        long retention=1_048_576L;
+        long candidateRetention=vertices*2048L;
         var afterNative=new AtomicLong(retention);var assessments=new java.util.concurrent.atomic.AtomicInteger();
         var production=RefinementPipeline.productionRunner();
         RefinementPipeline.Result baseline;
@@ -67,14 +92,14 @@ class RefinementPipelineTest {
             };
             CancellationProbe probe=()->{
                 if(StackWalker.getInstance().walk(frames->frames.anyMatch(f->f.getClassName().equals(RefinementPipeline.class.getName())&&f.getMethodName().equals("assess")))) {
-                    assertEquals(afterNative.get()+scratch,owner.currentBytes(),"Full unchanged assessment bound precedes compose/image/evaluation");assessments.incrementAndGet();
+                    assertEquals(afterNative.get()+candidateRetention+scratch,owner.currentBytes(),"One candidate and its assessment workspace are admitted before composition");assessments.incrementAndGet();
                 }
                 return false;
             };
             baseline=new RefinementPipeline().run(ticket,parent,sourcePlan,new RefinementPipeline.Adapters(sources(parent),observed,owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),probe);
             assertNotEquals(Outcome.RESOURCE_LIMIT,baseline.outcome());assertTrue(assessments.get()>0);assertTrue(baseline.actualWork().orElseThrow().transitions()>0);
         }
-        long separatedCap=afterNative.get()+scratch;
+        long separatedCap=afterNative.get()+candidateRetention+scratch;
         for(boolean oneByteShort:new boolean[]{false,true}) {
             var ledger=new AttemptMemoryLedger(separatedCap-(oneByteShort?1:0));var enteredAssessment=new java.util.concurrent.atomic.AtomicBoolean();
             try(var owner=ledger.rootOwner();var admissions=PipelineAdmissionObserver.openForTesting(value->{})) {
@@ -89,7 +114,7 @@ class RefinementPipelineTest {
                 if(oneByteShort) {
                     assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());assertFalse(enteredAssessment.get());
                     var refusal=admissions.latest(ticket).orElseThrow();assertEquals(PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH,refusal.gate());
-                    assertEquals(scratch,refusal.requestedBytes().orElseThrow());assertEquals(afterNative.get(),refusal.currentBytes().orElseThrow());
+                    assertEquals(scratch,refusal.requestedBytes().orElseThrow());assertEquals(afterNative.get()+candidateRetention,refusal.currentBytes().orElseThrow());
                 } else {assertEquals(baseline.outcome(),result.outcome());assertTrue(enteredAssessment.get());assertEquals(baseline.candidates().size(),result.candidates().size());}
             }
             assertEquals(0,ledger.currentBytes());

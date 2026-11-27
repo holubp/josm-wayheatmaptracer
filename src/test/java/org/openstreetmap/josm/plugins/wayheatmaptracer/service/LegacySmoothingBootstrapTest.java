@@ -293,6 +293,9 @@ class LegacySmoothingBootstrapTest {
                     seed.set(new LegacyRefinementBootstrap().captureForSmoothing(current,coordinator,work));assertFalse(data.isModified());
                 });
                 int before=requests.get();var root=new LegacyRefinementBootstrap().completeForSmoothing(seed.get(),coordinator,work);
+                assertTrue(seed.get().original().candidates().size()>1,"The original review must retain its other detector choices");
+                assertEquals(List.of(root.selected()),root.root().stage().candidates(),
+                        "Only the selected original choice may be materialized in optional history");
                 assertEquals(independentInput(seed.get().original().tileMosaics().require("hot").image()),root.source().inputByteHash());
                 assertEquals(64,root.source().inputByteHash().length());assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEvidenceCapture.ORIGINAL_ARGB_PROTOCOL,root.source().inputHashProtocol());
                 assertEquals(before,requests.get());assertEquals("hot-corridor",root.source().source().mapping());assertEquals("hot",root.source().source().palette());

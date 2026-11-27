@@ -289,31 +289,49 @@ public final class RefinementAcquisition {
                 throw new ParentTraceReference.UnavailableException(ParentTraceReference.Unavailable.EVIDENCE_COVERAGE);
             long input=(long)raster.image().getWidth()*raster.image().getHeight();
             long output=(long)grid.width()*grid.height();
-            // Bounds scalar/mask copies, strict rectification, field construction and provenance together.
-            var reservation=owner.reserve(Math.addExact(1048576L,Math.multiplyExact(Math.addExact(input,output),96L)));
-            AttemptMemoryLedger.Reservation retained=null;
-            try {
-                retained=owner.reserve(retainedEvidenceBytes(plan,grid,mapping));
+            // RasterEvidenceCapture admits its own metered conversion and final evidence. Only
+            // the precomputed scalar field and input validity copy are allocated at this layer.
+            long callerArrays=Math.addExact(4096L,Math.addExact(AttemptMemoryLedger.arrayBytes(input,8),
+                    AttemptMemoryLedger.arrayBytes(input,1)));
+            try(var scratch=work==null?owner.reserve(Math.addExact(1048576L,Math.multiplyExact(Math.addExact(input,output),96L)))
+                    :work.reserveOn(owner,"refinement-scalar-inputs",callerArrays);
+                    var retained=work==null?owner.reserve(retainedEvidenceBytes(plan,grid,mapping)):null) {
                 double[] scalar=aggregate?sources.aggregateScalars(cancellation):raster.scalarValues(mapping,plan.settings().intensity(),cancellation);
+                boolean[] validity=raster.validity();
                 double pitch=ManagedModernPreviewSource.nativePitchMeters(raster.zoom(),grid.coordinateFrame().origin().latitudeDegrees());
+                var resolution=EvidenceResolution.nativeSource(pitch,grid.pitchMeters());
                 var lineage=new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.MANAGED_TILE,
                     aggregate?EvidenceFieldLineage.DerivationKind.ALL_COLOR_AGGREGATE:plan.settings().intensity().usesColorMapping()?EvidenceFieldLineage.DerivationKind.NATIVE_PALETTE_MAPPING:EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,
                     plan.settings().intensity().usesColorMapping()?mapping:palette+"/"+plan.settings().intensity().detectorName(),EvidenceCorrelationGroup.STRAVA_RENDERINGS,aggregate);
-                var result=new RasterEvidenceCapture().captureWithMetricScalarSource(
-                    plan.operationIdentity()+"/"+mapping+"/"+plan.parent().canonicalIdentity(),raster.image(),raster.validity(),scalar,
-                    geographic,plan.parent().points(),raster.transform(),grid,EvidenceResolution.nativeSource(pitch,grid.pitchMeters()),
-                    plan.parent().root().request().permissions().ordinaryRadiusMeters(),raster.sourceIdentity(),
-                    EvidenceFieldLineage.AcquisitionKind.MANAGED_TILE,"native",lineage,cancellation);
+                var capture=new RasterEvidenceCapture();
+                String snapshotId=plan.operationIdentity()+"/"+mapping+"/"+plan.parent().canonicalIdentity();
+                double radius=plan.parent().root().request().permissions().ordinaryRadiusMeters();
+                EvidenceSnapshot result;
+                long backingBytes;
+                if(work==null) {
+                    result=capture.captureWithMetricScalarSource(snapshotId,raster.image(),validity,scalar,
+                            geographic,plan.parent().points(),raster.transform(),grid,resolution,radius,raster.sourceIdentity(),
+                            EvidenceFieldLineage.AcquisitionKind.MANAGED_TILE,"native",lineage,cancellation);
+                    backingBytes=retained.bytes();
+                } else {
+                    var admitted=capture.captureWithMetricScalarSource(snapshotId,raster.image(),validity,scalar,
+                            geographic,plan.parent().points(),raster.transform(),grid,resolution,radius,raster.sourceIdentity(),
+                            EvidenceFieldLineage.AcquisitionKind.MANAGED_TILE,"native",lineage,cancellation,work,owner);
+                    result=admitted.evidence();
+                    backingBytes=admitted.retainedBytes();
+                }
                 cancellation.checkpoint();requireCurrent();sources.requireCurrent(coordinator);
                 // Capture only the external generation owner, never the disposed five-palette acquisition.
                 var externalCoordinator=coordinator;var stamp=generationStamp;
                 var descriptor=new RetainedSmoothingSource(request,plan.settings().intensity(),"native",result,raster.transform(),
-                    raster.image().getWidth(),raster.image().getHeight(),retainedEvidenceBytes(plan,grid,mapping),
+                    raster.image().getWidth(),raster.image().getHeight(),backingBytes,
                     ()->{if(!externalCoordinator.isCurrent(stamp))throw new IllegalStateException("Retained source generation is stale");},
                     plan.operationIdentity()+"/input-ownership/"+(aggregate?"all-colors":palette),inputHash,OptionalLong.of(plan.settings().generation().value()),Optional.empty(),Optional.empty(),inputHashProtocol);
-                var metadata=owner.reserve(descriptor.descriptorBytes());
-                retained.adopt(result);metadata.adopt(descriptor);retainedSources.put(result,descriptor);reservation.close();return result;
-            } catch(RuntimeException|Error failure){if(retained!=null)retained.close();reservation.close();throw failure;}
+                try(var metadata=owner.reserve(descriptor.descriptorBytes())) {
+                    if(retained!=null)retained.adopt(result);
+                    metadata.adopt(descriptor);retainedSources.put(result,descriptor);return result;
+                }
+            }
         }
     }
     /** Output doubles/vertex/cell masks, bounded region polygons, IDs and provenance; no input pixel buffers survive. */

@@ -257,11 +257,11 @@ public final class RefinementPipeline {
         CancellationProbe nativeProbe=()->{finalProbe.checkpoint();if(budget.inferenceExpired())throw new DeadlineReached();return false;};
         try {
             finalProbe.checkpoint();
-            // Reserve every possible retained assembled alternative before any engine entry. Native
-            // receipts keep their own same-ledger owners; no source/interval receives a fresh pool.
+            // Reserve the result header now, and each actual assembled alternative before assessment.
+            // Native receipts keep their own same-ledger owners.
             vertices=maximumAssembledVertices(parent,intervals.size());
             var capacity=owner.child("assembled-result-capacity");
-            retained=capacity.reserve(Math.addExact(1_048_576L,Math.multiplyExact(32L,Math.multiplyExact(vertices,2048L))));
+            retained=capacity.reserve(1_048_576L);
             completion.capacity=capacity;completion.retention=CompletedGraphRetention.forPipeline(parent.root(),adapters.owner(),capacity,retained);
             for(;sourceIndex<sourcePlan.requests().size();sourceIndex++) {
                 var source=sourcePlan.requests().get(sourceIndex);
@@ -293,7 +293,7 @@ public final class RefinementPipeline {
                     if(whole.finalized().isPresent())for(var route:whole.finalized().get().routes()) {
                         var choice=choice(whole,route,source);
                         admissionGate=PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH;
-                        var assessed=assessAdmitted(composer,parent,List.of(choice),List.of(route),evidence,finalProbe,identity(ticket,source,"whole",candidates.size()+rejected.size()),owner,vertices);
+                        var assessed=assessAdmitted(composer,parent,List.of(choice),List.of(route),evidence,finalProbe,identity(ticket,source,"whole",candidates.size()+rejected.size()),owner,capacity,vertices);
                         admissionGate=null;
                         spanProvenance.put(assessed,List.of(Optional.ofNullable(whole.finalProvenance().get(route.hypothesis().id()))));
                         sourceAssessments.add(assessed);
@@ -323,7 +323,7 @@ public final class RefinementPipeline {
                     }
                     if(!selected.isEmpty()) {
                         admissionGate=PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH;
-                        var primary=assessAdmitted(composer,parent,selected.stream().map(Selected::choice).toList(),selected.stream().map(Selected::route).toList(),evidence,finalProbe,identity(ticket,source,"assembled",0),owner,vertices);
+                        var primary=assessAdmitted(composer,parent,selected.stream().map(Selected::choice).toList(),selected.stream().map(Selected::route).toList(),evidence,finalProbe,identity(ticket,source,"assembled",0),owner,capacity,vertices);
                         admissionGate=null;
                         spanProvenance.put(primary,selected.stream().map(Selected::provenance).toList());
                         sourceAssessments.add(primary);
@@ -334,7 +334,7 @@ public final class RefinementPipeline {
                             var single=new ArrayList<>(selected);
                             for(int i=0;i<single.size();i++)if(single.get(i).choice().reference().originalRange().equals(alternative.choice().reference().originalRange()))single.set(i,alternative);
                             admissionGate=PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH;
-                            var assessed=assessAdmitted(composer,parent,single.stream().map(Selected::choice).toList(),single.stream().map(Selected::route).toList(),evidence,finalProbe,identity(ticket,source,"single-interval",candidates.size()+rejected.size()),owner,vertices);
+                            var assessed=assessAdmitted(composer,parent,single.stream().map(Selected::choice).toList(),single.stream().map(Selected::route).toList(),evidence,finalProbe,identity(ticket,source,"single-interval",candidates.size()+rejected.size()),owner,capacity,vertices);
                             admissionGate=null;
                             spanProvenance.put(assessed,single.stream().map(Selected::provenance).toList());
                             sourceAssessments.add(assessed);
@@ -447,13 +447,16 @@ public final class RefinementPipeline {
     }
     private static ParentBackedComposer.Assessed assessAdmitted(ParentBackedComposer composer,ParentTraceReference parent,
             List<ParentBackedComposer.Choice> choices,List<ModernTracePipeline.Route> nativeRoutes,EvidenceSnapshot evidence,
-            CancellationProbe cancellation,String id,AttemptMemoryLedger.Owner owner,long vertices) {
+            CancellationProbe cancellation,String id,AttemptMemoryLedger.Owner owner,AttemptMemoryLedger.Owner capacity,long vertices) {
         // Includes all cached rows/supports, scalar clones, graph/topology and geometry scratch.
         // Admit the identical full bound before composition and retain it through final checking.
         // Composition/image/evaluation and production currentness probes make no nested ledger
         // reservations; ASSESSMENT_SCRATCH therefore identifies this admission, not native work.
-        try(var scratch=owner.reserve(assessmentScratchBytes(parent,evidence,vertices))) {
-            return assess(composer,parent,choices,nativeRoutes,evidence,cancellation,id);
+        try(var retained=capacity.reserve(Math.multiplyExact(vertices,2048L));
+                var scratch=owner.reserve(assessmentScratchBytes(parent,evidence,vertices))) {
+            var result=assess(composer,parent,choices,nativeRoutes,evidence,cancellation,id);
+            retained.adopt(result);
+            return result;
         }
     }
     private static ParentBackedComposer.Assessed assess(ParentBackedComposer composer,ParentTraceReference parent,

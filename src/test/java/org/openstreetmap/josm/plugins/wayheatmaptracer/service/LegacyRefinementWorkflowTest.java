@@ -50,9 +50,6 @@ class LegacyRefinementWorkflowTest {
     @Test void actualNativeAggregatePublicationRetainsCompleteOriginalInputHashAfterSettlement() throws Exception {
         executeWorkflow(AlignmentMode.PRECISE_SHAPE,TrackerMode.PROBABILISTIC,IntensitySamplingMode.COLOR_MAPPING,false,false,true);
     }
-    @Test void fullAlternativeAPlanKeepsResourceRefusalAndUnattemptedSourcesHonest() throws Exception {
-        executeWorkflow(AlignmentMode.PRECISE_SHAPE,TrackerMode.CORRIDOR_AWARE,IntensitySamplingMode.COLOR_MAPPING,true,true);
-    }
     @Test void scopedCompactARealStripePublishesItsActualHotCorridorSource() throws Exception {
         final double step=1.56;final int zoom=15;int tileX=(int)Math.floor((14.+180)/360*(1<<zoom));double latRad=Math.toRadians(50);
         int tileY=(int)Math.floor((1-Math.log(Math.tan(latRad)+1/Math.cos(latRad))/Math.PI)/2*(1<<zoom));
@@ -67,7 +64,7 @@ class LegacyRefinementWorkflowTest {
         try(var coordinator=new TileFetchCoordinator((request,credentials)->{assertEquals(tileX,request.address().x());assertEquals(tileY,request.address().y());assertEquals(zoom,request.address().zoom());requests.incrementAndGet();palettes.add(request.address().color());return new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",bytes,null,Duration.ZERO,"");},new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())) {
             var work=new LinkedBlockingQueue<Runnable>();var publication=new LinkedBlockingQueue<Runnable>();var workflow=new LegacyRefinementWorkflow[1];var review=new LegacyReviewOwner[1];var data=new DataSet[1];var root=new LegacyRefinementBootstrap.Root[1];
             try {
-                SwingUtilities.invokeAndWait(()->{try {
+                SwingUtilities.invokeAndWait(()->{
                     data[0]=new DataSet();var nodes=new java.util.ArrayList<Node>();
                     for(int i=0;i<5;i++){var node=new Node(new LatLon(centerLat,centerLon+(i-2)*step/(111195.*Math.cos(Math.toRadians(centerLat)))));data[0].addPrimitive(node);nodes.add(node);}
                     var way=new Way();way.put("highway","path");way.setNodes(nodes);data[0].addPrimitive(way);data[0].allPrimitives().forEach(p->p.setModified(false));
@@ -75,32 +72,18 @@ class LegacyRefinementWorkflowTest {
                     var config=AlignmentConfig.withoutCleanup(new ManagedHeatmapConfig("key","policy","signature","session","all","hot","",".*",AlignmentMode.PRECISE_SHAPE,TrackerMode.LEGACY_V02,false,false,true,false,false,false,false,true,false,false,7,4,3,InferenceMode.RAW_HIGH_RESOLUTION,15,15,7.01,step,IntensitySamplingMode.COLOR_MAPPING,7));
                     review[0]=LegacyReviewOwner.begin(data[0],selected,config);var receipt=new TileHeatmapSampler.AcquisitionReceipt[1];
                     var original=new AlignmentService(new TileHeatmapSampler(coordinator)).alignLegacyReviewed(selected,null,null,config,new AlignmentService.LegacyCaptureObserver(){public void managed(TileHeatmapSampler.AcquisitionReceipt actual){receipt[0]=actual;}});
-                    assertFalse(original.candidates().isEmpty());review[0].captured(original,null,receipt[0]);review[0].select(original.candidates().get(0));
+                    assertFalse(original.candidates().isEmpty());review[0].captured(original,null,receipt[0]);
+                    review[0].select(detectorChoice(original,"hot-corridor"));
                     workflow[0]=new LegacyRefinementWorkflow(review[0],coordinator,review[0]::select,shown->{},status->{},work::add,publication::add);
                     ((JButton)find(workflow[0].controls(),"refineA")).doClick();
-                    var field=LegacyRefinementWorkflow.class.getDeclaredField("seed");field.setAccessible(true);var seed=(LegacyRefinementBootstrap.Seed)field.get(workflow[0]);
-                    var scoped=RefinementSourcePlanner.Settings.capture(true,seed.config().heatmap(),List.of("hot-corridor"));
-                    var old=seed.settings();assertEquals(new RefinementSourcePlanner.Settings(old.managed(),old.activity(),old.selectedPalette(),old.inferenceZoom(),old.validationZoom(),old.generation(),old.intensity(),List.of("hot-corridor"),old.aggregate()),scoped);
-                    field.set(workflow[0],new LegacyRefinementBootstrap.Seed(seed.facts(),seed.original(),seed.config(),seed.receipt(),scoped,seed.selectedChoice(),seed.memory(),seed.payloadLimit()));
-                }catch(ReflectiveOperationException failure){throw new AssertionError(failure);}});
+                });
                 work.remove().run();SwingUtilities.invokeAndWait(publication.remove());
-                // The queued bootstrap owns its immutable original seed. Scope a new idle operation,
-                // rather than expecting a later reflective seed replacement to rewrite that snapshot.
-                SwingUtilities.invokeAndWait(workflow[0]::cancel);
-                work.remove().run();SwingUtilities.invokeAndWait(publication.remove());
-                SwingUtilities.invokeAndWait(()->{try {
-                    var preparedField=LegacyRefinementWorkflow.class.getDeclaredField("preparedRoot");preparedField.setAccessible(true);
-                    var prepared=(PreparedRefinementRoot)preparedField.get(workflow[0]);
-                    var seedField=LegacyRefinementWorkflow.class.getDeclaredField("seed");seedField.setAccessible(true);var scopedSeed=(LegacyRefinementBootstrap.Seed)seedField.get(workflow[0]);
-                    preparedField.set(workflow[0],new PreparedRefinementRoot(prepared.root(),scopedSeed.settings(),prepared.original(),prepared.source(),prepared.memory(),prepared.payloadLimit()));
-                    workflow[0].refine(TrackerMode.CORRIDOR_AWARE);
-                }catch(ReflectiveOperationException failure){throw new AssertionError(failure);}});
                 SwingUtilities.invokeAndWait(()->{try {
                     var rootField=LegacyRefinementWorkflow.class.getDeclaredField("root");rootField.setAccessible(true);root[0]=(LegacyRefinementBootstrap.Root)rootField.get(workflow[0]);
                     var seedField=LegacyRefinementWorkflow.class.getDeclaredField("seed");seedField.setAccessible(true);var seed=(LegacyRefinementBootstrap.Seed)seedField.get(workflow[0]);
                     var stage=workflow[0].currentStage();var chosen=stage.candidates().stream().filter(c->c.id().equals(stage.selected())).findFirst().orElseThrow();var parent=new ParentReferenceBinder().bind(root[0].authority(),stage.id(),chosen);
                     var activeField=LegacyRefinementWorkflow.class.getDeclaredField("active");activeField.setAccessible(true);var ticket=(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.OperationTicket)activeField.get(workflow[0]);
-                    var plan=RefinementSourcePlanner.plan(ticket,seed.settings(),parent);assertEquals(List.of("hot/hot","blue/blue","bluered/bluered","purple/purple","gray/gray","hot/hot-corridor"),plan.requests().stream().map(s->s.palette()+"/"+s.mapping()).toList());
+                    var plan=RefinementSourcePlanner.plan(ticket,seed.settings(),parent);assertEquals(List.of("hot/hot-corridor"),plan.requests().stream().map(s->s.palette()+"/"+s.mapping()).toList());
                     assertSame(seed.facts().network(),root[0].authority().network());assertEquals(seed.config(),root[0].authority().effectiveConfig());assertEquals(TraceBudgets.defaults(),root[0].authority().request().budgets());
                     assertTrue(root[0].authority().request().profileChainage().cumulativeGroundMeters().size()<=6);
                 }catch(ReflectiveOperationException failure){throw new AssertionError(failure);}});
@@ -108,9 +91,8 @@ class LegacyRefinementWorkflowTest {
                 var target=new RefinementSourcePlanner.SourceRequest("hot","hot-corridor",false,"");
                 try {
                     assertTrue(workflow[0].ownedBytes()>0,"Worker return retains queued result/source pins");
-                    assertEquals(Set.copyOf(RefinementSourcePlanner.BASE_PALETTES),palettes);
-                    for(String palette:RefinementSourcePlanner.BASE_PALETTES)assertTrue(actual.attempts().stream().anyMatch(a->a.source().palette().equals(palette)&&a.source().mapping().equals(palette)
-                        &&(a.kind()==RefinementPipeline.AttemptKind.WHOLE&&a.nativeCallAvailability().orElse(0)==1||a.kind()==RefinementPipeline.AttemptKind.UNAVAILABLE&&a.nativeCallAvailability().orElse(-1)==0)));
+                    assertEquals(Set.of("hot"),palettes);
+                    assertTrue(actual.attempts().stream().allMatch(a->a.source().equals(target)));
                     assertTrue(actual.attempts().stream().filter(a->a.source().equals(target)).flatMap(a->a.run().stream()).flatMap(r->r.nativeRun().stream()).anyMatch(r->r.result().status()==TraceHypothesisSet.Status.COMPLETE),
                         ()->actual.outcome()+" "+actual.attempts().stream().map(a->a.source().palette()+"/"+a.source().mapping()+":"+a.kind()+":"+a.reason()+":"+a.run().flatMap(r->r.nativeRun()).map(r->r.result().status().name()).orElse("no-native-result")).toList());
                     assertTrue(actual.sourceOutcomes().stream().filter(s->s.source().equals(target)).flatMap(s->s.assessments().stream()).anyMatch(a->a.quality().disposition()==org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Disposition.APPLICABLE));
@@ -176,7 +158,9 @@ class LegacyRefinementWorkflowTest {
                     new AlignmentService.LegacyCaptureObserver(){public void managed(TileHeatmapSampler.AcquisitionReceipt actual){receipt[0]=actual;}});
                 assertHistoryUnchanged(historyBefore.get(),redoBefore.get());
                 assertFalse(original[0].candidates().isEmpty());
-                owner[0].captured(original[0],null,receipt[0]);owner[0].select(original[0].candidates().get(0));
+                owner[0].captured(original[0],null,receipt[0]);
+                owner[0].select(aggregate?detectorChoice(original[0],"all-colors-combined"):
+                        alternatives?detectorChoice(original[0],"hot-corridor"):original[0].candidates().get(0));
                 java.util.function.Consumer<String> listener=message->{
                     status.set(message);if(started.get()&&workflow[0]!=null&&!workflow[0].busy())completed.get().countDown();
                 };
@@ -192,23 +176,7 @@ class LegacyRefinementWorkflowTest {
                 SwingUtilities.invokeAndWait(()->dumpPublishedFacts(workflow[0]));
             }
             assertTrue(completed.get().await(90,TimeUnit.SECONDS),"Actual refinement did not settle");
-            if(diagnostic&&engine==TrackerMode.CORRIDOR_AWARE) {
-                assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Outcome.RESOURCE_LIMIT,diagnosticResult[0].outcome());
-                assertTrue(diagnosticResult[0].truncated());
-                var variants=diagnosticResult[0].attempts().stream().filter(a->a.source().palette().equals("hot")&&!a.source().mapping().equals("hot")).toList();
-                assertTrue(variants.stream().anyMatch(a->a.kind()==RefinementPipeline.AttemptKind.UNATTEMPTED),"Shared alternative exhaustion must leave explicit later rows");
-                for(var attempt:variants) {
-                    if(attempt.kind()==RefinementPipeline.AttemptKind.UNATTEMPTED) {
-                        assertEquals(0,attempt.nativeCallAvailability().orElseThrow());assertTrue(attempt.issuedBudgets().isEmpty());assertTrue(attempt.run().isEmpty());
-                    } else {
-                        assertEquals(RefinementPipeline.AttemptKind.WHOLE,attempt.kind());assertTrue(attempt.issuedBudgets().isPresent());
-                        var actual=attempt.run().orElseThrow();assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Outcome.COMPLETE,actual.outcome());
-                        assertEquals(1,actual.nativeCalls());assertTrue(actual.actualWorkAvailability().isPresent());assertTrue(actual.actualWork().transitions()>0);
-                    }
-                }
-                assertEquals(8,diagnosticResult[0].actualWork().orElseThrow().distinctAlternatives(),"The unchanged shared distinct limit is exhausted without another pool");
-            }
-            assertRetainedBinderConsumesPublishedSources(workflow[0],alternatives&&!diagnostic);
+            assertRetainedBinderConsumesPublishedSources(workflow[0],alternatives);
             if(alternatives||aggregate) {
                 if(aggregate) {
                     SwingUtilities.invokeAndWait(()->assertTrue(workflow[0].currentStage().candidates().stream().flatMap(c->c.payload().nativeReview().orElseThrow().sources().stream()).anyMatch(RefinementSourcePlanner.SourceRequest::aggregate),"Actual all-five aggregate must be in the genuine published candidate lineage"));
@@ -223,7 +191,7 @@ class LegacyRefinementWorkflowTest {
                 assertHistoryUnchanged(historyBefore.get(),redoBefore.get());
                 assertTrue(workflow[0].nativeSelected(),status.get()+" "+workflow[0].computationEvidence());assertNotNull(selected.get());
                 assertTrue(workflow[0].actualNativeCalls()>0,"Actual kernel entry is required");
-                assertEquals(Set.copyOf(RefinementSourcePlanner.BASE_PALETTES),palettes);
+                assertEquals(Set.of("hot"),palettes);
                 var factual=workflow[0].currentNative().orElseThrow();
                 assertFalse(factual.sources().isEmpty());
                 for(var source:factual.sources()) {
@@ -236,7 +204,7 @@ class LegacyRefinementWorkflowTest {
                 assertEquals(selected.get().candidate().finalPreviewPoints().size(),factual.finalPointIds().orElseThrow().size());
                 assertTrue(factual.sourceSpans().stream().filter(s->!s.span().parentRetained()).allMatch(s->s.nativeProvenance().isPresent()));
                 var attempts=factual.operation().orElseThrow().attempts();
-                assertEquals(Set.copyOf(RefinementSourcePlanner.BASE_PALETTES),attempts.stream().map(RefinementOperationReceipt.Attempt::palette).collect(java.util.stream.Collectors.toSet()));
+                assertEquals(Set.of("hot"),attempts.stream().map(RefinementOperationReceipt.Attempt::palette).collect(java.util.stream.Collectors.toSet()));
                 assertTrue(attempts.stream().anyMatch(a->a.nativeCalls().orElse(0)>0&&a.evidenceHash().isPresent()&&a.parameterHash().isPresent()));
                 for(var attempt:attempts)if(attempt.nativeCalls().orElse(0)>0)assertTrue(attempt.nativeStatus().isPresent(),"Preserve actual no-result as well as successful native status");
                 int actualCalls=workflow[0].actualNativeCalls();
@@ -303,6 +271,11 @@ class LegacyRefinementWorkflowTest {
                 });
             }
         }
+    }
+    private static CenterlineCandidate detectorChoice(AlignmentResult result,String mapping) {
+        var ids=result.detectorAttempts().stream().filter(attempt->mapping.equals(attempt.mappingName()))
+                .flatMap(attempt->attempt.candidateIds().stream()).collect(java.util.stream.Collectors.toSet());
+        return result.applicableCandidates().stream().filter(candidate->ids.contains(candidate.id())).findFirst().orElseThrow();
     }
     private static void assertHistoryUnchanged(java.util.List<org.openstreetmap.josm.command.Command> undoBefore,
             java.util.List<org.openstreetmap.josm.command.Command> redoBefore) {

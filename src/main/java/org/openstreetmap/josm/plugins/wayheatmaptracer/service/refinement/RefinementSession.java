@@ -148,6 +148,15 @@ public final class RefinementSession implements AutoCloseable {
     }
     /** Prepare the exact admitted presentation before the selected root/history can change. */
     public void selectRootComposition(Candidate candidate,Runnable beforeCommit) {
+        selectRootComposition(candidate,beforeCommit,false);
+    }
+
+    /** The original review owns the Legacy chooser. History keeps the active and forward parent choices. */
+    void selectLegacyChoice(Candidate candidate,Runnable beforeCommit) {
+        selectRootComposition(candidate,beforeCommit,true);
+    }
+
+    private void selectRootComposition(Candidate candidate,Runnable beforeCommit,boolean selectedOnly) {
         requireIdle();Objects.requireNonNull(candidate);Objects.requireNonNull(beforeCommit);
         if(cursor!=0||!current().kind().root())throw new IllegalStateException("Root composition selection requires the root cursor");
         var root=current();var candidates=new ArrayList<>(root.candidates());
@@ -158,6 +167,11 @@ public final class RefinementSession implements AutoCloseable {
                     ||!old.sourcePalette().equals(candidate.sourcePalette())||!old.payload().rootReviewState().equals(candidate.payload().rootReviewState()))
                 throw new IllegalArgumentException("Root candidate identity belongs to a different composition");
         } else candidates.add(candidate);
+        if(selectedOnly) {
+            if(root.kind()!=StageKind.ROOT_LEGACY)throw new IllegalStateException("Legacy choice requires the original Legacy stage");
+            var forwardParent=history.size()>1?history.get(1).parentChoice():Optional.<CandidateId>empty();
+            candidates.removeIf(choice->!choice.id().equals(candidate.id())&&!forwardParent.filter(choice.id()::equals).isPresent());
+        }
         var updated=new Stage(root.id(),root.parent(),root.parentChoice(),root.kind(),root.engine(),candidates,candidate.id(),root.smoothingInput());
         var proposed=new ArrayList<>(history);proposed.set(0,updated);
         var refusal=retentionRefusal(proposed);if(refusal!=null)throw new Refused(refusal);
