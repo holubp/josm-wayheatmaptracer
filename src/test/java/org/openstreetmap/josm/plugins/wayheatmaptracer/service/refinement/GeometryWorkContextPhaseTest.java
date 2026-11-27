@@ -20,6 +20,23 @@ class GeometryWorkContextPhaseTest {
         try{return (AutoCloseable)LegacyRefinementWorkflow.class.getMethod("tightenPreparationForTesting",long.class).invoke(null,ceiling);}
         catch(InvocationTargetException failure){if(failure.getCause() instanceof RuntimeException runtime)throw runtime;throw failure;}
     }
+    @Test void elapsedDeadlineAndExhaustedVisitsAreDistinctWithoutDebitingEither() {
+        try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+            var work = new GeometryWorkContext(0, 4096, Long.MAX_VALUE, CancellationProbe.NONE, owner);
+            var timeout = new GeometryWorkContext(64, 4096, Long.MIN_VALUE, CancellationProbe.NONE, owner);
+            var exhausted = assertThrows(GeometryWorkContext.LimitReached.class,
+                    () -> work.visit(GeometryWorkContext.Kind.HASH, 1));
+            var expired = assertThrows(GeometryWorkContext.LimitReached.class,
+                    () -> timeout.visit(GeometryWorkContext.Kind.HASH, 1));
+            assertEquals(RefinementAttemptDiagnostics.FailureKind.AUXILIARY_RESOURCE_LIMIT,
+                    RefinementAttemptDiagnostics.FailureFacts.capture(exhausted).kind());
+            assertEquals(RefinementAttemptDiagnostics.FailureKind.DEADLINE,
+                    RefinementAttemptDiagnostics.FailureFacts.capture(expired).kind());
+            assertEquals(0, work.visits());
+            assertEquals(0, timeout.visits());
+        }
+    }
+
     @Test void guiTestScopeIsEdtOwnedTighteningOnlyAndRestoresProduction() throws Exception {
         assertThrows(IllegalStateException.class,()->tightening(8_000_000));
         javax.swing.SwingUtilities.invokeAndWait(()->{

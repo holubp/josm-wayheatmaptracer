@@ -136,8 +136,8 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     private String legacyContextAvailability="unavailable-not-retained";
     private boolean preparingExport,diagnosticSealed;
     record BootstrapConsumerFrame(String className,String methodName,int line) { }
-    record BootstrapFailureTrace(String boundary,List<BootstrapConsumerFrame> consumers,boolean unavailable,boolean truncated) { }
-    private static final String PLUGIN_STACK_PREFIX="org.openstreetmap.josm.plugins.wayheatmaptracer.";
+    record BootstrapFailureTrace(List<BootstrapConsumerFrame> consumers,boolean unavailable,boolean truncated) { }
+    private static final String PLUGIN_STACK_PREFIX=RefinementAttemptDiagnostics.FailureFacts.PLUGIN_PREFIX;
     private static final long BOOTSTRAP_DIAGNOSTIC_BYTES=4096;
     private static boolean stackIdentifier(String value,int maximum,boolean qualified) {
         if(value==null||value.isEmpty()||value.length()>maximum)return false;
@@ -152,13 +152,13 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     }
     /** One bounded view of the already-created exception; never retains a Throwable or file name. */
     static BootstrapFailureTrace bootstrapFailureTrace(StackTraceElement[] stack,boolean firstLimit) {
-        var consumers=new ArrayList<BootstrapConsumerFrame>(4);String boundary="";boolean truncated=firstLimit&&stack.length>64;
-        long retainedBytes=704; // Both records, actual optional ceiling, UUIDs and bounded list metadata.
+        var consumers=new ArrayList<BootstrapConsumerFrame>(4);boolean truncated=firstLimit&&stack.length>64;
+        // Includes the fixed records, UUID and one bounded failure frame with typed optional facts.
+        long retainedBytes=1504;
         for(int index=0;index<Math.min(64,stack.length);index++) {
             var frame=stack[index];if(frame==null)continue;
             String type=frame.getClassName(),method=frame.getMethodName();
             if(!type.startsWith(PLUGIN_STACK_PREFIX)||!stackIdentifier(type,192,true)||!stackIdentifier(method,96,false))continue;
-            if(boundary.isEmpty()&&!type.contains("AttemptMemoryLedger"))boundary=type.substring(type.lastIndexOf('.')+1)+"."+method+":"+frame.getLineNumber();
             if(!firstLimit||method.startsWith("lambda$"))continue;
             if(type.equals(PLUGIN_STACK_PREFIX+"service.quality.GeometryWorkContext")
                     &&(method.equals("debit")||method.equals("visit")||method.equals("reserve")||method.equals("reserveOn")))continue;
@@ -168,16 +168,17 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             if(consumers.size()<4&&bytes<=BOOTSTRAP_DIAGNOSTIC_BYTES-retainedBytes){consumers.add(new BootstrapConsumerFrame(type,method,frame.getLineNumber()));retainedBytes+=bytes;}
             else truncated=true;
         }
-        return new BootstrapFailureTrace(boundary,List.copyOf(consumers),consumers.isEmpty(),truncated);
+        return new BootstrapFailureTrace(List.copyOf(consumers),consumers.isEmpty(),truncated);
     }
     private record BootstrapDiagnostic(UUID attempt,TrackerMode requestedEngine,String operation,String strength,String cause,OptionalLong workVisits,OptionalLong maximumVisits,
-            List<BootstrapConsumerFrame> consumers,boolean consumerFramesUnavailable,boolean consumerFramesTruncated,boolean limitStackObserved) { }
+            List<BootstrapConsumerFrame> consumers,boolean consumerFramesUnavailable,boolean consumerFramesTruncated,
+            boolean limitStackObserved,Optional<RefinementAttemptDiagnostics.FailureFacts> failure) { }
     private BootstrapDiagnostic bootstrapDiagnostic;
     private AttemptMemoryLedger.Owner bootstrapDiagnosticMemory;
     private void beginBootstrapDiagnostics(TrackerMode engine,RefinementControls.Strength strength) {
         if(legacyContextSupplier==null)return;
         if(bootstrapDiagnosticMemory!=null)bootstrapDiagnosticMemory.close();
-        bootstrapDiagnostic=new BootstrapDiagnostic(UUID.randomUUID(),engine,strength==null?"REFINE":"SMOOTH",strength==null?"unavailable":strength.name(),"RUNNING",OptionalLong.empty(),OptionalLong.empty(),List.of(),true,false,false);
+        bootstrapDiagnostic=new BootstrapDiagnostic(UUID.randomUUID(),engine,strength==null?"REFINE":"SMOOTH",strength==null?"unavailable":strength.name(),"RUNNING",OptionalLong.empty(),OptionalLong.empty(),List.of(),true,false,false,Optional.empty());
         bootstrapDiagnosticMemory=rootMemory.child("bootstrap-diagnostic-slot");
         try{bootstrapDiagnosticMemory.reserve(BOOTSTRAP_DIAGNOSTIC_BYTES).adopt(bootstrapDiagnostic);}catch(AttemptMemoryLedger.ResourceLimitException limited){bootstrapDiagnosticMemory.close();bootstrapDiagnosticMemory=null;}
         if(diagnosticOwner==null)diagnosticOwner=DiagnosticsRegistry.claimRefinement(this);
@@ -186,22 +187,30 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     private void bootstrapFailed(RuntimeException failure,boolean workerReturned) {
         var failedWork=initialVisibleWork;
         initialVisibleWork=null;initialVisibleBudget=null;
+        if(closed||!ownsPublication())return;
         boolean firstLimit=failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached
             &&(bootstrapDiagnostic==null||!bootstrapDiagnostic.limitStackObserved());
         var trace=bootstrapFailureTrace(failure.getStackTrace(),firstLimit);
-        computationEvidence="bootstrap; failed="+failure.getClass().getSimpleName()+"; phase=PREPARATION";
-        if(!trace.boundary().isEmpty())computationEvidence+="; boundary="+trace.boundary();
+        var facts=RefinementAttemptDiagnostics.FailureFacts.capture(failure);
+        computationEvidence="bootstrap; failed="+facts.kind().name()+"; phase=PREPARATION";
+        if(!facts.firstPluginFrame().isEmpty())computationEvidence+="; boundary="+facts.firstPluginFrame();
         if(bootstrapDiagnostic==null)return;
         String cause=cancellation!=null&&cancellation.isCancelled()?"CANCELLED":review.invalidated()?"STALE":
             failure instanceof java.util.concurrent.RejectedExecutionException?"EXECUTOR_REJECTED":
-            failure instanceof AttemptMemoryLedger.ResourceLimitException||failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached?"RESOURCE_LIMIT":"FAILED";
+            facts.resourceLimited()?"RESOURCE_LIMIT":"FAILED";
         var visits=workerReturned&&failedWork!=null?OptionalLong.of(failedWork.visits()):OptionalLong.empty();
         var old=bootstrapDiagnostic;
         // Four bounded ASCII class/method pairs stay inside the existing4096-byte diagnostic slot.
         bootstrapDiagnostic=new BootstrapDiagnostic(old.attempt(),old.requestedEngine(),old.operation(),old.strength(),cause,visits,failedWork==null?OptionalLong.empty():OptionalLong.of(failedWork.maximumVisits()),
             old.limitStackObserved()?old.consumers():trace.consumers(),old.limitStackObserved()?old.consumerFramesUnavailable():trace.unavailable(),
-            old.limitStackObserved()?old.consumerFramesTruncated():trace.truncated(),old.limitStackObserved()||firstLimit);
+            old.limitStackObserved()?old.consumerFramesTruncated():trace.truncated(),old.limitStackObserved()||firstLimit,Optional.of(facts));
         if(diagnosticOwner!=null)DiagnosticsRegistry.invalidateRefinement(diagnosticOwner);
+    }
+    private String bootstrapFailureMessage(RuntimeException failure) {
+        if(cancellation!=null&&cancellation.isCancelled())return "Operation cancelled. The selected parent is still available.";
+        if(failure instanceof RefinementSession.Refused refused&&refused.reason()==RefusalReason.PAYLOAD_LIMIT)
+            return "The original preview exceeds the refinement history limit. The selected parent is still available. Run alignment with a smaller selection or fewer palettes, then retry.";
+        return "Original result preparation failed. The selected parent is still available. Use Export Last Alignment Diagnostics for details.";
     }
     private Format15Bundle bootstrapBundle(boolean terminal) {
         var attempt=Objects.requireNonNull(bootstrapDiagnostic);
@@ -225,7 +234,8 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             +",\"strength\":\""+attempt.strength()+"\",\"publication\":\"NO_PREPARED_ROOT\",\"nativeCalls\":0,\"nativeCallScope\":\"requested-optional-operation\",\"nativeFrozenInputs\":\"unavailable\",\"originalNativeWork\":\""+(originalWork==null?"unavailable":"available")+"\",\"chainReplay\":\"unavailable\",\"originalGeometryScope\":\"immutable-original-selected-segment\",\"auxiliaryWorkVisits\":"+(attempt.workVisits().isPresent()?attempt.workVisits().getAsLong():"null")
             +",\"auxiliaryMaximumVisits\":"+(maximum.isPresent()?maximum.getAsLong():"null")
             +",\"consumerFrames\":["+attempt.consumers().stream().map(frame->"{\"class\":\""+frame.className()+"\",\"method\":\""+frame.methodName()+"\",\"line\":"+frame.line()+"}").collect(java.util.stream.Collectors.joining(","))
-            +"],\"consumerFramesUnavailable\":"+attempt.consumerFramesUnavailable()+",\"consumerFramesTruncated\":"+attempt.consumerFramesTruncated()+"}\n";
+            +"],\"consumerFramesUnavailable\":"+attempt.consumerFramesUnavailable()+",\"consumerFramesTruncated\":"+attempt.consumerFramesTruncated()
+            +attempt.failure().map(RefinementAttemptDiagnostics.FailureFacts::jsonMembers).orElse("")+"}\n";
         var status=Format15Artifact.text("latest-operation.json",json);
         // This fallback deliberately has no authority receipt, generated geometry or lineage.
         var artifacts=new LinkedHashMap<String,Format15Artifact>();artifacts.put(geometry.name(),geometry);artifacts.put(settings.name(),settings);artifacts.put(status.name(),status);
@@ -457,6 +467,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         Optional<RefinementSourcePlanner.SourceRequest> failedSource=Optional.empty();
         Optional<RefinementAttemptDiagnostics.NativeWork> nativeWork=Optional.empty();
         Optional<RefinementAttemptDiagnostics.SourceFacts> sourceFacts=Optional.empty();
+        Optional<RefinementAttemptDiagnostics.SourceFailure> sourceFailure=Optional.empty();
         AttemptProgress(RefinementAttemptDiagnostics.Binding binding,RefinementAttemptDiagnostics.Slot slot){this.binding=binding;this.slot=slot;}
         RefinementAttemptDiagnostics snapshot(RefinementAttemptDiagnostics.Publication publication,RefinementAttemptDiagnostics.Cause cause){return new RefinementAttemptDiagnostics(binding,receipt,publication,phase,cause,materializationRefusals,true,sourcePreparation);}
     }
@@ -732,7 +743,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                         var original=seed.originalSource();preparingSourceCurrent=()->original.requireCurrent(coordinator);
                     }
                 }
-                catch(RuntimeException refused){bootstrapMemory.close();settleWork(work);completeLifecycle(work,false);throw refused;}
+                catch(RuntimeException refused){message=bootstrapFailureMessage(refused);bootstrapMemory.close();settleWork(work);completeLifecycle(work,false);throw refused;}
                 busy=true;if(initialVisibleWork==null)cancellation=new CancellationToken();
                 try{present();}catch(RuntimeException failed){busy=false;bootstrapMemory.close();settleWork(work);completeLifecycle(work,false);throw failed;}
                 var captured=seed;var probe=probe(cancellation);
@@ -758,7 +769,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                             if(review instanceof LegacyReviewOwner)bindLegacyReview();
                             else showCurrent();
                             startDiagnostics();continueRefinement=true;
-                        }catch(RuntimeException refused){bootstrapFailed(refused,true);bootstrapMemory.close();seed=null;message=cancellation!=null&&cancellation.isCancelled()?"Operation cancelled; retained the selected parent.":"Original result preparation failed; retained the selected parent.";}
+                        }catch(RuntimeException refused){bootstrapFailed(refused,true);bootstrapMemory.close();seed=null;message=bootstrapFailureMessage(refused);}
                         finally {
                             busy=false;if(closed)releaseClosed();
                             settleWork(work);
@@ -887,7 +898,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                 else {clearDiagnostics();diagnosticsAvailability=RefinementAttemptDiagnostics.Availability.UNAVAILABLE_BUDGET;}
                 session.fail(active,Outcome.FAILED);session.workerSettled(active);active=null;
             }
-            message=refused.getMessage();busy=false;present();
+            message=session==null?bootstrapFailureMessage(refused):refused.getMessage();busy=false;present();
         }
     }
     private void startSmoothing(RefinementControls.Strength strength) {
@@ -1041,7 +1052,14 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                 progress.phase=RefinementAttemptDiagnostics.Phase.SOURCE_PREPARATION;
                 try{var actual=sources.evidence(source,cancellation);evidence.put(source,actual);progress.phase=RefinementAttemptDiagnostics.Phase.PIPELINE;return actual;}
                 catch(RefinementPipeline.SourceUnavailable unavailable){progress.phase=RefinementAttemptDiagnostics.Phase.PIPELINE;throw unavailable;}
-                catch(RuntimeException failure){var outcome=RefinementPipeline.sourcePreparationFailure(failure,sources,probe);progress.sourcePreparationCause=sourcePreparationCause(outcome);progress.failedSource=Optional.of(source);throw new RefinementPipeline.SourcePreparationFailure(outcome,failure);}
+                catch(RuntimeException failure) {
+                    var outcome=RefinementPipeline.sourcePreparationFailure(failure,sources,probe);
+                    progress.sourcePreparationCause=sourcePreparationCause(outcome);
+                    progress.failedSource=Optional.of(source);
+                    progress.sourceFailure=Optional.of(new RefinementAttemptDiagnostics.SourceFailure(
+                        progress.phase,RefinementAttemptDiagnostics.FailureFacts.capture(failure)));
+                    throw new RefinementPipeline.SourcePreparationFailure(outcome,failure);
+                }
             }
             public Optional<RefinementSourcePlanner.Plan> binding(){return sources.binding();}
             public Optional<ManagedModernPreviewSource.RefinementWorkReceipt> actualSourceWork(){return sources.actualSourceWork();}
@@ -1074,11 +1092,21 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         } catch(RuntimeException failure) {
             if(progress.phase==RefinementAttemptDiagnostics.Phase.ACQUISITION) {
                 var actual=unwrap(failure);
-                progress.sourcePreparationCause=actual instanceof CancellationException?RefinementAttemptDiagnostics.Cause.CANCELLED:
-                    actual instanceof AttemptMemoryLedger.ResourceLimitException||actual instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached?RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT:RefinementAttemptDiagnostics.Cause.FAILED;
+                var facts=RefinementAttemptDiagnostics.FailureFacts.capture(actual);
+                var outcome=facts.resourceLimited()?Outcome.RESOURCE_LIMIT
+                    :actual instanceof CancellationException?Outcome.CANCELLED:Outcome.FAILED;
+                progress.sourcePreparationCause=sourcePreparationCause(outcome);
+                progress.sourceFailure=Optional.of(new RefinementAttemptDiagnostics.SourceFailure(progress.phase,facts));
+                // Acquisition did not enter the pipeline; its native call count is known but engine work is unavailable.
+                progress.nativeWork=Optional.of(new RefinementAttemptDiagnostics.NativeWork(outcome,Optional.empty(),OptionalInt.of(0)));
             }
             throw failure;
-        } finally {progress.sourceFacts=sourceOpening?sourceContext.sourceFacts():Optional.empty();progress.sourcePreparation=Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(progress.sourcePreparationCause,hashWork.visits(),hashWork.counters(),progress.failedSource,progress.nativeWork,progress.sourceFacts,OptionalLong.of(hashWork.maximumVisits())));}
+        } finally {
+            progress.sourceFacts=sourceOpening?sourceContext.sourceFacts():Optional.empty();
+            progress.sourcePreparation=Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(
+                progress.sourcePreparationCause,hashWork.visits(),hashWork.counters(),progress.failedSource,
+                progress.nativeWork,progress.sourceFacts,OptionalLong.of(hashWork.maximumVisits()),progress.sourceFailure));
+        }
     }
     /** Claims the unchanged future Stage bound only once actual assessed output needs materialization. */
     static Computed materialize(OperationTicket ticket,ParentTraceReference parent,RefinementPipeline.Result outcome,

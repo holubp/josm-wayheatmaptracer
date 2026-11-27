@@ -245,6 +245,73 @@ class LegacySmoothingBootstrapTest {
             assertEquals(0,ledger.currentBytes());
         }
     }
+    @Test void oversizedOriginalSmoothCaptureExportsTypedRefusalAndKeepsExactParent() throws Exception {
+        var decoder = new TileDecoderClassifier();
+        var epoch = new VisibleSourceEpoch();
+        var work = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+        var review = new AtomicReference<LegacyReviewOwner>();
+        var workflow = new AtomicReference<LegacyRefinementWorkflow>();
+        var status = new AtomicReference<String>();
+        try (var coordinator = new TileFetchCoordinator((request, credentials) -> {
+            throw new AssertionError("Original visible bootstrap should not fetch tiles");
+        }, new ManagedTileCache(temp, decoder), decoder, TileReliabilityPolicy.defaults())) {
+            try {
+                SwingUtilities.invokeAndWait(() -> {
+                    var data = new DataSet();
+                    var selected = selection(data);
+                    data.allPrimitives().forEach(primitive -> primitive.setModified(false));
+                    var cfg = config(AlignmentMode.PRECISE_SHAPE, false);
+                    var current = LegacyReviewOwner.begin(data, selected, cfg);
+                    review.set(current);
+                    var points = selected.segmentNodes().stream().map(Node::getEastNorth).toList();
+                    var center = ProjectionRegistry.getProjection().latlon2eastNorth(new LatLon(50, 14));
+                    int size = 4096;
+                    var image = new BufferedImage(size, size, BufferedImage.TYPE_BYTE_GRAY);
+                    var candidate = new CenterlineCandidate("original", 1, List.of(), List.of(), points,
+                            points, Map.of(), List.of(), 1, CandidateEvidence.empty(), CandidateCleanupEvidence.empty(), List.of());
+                    var result = new AlignmentResult(selected, image, List.of(candidate), points, points,
+                            List.of(), null, null, List.of(new DetectorAttempt("hot", "hot", TrackerMode.LEGACY_V02,
+                            DetectorAttemptStatus.APPLICABLE, List.of(candidate.id()), "", "")), List.of(candidate));
+                    var source = new LegacyVisibleSource(center.east() - size / 2, center.north() - size / 2,
+                            center.east() + size / 2, center.north() + size / 2, 6, 3.86, OptionalDouble.empty(),
+                            "EPSG:3857", epoch.captureStable(), OptionalDouble.of(3.5), OptionalDouble.of(1.2));
+                    current.captured(result, LegacyVisibleRefinementBootstrapTest.factualFrame(source, size, size, 0, 0));
+                    current.select(candidate);
+                    assertTrue(RefinementPayload.estimateBytes(result) > 64L * 1024 * 1024);
+                    var controller = new LegacyRefinementWorkflow(current, coordinator, current::select,
+                            ignored -> {}, status::set, work::add, SwingUtilities::invokeLater);
+                    workflow.set(controller);
+                    controller.enableRuntimeDiagnostics(() -> null);
+                    controller.smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.MEDIUM);
+                    assertSame(candidate, current.selectedCandidate());
+                    assertTrue(controller.hasCurrentPresentation());
+                    assertFalse(controller.busy());
+                    assertFalse(data.isModified());
+                    assertTrue(work.isEmpty(), "Payload refusal occurs before submitting bootstrap");
+                });
+                Path archivePath = temp.resolve("bootstrap-refusal.zip");
+                org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.writeLatest(archivePath.toFile());
+                var archive = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader.read(archivePath);
+                var json = jakarta.json.Json.createReader(new java.io.ByteArrayInputStream(
+                        archive.artifact("latest-operation.json").orElseThrow().bytes())).readObject();
+                assertEquals("BOOTSTRAP", json.getString("phase"));
+                assertEquals("RESOURCE_LIMIT", json.getString("cause"));
+                assertEquals("PAYLOAD_LIMIT", json.getString("refusalReason"));
+                assertTrue(json.getString("firstPluginFrame").matches("LegacyRefinementBootstrap\\.captureForSmoothing:[0-9]+"));
+                assertEquals(0, json.getInt("nativeCalls"));
+                assertTrue(archive.artifact("refinement-lineage.json").isEmpty());
+                assertTrue(status.get().contains("smaller selection"), status::get);
+                assertTrue(status.get().contains("fewer palettes"), status::get);
+            } finally {
+                SwingUtilities.invokeAndWait(() -> {
+                    if (workflow.get() != null) workflow.get().close();
+                    if (review.get() != null) review.get().close();
+                });
+                org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.setLastBundle(null);
+            }
+        }
+    }
+
     @ParameterizedTest @EnumSource(AlignmentMode.class)
     void visibleBothModesUseRecordedSamplingWindowAndEpochWithNoAcquisition(AlignmentMode mode) throws Exception {
         var epoch=new VisibleSourceEpoch();var decoder=new TileDecoderClassifier();

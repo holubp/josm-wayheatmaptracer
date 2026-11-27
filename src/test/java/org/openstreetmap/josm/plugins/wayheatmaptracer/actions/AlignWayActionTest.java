@@ -535,6 +535,9 @@ class AlignWayActionTest {
             var archive = Format15ArchiveReader.read(exported);
             String failure = new String(archive.artifact("worker-failure.json").orElseThrow().bytes(), StandardCharsets.UTF_8);
             assertTrue(failure.contains("SCALAR_SOURCE_NOT_NORMALIZED"));
+            assertTrue(failure.contains("\"phase\":\"INFERRING\""), failure);
+            assertTrue(failure.contains("\"exceptionKind\":\"ILLEGAL_ARGUMENT\""), failure);
+            assertTrue(failure.contains("\"firstPluginFrame\":\"AlignWayActionTest."), failure);
             assertTrue(failure.contains("\"applyAvailable\":false"));
             assertFalse(failure.contains("managed-source")); assertFalse(failure.contains("captured-attempt"));
             var next = session.open(() -> { });
@@ -578,6 +581,32 @@ class AlignWayActionTest {
         assertTrue(AlignWayAction.captureFailureMessage(failure).contains("Download the required relation members"));
         assertTrue(AlignWayAction.captureFailureMessage(failure).contains("Export Last Alignment Diagnostics"));
         assertFalse(AlignWayAction.captureFailureMessage(failure).contains("123456789"));
+    }
+
+    @Test
+    void genericCaptureFailureExportsOnlyTypedFailureAndSafePluginFrame(@TempDir Path directory)
+            throws Exception {
+        var failure = new IllegalStateException("RESOURCE_LIMIT synthetic-private https://example.test/?cookie=synthetic");
+        failure.setStackTrace(new StackTraceElement[] {
+            new StackTraceElement("foreign.Failure", "method", "private-file", 1),
+            new StackTraceElement("org.openstreetmap.josm.plugins.wayheatmaptracer.Invalid-Name", "api", "private-file", 2),
+            new StackTraceElement("org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService",
+                    "capture", "private-file", 33)
+        });
+        AlignWayAction.recordCaptureFailure(failure, "managed-tiles", "synthetic-attempt");
+        Path exported = directory.resolve("capture-failure.zip");
+        DiagnosticsRegistry.writeLatest(exported.toFile());
+        var archive = Format15ArchiveReader.read(exported);
+        var summary = jakarta.json.Json.createReader(new java.io.ByteArrayInputStream(
+                archive.artifact("failure-summary.json").orElseThrow().bytes())).readObject();
+        assertEquals("CAPTURE", summary.getString("phase"));
+        assertEquals("ILLEGAL_STATE", summary.getString("exceptionKind"));
+        assertEquals("LiveBPreviewService.capture:33", summary.getString("firstPluginFrame"));
+        assertFalse("RESOURCE_LIMIT".equals(summary.getString("failureCode")));
+        assertFalse(summary.toString().contains("synthetic-private"));
+        assertFalse(summary.toString().contains("example.test"));
+        assertFalse(summary.toString().contains("private-file"));
+        assertFalse(summary.containsKey("inferenceStatus"));
     }
 
     @Test
@@ -775,6 +804,8 @@ class AlignWayActionTest {
         assertTrue(summary.contains("\"scope\":\"INTERVAL_SOURCE_BATCH\""));
         assertTrue(summary.contains("\"exceptionKind\":\"ILLEGAL_STATE\""),summary);
         assertTrue(summary.contains("\"boundary\":\"INTERVAL_DIAGNOSTIC_BUNDLE\""));
+        assertTrue(summary.matches("(?s).*\"firstPluginFrame\":\"[A-Za-z0-9_$.]+:[0-9]+\".*"), summary);
+        assertTrue(summary.contains("\"impact\":\"EXPORT_ONLY\""), summary);
         assertTrue(summary.contains("\"intervalRuns\":" + computed.intervalBatch().runs().size()));
         assertTrue(summary.contains("\"intervalTransitions\":" + computed.intervalBatch().totalUsage().transitions()));
         assertFalse(summary.contains("\"inferenceStatus\":"), "There was no single full-way inference");

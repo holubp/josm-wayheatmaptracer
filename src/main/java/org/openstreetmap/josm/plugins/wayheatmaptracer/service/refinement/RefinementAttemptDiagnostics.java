@@ -1,6 +1,15 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement;
 
 import java.util.*;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.RejectedExecutionException;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorResourceLimitException;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyRefinementBootstrap.SmoothingUnavailable;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService.ManualJunctionCaptureException;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedModernPreviewSource.RefinementFailed;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEvidenceCapture;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 
@@ -20,21 +29,144 @@ public record RefinementAttemptDiagnostics(Binding binding, Optional<RefinementO
     public enum Publication { PUBLISHED, NO_CHILD, CANCELLED, STALE, REFUSED, FAILED }
     public enum Phase { PREPARATION, ACQUISITION, SOURCE_PREPARATION, PIPELINE, MATERIALIZATION, PUBLICATION }
     public enum Cause { NONE, NO_USABLE_RESULT, PLAN_REFUSED, CANCELLED, STALE, RESOURCE_LIMIT, FAILED, PUBLICATION_REFUSED, PRESENTATION_FAILED }
+    public enum FailureKind {
+        OWNERSHIP_RESOURCE_LIMIT, AUXILIARY_RESOURCE_LIMIT, DEADLINE, CAPTURE_RESOURCE_LIMIT,
+        INTERVAL_RESOURCE_LIMIT, CORRIDOR_RESOURCE_LIMIT, SESSION_REFUSAL, SOURCE_UNAVAILABLE,
+        MANUAL_JUNCTION, EXECUTOR_REJECTED, CANCELLED, ILLEGAL_ARGUMENT, ILLEGAL_STATE,
+        UNSUPPORTED_OPERATION, IO, OTHER_RUNTIME, OTHER_EXCEPTION
+    }
+
+    public record MemoryRefusal(long requestedBytes, long currentBytes, long limitBytes) {
+        public MemoryRefusal {
+            if (requestedBytes < 0 || currentBytes < 0 || limitBytes < 0
+                    || currentBytes <= limitBytes && requestedBytes <= limitBytes - currentBytes) {
+                throw new IllegalArgumentException("Invalid memory refusal");
+            }
+        }
+    }
+
+    /** Typed result of inspecting one failure. It owns no exception, message, filename or input. */
+    public record FailureFacts(FailureKind kind, String firstPluginFrame,
+            Optional<RefusalReason> refusalReason, Optional<MemoryRefusal> memoryRefusal) {
+        static final String PLUGIN_PREFIX = "org.openstreetmap.josm.plugins.wayheatmaptracer.";
+
+        public FailureFacts {
+            Objects.requireNonNull(kind);
+            Objects.requireNonNull(firstPluginFrame);
+            Objects.requireNonNull(refusalReason);
+            Objects.requireNonNull(memoryRefusal);
+            if (!firstPluginFrame.isEmpty() && (firstPluginFrame.length() > 300
+                    || !firstPluginFrame.matches("[A-Za-z_$][A-Za-z0-9_$]*\\.[A-Za-z_$][A-Za-z0-9_$]*:[0-9]{1,10}"))
+                    || (kind == FailureKind.SESSION_REFUSAL) != refusalReason.isPresent()
+                    || (kind == FailureKind.OWNERSHIP_RESOURCE_LIMIT) != memoryRefusal.isPresent()) {
+                throw new IllegalArgumentException("Invalid bounded failure facts");
+            }
+        }
+
+        public static FailureFacts capture(Exception failure) {
+            var kind = kind(failure);
+            Optional<RefusalReason> refusal = failure instanceof RefinementSession.Refused refused
+                    ? Optional.of(refused.reason()) : Optional.empty();
+            Optional<MemoryRefusal> memory = failure instanceof AttemptMemoryLedger.ResourceLimitException limited
+                    ? Optional.of(new MemoryRefusal(limited.requestedBytes(), limited.currentBytes(), limited.limitBytes()))
+                    : Optional.empty();
+            return new FailureFacts(kind, firstPluginFrame(failure.getStackTrace()), refusal, memory);
+        }
+
+        public boolean resourceLimited() {
+            return switch (kind) {
+                case OWNERSHIP_RESOURCE_LIMIT, AUXILIARY_RESOURCE_LIMIT, DEADLINE, CAPTURE_RESOURCE_LIMIT,
+                        INTERVAL_RESOURCE_LIMIT, CORRIDOR_RESOURCE_LIMIT -> true;
+                case SESSION_REFUSAL -> switch (refusalReason.orElseThrow()) {
+                    case PAYLOAD_LIMIT, STAGE_LIMIT, CANDIDATE_LIMIT -> true;
+                    default -> false;
+                };
+                default -> false;
+            };
+        }
+
+        private static FailureKind kind(Exception failure) {
+            if (failure instanceof AttemptMemoryLedger.ResourceLimitException) return FailureKind.OWNERSHIP_RESOURCE_LIMIT;
+            if (failure instanceof GeometryWorkContext.LimitReached limited)
+                return limited.reason() == GeometryWorkContext.LimitReached.Reason.DEADLINE
+                        ? FailureKind.DEADLINE : FailureKind.AUXILIARY_RESOURCE_LIMIT;
+            if (failure instanceof RefinementPipeline.DeadlineReached) return FailureKind.DEADLINE;
+            if (failure instanceof RasterEvidenceCapture.ResourceLimitException) return FailureKind.CAPTURE_RESOURCE_LIMIT;
+            if (failure instanceof IntervalTraceBatch.ResourceLimitException) return FailureKind.INTERVAL_RESOURCE_LIMIT;
+            if (failure instanceof CorridorResourceLimitException) return FailureKind.CORRIDOR_RESOURCE_LIMIT;
+            if (failure instanceof RefinementSession.Refused) return FailureKind.SESSION_REFUSAL;
+            if (failure instanceof SmoothingUnavailable || failure instanceof RefinementFailed || failure instanceof RefinementPipeline.SourceUnavailable) return FailureKind.SOURCE_UNAVAILABLE;
+            if (failure instanceof ManualJunctionCaptureException) return FailureKind.MANUAL_JUNCTION;
+            if (failure instanceof RejectedExecutionException) return FailureKind.EXECUTOR_REJECTED;
+            if (failure instanceof CancellationException) return FailureKind.CANCELLED;
+            if (failure instanceof IllegalArgumentException) return FailureKind.ILLEGAL_ARGUMENT;
+            if (failure instanceof IllegalStateException) return FailureKind.ILLEGAL_STATE;
+            if (failure instanceof UnsupportedOperationException) return FailureKind.UNSUPPORTED_OPERATION;
+            if (failure instanceof java.io.IOException) return FailureKind.IO;
+            return failure instanceof RuntimeException ? FailureKind.OTHER_RUNTIME : FailureKind.OTHER_EXCEPTION;
+        }
+
+        static String firstPluginFrame(StackTraceElement[] stack) {
+            for (int i = 0; i < Math.min(64, stack.length); i++) {
+                var frame = stack[i];
+                if (frame == null || frame.getLineNumber() <= 0) continue;
+                String type = frame.getClassName();
+                String method = frame.getMethodName();
+                if (type.startsWith(PLUGIN_PREFIX) && type.length() <= 192 && method.length() <= 96
+                        && type.matches("[A-Za-z_$][A-Za-z0-9_$]*(\\.[A-Za-z_$][A-Za-z0-9_$]*)+")
+                        && method.matches("[A-Za-z_$][A-Za-z0-9_$]*")) {
+                    return type.substring(type.lastIndexOf('.') + 1) + "." + method + ":" + frame.getLineNumber();
+                }
+            }
+            return "";
+        }
+
+        /** JSON members consist only of fixed enums, a validated symbol, and observed byte counts. */
+        public String jsonMembers() {
+            return ",\"exceptionKind\":\"" + kind.name() + "\",\"firstPluginFrame\":"
+                    + (firstPluginFrame.isEmpty() ? "null" : "\"" + firstPluginFrame + "\"")
+                    + ",\"refusalReason\":" + refusalReason.map(reason -> "\"" + reason.name() + "\"").orElse("null")
+                    + ",\"memoryRefusal\":" + memoryRefusal.map(memory -> "{\"requestedBytes\":" + memory.requestedBytes()
+                    + ",\"currentBytes\":" + memory.currentBytes() + ",\"limitBytes\":" + memory.limitBytes() + "}").orElse("null");
+        }
+    }
+
+    /** The phase in which acquisition or source preparation actually raised the failure. */
+    public record SourceFailure(Phase phase, FailureFacts facts) {
+        public SourceFailure {
+            Objects.requireNonNull(facts);
+            if (phase != Phase.ACQUISITION && phase != Phase.SOURCE_PREPARATION)
+                throw new IllegalArgumentException("Invalid source failure phase");
+        }
+    }
+
     /** Fixed-size observed auxiliary work. NONE means no source-preparation failure was observed, not that every source ran. */
     public record SourcePreparationWork(Cause cause,long visits,
             Map<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind,Long> counters,
-            Optional<RefinementSourcePlanner.SourceRequest> failedSource,Optional<NativeWork> nativeWork,Optional<SourceFacts> sourceFacts,OptionalLong maximumVisits) {
+            Optional<RefinementSourcePlanner.SourceRequest> failedSource,Optional<NativeWork> nativeWork,
+            Optional<SourceFacts> sourceFacts,OptionalLong maximumVisits,Optional<SourceFailure> failure) {
+        public SourcePreparationWork(Cause cause,long visits,Map<GeometryWorkContext.Kind,Long> counters,
+                Optional<RefinementSourcePlanner.SourceRequest> failedSource,Optional<NativeWork> nativeWork,
+                Optional<SourceFacts> sourceFacts,OptionalLong maximumVisits) {
+            this(cause,visits,counters,failedSource,nativeWork,sourceFacts,maximumVisits,Optional.empty());
+        }
         public SourcePreparationWork(Cause cause,long visits,Map<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind,Long> counters,
                 Optional<RefinementSourcePlanner.SourceRequest> failedSource,Optional<NativeWork> nativeWork,Optional<SourceFacts> sourceFacts){this(cause,visits,counters,failedSource,nativeWork,sourceFacts,OptionalLong.empty());}
         public SourcePreparationWork(Cause cause,long visits,Map<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind,Long> counters,
                 Optional<RefinementSourcePlanner.SourceRequest> failedSource,Optional<NativeWork> nativeWork){this(cause,visits,counters,failedSource,nativeWork,Optional.empty());}
         public SourcePreparationWork {
-            Objects.requireNonNull(cause);Objects.requireNonNull(failedSource);Objects.requireNonNull(nativeWork);Objects.requireNonNull(sourceFacts);Objects.requireNonNull(maximumVisits);counters=Map.copyOf(counters);
+            Objects.requireNonNull(cause);Objects.requireNonNull(failedSource);Objects.requireNonNull(nativeWork);Objects.requireNonNull(sourceFacts);Objects.requireNonNull(maximumVisits);Objects.requireNonNull(failure);counters=Map.copyOf(counters);
             long ceiling=maximumVisits.orElse(8_000_000L);
             if(!Set.of(Cause.NONE,Cause.RESOURCE_LIMIT,Cause.CANCELLED,Cause.STALE,Cause.FAILED).contains(cause)||ceiling<0||ceiling>64_000_000L||visits<0||visits>ceiling
                     ||counters.size()!=org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values().length
                     // Acquisition can fail before any detector source is attempted; keep it unavailable.
-                    ||cause==Cause.NONE&&failedSource.isPresent())throw new IllegalArgumentException("Invalid auxiliary source work");
+                    ||cause==Cause.NONE&&(failedSource.isPresent()||failure.isPresent()))throw new IllegalArgumentException("Invalid auxiliary source work");
+            failure.ifPresent(observed -> {
+                if ((observed.phase()==Phase.SOURCE_PREPARATION)!=failedSource.isPresent()
+                        || cause==Cause.RESOURCE_LIMIT&&!observed.facts().resourceLimited()) {
+                    throw new IllegalArgumentException("Source failure does not match its observed work");
+                }
+            });
             long sum=0;for(var kind:org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values()) {var count=counters.get(kind);if(count==null||count<0)throw new IllegalArgumentException("Invalid auxiliary counter");sum=Math.addExact(sum,count);}if(sum!=visits)throw new IllegalArgumentException("Auxiliary counter sum differs");
             if(sourceFacts.isPresent()&&sourceFacts.orElseThrow().captureAuxiliaryVisits().orElse(0)>visits)throw new IllegalArgumentException("Capture work exceeds total source work");
         }

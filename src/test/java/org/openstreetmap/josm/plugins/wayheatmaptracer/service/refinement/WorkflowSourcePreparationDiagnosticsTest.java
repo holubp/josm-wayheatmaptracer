@@ -52,13 +52,8 @@ class WorkflowSourcePreparationDiagnosticsTest {
             });
             try {
                 SwingUtilities.invokeAndWait(()->{
-                    data[0]=new DataSet();var nodes=new java.util.ArrayList<Node>();for(int i=0;i<5;i++){var node=new Node(new LatLon(50.000018,14+(i-2)*.00028));data[0].addPrimitive(node);nodes.add(node);}
-                    var way=new Way();way.put("highway","path");way.setNodes(nodes);data[0].addPrimitive(way);data[0].allPrimitives().forEach(p->p.setModified(false));
-                    var selection=new SelectionContext(way,0,4,nodes,Set.of(nodes.get(0),nodes.get(4)));
-                    var config=AlignmentConfig.withoutCleanup(new ManagedHeatmapConfig("key","policy","signature","session","all","hot","",".*",AlignmentMode.PRECISE_SHAPE,TrackerMode.LEGACY_V02,false,false,false,false,false,false,false,true,false,false,7,4,3,InferenceMode.RAW_HIGH_RESOLUTION,15,15,7.01,1.56,IntensitySamplingMode.DIRECT_VALUE,7));
-                    review[0]=LegacyReviewOwner.begin(data[0],selection,config);var receipt=new TileHeatmapSampler.AcquisitionReceipt[1];
-                    var original=new AlignmentService(new TileHeatmapSampler(coordinator)).alignLegacyReviewed(selection,null,null,config,new AlignmentService.LegacyCaptureObserver(){public void managed(TileHeatmapSampler.AcquisitionReceipt actual){receipt[0]=actual;}});
-                    review[0].captured(original,null,receipt[0]);review[0].select(original.candidates().get(0));
+                    review[0]=managedReview(coordinator);
+                    data[0]=review[0].dataSet();
                     workflow[0]=new LegacyRefinementWorkflow(review[0],coordinator,review[0]::select,shown->{},status->{},work::add,publications::add,LegacyRefinementWorkflow.SourcePreparationControl.production());workflow[0].enableRuntimeDiagnostics(()->null);
                     ((JButton)find(workflow[0].controls(),"refineB")).doClick();
                 });
@@ -101,6 +96,117 @@ class WorkflowSourcePreparationDiagnosticsTest {
             }
         }
     }
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {8, 58})
+    void managedFailureExportsItsOwnPhysicalReservationBeforeAnyNativeCall(int availableMiB) throws Exception {
+        var decoder = new TileDecoderClassifier();
+        var work = new LinkedBlockingQueue<Runnable>();
+        var publications = new LinkedBlockingQueue<Runnable>();
+        var review = new LegacyReviewOwner[1];
+        var workflow = new LegacyRefinementWorkflow[1];
+        try (var coordinator = new TileFetchCoordinator((request, credentials) -> new TransportResponse(
+                TileFetchStatus.SUCCESS_NETWORK, 200, "image/png", ridge(request.address()), null,
+                Duration.ZERO, ""), new ManagedTileCache(temp, decoder), decoder, TileReliabilityPolicy.defaults())) {
+            try {
+                SwingUtilities.invokeAndWait(() -> {
+                    review[0] = managedReview(coordinator);
+                    workflow[0] = new LegacyRefinementWorkflow(review[0], coordinator, review[0]::select,
+                            ignored -> {}, ignored -> {}, work::add, publications::add);
+                    workflow[0].enableRuntimeDiagnostics(() -> null);
+                    workflow[0].refine(TrackerMode.PROBABILISTIC);
+                });
+                work.remove().run();
+                SwingUtilities.invokeAndWait(publications.remove());
+                // Settle the warming click so the attempt being tested owns a fresh preparation counter.
+                SwingUtilities.invokeAndWait(workflow[0]::cancel);
+                work.remove().run();
+                SwingUtilities.invokeAndWait(publications.remove());
+                SwingUtilities.invokeAndWait(() -> workflow[0].refine(TrackerMode.PROBABILISTIC));
+                var rootMemory = LegacyRefinementWorkflow.class.getDeclaredField("rootMemory");
+                rootMemory.setAccessible(true);
+                var owner = (AttemptMemoryLedger.Owner) rootMemory.get(workflow[0]);
+                long availableBytes = availableMiB * 1024L * 1024L;
+                try (var held = owner.reserve(AttemptMemoryLedger.MAX_BYTES - workflow[0].ownedBytes() - availableBytes)) {
+                    work.remove().run();
+                    SwingUtilities.invokeAndWait(publications.remove());
+                }
+                var diagnostic = workflow[0].latestAttemptDiagnostics().orElseThrow();
+                assertEquals(RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT, diagnostic.cause(), workflow[0]::computationEvidence);
+                assertEquals(0, workflow[0].actualNativeCalls());
+                SwingUtilities.invokeAndWait(() -> assertFalse(review[0].dataSet().isModified()));
+                Path file = temp.resolve("managed-memory-" + availableMiB + ".zip");
+                DiagnosticsRegistry.writeLatest(file.toFile());
+                var archive = Format15ArchiveReader.read(file);
+                var artifact = archive.artifact(RefinementLineageCodec.ARTIFACT).orElseThrow();
+                var json = jakarta.json.Json.createReader(new java.io.ByteArrayInputStream(artifact.bytes())).readObject();
+                var source = json.getJsonObject("latestPublication").getJsonObject("sourcePreparation");
+                var observedPhase = availableMiB == 8 ? "ACQUISITION" : "SOURCE_PREPARATION";
+                assertEquals(observedPhase, diagnostic.phase().name(), workflow[0]::computationEvidence);
+                var failure = source.getJsonObject("failure");
+                assertNotNull(failure, () -> "Expected physical refusal at " + observedPhase + " in " + source);
+                assertEquals(observedPhase, failure.getString("phase"));
+                assertEquals("OWNERSHIP_RESOURCE_LIMIT", failure.getString("exceptionKind"));
+                assertEquals(0, source.getJsonObject("nativeWork").getInt("calls"));
+                var memory = failure.getJsonObject("memoryRefusal");
+                long requested = memory.getJsonNumber("requestedBytes").longValueExact();
+                long current = memory.getJsonNumber("currentBytes").longValueExact();
+                long limit = memory.getJsonNumber("limitBytes").longValueExact();
+                assertEquals(AttemptMemoryLedger.MAX_BYTES, limit);
+                assertTrue(current > 0 && requested > limit - current);
+                assertTrue(failure.getString("firstPluginFrame").startsWith("AttemptMemoryLedger."));
+                if (availableMiB == 8) assertEquals(0, source.getJsonNumber("visits").longValueExact());
+                else {
+                    assertTrue(source.getJsonNumber("visits").longValueExact() >= 262_144);
+                    assertTrue(requested > 20L * 1024 * 1024, "Retain the larger scalar request even if later receipt admission fails");
+                }
+                var decoded = RefinementLineageCodec.read(artifact).latestPublication().orElseThrow().diagnostic();
+                assertEquals(diagnostic, decoded);
+                var tampered = json.toString().replace(failure.getString("firstPluginFrame"),
+                        "https://example.invalid/?cookie=synthetic");
+                assertThrows(IllegalArgumentException.class, () -> RefinementLineageCodec.read(
+                        Format15Artifact.text(RefinementLineageCodec.ARTIFACT, tampered)));
+                var old = json.toString().replace(",\"failure\":" + failure, "");
+                assertTrue(RefinementLineageCodec.read(Format15Artifact.text(RefinementLineageCodec.ARTIFACT, old))
+                        .latestPublication().orElseThrow().diagnostic().sourcePreparation().orElseThrow().failure().isEmpty());
+            } finally {
+                SwingUtilities.invokeAndWait(() -> {
+                    if (workflow[0] != null) workflow[0].close();
+                    if (review[0] != null) review[0].close();
+                    DiagnosticsRegistry.setLastBundle(null);
+                });
+            }
+        }
+    }
+
+    private static LegacyReviewOwner managedReview(TileFetchCoordinator coordinator) {
+        var data = new DataSet();
+        var nodes = new java.util.ArrayList<Node>();
+        for (int i = 0; i < 5; i++) {
+            var node = new Node(new LatLon(50.000018, 14 + (i - 2) * .00028));
+            data.addPrimitive(node);
+            nodes.add(node);
+        }
+        var way = new Way();
+        way.put("highway", "path");
+        way.setNodes(nodes);
+        data.addPrimitive(way);
+        data.allPrimitives().forEach(p -> p.setModified(false));
+        var selection = new SelectionContext(way, 0, 4, nodes, Set.of(nodes.get(0), nodes.get(4)));
+        var config = AlignmentConfig.withoutCleanup(new ManagedHeatmapConfig("key", "policy", "signature", "session",
+                "all", "hot", "", ".*", AlignmentMode.PRECISE_SHAPE, TrackerMode.LEGACY_V02,
+                false, false, false, false, false, false, false, true, false, false, 7, 4, 3,
+                InferenceMode.RAW_HIGH_RESOLUTION, 15, 15, 7.01, 1.56, IntensitySamplingMode.DIRECT_VALUE, 7));
+        var review = LegacyReviewOwner.begin(data, selection, config);
+        var receipt = new TileHeatmapSampler.AcquisitionReceipt[1];
+        var original = new AlignmentService(new TileHeatmapSampler(coordinator)).alignLegacyReviewed(selection,
+                null, null, config, new AlignmentService.LegacyCaptureObserver() {
+                    public void managed(TileHeatmapSampler.AcquisitionReceipt actual) { receipt[0] = actual; }
+                });
+        review.captured(original, null, receipt[0]);
+        review.select(original.candidates().get(0));
+        return review;
+    }
+
     private static Component find(Container root,String name){for(Component child:root.getComponents()){if(name.equals(child.getName()))return child;if(child instanceof Container nested){var found=find(nested,name);if(found!=null)return found;}}return null;}
     private static byte[] ridge(ManagedTileAddress address) {
         try{var image=new BufferedImage(512,512,BufferedImage.TYPE_INT_ARGB);for(int y=0;y<512;y++){double worldY=(address.y()*512.0+y+.5)/(512.0*(1<<address.zoom()));double lat=Math.toDegrees(Math.atan(Math.sinh(Math.PI*(1-2*worldY))));int red=(int)Math.round(245*Math.exp(-.5*Math.pow((lat-50)*111195/2,2)));for(int x=0;x<512;x++)image.setRGB(x,y,(red==0?0:0xff000000)|(red<<16)|Math.min(red,(x/8+y/8)%4)<<8);}var out=new ByteArrayOutputStream();ImageIO.write(image,"png",out);return out.toByteArray();}catch(Exception failure){throw new IllegalStateException(failure);}

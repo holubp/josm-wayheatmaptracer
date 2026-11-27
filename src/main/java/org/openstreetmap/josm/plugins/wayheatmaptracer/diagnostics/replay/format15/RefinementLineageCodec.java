@@ -6,6 +6,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.*;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.FailureFacts;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.FailureKind;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.MemoryRefusal;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.Phase;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.SourceFailure;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage;
 
@@ -430,6 +435,7 @@ public final class RefinementLineageCodec {
         Object source=work.failedSource().map(s->map("palette",s.palette(),"mapping",s.mapping(),"aggregate",s.aggregate(),"unavailable",s.unavailableReason())).orElse(null);
         Object nativeWork=work.nativeWork().map(n->map("outcome",n.outcome().name(),"work",workMap(n.actualWork()),"calls",n.nativeCalls().isPresent()?n.nativeCalls().getAsInt():null)).orElse(null);
         var result=map("phase","SOURCE_PREPARATION","cause",work.cause().name(),"visits",work.visits(),"counters",counters,"failedSource",source,"nativeWork",nativeWork);
+        result.put("failure",work.failure().map(RefinementLineageCodec::sourceFailureMap).orElse(null));
         if(work.maximumVisits().isPresent())result.put("maximumVisits",work.maximumVisits().getAsLong());
         work.sourceFacts().ifPresent(f->result.put("sourceFacts",map("ticket",ticketMap(f.ticket()),"sourceIdentityHash",f.sourceIdentityHash(),"sourceKind",f.sourceKind().name(),"coverage",f.coverage().name(),
             "planHash",f.planHash(),"frameHash",f.frameHash(),"inputHash",f.inputHash(),"frameRole",f.frameRole().name(),"frameWidth",f.frameWidth(),"frameHeight",f.frameHeight(),
@@ -438,14 +444,36 @@ public final class RefinementLineageCodec {
     }
     private static Optional<RefinementAttemptDiagnostics.SourcePreparationWork> readSourcePreparation(Object value) {
         if(value==null)return Optional.empty();
-        var keys=new ArrayList<>(List.of("phase","cause","visits","counters","failedSource","nativeWork"));if(value instanceof Map<?,?> m){if(m.containsKey("sourceFacts"))keys.add("sourceFacts");if(m.containsKey("maximumVisits"))keys.add("maximumVisits");}
+        var keys=new ArrayList<>(List.of("phase","cause","visits","counters","failedSource","nativeWork"));if(value instanceof Map<?,?> m){if(m.containsKey("sourceFacts"))keys.add("sourceFacts");if(m.containsKey("maximumVisits"))keys.add("maximumVisits");if(m.containsKey("failure"))keys.add("failure");}
         var p=fields(value,keys.toArray(String[]::new));if(!"SOURCE_PREPARATION".equals(p.get("phase")))throw invalid();
         var kinds=org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.values();var names=Arrays.stream(kinds).map(Enum::name).toArray(String[]::new);var raw=fields(p.get("counters"),names);
         var counters=new EnumMap<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind,Long>(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.class);for(var kind:kinds)counters.put(kind,number(raw.get(kind.name())));
         Optional<RefinementSourcePlanner.SourceRequest> source=Optional.empty();if(p.get("failedSource")!=null){var v=fields(p.get("failedSource"),"palette","mapping","aggregate","unavailable");if(!(v.get("aggregate") instanceof Boolean))throw invalid();source=Optional.of(new RefinementSourcePlanner.SourceRequest(string(v.get("palette")),string(v.get("mapping")),(Boolean)v.get("aggregate"),string(v.get("unavailable"))));}
         Optional<RefinementAttemptDiagnostics.NativeWork> nativeWork=Optional.empty();if(p.get("nativeWork")!=null){var v=fields(p.get("nativeWork"),"outcome","work","calls");nativeWork=Optional.of(new RefinementAttemptDiagnostics.NativeWork(enumeration(Outcome.class,v.get("outcome")),work(v.get("work")),v.get("calls")==null?OptionalInt.empty():OptionalInt.of(integer(v.get("calls")))));}
-        return Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(enumeration(RefinementAttemptDiagnostics.Cause.class,p.get("cause")),number(p.get("visits")),counters,source,nativeWork,readSourceFacts(p.get("sourceFacts")),p.get("maximumVisits")==null?OptionalLong.empty():OptionalLong.of(number(p.get("maximumVisits")))));
+        return Optional.of(new RefinementAttemptDiagnostics.SourcePreparationWork(enumeration(RefinementAttemptDiagnostics.Cause.class,p.get("cause")),number(p.get("visits")),counters,source,nativeWork,readSourceFacts(p.get("sourceFacts")),p.get("maximumVisits")==null?OptionalLong.empty():OptionalLong.of(number(p.get("maximumVisits"))),readSourceFailure(p.get("failure"))));
     }
+    private static Map<String,Object> sourceFailureMap(SourceFailure failure) {
+        var facts=failure.facts();
+        return map("phase",failure.phase().name(),"exceptionKind",facts.kind().name(),
+            "firstPluginFrame",facts.firstPluginFrame().isEmpty()?null:facts.firstPluginFrame(),
+            "refusalReason",facts.refusalReason().map(Enum::name).orElse(null),
+            "memoryRefusal",facts.memoryRefusal().map(m->map("requestedBytes",m.requestedBytes(),
+                "currentBytes",m.currentBytes(),"limitBytes",m.limitBytes())).orElse(null));
+    }
+    private static Optional<SourceFailure> readSourceFailure(Object value) {
+        if(value==null)return Optional.empty();
+        var p=fields(value,"phase","exceptionKind","firstPluginFrame","refusalReason","memoryRefusal");
+        Optional<MemoryRefusal> memory=Optional.empty();
+        if(p.get("memoryRefusal")!=null) {
+            var m=fields(p.get("memoryRefusal"),"requestedBytes","currentBytes","limitBytes");
+            memory=Optional.of(new MemoryRefusal(number(m.get("requestedBytes")),number(m.get("currentBytes")),number(m.get("limitBytes"))));
+        }
+        var facts=new FailureFacts(enumeration(FailureKind.class,p.get("exceptionKind")),
+            p.get("firstPluginFrame")==null?"":string(p.get("firstPluginFrame")),
+            p.get("refusalReason")==null?Optional.empty():Optional.of(enumeration(RefusalReason.class,p.get("refusalReason"))),memory);
+        return Optional.of(new SourceFailure(enumeration(Phase.class,p.get("phase")),facts));
+    }
+
     private static Optional<RefinementAttemptDiagnostics.SourceFacts> readSourceFacts(Object value){
         if(value==null)return Optional.empty();
         var p=fields(value,"ticket","sourceIdentityHash","sourceKind","coverage","planHash","frameHash","inputHash","frameRole","frameWidth","frameHeight","outputGridWidth","outputGridHeight","sourceRevision","captureAuxiliaryVisits");

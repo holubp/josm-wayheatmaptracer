@@ -25,6 +25,7 @@ import java.util.function.Consumer;
 import java.util.function.BiFunction;
 import java.util.function.LongSupplier;
 import java.util.function.Function;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.FailureFacts;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyReviewOwner;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.LegacyRefinementWorkflow;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ModernReviewRoot;
@@ -3036,15 +3037,16 @@ public class AlignWayAction extends JosmAction {
     static void recordCaptureFailure(Exception failure, String sourceLineage, String attemptIdentity) {
         var manual = failure instanceof LiveBPreviewService.ManualJunctionCaptureException junction
                 ? junction.reason() : null;
-        String code = workerFailureCode(failure.getClass().getSimpleName() + ": " + failure.getMessage());
+        var facts = FailureFacts.capture(failure);
+        String code = captureFailureCode(failure, facts);
         Format15Bundle base = Format15ProductionBundleFactory.createUnavailableLive(
-                LastSlideDebugBundle.buildIdentity(), manual == null ? "failed" : "blocked",
+                LastSlideDebugBundle.buildIdentity(), manual != null ? "blocked" : facts.resourceLimited() ? "resource-limited" : "failed",
                 sourceLineage, attemptIdentity, manual);
-        DiagnosticsRegistry.setLastModernBundle(withFailureSummary(base, "CAPTURE", code, null));
+        DiagnosticsRegistry.setLastModernBundle(withFailureSummary(base, "CAPTURE", code, null, facts, null));
     }
 
     static String captureFailureMessage(Exception failure) {
-        String code = workerFailureCode(failure.getClass().getSimpleName() + ": " + failure.getMessage());
+        String code = captureFailureCode(failure, FailureFacts.capture(failure));
         String instruction = code.equals("INCOMPLETE_RELATION_MEMBERS")
                 ? tr("Required relation members are not downloaded. Download the required relation members, then run alignment again.")
                 : failure instanceof LiveBPreviewService.ManualJunctionCaptureException manual
@@ -3053,13 +3055,19 @@ public class AlignWayAction extends JosmAction {
         return instruction + " " + tr("No changes were applied. Use Export Last Alignment Diagnostics for details.");
     }
 
+    private static String captureFailureCode(Exception failure, FailureFacts facts) {
+        if (facts.resourceLimited()) return "RESOURCE_LIMIT";
+        String code = workerFailureCode(failure.getClass().getSimpleName() + ": " + failure.getMessage());
+        return code.equals("RESOURCE_LIMIT") ? "ALIGNMENT_WORKER_FAILURE" : code;
+    }
+
     /** Values are fixed local codes/enums and numeric work counters, never exception or source text. */
     private static Format15Bundle withFailureSummary(Format15Bundle base, String phase, String code,
             LiveBPreviewService.Computed computed) {
         return withFailureSummary(base,phase,code,computed,null,null);
     }
     private static Format15Bundle withFailureSummary(Format15Bundle base,String phase,String code,
-            LiveBPreviewService.Computed computed,RuntimeException failure,String boundary) {
+            LiveBPreviewService.Computed computed,FailureFacts failure,String boundary) {
         String scope = computed == null ? "ATTEMPT" : computed.partitioned()
                 ? "INTERVAL_SOURCE_BATCH" : "SOURCE_RUN";
         String work;
@@ -3089,16 +3097,10 @@ public class AlignWayAction extends JosmAction {
         artifacts.put("failure-summary.json", Format15Artifact.text("failure-summary.json",
                 "{\"phase\":\"" + phase + "\",\"failureCode\":\"" + code
                 + "\",\"scope\":\"" + scope + "\",\"applyPlanIncluded\":false" + work
-                +(failure==null?"":",\"exceptionKind\":\""+diagnosticExceptionKind(failure)+"\",\"boundary\":\""+boundary+"\"")+"}\n"));
+                + (boundary == null ? "" : ",\"boundary\":\"" + boundary + "\"")
+                + ("DIAGNOSTIC_EXPORT".equals(phase) ? ",\"impact\":\"EXPORT_ONLY\"" : "")
+                + (failure == null ? "" : failure.jsonMembers()) + "}\n"));
         return new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(), base.parameterHash(), artifacts);
-    }
-    private static String diagnosticExceptionKind(RuntimeException failure) {
-        if(failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached)return "AUXILIARY_RESOURCE_LIMIT";
-        if(failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.ResourceLimitException)return "OWNERSHIP_RESOURCE_LIMIT";
-        if(failure instanceof IllegalArgumentException)return "ILLEGAL_ARGUMENT";
-        if(failure instanceof IllegalStateException)return "ILLEGAL_STATE";
-        if(failure instanceof UnsupportedOperationException)return "UNSUPPORTED_OPERATION";
-        return "OTHER_RUNTIME";
     }
 
     static ManualJunctionEligibility.Reason manualCaptureReason(String failure) {
@@ -3161,9 +3163,13 @@ public class AlignWayAction extends JosmAction {
         synchronized (session) {
             if (failed == null || failed.state() != AlignmentJob.State.FAILED
                     || session.currentAttempt() != failed || !session.isCurrent(owner)) return false;
-            String code = workerFailureCode(failed.failureReason());
+            var failure = failed.workerFailure();
+            boolean resourceLimited = failure != null && failure.facts().resourceLimited();
+            String reasonCode = workerFailureCode(failed.failureReason());
+            String code = resourceLimited ? "RESOURCE_LIMIT"
+                    : reasonCode.equals("RESOURCE_LIMIT") ? "ALIGNMENT_WORKER_FAILURE" : reasonCode;
             var manual = manualCaptureReason(failed.failureReason());
-            String status = manual != null ? "blocked" : code.equals("RESOURCE_LIMIT") ? "resource-limited" : "failed";
+            String status = manual != null ? "blocked" : resourceLimited ? "resource-limited" : "failed";
             return closeAndPublishIfCurrent(session, owner, () -> {
                 Format15Bundle base = Format15ProductionBundleFactory.createUnavailableLive(
                         LastSlideDebugBundle.buildIdentity(), status, sourceLineage, attemptIdentity, manual);
@@ -3175,7 +3181,9 @@ public class AlignWayAction extends JosmAction {
                         + "\",\"applyAvailable\":false,\"snapshotIdentityHash\":\"" + safeLayerNameIdentity(snapshot.attemptId())
                         + "\",\"sourceIdentityHash\":\"" + safeLayerNameIdentity(snapshot.sourceIdentity())
                         + "\",\"settingsIdentityHash\":\"" + safeLayerNameIdentity(snapshot.settingsHash())
-                        + "\",\"networkIdentityHash\":\"" + safeLayerNameIdentity(snapshot.contentHash()) + "\"}\n"));
+                        + "\",\"networkIdentityHash\":\"" + safeLayerNameIdentity(snapshot.contentHash()) + "\""
+                        + (failure == null ? "" : ",\"phase\":\"" + failure.phase().name() + "\"" + failure.facts().jsonMembers())
+                        + "}\n"));
                 DiagnosticsRegistry.setLastModernBundle(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
                         base.parameterHash(), artifacts));
                 showFailure.accept(tr("Alignment preview failed safely ({0}). No changes were applied. "
@@ -3271,16 +3279,14 @@ public class AlignWayAction extends JosmAction {
         try {
             DiagnosticsRegistry.setLastModernBundle(createIntervalDiagnostics(computed, state, status));
         } catch (RuntimeException failure) {
-            String reason = failure.getMessage() == null ? ""
-                    : failure.getMessage().toLowerCase(Locale.ROOT);
-            String terminal = reason.contains("budget") || reason.contains("limit")
-                    || reason.contains("large") ? "resource-limited" : "failed";
+            var facts = FailureFacts.capture(failure);
+            String terminal = facts.resourceLimited() ? "resource-limited" : "failed";
             Format15Bundle fallback = Format15ProductionBundleFactory.createUnavailableLive(
                     LastSlideDebugBundle.buildIdentity(), terminal, computed.captured().managedRaster() == null
                             ? "visible-layer" : "managed-tiles", attemptIdentity);
             LiveBPreviewService.Computed selected = state.selectedRun() == null ? computed : state.selectedRun();
             DiagnosticsRegistry.setLastModernBundle(withFailureSummary(fallback, "DIAGNOSTIC_EXPORT",
-                    format15FailureCode(failure), selected,failure,"INTERVAL_DIAGNOSTIC_BUNDLE"));
+                    format15FailureCode(failure), selected, facts, "INTERVAL_DIAGNOSTIC_BUNDLE"));
             PluginLog.verbose("Format15 interval export unavailable status=%s cause=%s",
                     terminal, format15FailureCode(failure));
         }
@@ -3391,15 +3397,13 @@ public class AlignWayAction extends JosmAction {
             }
             DiagnosticsRegistry.setLastModernBundle(bundle);
         } catch (RuntimeException failure) {
-            String reason = failure.getMessage() == null ? "" : failure.getMessage()
-                    .toLowerCase(java.util.Locale.ROOT);
-            String diagnosticStatus = reason.contains("budget") || reason.contains("limit")
-                    || reason.contains("large") ? "resource-limited" : "failed";
+            var facts = FailureFacts.capture(failure);
+            String diagnosticStatus = facts.resourceLimited() ? "resource-limited" : "failed";
             Format15Bundle fallback = Format15ProductionBundleFactory.createUnavailableLive(
                     LastSlideDebugBundle.buildIdentity(), diagnosticStatus, sourceLineage, attemptIdentity,
                     assessedManualReason);
             DiagnosticsRegistry.setLastModernBundle(withFailureSummary(fallback, "DIAGNOSTIC_EXPORT",
-                    format15FailureCode(failure), computed,failure,"FULL_ROUTE_DIAGNOSTIC_BUNDLE"));
+                    format15FailureCode(failure), computed, facts, "FULL_ROUTE_DIAGNOSTIC_BUNDLE"));
             PluginLog.verbose("Format15 support export unavailable status=%s cause=%s",
                     diagnosticStatus, format15FailureCode(failure));
         }

@@ -12,7 +12,11 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 public final class GeometryWorkContext {
     public enum Kind { COPY, MAP, HASH, BIND, RESERVATION }
     public static final class LimitReached extends IllegalStateException {
-        public LimitReached(){super("geometry-work-limit");}
+        public enum Reason { VISITS, DEADLINE }
+        private final Reason reason;
+        public LimitReached(){this(Reason.VISITS);}
+        public LimitReached(Reason reason){super("geometry-work-limit");this.reason=Objects.requireNonNull(reason);}
+        public Reason reason(){return reason;}
     }
     private final long maximumVisits,maximumBytes,deadlineNanos;
     private final CancellationProbe cancellation;
@@ -51,7 +55,8 @@ public final class GeometryWorkContext {
     private void debit(long ceiling,Kind kind,long count) {
         Objects.requireNonNull(kind);if(count<0||count>256)throw new IllegalArgumentException("Geometry work batches must be at most256");
         cancellation.checkpoint();
-        if(System.nanoTime()>=deadlineNanos||count>ceiling-state.visits)throw new LimitReached();
+        if(System.nanoTime()>=deadlineNanos)throw new LimitReached(LimitReached.Reason.DEADLINE);
+        if(count>ceiling-state.visits)throw new LimitReached();
         state.visits=Math.addExact(state.visits,count);state.counters[kind.ordinal()]=Math.addExact(state.counters[kind.ordinal()],count);
     }
     /** Account on the same attempt ledger before allocation, including already live history/source pins. */

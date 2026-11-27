@@ -121,7 +121,7 @@ public final class RefinementPipeline {
             Optional<ManagedModernPreviewSource.RefinementWorkReceipt> actualSourceWork,List<SourceOutcome> sourceOutcomes) {
         public Result {candidates=List.copyOf(candidates);attempts=List.copyOf(attempts);rejected=List.copyOf(rejected);sourceOutcomes=List.copyOf(sourceOutcomes);Objects.requireNonNull(actualWork);Objects.requireNonNull(actualSourceWork);}
     }
-    private static final class DeadlineReached extends CancellationException { }
+    static final class DeadlineReached extends CancellationException { }
     private static final class SourceInvalid extends IllegalStateException { }
     public static final class OperationBudget {
         private final TraceBudgets maximum;private final LongSupplier clock;private final long started,duration,reserve;
@@ -137,7 +137,10 @@ public final class RefinementPipeline {
         /** Absolute final deadline in the supplied clock's units; production uses System.nanoTime. */
         public long finalDeadlineNanos(){return Math.addExact(started,duration);}
         /** Final publication work consumes the same original clock/deadline after graph settlement. */
-        void requireFinalTime(){if(finalExpired())throw new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached();}
+        void requireFinalTime(){
+            if(finalExpired())throw new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached.Reason.DEADLINE);
+        }
         private void claim(TraceBudgets root) {
             if(claimed||maximum.maximumStatesPerProfile()!=root.maximumStatesPerProfile()||maximum.maximumPairVisits()>root.maximumPairVisits()
                 ||maximum.maximumTransitions()>root.maximumTransitions()||maximum.maximumRawAlternatives()>root.maximumRawAlternatives()

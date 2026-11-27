@@ -16,6 +16,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 import org.openstreetmap.josm.tools.Logging;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAttemptDiagnostics.FailureFacts;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /**
@@ -62,14 +63,31 @@ public final class AlignmentJob<R> implements AutoCloseable {
         }
     }
 
+    /** The last active worker phase and safe facts from its exception. */
+    public record WorkerFailure(State phase, FailureFacts facts) {
+        public WorkerFailure {
+            Objects.requireNonNull(phase);
+            Objects.requireNonNull(facts);
+            if (phase.terminal() || phase == State.CAPTURING) {
+                throw new IllegalArgumentException("Failure has no worker phase");
+            }
+        }
+    }
+
     /** Immutable attempt-owned state, including an optional preview result. */
     public record Attempt<R>(long sequence, AttemptSnapshot snapshot, State state, boolean cancelled,
-        R result, String failureReason) {
+        R result, String failureReason, WorkerFailure workerFailure) {
+        public Attempt(long sequence, AttemptSnapshot snapshot, State state, boolean cancelled,
+                R result, String failureReason) {
+            this(sequence, snapshot, state, cancelled, result, failureReason, null);
+        }
+
         /** Validates a complete state transition snapshot. */
         public Attempt {
             if (sequence < 1 || snapshot == null || state == null || failureReason == null
                 || state == State.PREVIEW_READY && result == null
-                || state != State.PREVIEW_READY && result != null) {
+                || state != State.PREVIEW_READY && result != null
+                || state != State.FAILED && workerFailure != null) {
                 throw new IllegalArgumentException("Attempt state is inconsistent");
             }
         }
@@ -397,9 +415,7 @@ public final class AlignmentJob<R> implements AutoCloseable {
             Thread.currentThread().interrupt();
             cancelAttempt(started, "interrupted");
         } catch (Exception exception) {
-            String failure = safeFailure(exception);
-            Logging.warn("[WayHeatmapTracer] Preview worker failed safely: " + failure);
-            transitionIfCurrent(started.sequence(), State.FAILED, null, failure);
+            failWorker(started.sequence(), exception);
         } finally {
             contexts.remove(started.sequence(), context);
         }
@@ -448,9 +464,7 @@ public final class AlignmentJob<R> implements AutoCloseable {
             Thread.currentThread().interrupt();
             cancelAttempt(started, "interrupted");
         } catch (Exception exception) {
-            String failure = safeFailure(exception);
-            Logging.warn("[WayHeatmapTracer] Preview worker failed safely: " + failure);
-            transitionIfCurrent(started.sequence(), State.FAILED, null, failure);
+            failWorker(started.sequence(), exception);
         } finally {
             contexts.remove(started.sequence(), context);
         }
@@ -486,6 +500,16 @@ public final class AlignmentJob<R> implements AutoCloseable {
             context.signalCancellation();
         }
         return updated;
+    }
+
+    private void failWorker(long attemptSequence, Exception exception) {
+        var facts = FailureFacts.capture(exception);
+        String reason = safeFailure(exception);
+        current.updateAndGet(attempt -> attempt == null || attempt.sequence() != attemptSequence
+            || attempt.cancelled() || attempt.state().terminal() ? attempt
+                : new Attempt<>(attempt.sequence(), attempt.snapshot(), State.FAILED, false, null, reason,
+                    new WorkerFailure(attempt.state(), facts)));
+        Logging.warn("[WayHeatmapTracer] Preview worker failed safely: " + facts.kind().name());
     }
 
     private void transitionIfCurrent(long attemptSequence, State state, R result, String failureReason) {
