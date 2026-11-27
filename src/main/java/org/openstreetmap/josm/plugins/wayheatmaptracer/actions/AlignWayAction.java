@@ -2640,8 +2640,15 @@ public class AlignWayAction extends JosmAction {
         line.weightx = 1;
         line.fill = GridBagConstraints.HORIZONTAL;
         for (JButton action : longActions) controls.add(action, line);
-        var primaryRow = new JPanel(new java.awt.GridLayout(1, 0, 4, 4));
-        primary.forEach(primaryRow::add);
+        var primaryRow = new JPanel(new GridBagLayout());
+        var cell = new GridBagConstraints();
+        cell.fill = GridBagConstraints.HORIZONTAL;
+        cell.weightx = 1;
+        for (int index = 0; index < primary.size(); index++) {
+            cell.gridx = index;
+            cell.insets = new Insets(0, 0, 0, index + 1 < primary.size() ? 4 : 0);
+            primaryRow.add(primary.get(index), cell);
+        }
         controls.add(primaryRow, line);
         return controls;
     }

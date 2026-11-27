@@ -1415,16 +1415,20 @@ class AlignWayActionTest {
     void longReviewActionsHaveTheirOwnRowAtLargerFonts() throws Exception {
         SwingUtilities.invokeAndWait(() -> {
             var disconnect = new JButton("Disconnect selected way at shared nodes…");
-            disconnect.setFont(disconnect.getFont().deriveFont(18f));
             var apply = new JButton("Apply");
             var close = new JButton("Close preview");
-            var confirm = new JButton("Confirm review");
+            var confirm = new JButton("Confirm reviewed candidate");
+            for (var button : List.of(disconnect, apply, close, confirm)) {
+                button.setFont(button.getFont().deriveFont(18f));
+            }
             var footer = AlignWayAction.reviewActions(List.of(confirm, apply, close), disconnect);
             footer.setSize(640, footer.getPreferredSize().height);
             footer.doLayout();
             apply.getParent().doLayout();
             assertTrue(disconnect.getWidth() >= disconnect.getPreferredSize().width);
-            assertTrue(apply.getWidth() >= apply.getPreferredSize().width);
+            for (var button : List.of(apply, close, confirm)) {
+                assertTrue(button.getWidth() >= button.getPreferredSize().width, button.getText());
+            }
             assertTrue(apply.getParent().getY() >= disconnect.getY() + disconnect.getHeight());
         });
     }
