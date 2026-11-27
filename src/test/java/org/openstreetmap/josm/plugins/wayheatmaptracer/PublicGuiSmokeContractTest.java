@@ -212,7 +212,7 @@ class PublicGuiSmokeContractTest {
         var fixtureField=PublicGuiSmokeMain.class.getDeclaredField("visiblePainterFixture");fixtureField.setAccessible(true);
         var write=PublicGuiSmokeMain.class.getDeclaredMethod("writeSummary",Path.class,String.class);write.setAccessible(true);
         Object previous=fixtureField.get(null);var closes=new java.util.concurrent.atomic.AtomicInteger();
-        AutoCloseable fixture=closes::incrementAndGet;fixtureField.set(null,fixture);
+        var fixture=installVisibleCleanupFixture(fixtureField,closes::incrementAndGet);
         try {
             var report=directory.resolve("later-refinement-diagnostics.json");
             write.invoke(null,report,"{\"synthetic\":true}\n");
@@ -230,13 +230,23 @@ class PublicGuiSmokeContractTest {
     @Test void terminalReportWriteFailureStillReleasesTheVisibleFixture(@TempDir Path directory) throws Exception {
         var fixtureField=PublicGuiSmokeMain.class.getDeclaredField("visiblePainterFixture");fixtureField.setAccessible(true);
         var terminal=PublicGuiSmokeMain.class.getDeclaredMethod("writeTerminalSummary",Path.class,String.class);terminal.setAccessible(true);
-        Object previous=fixtureField.get(null);var closes=new java.util.concurrent.atomic.AtomicInteger();fixtureField.set(null,(AutoCloseable)closes::incrementAndGet);
+        Object previous=fixtureField.get(null);var closes=new java.util.concurrent.atomic.AtomicInteger();
+        installVisibleCleanupFixture(fixtureField,closes::incrementAndGet);
         try {
             Path parent=directory.resolve("regular-file");Files.writeString(parent,"synthetic");
             var failure=assertThrows(java.lang.reflect.InvocationTargetException.class,()->terminal.invoke(null,parent.resolve("summary.json"),"{}\n"));
             assertTrue(failure.getCause() instanceof java.io.IOException);
             assertEquals(1,closes.get());org.junit.jupiter.api.Assertions.assertNull(fixtureField.get(null));
         } finally {fixtureField.set(null,previous);}
+    }
+
+    private static Object installVisibleCleanupFixture(java.lang.reflect.Field field, AutoCloseable cleanup)
+            throws ReflectiveOperationException {
+        var constructor=field.getType().getDeclaredConstructors()[0];
+        constructor.setAccessible(true);
+        var fixture=constructor.newInstance(null,null,cleanup);
+        field.set(null,fixture);
+        return fixture;
     }
 
     @Test void settingsControlLookupRejectsMissingOrAmbiguousControls() {
