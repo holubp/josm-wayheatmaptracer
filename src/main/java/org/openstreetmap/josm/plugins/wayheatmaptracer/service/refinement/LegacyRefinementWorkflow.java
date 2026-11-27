@@ -953,7 +953,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                 var workerPhase=progress.phase;progress.phase=RefinementAttemptDiagnostics.Phase.PUBLICATION;
                 probe.checkpoint();review.requireOriginalAttemptCurrent();completedSource.get().requireCurrent();
                 cause=computed.cause();
-                if(computed.stage().isEmpty()){progress.phase=workerPhase;session.fail(ticket,cause==RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT?Outcome.RESOURCE_LIMIT:Outcome.NO_USABLE_RESULT);outcome=RefinementAttemptDiagnostics.Publication.NO_CHILD;message="Smoothen retained the selected parent: "+cause.name().toLowerCase(Locale.ROOT)+".";}
+                if(computed.stage().isEmpty()){progress.phase=workerPhase;session.fail(ticket,cause==RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT?Outcome.RESOURCE_LIMIT:Outcome.NO_USABLE_RESULT);outcome=RefinementAttemptDiagnostics.Publication.NO_CHILD;message=smoothingRetainedMessage(progress.smoothingReceipt,cause);}
                 else {
                     var child=computed.stage().orElseThrow();
                     if(session.publish(ticket,child,()->{
@@ -991,6 +991,15 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                 }
             }
         });});
+    }
+    static String smoothingRetainedMessage(Optional<RefinementSmoothingAdapter.Receipt> receipt,
+            RefinementAttemptDiagnostics.Cause cause) {
+        if (receipt.isPresent() && receipt.get().outcome() == RefinementSmoothingAdapter.Outcome.UNCHANGED) {
+            if ("no-movable-interior".equals(receipt.get().reason()))
+                return "Smoothen retained the selected parent: there are no movable interior points.";
+            return "Smoothen retained the selected parent: smoothing produced no geometric change.";
+        }
+        return "Smoothen retained the selected parent: " + cause.name().toLowerCase(Locale.ROOT) + ".";
     }
     private Computed computeSmoothing(OperationTicket ticket,Candidate parent,RetainedSmoothingSource source,RefinementControls.Strength strength,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,CancellationProbe probe,AttemptProgress progress,

@@ -443,7 +443,7 @@ public final class ImageCostField {
     /** Freezes one profile with bounded cooperative cancellation during scalar sampling. */
     public FrozenProfile freezeProfile(MetricPoint point, MetricPoint routeTangent,
             CancellationProbe cancellation) {
-        return freezeProfile(point, routeTangent, cancellation, false);
+        return freezeProfile(point, routeTangent, cancellation, 0);
     }
 
     /**
@@ -452,11 +452,60 @@ public final class ImageCostField {
      */
     public FrozenProfile freezeProfileWithCoreOrientation(MetricPoint point,
             MetricPoint routeTangent, CancellationProbe cancellation) {
-        return freezeProfile(point, routeTangent, cancellation, true);
+        return freezeProfile(point, routeTangent, cancellation, 1);
+    }
+
+    /** Scalar profile with core direction computed only when a consumer needs it. */
+    public PreparedCoreProfile prepareCoreProfile(MetricPoint point, MetricPoint tangent,
+            CancellationProbe cancellation) {
+        return new PreparedCoreProfile(freezeProfile(point, tangent, cancellation, 2), tangent);
+    }
+
+    /** One invocation-owned scalar profile and its lazily computed core direction. */
+    public final class PreparedCoreProfile {
+        private final FrozenProfile scalar;
+        private final MetricPoint tangent;
+        private final Thread thread = Thread.currentThread();
+        private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work = PostprocessingValidationWork.current();
+        private CoreDirection direction;
+        private PreparedCoreProfile(FrozenProfile scalar, MetricPoint tangent) {
+            this.scalar = scalar; this.tangent = tangent;
+        }
+        public FrozenProfile scalar() { return scalar; }
+        public CoreDirection direction(CancellationProbe cancellation) {
+            if (Thread.currentThread() != thread || PostprocessingValidationWork.current() != work)
+                throw new IllegalStateException("Prepared profile belongs to its original work context and thread");
+            cancellation.checkpoint();
+            PostprocessingValidationWork.visit();
+            if (direction == null) {
+                Orientation measured = Orientation.UNKNOWN;
+                if (scalar.support() == FrozenSupport.MEASURED) {
+                    double offset = 0.5 * (scalar.coreMinimumMeters() + scalar.coreMaximumMeters());
+                    MetricPoint center = new MetricPoint(
+                            scalar.origin().xMeters() + scalar.normal().xMeters() * offset,
+                            scalar.origin().yMeters() + scalar.normal().yMeters() * offset);
+                    measured = measureOrientation(center, tangent, cancellation);
+                }
+                double bearing = scalar.support() == FrozenSupport.MEASURED
+                        ? normalizeBearing(StrictMath.atan2(tangent.yMeters(), tangent.xMeters())) : 0.0;
+                direction = new CoreDirection(measured.modes(), measured.measured() ? measured.radians() : bearing,
+                        measured.measured() ? measured.certainty() : 0.0, measured.directedModes());
+            }
+            return direction;
+        }
+    }
+
+    /** Immutable core direction view without scalar-profile or ray-array copies. */
+    public record CoreDirection(List<ImageOrientationSupport.AngularMode> modes,
+            double radians, double certainty, List<DirectedOrientationMode> directedModes) {
+        public CoreDirection {
+            modes = List.copyOf(modes);
+            directedModes = List.copyOf(directedModes);
+        }
     }
 
     private FrozenProfile freezeProfile(MetricPoint point, MetricPoint routeTangent,
-            CancellationProbe cancellation, boolean measureAtCoreCenter) {
+            CancellationProbe cancellation, int orientationMode) {
         if (point == null || routeTangent == null) {
             throw new IllegalArgumentException("Frozen profile requires a point and tangent");
         }
@@ -538,9 +587,9 @@ public final class ImageCostField {
         MetricPoint selectedCoreCenter = new MetricPoint(
                 point.xMeters() + normal.xMeters() * selectedOffset,
                 point.yMeters() + normal.yMeters() * selectedOffset);
-        Orientation originOrientation = measureAtCoreCenter ? Orientation.UNKNOWN
+        Orientation originOrientation = orientationMode != 0 ? Orientation.UNKNOWN
                 : measureOrientation(point, routeTangent, cancellation);
-        Orientation coreOrientation = measureAtCoreCenter
+        Orientation coreOrientation = orientationMode == 1
                 ? measureOrientation(selectedCoreCenter, routeTangent, cancellation)
                 : Orientation.UNKNOWN;
         double routeBearing = normalizeBearing(StrictMath.atan2(routeTangent.yMeters(), routeTangent.xMeters()));

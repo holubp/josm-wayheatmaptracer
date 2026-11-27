@@ -65,7 +65,7 @@ public final class RefinementSmoothingAdapter {
             if(proposal.result().status()==LongScaleNormalFairing.RequestedStatus.REFUSED_GEOMETRY)
                 return retained(parent,strength,Outcome.RETAINED_UNSAFE,work.visits()-started,proposalWork,0,"proposal-geometry");
             var requested=proposal.result().requestedPoints().orElse(parent.reference().points());
-            if(requested.equals(parent.reference().points()))return retained(parent,strength,Outcome.UNCHANGED,work.visits()-started,proposalWork,0,"no-distinct-output");
+            if(requested.equals(parent.reference().points()))return retained(parent,strength,Outcome.UNCHANGED,work.visits()-started,proposalWork,0,proposal.result().reason());
             owner=work.owner().child("guarded-baseline-smoothing");
             parent.nativeFacts().source().retainInto(owner);owner.retain(parent);owner.retain(parent.image());
             long graphUnits=graphUnits(parent,work);

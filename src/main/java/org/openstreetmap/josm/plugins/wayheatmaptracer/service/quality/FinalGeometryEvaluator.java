@@ -18,6 +18,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSup
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.FrozenProfile;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.PreparedCoreProfile;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.ObservedModeStatus;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.UniqueSegmentStatus;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
@@ -703,7 +704,7 @@ public final class FinalGeometryEvaluator {
         MetricPoint windowStart = samples.sampleAt(start).point();
         MetricPoint windowTangent = subtract(samples.sampleAt(end).point(), windowStart);
         if (!(norm(windowTangent) > 1.0e-12)) return LocalComparison.AMBIGUOUS;
-        List<FrozenProfile> measured = new ArrayList<>(rows.size());
+        List<PreparedCoreProfile> measured = new ArrayList<>(rows.size());
         List<MetricPoint> centers = new ArrayList<>(rows.size());
         List<MetricPoint> alternative = new ArrayList<>(rows.size());
         double[] rowChainage = new double[rows.size()];
@@ -721,8 +722,9 @@ public final class FinalGeometryEvaluator {
             if (row.originalVertex() == candidate.apexVertex()) apexRow = rowIndex;
             boolean exactBoundary = row.chainageMeters() == start
                     || row.chainageMeters() == end;
-            FrozenProfile profile = frozenProfile(request.image(), row.point(), windowTangent,
+            PreparedCoreProfile prepared = frozenProfile(request.image(), row.point(), windowTangent,
                     profiles, cancellation);
+            FrozenProfile profile = prepared == null ? null : prepared.scalar();
             if (profile == null || profile.support() != ImageCostField.FrozenSupport.MEASURED) {
                 if (exactBoundary) {
                     // An exact local boundary is never moved.  A supported bend may therefore
@@ -771,7 +773,7 @@ public final class FinalGeometryEvaluator {
             alternativeCosts[rowIndex] = proposedSample.orElseThrow().cost();
             routeFollowsMeasuredCenter &= residual
                     <= 0.5 * request.sourcePitchMeters() + 1.0e-9;
-            measured.add(profile);
+            measured.add(prepared);
             centers.add(center);
             alternative.add(proposed);
         }
@@ -782,7 +784,7 @@ public final class FinalGeometryEvaluator {
         if (routeFollowsMeasuredCenter) {
             boolean coherent = directionallyCoherent(
                     rows.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).map(PhysicalSample::point).toList(),
-                    centers, measured, rowChainage, apexRow, request.sourcePitchMeters());
+                    centers, measured, rowChainage, apexRow, request.sourcePitchMeters(), cancellation);
             if (coherent) {
                 return LocalComparison.SUPPORTED;
             }
@@ -835,7 +837,7 @@ public final class FinalGeometryEvaluator {
             previousProjection = projection;
         }
         if (!directionallyCoherent(centers, centers, measured, rowChainage, apexRow,
-                request.sourcePitchMeters())) {
+                request.sourcePitchMeters(), cancellation)) {
             stats.singleApexOrientationAmbiguities++;
             return LocalComparison.AMBIGUOUS;
         }
@@ -848,8 +850,8 @@ public final class FinalGeometryEvaluator {
     }
 
     private static boolean directionallyCoherent(List<MetricPoint> route,
-            List<MetricPoint> centers, List<FrozenProfile> profiles, double[] chainage,
-            int apexIndex, double sourcePitchMeters) {
+            List<MetricPoint> centers, List<PreparedCoreProfile> profiles, double[] chainage,
+            int apexIndex, double sourcePitchMeters, CancellationProbe cancellation) {
         if (apexIndex < 0 || apexIndex >= centers.size() || centers.get(apexIndex) == null
                 || profiles.get(apexIndex) == null) {
             return false;
@@ -876,17 +878,17 @@ public final class FinalGeometryEvaluator {
                 && continuousCenters(centers, chainage, left, right, sourcePitchMeters)
                 && coherentLeg(route.get(left), route.get(apexIndex), centers.get(left),
                         centers.get(apexIndex), profiles, left, apexIndex - 1,
-                        sourcePitchMeters)
+                        sourcePitchMeters, cancellation)
                 && coherentLeg(route.get(apexIndex), route.get(right), centers.get(apexIndex),
                         centers.get(right), profiles, apexIndex + 1, right,
-                        sourcePitchMeters)
+                        sourcePitchMeters, cancellation)
                 && apexDirectionCoherent(centers.get(left), centers.get(apexIndex),
-                        centers.get(right), profiles.get(apexIndex), sourcePitchMeters);
+                        centers.get(right), profiles.get(apexIndex), sourcePitchMeters, cancellation);
     }
 
     private static boolean coherentLeg(MetricPoint routeFirst, MetricPoint routeSecond,
-            MetricPoint centerFirst, MetricPoint centerSecond, List<FrozenProfile> profiles,
-            int firstIndex, int secondIndex, double sourcePitchMeters) {
+            MetricPoint centerFirst, MetricPoint centerSecond, List<PreparedCoreProfile> profiles,
+            int firstIndex, int secondIndex, double sourcePitchMeters, CancellationProbe cancellation) {
         double routeLength = routeFirst.distanceTo(routeSecond);
         double centerLength = centerFirst.distanceTo(centerSecond);
         double baseline = Math.min(routeLength, centerLength);
@@ -906,20 +908,22 @@ public final class FinalGeometryEvaluator {
         for (int index = Math.min(firstIndex, secondIndex);
                 index <= Math.max(firstIndex, secondIndex); index++) {
             PostprocessingValidationWork.visit();
-            FrozenProfile profile = profiles.get(index);
-            if (profile == null || profile.coreOrientationModes().isEmpty()
-                    || !(profile.coreOrientationCertainty() > 0.0)) {
+            PreparedCoreProfile profile = profiles.get(index);
+            if (profile == null) continue;
+            var direction = profile.direction(cancellation);
+            if (direction.modes().isEmpty() || !(direction.certainty() > 0.0)) {
                 continue;
             }
             hasMeasuredRayDirection = true;
-            hasCoherentRayDirection |= profile.coreOrientationModes().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
+            hasCoherentRayDirection |= direction.modes().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                     .anyMatch(mode -> mode.distanceTo(centerBearing) <= allowance + 1.0e-12);
         }
         return hasMeasuredRayDirection && hasCoherentRayDirection;
     }
 
     private static boolean apexDirectionCoherent(MetricPoint left, MetricPoint apex,
-            MetricPoint right, FrozenProfile apexProfile, double sourcePitchMeters) {
+            MetricPoint right, PreparedCoreProfile prepared, double sourcePitchMeters, CancellationProbe cancellation) {
+        FrozenProfile apexProfile = prepared.scalar();
         double incomingLength = left.distanceTo(apex);
         double outgoingLength = apex.distanceTo(right);
         double centeredLength = left.distanceTo(right);
@@ -938,9 +942,10 @@ public final class FinalGeometryEvaluator {
         boolean resolutionSignificantCorner = undirectedDistance(incoming, outgoing)
                 > incomingAllowance + outgoingAllowance + 1.0e-12;
         if (!resolutionSignificantCorner) {
-            return Double.isFinite(centeredAllowance)
-                    && apexProfile.coreOrientationCertainty() > 0.0
-                    && apexProfile.coreOrientationModes().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(mode ->
+            if (!Double.isFinite(centeredAllowance)) return false;
+            var direction = prepared.direction(cancellation);
+            return direction.certainty() > 0.0
+                    && direction.modes().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(mode ->
                             mode.distanceTo(centered) <= centeredAllowance + 1.0e-12);
         }
         if (apexProfile.observedModeStatus() != ObservedModeStatus.OBSERVED_UNIQUE
@@ -951,13 +956,14 @@ public final class FinalGeometryEvaluator {
                         != Double.POSITIVE_INFINITY) {
             return false;
         }
-        if (apexProfile.directedOrientationModes().size() != 2) return false;
+        var direction = prepared.direction(cancellation);
+        if (direction.directedModes().size() != 2) return false;
         double outwardLeft = incoming + Math.PI;
         int leftMode = -1;
         int rightMode = -1;
-        for (int index = 0; index < apexProfile.directedOrientationModes().size(); index++) {
+        for (int index = 0; index < direction.directedModes().size(); index++) {
             PostprocessingValidationWork.visit();
-            var mode = apexProfile.directedOrientationModes().get(index);
+            var mode = direction.directedModes().get(index);
             if (mode.distanceTo(outwardLeft) <= incomingAllowance + 1.0e-12) leftMode = index;
             if (mode.distanceTo(outgoing) <= outgoingAllowance + 1.0e-12) rightMode = index;
         }
@@ -1258,8 +1264,9 @@ public final class FinalGeometryEvaluator {
                 return LocalComparison.AMBIGUOUS;
             }
             MetricPoint tangent = samples.tangentAt(lobe.sample().chainageMeters());
-            FrozenProfile profile = frozenProfile(request.image(), lobe.sample().point(), tangent,
+            PreparedCoreProfile prepared = frozenProfile(request.image(), lobe.sample().point(), tangent,
                     profiles, cancellation);
+            FrozenProfile profile = prepared == null ? null : prepared.scalar();
             if (profile == null
                     || profile.observedModeStatus() != ObservedModeStatus.OBSERVED_UNIQUE) {
                 return LocalComparison.AMBIGUOUS;
@@ -1291,8 +1298,9 @@ public final class FinalGeometryEvaluator {
             cancellation.checkpoint();
             PhysicalSample row = rows.get(index);
             MetricPoint tangent = localTangent(rows, index);
-            FrozenProfile profile = frozenProfile(request.image(), row.point(), tangent,
+            PreparedCoreProfile prepared = frozenProfile(request.image(), row.point(), tangent,
                     profiles, cancellation);
+            FrozenProfile profile = prepared == null ? null : prepared.scalar();
             if (profile == null
                     || profile.observedModeStatus() != ObservedModeStatus.OBSERVED_UNIQUE) {
                 return LocalComparison.AMBIGUOUS;
@@ -1318,7 +1326,7 @@ public final class FinalGeometryEvaluator {
         return LocalComparison.CONTRADICTED;
     }
 
-    private static FrozenProfile frozenProfile(ImageCostField image, MetricPoint point,
+    private static PreparedCoreProfile frozenProfile(ImageCostField image, MetricPoint point,
             MetricPoint tangent, ProfileCache profiles,
             CancellationProbe cancellation) {
         return profiles.getOrMeasure(image, new ProfileKey(point, tangent), cancellation);
@@ -1933,7 +1941,7 @@ public final class FinalGeometryEvaluator {
     }
 
     private static final class ProfileCache {
-        private final Map<ProfileKey, FrozenProfile> profiles =
+        private final Map<ProfileKey, PreparedCoreProfile> profiles =
                 new LinkedHashMap<>(256, 0.75f, true);
         private final MutableLocalWarningStats stats;
         private long retainedRows;
@@ -1942,15 +1950,17 @@ public final class FinalGeometryEvaluator {
             this.stats = stats;
         }
 
-        FrozenProfile getOrMeasure(ImageCostField image, ProfileKey key,
+        PreparedCoreProfile getOrMeasure(ImageCostField image, ProfileKey key,
                 CancellationProbe cancellation) {
-            FrozenProfile cached = profiles.get(key);
+            cancellation.checkpoint();
+            PostprocessingValidationWork.visit();
+            PreparedCoreProfile cached = profiles.get(key);
             if (cached != null) {
                 return cached;
             }
-            FrozenProfile measured = image.freezeProfileWithCoreOrientation(
+            PreparedCoreProfile measured = image.prepareCoreProfile(
                     key.point(), key.tangent(), cancellation);
-            int rows = measured.sampleCount();
+            int rows = measured.scalar().sampleCount();
             if (rows > MAXIMUM_CACHED_PROFILE_ROWS) {
                 return null;
             }
@@ -1958,8 +1968,8 @@ public final class FinalGeometryEvaluator {
                     && retainedRows + rows > MAXIMUM_CACHED_PROFILE_ROWS) {
             PostprocessingValidationWork.visit();
                 var iterator = profiles.entrySet().iterator();
-                Map.Entry<ProfileKey, FrozenProfile> eldest = iterator.next();
-                retainedRows -= eldest.getValue().sampleCount();
+                Map.Entry<ProfileKey, PreparedCoreProfile> eldest = iterator.next();
+                retainedRows -= eldest.getValue().scalar().sampleCount();
                 iterator.remove();
             }
             profiles.put(key, measured);

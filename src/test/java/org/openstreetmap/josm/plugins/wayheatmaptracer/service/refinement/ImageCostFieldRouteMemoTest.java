@@ -24,6 +24,51 @@ class ImageCostFieldRouteMemoTest {
     private static GeometryWorkContext work(AttemptMemoryLedger.Owner owner) {
         return new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,owner);
     }
+    @Test void deferredCoreDirectionMatchesEagerAndChargesOnlyTheFirstRead() {
+        for (int kind : List.of(0, 1, 2, 3)) {
+            var image = image(kind);
+            var point = new MetricPoint(0, 0); var tangent = new MetricPoint(4, 0);
+            var eager = image.freezeProfileWithCoreOrientation(point, tangent, CancellationProbe.NONE);
+            try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+                var work = work(owner);
+                try (var scope = PostprocessingValidationWork.open(work)) {
+                    var prepared = image.prepareCoreProfile(point, tangent, CancellationProbe.NONE);
+                    assertEquals(eager.support(), prepared.scalar().support());
+                    assertArrayEquals(eager.offsetsMeters(), prepared.scalar().offsetsMeters());
+                    assertArrayEquals(eager.values(), prepared.scalar().values());
+                    long before = work.visits();
+                    var actual = prepared.direction(CancellationProbe.NONE);
+                    long after = work.visits();
+                    assertEquals(eager.coreOrientationModes(), actual.modes());
+                    assertEquals(eager.coreOrientationRadians(), actual.radians());
+                    assertEquals(eager.coreOrientationCertainty(), actual.certainty());
+                    assertEquals(eager.directedOrientationModes(), actual.directedModes());
+                    assertSame(actual, prepared.direction(CancellationProbe.NONE));
+                    assertEquals(after + 1, work.visits());
+                    assertThrows(java.util.concurrent.CancellationException.class,
+                            () -> prepared.direction(() -> true));
+                    assertTrue(after > before);
+                }
+            }
+        }
+    }
+    @Test void cancelledDirectionMissDoesNotPublishPartialResult() {
+        var image = image(0);
+        try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+            var work = work(owner);
+            try (var scope = PostprocessingValidationWork.open(work)) {
+                var point = new MetricPoint(0, 0); var tangent = new MetricPoint(4, 1);
+                var prepared = image.prepareCoreProfile(point, tangent, CancellationProbe.NONE);
+                var checks = new java.util.concurrent.atomic.AtomicInteger();
+                assertThrows(java.util.concurrent.CancellationException.class,
+                        () -> prepared.direction(() -> checks.incrementAndGet() > 2));
+                var actual = prepared.direction(CancellationProbe.NONE);
+                var expected = image.freezeProfileWithCoreOrientation(point, tangent, CancellationProbe.NONE);
+                assertEquals(expected.coreOrientationModes(), actual.modes());
+                assertEquals(expected.directedOrientationModes(), actual.directedModes());
+            }
+        }
+    }
     @Test void identicalSupportAndEnergySchedulesReuseCompleteSamplesWithRealFirstMissWork() {
         var image=image(0);var ledger=AttemptMemoryLedger.production();
         try(var owner=ledger.rootOwner()) {

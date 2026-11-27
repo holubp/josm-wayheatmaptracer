@@ -122,6 +122,23 @@ class V022FinalGeometryTest {
     }
 
     @Test
+    void rejectedApexDoesNotSpendWorkOnUnusedOrientation() {
+        var geometry = List.of(p(5, 0), p(10, 3), p(15, 0));
+        var image = ridgeImage((x, y) -> gaussian(y), (x, y) -> true);
+        var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            var work = new GeometryWorkContext(8_000_000, 268_435_456, Long.MAX_VALUE,
+                    CancellationProbe.NONE, owner);
+            try (var scope = PostprocessingValidationWork.open(work)) {
+                var result = evaluator.inspectLocalExcursionsForTest(
+                        request("unused-direction", geometry, image, 1), CancellationProbe.NONE);
+                assertTrue(result.stats().singleApexComparisons() > 0);
+            }
+            assertTrue(work.visits() < 350_000, "unexpected work=" + work.visits());
+        }
+    }
+
+    @Test
     void isolatedWrongApexIsContradictedByItsDirectUniqueChord() {
         List<MetricPoint> geometry = List.of(p(5, 0), p(10, 3), p(15, 0));
         ImageCostField straight = ridgeImage((x, y) -> gaussian(y), (x, y) -> true);

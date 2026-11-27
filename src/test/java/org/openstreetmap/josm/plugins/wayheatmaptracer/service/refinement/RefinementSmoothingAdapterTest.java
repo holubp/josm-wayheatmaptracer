@@ -45,6 +45,32 @@ class RefinementSmoothingAdapterTest {
             }
         }
     }
+    @Test void completelyProtectedParentReportsNoMovableInterior() {
+        try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+            var work = work(owner);
+            var original = parent(AlignmentMode.MOVE_EXISTING_NODES, owner, work, () -> {});
+            int count = original.reference().points().size();
+            var rows = java.util.stream.IntStream.range(0, count).mapToObj(FinalControlBasis.Row::independent).toList();
+            var protectedSlots = java.util.stream.IntStream.range(0, count).boxed().collect(java.util.stream.Collectors.toSet());
+            var basis = new FinalControlBasis(original.reference().points(), rows, protectedSlots);
+            var fixed = new SmoothingModels.Parent(original.ticket(), original.reference(), original.frame(), original.nativeBasis(),
+                    basis, original.representationIdentity(), original.pointIds(), original.image(), original.evidence(),
+                    original.nativeFacts(), original.baselineReference(), original.originalEvidenceHashProof());
+            try (var result = new RefinementSmoothingAdapter().smooth(fixed, SmoothingModels.Preset.MEDIUM_1PX, work, CancellationProbe.NONE)) {
+                assertEquals(RefinementSmoothingAdapter.Outcome.UNCHANGED, result.receipt().outcome());
+                assertEquals("no-movable-interior", result.receipt().reason());
+                assertTrue(LegacyRefinementWorkflow.smoothingRetainedMessage(Optional.of(result.receipt()),
+                        RefinementAttemptDiagnostics.Cause.PLAN_REFUSED).contains("no movable interior points"));
+                var r = result.receipt();
+                var unchanged = new RefinementSmoothingAdapter.Receipt(r.method(), r.parentIdentity(), r.strength(),
+                        r.reference(), r.inputHash(), r.representation(), r.outcome(), r.workVisits(),
+                        r.proposalWorkVisits(), r.guardTrials(), r.acceptedScale(), "no-geometric-change", r.mode());
+                assertTrue(LegacyRefinementWorkflow.smoothingRetainedMessage(Optional.of(unchanged),
+                        RefinementAttemptDiagnostics.Cause.PLAN_REFUSED).contains("no geometric change"));
+                assertTrue(result.plan().isEmpty());
+            }
+        }
+    }
     @Test void cancellationResourceAndStaleSourceRetainParentWithoutPlan() {
         try(var owner=AttemptMemoryLedger.production().rootOwner()) {
             var parent=parent(AlignmentMode.MOVE_EXISTING_NODES,owner,work(owner),()->{});
