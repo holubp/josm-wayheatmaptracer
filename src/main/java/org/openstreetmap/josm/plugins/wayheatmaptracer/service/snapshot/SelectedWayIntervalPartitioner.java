@@ -722,7 +722,7 @@ public final class SelectedWayIntervalPartitioner {
             boolean fixedRoutePayloadWitness = allowIncompleteRoutePayload
                     && Boolean.TRUE.equals(relation.payloadComplete().orElse(null))
                     && "route".equals(relation.tags().get("type"))
-                    && Set.of("hiking", "bicycle").contains(relation.tags().get("route"))
+                    && Set.of("hiking", "foot", "bicycle").contains(relation.tags().get("route"))
                     && relation.parentWatches().isEmpty()
                     && relation.members().stream().anyMatch(member -> member.key().equals(receiver)
                             && member.complete())

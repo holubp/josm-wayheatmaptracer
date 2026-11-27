@@ -179,10 +179,23 @@ class V022SelectedWayIntervalPartitionerTest {
     }
 
     @Test
-    void onlyExplicitCompletePayloadAndFixedHikingOrBicycleRouteCanUseTheRelaxation() {
+    void fixedWalkingRouteWithCompletePayloadCanPreserveItsReadOnlyReceiver() {
+        Fixture fixture = routePayload("route", "foot", Optional.of(true), true, true);
+        var result = partition(fixture);
+        assertFalse(result.slideIntervals().isEmpty());
+        assertEquals(ManualJunctionEligibility.Reason.PARTICIPATING_RELATION,
+                result.junctionDispositions().get(0).reason());
+        assertFalse(result.junctionDispositions().get(0).automaticEligible());
+        assertTrue(SelectedWayIntervalPartitioner.verifyFrozenParity(result, fixture.snapshot));
+    }
+
+    @Test
+    void onlyExplicitCompletePayloadAndFixedWalkingOrBicycleRouteCanUseTheRelaxation() {
         List<Fixture> refused = List.of(
-                routePayload("route", "foot", Optional.of(true), true, true),
+                routePayload("route", "bus", Optional.of(true), true, true),
                 routePayload("restriction", "bicycle", Optional.of(true), true, true),
+                routePayload("route", "foot", Optional.of(false), true, true),
+                routePayload("route", "foot", Optional.of(true), true, false),
                 routePayload("route", "bicycle", Optional.of(false), true, true),
                 routePayload("route", "bicycle", Optional.empty(), true, true),
                 routePayload("route", "bicycle", Optional.of(true), false, true),
