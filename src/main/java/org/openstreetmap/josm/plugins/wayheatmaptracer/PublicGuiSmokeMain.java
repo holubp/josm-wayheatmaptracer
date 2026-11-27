@@ -1518,11 +1518,18 @@ public final class PublicGuiSmokeMain {
                 return initial + 1 < target.getItemCount() ? java.awt.event.KeyEvent.VK_DOWN : java.awt.event.KeyEvent.VK_UP;
             });
             focused.get(10, TimeUnit.SECONDS);
+            onEventThread(() -> {
+                target.showPopup();
+                if (!target.isPopupVisible()) throw new IllegalStateException("Detector list did not open");
+                return null;
+            });
             var robot = new java.awt.Robot();
             robot.keyPress(key); robot.keyRelease(key);
+            robot.keyPress(java.awt.event.KeyEvent.VK_ENTER); robot.keyRelease(java.awt.event.KeyEvent.VK_ENTER);
             changed.get(10, TimeUnit.SECONDS);
         } finally {
             onEventThread(() -> {
+                target.hidePopup();
                 target.removeFocusListener(focus); target.removeActionListener(selection);
                 target.setSelectedIndex(initial);
                 if (target.getSelectedIndex() != initial) throw new IllegalStateException("Detector selection was not restored");
