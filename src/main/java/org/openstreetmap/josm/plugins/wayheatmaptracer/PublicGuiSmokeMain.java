@@ -475,6 +475,7 @@ public final class PublicGuiSmokeMain {
                 throw new IllegalStateException("Shortcut changed saved alignment or source settings");
             requireLegacyMigrationRoot(() -> rootReview.originalConfig().heatmap().trackerMode());
         }
+        checkConstrainedDetectorKeyboard(preview);
         String initialChoice=onEventThread(owner::selectedChoiceIdentity);
         String rootChoice=onEventThread(()->{
             var choices=requiredNamed(preview.getContentPane(),"candidate",JComboBox.class);
@@ -1480,6 +1481,59 @@ public final class PublicGuiSmokeMain {
         var match=java.util.regex.Pattern.compile("; failed=([A-Za-z0-9_$]{1,80}); phase=([A-Z_]{1,40}); boundary=([A-Za-z0-9_.$:]{1,160})").matcher(evidence);
         return match.find()?match.group(1)+":"+match.group(2)+":"+match.group(3):"unavailable";
     }
+    /** Exercises the real detector chooser after scrolling long diagnostics at a constrained size. */
+    private static void checkConstrainedDetectorKeyboard(JDialog dialog) throws Exception {
+        var focused = new CompletableFuture<Void>();
+        var changed = new CompletableFuture<Void>();
+        var target = onEventThread(() -> requiredNamed(dialog.getContentPane(), "candidate", JComboBox.class));
+        var quality = onEventThread(() -> requiredNamed(dialog.getContentPane(), "quality", javax.swing.JTextArea.class));
+        var size = onEventThread(dialog::getSize);
+        int initial = onEventThread(target::getSelectedIndex);
+        String originalText = onEventThread(quality::getText);
+        int originalCaret = onEventThread(quality::getCaretPosition);
+        var viewport = onEventThread(() -> (javax.swing.JViewport) quality.getParent());
+        var originalPosition = onEventThread(viewport::getViewPosition);
+        java.awt.event.FocusListener focus = new java.awt.event.FocusAdapter() {
+            @Override public void focusGained(java.awt.event.FocusEvent event) { focused.complete(null); }
+        };
+        java.awt.event.ActionListener selection = event -> {
+            if (target.getSelectedIndex() != initial) changed.complete(null);
+        };
+        try {
+            int key = onEventThread(() -> {
+                if (target.getItemCount() < 2 || initial < 0) throw new IllegalStateException("Keyboard fixture needs multiple detectors");
+                dialog.setSize(800, 600); dialog.validate();
+                quality.setText("Long detector diagnostic with retained evidence. ".repeat(100));
+                quality.setCaretPosition(quality.getDocument().getLength());
+                var scroll = (javax.swing.JScrollPane) SwingUtilities.getAncestorOfClass(javax.swing.JScrollPane.class, quality);
+                scroll.validate();
+                var bar = scroll.getVerticalScrollBar();
+                if (bar.getMaximum() <= bar.getVisibleAmount()) throw new IllegalStateException("Long diagnostics do not scroll");
+                bar.setValue(bar.getMaximum());
+                if (bar.getValue() <= bar.getMinimum()) throw new IllegalStateException("Long diagnostics cannot be scrolled");
+                requireFooterHierarchy(dialog.getContentPane(), target, target.isShowing());
+                target.addFocusListener(focus); target.addActionListener(selection);
+                dialog.toFront();
+                if (target.isFocusOwner()) focused.complete(null); else target.requestFocusInWindow();
+                return initial + 1 < target.getItemCount() ? java.awt.event.KeyEvent.VK_DOWN : java.awt.event.KeyEvent.VK_UP;
+            });
+            focused.get(10, TimeUnit.SECONDS);
+            var robot = new java.awt.Robot();
+            robot.keyPress(key); robot.keyRelease(key);
+            changed.get(10, TimeUnit.SECONDS);
+        } finally {
+            onEventThread(() -> {
+                target.removeFocusListener(focus); target.removeActionListener(selection);
+                target.setSelectedIndex(initial);
+                if (target.getSelectedIndex() != initial) throw new IllegalStateException("Detector selection was not restored");
+                quality.setText(originalText); quality.setCaretPosition(Math.min(originalCaret, quality.getDocument().getLength()));
+                viewport.setViewPosition(originalPosition);
+                dialog.setSize(size); dialog.validate();
+                return null;
+            });
+        }
+    }
+
     private static void checkDialogLayout(JDialog dialog) throws Exception {
         onEventThread(() -> {
             var size = dialog.getSize();
