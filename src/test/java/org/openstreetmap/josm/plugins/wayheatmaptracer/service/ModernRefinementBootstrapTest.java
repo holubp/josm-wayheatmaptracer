@@ -25,9 +25,12 @@ class ModernRefinementBootstrapTest {
         var computed=service.compute(captured[0],CancellationProbe.NONE);
         var choices=service.adaptChoices(computed,p->ProjectionRegistry.getProjection().latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(p.latitudeDegrees(),p.longitudeDegrees())));
         var publications=new java.util.concurrent.LinkedBlockingQueue<Runnable>();var review=new ModernReviewRoot[1];var workflow=new LegacyRefinementWorkflow[1];
+        var refuseBeforeContext=new java.util.concurrent.atomic.AtomicBoolean();
         org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.setLastBundle(null);
         SwingUtilities.invokeAndWait(()->{
-            review[0]=ModernReviewRoot.fromFullChoices(fixture.dataSet(),fixture.selection(),config,choices,null,()->{});
+            review[0]=ModernReviewRoot.fromFullChoices(fixture.dataSet(),fixture.selection(),config,choices,null,()->{
+                if(refuseBeforeContext.get())throw new IllegalStateException("Synthetic refusal before bootstrap context creation");
+            });
             workflow[0]=new LegacyRefinementWorkflow(review[0],null,review[0]::select,d->{},s->{},task->{throw new java.util.concurrent.RejectedExecutionException();},publications::add);
             workflow[0].enableNativeRuntimeDiagnostics(c->{throw new AssertionError("No prepared root exists");},c->{throw new AssertionError("No prepared root exists");},
                 ()->org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Artifact.text("original-native-work.json",
@@ -44,10 +47,24 @@ class ModernRefinementBootstrapTest {
             assertTrue(json.contains("\"phase\":\"BOOTSTRAP\""));assertTrue(json.contains("\"cause\":\"EXECUTOR_REJECTED\""));assertTrue(json.contains("\"requestedEngine\":\"CORRIDOR_AWARE\""));
             assertTrue(json.contains("\"nativeCalls\":0"));assertTrue(json.contains("\"nativeFrozenInputs\":\"unavailable\""));
             assertTrue(json.contains("\"originalNativeWork\":\"available\""));
+            assertTrue(json.contains("\"schema\":2"));assertTrue(json.contains("\"auxiliaryMaximumVisits\":64000000"));
             var originalWork=new String(archive.artifact("original-native-work.json").orElseThrow().bytes(),java.nio.charset.StandardCharsets.UTF_8);
             assertTrue(originalWork.contains(FrozenReplayCodec.canonicalRequestHash(computed.request())));
             assertTrue(originalWork.contains("\"transitions\":"+computed.pipeline().inference().evaluatedTransitions()));
             assertTrue(archive.artifact("refinement-lineage.json").isEmpty());assertTrue(archive.artifact("original-osm-geographic.csv").isPresent());
+            assertEquals("runtime-stepwise-preparation-v2",archive.buildIdentity());
+            var first=jakarta.json.Json.createReader(new java.io.StringReader(json)).readObject();
+            refuseBeforeContext.set(true);
+            SwingUtilities.invokeAndWait(()->workflow[0].refine(TrackerMode.CORRIDOR_AWARE));
+            assertTrue(publications.isEmpty());
+            var secondPath=diagnosticsDirectory.resolve("refusal-before-context.zip");
+            org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.writeLatest(secondPath.toFile());
+            var secondArchive=org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader.read(secondPath);
+            var second=jakarta.json.Json.createReader(new java.io.ByteArrayInputStream(secondArchive.artifact("latest-operation.json").orElseThrow().bytes())).readObject();
+            assertNotEquals(first.getString("attempt"),second.getString("attempt"));
+            assertEquals("FAILED",second.getString("cause"));
+            assertTrue(second.isNull("auxiliaryMaximumVisits"),"A new attempt that never created work cannot report the prior attempt's ceiling");
+            assertTrue(second.isNull("auxiliaryWorkVisits"));
         } finally {SwingUtilities.invokeAndWait(()->{workflow[0].close();review[0].close();});org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.setLastBundle(null);}
     }
     @Test void nativeIntervalRootRetainsExactSelectedOccurrences() throws Exception {
@@ -424,12 +441,12 @@ class ModernRefinementBootstrapTest {
         // Qualify the actual proof-backed bootstrap separately so a preparation failure cannot
         // be mistaken for a missing Gaussian receipt or an invalid original interval proof.
         try(var memory=AttemptMemoryLedger.production().rootOwner()) {
-            var work=new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,memory);
+            var work=new GeometryWorkContext(64_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,memory);
             try(var prepared=new ModernRefinementBootstrap().complete(review[0],work,port)) {
                 assertTrue(prepared.root().stage().candidates().stream().allMatch(c->c.payload().rootNoChangeReview().isPresent()));
                 var stage=prepared.root().stage();var candidate=stage.candidates().stream().filter(c->c.id().equals(stage.selected())).findFirst().orElseThrow();
                 var source=candidate.payload().rootNoChangeReview().orElseThrow().source();
-                assertTrue(work.visits()<=8_000_000L,"Whole original interval bootstrap retains its inherited 8M ceiling");
+                assertTrue(work.visits()<=64_000_000L,"Whole original interval bootstrap retains its inherited cumulative64M ceiling");
                 var ids=proof.finalSelection().pointIds();var points=ids.stream().map(assessment.assignments()::get).toList();
                 var protectedPoints=new LinkedHashMap<Integer,MetricPoint>();
                 for(int i=0;i<ids.size();i++)if(ids.get(i) instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing

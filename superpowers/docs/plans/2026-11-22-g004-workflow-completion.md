@@ -14,6 +14,16 @@
 
 ## Current remaining work —2026-11-26
 
+**Nov27 explicit user approval:** implement the combined64M auxiliary ceiling
+per optional click (bootstrap/source/Smoothen/A/B), preserving one counter state,
+owner/cancel/original deadline, all native/memory/history/source/quality/geometry
+guards and original400m assertions. Keep≤8M tightening/negative coverage and
+historical missing ceilings unavailable/original8M. Qualify actual unchanged
+full/interval/directSmooth/postSmoothA/B quality parity/changed children/stored
+commands, coherent full public/performance/source freeze, ONE final audit and RC16.
+
+### Historical Nov26 pending decision — superseded by approval above
+
 Combined64M optional-operation budget proposal remains UNAPPROVED. Current8M
 bootstrap/Smoothen and64M A/B preparation are unchanged. Independently approved
 repairs preserve inherited cancellation and meter the original managed-Legacy

@@ -35,14 +35,27 @@ class GeometryWorkContextPhaseTest {
             }catch(Exception failure){throw new AssertionError(failure);}
         });
     }
-    @Test void productionOnlyWidensRefinementAndOldControlTightensBothPhases() throws Exception {
+    @Test void productionShares64MAndTheExistingControlTightensBothPhases() throws Exception {
         var production=LegacyRefinementWorkflow.SourcePreparationControl.production();
         var accessor=production.getClass().getDeclaredMethod("refinementVisits");accessor.setAccessible(true);
-        assertEquals(8_000_000L,production.visits());assertEquals(64_000_000L,accessor.invoke(production));
+        assertEquals(64_000_000L,production.visits());assertEquals(64_000_000L,accessor.invoke(production));
         assertEquals(AttemptMemoryLedger.MAX_BYTES,production.bytes());
+        assertThrows(IllegalArgumentException.class,()->new LegacyRefinementWorkflow.SourcePreparationControl(64_000_001,64_000_001,1024,value->{}));
+        assertThrows(IllegalArgumentException.class,()->new LegacyRefinementWorkflow.SourcePreparationControl(-1,64_000_000,1024,value->{}));
+        assertThrows(IllegalArgumentException.class,()->new LegacyRefinementWorkflow.SourcePreparationControl(64_000_000,64_000_000,AttemptMemoryLedger.MAX_BYTES+1,value->{}));
         var tightened=new LegacyRefinementWorkflow.SourcePreparationControl(257,1024,value->{});
         assertEquals(257,tightened.visits());assertEquals(257L,accessor.invoke(tightened));
         assertThrows(IllegalArgumentException.class,()->new LegacyRefinementWorkflow.SourcePreparationControl(8_000_001L,1024,value->{}));
+    }
+    @Test void combinedAllowanceKeepsAllBootstrapWorkThroughEitherHandoffAndStopsExactlyAt64M() throws Exception {
+        for(boolean smooth:new boolean[]{false,true})try(var owner=AttemptMemoryLedger.production().rootOwner()) {
+            var work=new GeometryWorkContext(64_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,owner);
+            for(int i=0;i<9_000_000;i+=256)work.visit(GeometryWorkContext.Kind.COPY,Math.min(256,9_000_000-i));
+            var next=smooth?work:phase(work,64_000_000);assertTrue(next.sharesAccountingWith(work));assertSame(owner,next.owner());
+            while(next.visits()<64_000_000)next.visit(GeometryWorkContext.Kind.MAP,Math.min(256,64_000_000-next.visits()));
+            assertEquals(64_000_000,work.visits());assertThrows(GeometryWorkContext.LimitReached.class,()->next.visit(GeometryWorkContext.Kind.BIND,1));
+            assertThrows(GeometryWorkContext.LimitReached.class,()->phase(next,64_000_000));
+        }
     }
     @Test void phaseIncludesSpentBootstrapAndDoesNotRenewBetweenSources() throws Exception {
         var ledger=AttemptMemoryLedger.production();

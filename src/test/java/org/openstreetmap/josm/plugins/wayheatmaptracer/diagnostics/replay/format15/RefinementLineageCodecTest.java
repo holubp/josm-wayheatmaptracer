@@ -13,7 +13,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWork
 class RefinementLineageCodecTest {
     @Test void preparationCeilingRoundTripsWithoutGrantingOldArchivesANewBudget() throws Exception {
         var root=root();var key=new RefinementLineageCodec.CandidateKey(root.id(),root.selected());
-        var base=publicationDocument(List.of(root),root,ticket(root,1),Optional.empty(),RefinementAttemptDiagnostics.Publication.FAILED,
+        var smoothing=new OperationTicket(session,1,root.id(),root.selected(),TrackerMode.CORRIDOR_AWARE,AlignmentMode.PRECISE_SHAPE,StageKind.SMOOTH,
+            Optional.of(new SmoothingInput(root.id(),root.selected(),root.id(),root.selected(),"Medium")));
+        var base=publicationDocument(List.of(root),root,smoothing,Optional.empty(),RefinementAttemptDiagnostics.Publication.FAILED,
             RefinementAttemptDiagnostics.Phase.SOURCE_PREPARATION,RefinementAttemptDiagnostics.Cause.FAILED,key);
         var counts=new EnumMap<org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind,Long>(
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.class);
@@ -28,6 +30,7 @@ class RefinementLineageCodecTest {
         var artifact=RefinementLineageCodec.artifact(document);
         var decoded=RefinementLineageCodec.read(artifact).latestPublication().orElseThrow().diagnostic().sourcePreparation().orElseThrow();
         assertEquals(9_000_000L,decoded.visits());
+        assertEquals(StageKind.SMOOTH,RefinementLineageCodec.read(artifact).latestPublication().orElseThrow().diagnostic().binding().ticket().kind());
         assertEquals(OptionalLong.of(64_000_000),decoded.getClass().getMethod("maximumVisits").invoke(decoded));
         String json=new String(artifact.bytes(),StandardCharsets.UTF_8);
         assertTrue(json.contains("\"maximumVisits\":64000000"));

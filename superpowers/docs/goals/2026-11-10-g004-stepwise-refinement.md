@@ -7,6 +7,17 @@
 
 ## Current shortest path to the next RC
 
+**Nov27 ACTIVE:** the user explicitly approved combined64M and resumed G004.
+Implement one cumulative64M allowance per optional click including bootstrap,
+source preparation and Smoothen/A/B; same counters/owner/token/probe/original
+deadline, no phase reset. Native/memory/history/source/quality/algorithm limits
+and original400m assertions remain unchanged;≤8M tightening stays. Actual interval
+quality parity/changed descendants/commands and current full/performance gates
+remain required, followed by the controller's ONE final audit and verified RC16.
+The older pending/block status below is historical and superseded.
+
+### Historical Nov26 budget checkpoint
+
 The combined64M bootstrap/Smoothen optional-operation proposal is PENDING user
 approval. Current8M bootstrap/Smoothen and64M A/B preparation remain unchanged.
 Separately authorized correctness repairs retain the inherited Smoothen cancel

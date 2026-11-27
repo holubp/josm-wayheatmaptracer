@@ -1,5 +1,13 @@
 # G004 Qualified Selected-Stage Smoothing Implementation Plan
 
+> **Binding live-budget amendment — user approved2026-11-27:** one explicit
+> optional click has ONE cumulative64M auxiliary allowance, including lazy
+> bootstrap/source preparation/Smoothen or A/B. Same counters/owner/cancellation/
+> original five-minute deadline; no phase pool/reset. Existing memory/native/
+> history/source/quality limits and≤8M test tightening remain unchanged. This
+> supersedes the older live8M allowance below. Historical numerical tournament
+> and comparison budgets remain historical; no new smoothing method is authorized.
+
 > **Current execution routing — 2026-11-22:** follow the approved
 > [completion plan](2026-11-22-g004-workflow-completion.md). Legacy/A/B are valid
 > roots and A/B may follow smoothing. The existing visually reviewed Gaussian

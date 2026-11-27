@@ -69,9 +69,10 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     }
     /** Package-only deterministic test control: reductions and an extra checkpoint, never a replacement probe/context. */
     record SourcePreparationControl(long visits,long refinementVisits,long bytes,java.util.function.LongConsumer checkpoint) {
-        SourcePreparationControl(long visits,long bytes,java.util.function.LongConsumer checkpoint){this(visits,visits,bytes,checkpoint);}
-        SourcePreparationControl {if(visits<0||visits>8_000_000L||refinementVisits<visits||refinementVisits>64_000_000L||bytes<0||bytes>AttemptMemoryLedger.MAX_BYTES)throw new IllegalArgumentException("Source preparation control may only tighten production phase limits");Objects.requireNonNull(checkpoint);}
-        static SourcePreparationControl production(){var tightened=PREPARATION_TIGHTENING.get();return tightened!=null?tightened:new SourcePreparationControl(8_000_000L,64_000_000L,AttemptMemoryLedger.MAX_BYTES,value->{});}
+        SourcePreparationControl(long visits,long bytes,java.util.function.LongConsumer checkpoint){this(tighteningVisits(visits),visits,bytes,checkpoint);}
+        private static long tighteningVisits(long visits){if(visits>8_000_000L)throw new IllegalArgumentException("Test tightening cannot exceed8M");return visits;}
+        SourcePreparationControl {if(visits<0||visits>64_000_000L||refinementVisits<visits||refinementVisits>64_000_000L||bytes<0||bytes>AttemptMemoryLedger.MAX_BYTES)throw new IllegalArgumentException("Source preparation control may only tighten production phase limits");Objects.requireNonNull(checkpoint);}
+        static SourcePreparationControl production(){var tightened=PREPARATION_TIGHTENING.get();return tightened!=null?tightened:new SourcePreparationControl(64_000_000L,64_000_000L,AttemptMemoryLedger.MAX_BYTES,value->{});}
     }
     private final SourcePreparationControl sourcePreparationControl;
     private PreviewWorkGate workGate;
@@ -152,7 +153,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
     /** One bounded view of the already-created exception; never retains a Throwable or file name. */
     static BootstrapFailureTrace bootstrapFailureTrace(StackTraceElement[] stack,boolean firstLimit) {
         var consumers=new ArrayList<BootstrapConsumerFrame>(4);String boundary="";boolean truncated=firstLimit&&stack.length>64;
-        long retainedBytes=640; // Both diagnostic records, UUID/optional values and bounded list metadata.
+        long retainedBytes=704; // Both records, actual optional ceiling, UUIDs and bounded list metadata.
         for(int index=0;index<Math.min(64,stack.length);index++) {
             var frame=stack[index];if(frame==null)continue;
             String type=frame.getClassName(),method=frame.getMethodName();
@@ -169,20 +170,22 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         }
         return new BootstrapFailureTrace(boundary,List.copyOf(consumers),consumers.isEmpty(),truncated);
     }
-    private record BootstrapDiagnostic(UUID attempt,TrackerMode requestedEngine,String operation,String strength,String cause,OptionalLong workVisits,
+    private record BootstrapDiagnostic(UUID attempt,TrackerMode requestedEngine,String operation,String strength,String cause,OptionalLong workVisits,OptionalLong maximumVisits,
             List<BootstrapConsumerFrame> consumers,boolean consumerFramesUnavailable,boolean consumerFramesTruncated,boolean limitStackObserved) { }
     private BootstrapDiagnostic bootstrapDiagnostic;
     private AttemptMemoryLedger.Owner bootstrapDiagnosticMemory;
     private void beginBootstrapDiagnostics(TrackerMode engine,RefinementControls.Strength strength) {
         if(legacyContextSupplier==null)return;
         if(bootstrapDiagnosticMemory!=null)bootstrapDiagnosticMemory.close();
-        bootstrapDiagnostic=new BootstrapDiagnostic(UUID.randomUUID(),engine,strength==null?"REFINE":"SMOOTH",strength==null?"unavailable":strength.name(),"RUNNING",OptionalLong.empty(),List.of(),true,false,false);
+        bootstrapDiagnostic=new BootstrapDiagnostic(UUID.randomUUID(),engine,strength==null?"REFINE":"SMOOTH",strength==null?"unavailable":strength.name(),"RUNNING",OptionalLong.empty(),OptionalLong.empty(),List.of(),true,false,false);
         bootstrapDiagnosticMemory=rootMemory.child("bootstrap-diagnostic-slot");
         try{bootstrapDiagnosticMemory.reserve(BOOTSTRAP_DIAGNOSTIC_BYTES).adopt(bootstrapDiagnostic);}catch(AttemptMemoryLedger.ResourceLimitException limited){bootstrapDiagnosticMemory.close();bootstrapDiagnosticMemory=null;}
         if(diagnosticOwner==null)diagnosticOwner=DiagnosticsRegistry.claimRefinement(this);
         DiagnosticsRegistry.invalidateRefinement(diagnosticOwner);
     }
     private void bootstrapFailed(RuntimeException failure,boolean workerReturned) {
+        var failedWork=initialVisibleWork;
+        initialVisibleWork=null;initialVisibleBudget=null;
         boolean firstLimit=failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached
             &&(bootstrapDiagnostic==null||!bootstrapDiagnostic.limitStackObserved());
         var trace=bootstrapFailureTrace(failure.getStackTrace(),firstLimit);
@@ -192,16 +195,18 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         String cause=cancellation!=null&&cancellation.isCancelled()?"CANCELLED":review.invalidated()?"STALE":
             failure instanceof java.util.concurrent.RejectedExecutionException?"EXECUTOR_REJECTED":
             failure instanceof AttemptMemoryLedger.ResourceLimitException||failure instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached?"RESOURCE_LIMIT":"FAILED";
-        var visits=workerReturned&&initialVisibleWork!=null?OptionalLong.of(initialVisibleWork.visits()):OptionalLong.empty();
+        var visits=workerReturned&&failedWork!=null?OptionalLong.of(failedWork.visits()):OptionalLong.empty();
         var old=bootstrapDiagnostic;
         // Four bounded ASCII class/method pairs stay inside the existing4096-byte diagnostic slot.
-        bootstrapDiagnostic=new BootstrapDiagnostic(old.attempt(),old.requestedEngine(),old.operation(),old.strength(),cause,visits,
+        bootstrapDiagnostic=new BootstrapDiagnostic(old.attempt(),old.requestedEngine(),old.operation(),old.strength(),cause,visits,failedWork==null?OptionalLong.empty():OptionalLong.of(failedWork.maximumVisits()),
             old.limitStackObserved()?old.consumers():trace.consumers(),old.limitStackObserved()?old.consumerFramesUnavailable():trace.unavailable(),
             old.limitStackObserved()?old.consumerFramesTruncated():trace.truncated(),old.limitStackObserved()||firstLimit);
         if(diagnosticOwner!=null)DiagnosticsRegistry.invalidateRefinement(diagnosticOwner);
     }
     private Format15Bundle bootstrapBundle(boolean terminal) {
         var attempt=Objects.requireNonNull(bootstrapDiagnostic);
+        var context=initialVisibleWork;
+        var maximum=attempt.maximumVisits().isPresent()?attempt.maximumVisits():context==null?OptionalLong.empty():OptionalLong.of(context.maximumVisits());
         if(bootstrapDiagnosticMemory==null)throw new ExportBudgetRefused();
         var original=review.originalResult().sourcePolyline();if(original.size()>2048)throw new ExportBudgetRefused();
         var projection=Projections.getProjectionByCode(review.projectionCode());
@@ -215,16 +220,17 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             if(known!=null&&known.name().equals("original-native-work.json")&&known.bytes().length<=65536)originalWork=known;
         }catch(RuntimeException unavailable){PluginLog.verbose("Original native preparation work unavailable: %s",unavailable.getClass().getSimpleName());}
         String cause=terminal&&busy?"CANCELLED":attempt.cause();
-        String json="{\"schema\":1,\"attempt\":\""+attempt.attempt()+"\",\"phase\":\"BOOTSTRAP\",\"cause\":\""+cause
+        String json="{\"schema\":2,\"attempt\":\""+attempt.attempt()+"\",\"phase\":\"BOOTSTRAP\",\"cause\":\""+cause
             +"\",\"operation\":\""+attempt.operation()+"\",\"requestedEngine\":"+(attempt.requestedEngine()==null?"null":"\""+attempt.requestedEngine().name()+"\"")
             +",\"strength\":\""+attempt.strength()+"\",\"publication\":\"NO_PREPARED_ROOT\",\"nativeCalls\":0,\"nativeCallScope\":\"requested-optional-operation\",\"nativeFrozenInputs\":\"unavailable\",\"originalNativeWork\":\""+(originalWork==null?"unavailable":"available")+"\",\"chainReplay\":\"unavailable\",\"originalGeometryScope\":\"immutable-original-selected-segment\",\"auxiliaryWorkVisits\":"+(attempt.workVisits().isPresent()?attempt.workVisits().getAsLong():"null")
+            +",\"auxiliaryMaximumVisits\":"+(maximum.isPresent()?maximum.getAsLong():"null")
             +",\"consumerFrames\":["+attempt.consumers().stream().map(frame->"{\"class\":\""+frame.className()+"\",\"method\":\""+frame.methodName()+"\",\"line\":"+frame.line()+"}").collect(java.util.stream.Collectors.joining(","))
             +"],\"consumerFramesUnavailable\":"+attempt.consumerFramesUnavailable()+",\"consumerFramesTruncated\":"+attempt.consumerFramesTruncated()+"}\n";
         var status=Format15Artifact.text("latest-operation.json",json);
         // This fallback deliberately has no authority receipt, generated geometry or lineage.
         var artifacts=new LinkedHashMap<String,Format15Artifact>();artifacts.put(geometry.name(),geometry);artifacts.put(settings.name(),settings);artifacts.put(status.name(),status);
         if(originalWork!=null)artifacts.put(originalWork.name(),originalWork);
-        return new Format15Bundle("runtime-stepwise-preparation-v1",bootstrapSourceHash(review.sourceIdentity()),settings.sha256(),artifacts);
+        return new Format15Bundle("runtime-stepwise-preparation-v2",bootstrapSourceHash(review.sourceIdentity()),settings.sha256(),artifacts);
     }
     private static String bootstrapSourceHash(String source) {
         try{return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(source.getBytes(java.nio.charset.StandardCharsets.UTF_8)));}
@@ -697,7 +703,10 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
         if(busy||closed||!ownsPublication())return;
         AttemptProgress preparing=null;
         try {
-            if(session==null)beginBootstrapDiagnostics(engine,smoothing);
+            if(session==null){
+                cancellation=null;
+                beginBootstrapDiagnostics(engine,smoothing);
+            }
             review.requireOriginalAttemptCurrent();confirmation=null;message="";
             if(session==null) {
                 var work=beginOwnedWork();

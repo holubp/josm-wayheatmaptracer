@@ -819,9 +819,17 @@ public final class PublicGuiSmokeMain {
             throw new IllegalStateException("Actual rootless bootstrap diagnostic contract is unavailable");
         var cause=diagnosticToken(value.getString("cause",""),java.util.Set.of("RUNNING","CANCELLED","STALE","EXECUTOR_REJECTED","RESOURCE_LIMIT","FAILED"));
         String visits="null";
+        int schema=value.getInt("schema",1);if(schema!=1&&schema!=2)throw new IllegalStateException("Actual bootstrap schema is unsupported");
+        String maximum="null";long ceiling=8_000_000L;
+        if(schema==2&&value.containsKey("auxiliaryMaximumVisits")&&!value.isNull("auxiliaryMaximumVisits")) {
+            ceiling=value.getJsonNumber("auxiliaryMaximumVisits").longValueExact();
+            if(ceiling<0||ceiling>64_000_000L)throw new IllegalStateException("Actual bootstrap ceiling is invalid");
+            maximum=Long.toString(ceiling);
+        }
         if(value.containsKey("auxiliaryWorkVisits")&&!value.isNull("auxiliaryWorkVisits")) {
+            if(schema==2&&maximum.equals("null"))throw new IllegalStateException("Actual bootstrap ceiling is unavailable");
             long actual=value.getJsonNumber("auxiliaryWorkVisits").longValueExact();
-            if(actual<0||actual>8_000_000L)throw new IllegalStateException("Actual bootstrap work exceeds its unchanged ceiling");
+            if(actual<0||actual>ceiling)throw new IllegalStateException("Actual bootstrap work exceeds its actual ceiling");
             visits=Long.toString(actual);
         }
         var frames=new ArrayList<String>(4);boolean unavailable=true;String truncated="null";
@@ -841,6 +849,7 @@ public final class PublicGuiSmokeMain {
             }
         }
         return "{\"phase\":\"BOOTSTRAP\",\"cause\":\""+cause+"\",\"publication\":\"NO_PREPARED_ROOT\",\"nativeCalls\":0,\"nativeCallScope\":\"requested-optional-operation\",\"nativeFrozenInputs\":\"unavailable\",\"chainReplay\":\"unavailable\",\"auxiliaryWorkVisits\":"+visits
+            +",\"schema\":"+schema+",\"auxiliaryMaximumVisits\":"+maximum
             +",\"consumerFrames\":["+String.join(",",frames)+"],\"consumerFramesUnavailable\":"+unavailable+",\"consumerFramesTruncated\":"+truncated+"}";
     }
     private static boolean bootstrapConsumerIdentifier(String type,String method) {
@@ -866,11 +875,15 @@ public final class PublicGuiSmokeMain {
             &&d.binding().ticket().kind()==expected).orElse(false);
     }
     private static void clickAndAwaitStage(Path report,JDialog dialog,LegacyRefinementWorkflow owner,String button,StageKind expected) throws Exception {
+        clickAndAwaitStage(report,dialog,owner,button,expected,false);
+    }
+    private static void clickAndAwaitStage(Path report,JDialog dialog,LegacyRefinementWorkflow owner,String button,StageKind expected,
+            boolean expectBootstrapRefusal) throws Exception {
         try(var admissions=PipelineAdmissionObserver.openForTesting(value->{})) {
             var ready=new CompletableFuture<Void>();
             Runnable check=()->{
                 if(owner.busy()){requireComputingView(dialog);return;}
-                if(owner.nativeSelected()&&owner.currentStage().kind()==expected)ready.complete(null);
+                if(expectBootstrapRefusal?owner.ownsPublication()&&!owner.nativeSelected():owner.nativeSelected()&&owner.currentStage().kind()==expected)ready.complete(null);
                 else ready.completeExceptionally(new IllegalStateException("Requested live refinement did not publish a child"));
             };
             java.beans.PropertyChangeListener listener=event->SwingUtilities.invokeLater(check);
@@ -2043,13 +2056,19 @@ public final class PublicGuiSmokeMain {
                 if(modal.get()||onEventThread(dialog::isDisplayable))throw new IllegalStateException("Safe original unchanged interval acceptance did not close its modeless review");
                 requireUnchanged(fixture,baseline,originalUndo);
             }
+            exerciseTightVisibleIntervalBootstrap(report,action,session,fixture,baseline,originalUndo,computed);
             var descendantOpened=new CompletableFuture<JDialog>();
             AWTEventListener descendantListener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog next&&isPreview(next))descendantOpened.complete(next);};
             Toolkit.getDefaultToolkit().addAWTEventListener(descendantListener,AWTEvent.WINDOW_EVENT_MASK);
             try {
                 onEventThread(()->{action.actionPerformed(null);return null;});var next=descendantOpened.get(180,TimeUnit.SECONDS);
                 var descendant=onEventThread(()->(LegacyRefinementWorkflow)next.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner"));
+                requireSameVisibleIntervalInput(session,computed);
                 clickAndAwaitStage(report,next,descendant,"refineA",StageKind.REFINE_A);
+                var work=onEventThread(()->descendant.latestAttemptDiagnostics().orElseThrow().sourcePreparation().orElseThrow());
+                if(work.maximumVisits().orElseThrow()!=64_000_000||work.visits()<=8_000_000)
+                    throw new IllegalStateException("Actual interval descendant lacks its inherited cumulative64M work");
+                System.err.println("GUI_SMOKE_VISIBLE_INTERVAL descendantMaximumVisits="+work.maximumVisits().orElseThrow()+" descendantActualVisits="+work.visits());
                 if(!originalChanged) {
                     var root=onEventThread(()->{
                         var child=descendant.currentStage();int calls=descendant.actualNativeCalls();
@@ -2083,6 +2102,43 @@ public final class PublicGuiSmokeMain {
             });
         }
         requireUnchanged(fixture,original,originalUndo);
+    }
+    private static void exerciseTightVisibleIntervalBootstrap(Path report,AlignWayAction action,PreviewSessionController<?> session,
+            PublicGuiSmokeFixture fixture,List<String> baseline,int undo,LiveBPreviewService.Computed expected) throws Exception {
+        var opened=new CompletableFuture<JDialog>();
+        AWTEventListener listener=event->{if(event instanceof WindowEvent e&&e.getID()==WindowEvent.WINDOW_OPENED&&e.getWindow() instanceof JDialog dialog&&isPreview(dialog))opened.complete(dialog);};
+        Toolkit.getDefaultToolkit().addAWTEventListener(listener,AWTEvent.WINDOW_EVENT_MASK);
+        var tightening=onEventThread(()->LegacyRefinementWorkflow.tightenPreparationForTesting(8_000_000));
+        JDialog dialog=null;
+        try {
+            onEventThread(()->{action.actionPerformed(null);return null;});dialog=opened.get(180,TimeUnit.SECONDS);
+            requireSameVisibleIntervalInput(session,expected);
+            var actualDialog=dialog;var owner=onEventThread(()->(LegacyRefinementWorkflow)actualDialog.getRootPane().getClientProperty("wayheatmaptracer.refinementOwner"));
+            clickAndAwaitStage(report,dialog,owner,"refineA",StageKind.REFINE_A,true);
+            var archive=Format15ArchiveReader.read(exportThroughActualMenu());
+            var json=new String(archive.artifact("latest-operation.json").orElseThrow().bytes(),java.nio.charset.StandardCharsets.UTF_8);
+            var facts=parseReviewStatus(bootstrapFailureFacts(json));
+            if(facts.getInt("schema")!=2||!"RESOURCE_LIMIT".equals(facts.getString("cause"))||facts.getJsonNumber("auxiliaryMaximumVisits").longValueExact()!=8_000_000
+                    ||facts.getJsonNumber("auxiliaryWorkVisits").longValueExact()>8_000_000||facts.getJsonNumber("auxiliaryWorkVisits").longValueExact()<=8_000_000-256
+                    ||owner.actualNativeCalls()!=0||onEventThread(()->{try{owner.currentStage();return true;}catch(IllegalStateException absent){return false;}}))
+                throw new IllegalStateException("Explicit8M interval bootstrap lost its exact actual refusal");
+            requireUnchanged(fixture,baseline,undo);
+            System.err.println("GUI_SMOKE_VISIBLE_INTERVAL tightenedBootstrapCeiling=8000000 actualResourceRefusal=true optionalNativeCalls=0");
+            System.err.println("GUI_SMOKE_ACTUAL_BOOTSTRAP "+facts);
+        } finally {
+            var actualDialog=dialog;if(actualDialog!=null)onEventThread(()->{actualDialog.dispatchEvent(new WindowEvent(actualDialog,WindowEvent.WINDOW_CLOSING));return null;});
+            onEventThread(()->{tightening.close();return null;});Toolkit.getDefaultToolkit().removeAWTEventListener(listener);
+        }
+        requireUnchanged(fixture,baseline,undo);
+    }
+    private static void requireSameVisibleIntervalInput(PreviewSessionController<?> session,LiveBPreviewService.Computed expected) throws Exception {
+        var actual=onEventThread(()->(LiveBPreviewService.Computed)session.currentAttempt().result());
+        if(!actual.partitioned()||actual.captured().visibleInputReceipt().isEmpty()
+                ||!actual.request().evidenceContentHash().equals(expected.request().evidenceContentHash())
+                ||!actual.request().networkContentHash().equals(expected.request().networkContentHash())
+                ||!actual.intervalBatch().runs().stream().map(value->value.interval()).toList()
+                    .equals(expected.intervalBatch().runs().stream().map(value->value.interval()).toList()))
+            throw new IllegalStateException("Repeated visible interval bootstrap input differs from the original accepted workload");
     }
     private static void requireUncachedIntervalQualityParity(
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementPayload.RootIntervalNoChangeReview root) {

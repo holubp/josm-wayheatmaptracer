@@ -80,7 +80,7 @@ public record RefinementAttemptDiagnostics(Binding binding, Optional<RefinementO
         pipeline.ifPresent(receipt->{if(!receipt.ticket().equals(binding.ticket())||!receipt.parentIdentity().equals(binding.parentIdentity())
             ||!receipt.originalNetworkHash().equals(binding.originalNetworkHash()))throw new IllegalArgumentException("Attempt receipt binding differs");});
     }
-    private static long preparationCeiling(StageKind kind){return kind==StageKind.REFINE_A||kind==StageKind.REFINE_B?64_000_000L:8_000_000L;}
+    private static long preparationCeiling(StageKind kind){return kind==StageKind.REFINE_A||kind==StageKind.REFINE_B||kind==StageKind.SMOOTH?64_000_000L:8_000_000L;}
     private static String sourceIdentityHash(String identity) {
         try {
             return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")

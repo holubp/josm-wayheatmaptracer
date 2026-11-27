@@ -54,11 +54,11 @@ class SourcePreparationCeilingTest {
         return new RefinementAttemptDiagnostics(binding,Optional.empty(),RefinementAttemptDiagnostics.Publication.NO_CHILD,
             RefinementAttemptDiagnostics.Phase.SOURCE_PREPARATION,RefinementAttemptDiagnostics.Cause.NONE,0,true,Optional.of(work));
     }
-    @Test void effectiveCeilingAllowsOnlyActualRefinementAndOldMissingStaysEightMillion() throws Exception {
+    @Test void optionalOperationsUseTheActualCeilingAndOldMissingStaysEightMillion() throws Exception {
         var larger=work(9_000_000,OptionalLong.of(64_000_000));
         assertNotNull(diagnostic(ticket(StageKind.REFINE_A),larger));
         assertNotNull(diagnostic(ticket(StageKind.REFINE_B),larger));
-        assertThrows(IllegalArgumentException.class,()->diagnostic(ticket(StageKind.SMOOTH),larger));
+        assertNotNull(diagnostic(ticket(StageKind.SMOOTH),larger));
         assertThrows(IllegalArgumentException.class,()->work(8_000_001,OptionalLong.empty()));
         assertThrows(IllegalArgumentException.class,()->work(64_000_001,OptionalLong.of(64_000_000)));
         assertThrows(IllegalArgumentException.class,()->work(0,OptionalLong.of(64_000_001)));
@@ -75,6 +75,6 @@ class SourcePreparationCeilingTest {
             RefinementAttemptDiagnostics.InputFrameRole.CAPTURED_INPUT,100,100,100,100,0,OptionalLong.of(9_000_000));
         assertNotNull(facts.apply(ticket(StageKind.REFINE_A)));
         assertNotNull(facts.apply(ticket(StageKind.REFINE_B)));
-        assertThrows(IllegalArgumentException.class,()->facts.apply(ticket(StageKind.SMOOTH)));
+        assertNotNull(facts.apply(ticket(StageKind.SMOOTH)));
     }
 }

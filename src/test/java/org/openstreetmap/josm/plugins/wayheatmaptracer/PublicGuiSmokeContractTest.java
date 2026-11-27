@@ -82,6 +82,13 @@ class PublicGuiSmokeContractTest {
         for(var invalid:List.of(actual.replace("7999999","8000001"),actual.replace("\"nativeCalls\":0","\"nativeCalls\":1"),actual.replace("BOOTSTRAP","NATIVE"),actual.replace("NO_PREPARED_ROOT","PUBLISHED")))
             assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.bootstrapFailureFacts(invalid));
     }
+    @Test void visibleIntervalBootstrapSchemaTwoRequiresItsActualCeilingAndPreservesOldEightMillion() {
+        String actual="{\"schema\":2,\"phase\":\"BOOTSTRAP\",\"cause\":\"RESOURCE_LIMIT\",\"publication\":\"NO_PREPARED_ROOT\",\"nativeCalls\":0,\"nativeCallScope\":\"requested-optional-operation\",\"nativeFrozenInputs\":\"unavailable\",\"chainReplay\":\"unavailable\",\"auxiliaryWorkVisits\":9000000,\"auxiliaryMaximumVisits\":64000000}";
+        assertTrue(PublicGuiSmokeMain.bootstrapFailureFacts(actual).contains("\"auxiliaryMaximumVisits\":64000000"));
+        for(var bad:List.of(actual.replace(",\"auxiliaryMaximumVisits\":64000000",""),actual.replace("64000000","8000000"),actual.replace("64000000","64000001"),actual.replace("\"schema\":2","\"schema\":1"),actual.replace("\"schema\":2","\"schema\":3")))
+            assertThrows(IllegalStateException.class,()->PublicGuiSmokeMain.bootstrapFailureFacts(bad));
+        assertTrue(PublicGuiSmokeMain.bootstrapFailureFacts(actual.replace("9000000","8000000").replace("64000000","8000000")).contains("\"auxiliaryMaximumVisits\":8000000"));
+    }
     @Test void visibleIntervalFailureClassificationExposesOnlyExactFixedSourceSymbols() {
         String known="GLOBAL_FINAL_VALIDATION:IllegalArgumentException:Composite original occurrence exceeds its captured movement authority";
         assertEquals("COMPOSITE_OCCURRENCE_AUTHORITY",PublicGuiSmokeMain.visibleIntervalFailureCode(known));

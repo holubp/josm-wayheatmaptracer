@@ -13,7 +13,7 @@ class RefinementRepairContractTest {
   String type=prefix+"C".repeat(192-prefix.length()),method="m".repeat(96);
   var stack=new StackTraceElement[4];Arrays.fill(stack,new StackTraceElement(type,method,"synthetic-secret",Integer.MAX_VALUE));
   var trace=LegacyRefinementWorkflow.bootstrapFailureTrace(stack,true);
-  long conservative=640;for(var frame:trace.consumers())conservative+=320L+2L*(frame.className().length()+frame.methodName().length());
+  long conservative=704;for(var frame:trace.consumers())conservative+=320L+2L*(frame.className().length()+frame.methodName().length());
   assertTrue(conservative<=4096);assertFalse(trace.unavailable());assertTrue(trace.truncated());assertTrue(trace.consumers().size()<=4);
  }
  @Test void bootstrapConsumerStackSkipsOnlySpecifiedWrappersAndNeverRetainsFileText() {

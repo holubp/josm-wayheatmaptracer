@@ -2,7 +2,24 @@
 
 Status: APPROVED by the user on 2026-11-10, including Astra high corrections and the concrete menu/source proposals, with subsequent user amendments below. Implementation is partial; component evidence and unfinished integration are recorded in the G004 execution ledger.
 
-## Binding preparation policy amendment — approved 2026-11-26
+## Binding cumulative auxiliary policy amendment — approved 2026-11-27
+
+The user explicitly approved “Approve combined64M and resumeG004”. One optional
+click has ONE cumulative64,000,000-visit allowance including lazy bootstrap,
+source preparation and Smoothen or A/B preparation. All transitions share the
+same private counters, owner, cancellation token/probe and original absolute
+five-minute deadline; no phase receives a fresh pool. Native/memory/history,
+source/geometry/full-quality and transaction limits remain unchanged. Existing
+three-argument tightening at or below 8M and actual 8M negative controls remain.
+Rootless bootstrap status schema 2 records the actual context ceiling as
+`auxiliaryMaximumVisits` and uses build identity
+`runtime-stepwise-preparation-v2` in the format-15 archive. A context that was
+never created leaves this value unavailable. Historical schema 1 and lineage
+work without an explicit ceiling retain their original 8M validation bound.
+This supersedes only the earlier bootstrap/Smoothen8M allowance below. Sufficiency
+requires actual unchanged GUI/full/performance qualification, final audit and RC.
+
+## Historical preparation policy amendment — approved 2026-11-26, superseded above
 
 The user explicitly approved64,000,000 auxiliary preparation visits for an
 actual A/B refinement ticket, across source palettes and fallback. Bootstrap

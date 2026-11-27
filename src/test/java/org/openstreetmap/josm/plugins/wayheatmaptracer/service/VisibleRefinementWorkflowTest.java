@@ -50,7 +50,17 @@ class VisibleRefinementWorkflowTest {
             var field=LegacyRefinementWorkflow.class.getDeclaredField("initialVisibleWork");field.setAccessible(true);
             var inherited=(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext)field.get(workflow[0]);assertNotNull(inherited);
             var tokenField=LegacyRefinementWorkflow.class.getDeclaredField("cancellation");tokenField.setAccessible(true);var originalToken=tokenField.get(workflow[0]);
+            var budgetField=LegacyRefinementWorkflow.class.getDeclaredField("initialVisibleBudget");budgetField.setAccessible(true);
+            var budget=(RefinementPipeline.OperationBudget)budgetField.get(workflow[0]);
+            var deadlineField=inherited.getClass().getDeclaredField("deadlineNanos");deadlineField.setAccessible(true);
+            var memoryOwner=inherited.owner();long originalDeadline=budget.finalDeadlineNanos();
+            assertEquals(originalDeadline,deadlineField.getLong(inherited));
+            assertEquals(64_000_000,inherited.maximumVisits());
+            for(int remaining=9_000_000;remaining>0;remaining-=256)
+                inherited.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.COPY,Math.min(remaining,256));
             workers.remove().run();SwingUtilities.invokeAndWait(publications.remove());
+            assertEquals(originalDeadline,deadlineField.getLong(inherited));assertSame(memoryOwner,inherited.owner());
+            assertNull(budgetField.get(workflow[0]));assertTrue(inherited.visits()>9_000_000);
             assertTrue(workflow[0].busy());assertFalse(workers.isEmpty());assertNull(field.get(workflow[0]));long visits=inherited.visits();
             SwingUtilities.invokeAndWait(workflow[0]::cancel);
             assertThrows(java.util.concurrent.CancellationException.class,()->inherited.visit(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.BIND,1));
