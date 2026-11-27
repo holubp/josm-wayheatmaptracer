@@ -203,7 +203,16 @@ public final class SelectedWayIntervalPartitioner {
             if (!disconnections.containsKey(index)
                     && wayReferrers(authoritySnapshot, node).size() > 1) junctionOccurrences.add(index);
         }
-        boolean repeatedSelected = new LinkedHashSet<>(selected.nodeKeys()).size() != selected.nodeKeys().size();
+        Set<PrimitiveKey> selectedIdentities = new LinkedHashSet<>(selected.nodeKeys().subList(
+                selection.firstIndex(), selection.lastIndex() + 1));
+        Set<PrimitiveKey> seenSelected = new LinkedHashSet<>();
+        boolean repeatedSelected = false;
+        for (PrimitiveKey node : selected.nodeKeys()) {
+            if (selectedIdentities.contains(node) && !seenSelected.add(node)) {
+                repeatedSelected = true;
+                break;
+            }
+        }
         if (repeatedSelected) {
             int representative = junctionOccurrences.isEmpty() ? selection.firstIndex()
                     : junctionOccurrences.get(0);

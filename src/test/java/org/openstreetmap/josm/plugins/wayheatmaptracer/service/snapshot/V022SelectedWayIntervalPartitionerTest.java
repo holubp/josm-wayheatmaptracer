@@ -621,6 +621,32 @@ class V022SelectedWayIntervalPartitionerTest {
                 result.junctionDispositions().get(0).reason());
     }
 
+    @Test
+    void closedWayWithClosureOutsideSelectedInteriorDoesNotFreezeSelection() {
+        Fixture base = pathWithJunctions(12, 0, -1, false);
+        Map<PrimitiveKey, DetachedPrimitive> values = new LinkedHashMap<>(base.snapshot.primitives());
+        DetachedWay source = (DetachedWay) values.get(base.selected);
+        List<PrimitiveKey> closed = new ArrayList<>(source.nodeKeys());
+        closed.set(closed.size() - 1, closed.get(0));
+        values.put(base.selected, way(base.selected, closed));
+        Fixture fixture = base.rebuild(values, Map.of()).selectRange(3, 9);
+
+        var result = partition(fixture);
+        assertTrue(result.fixedIslands().isEmpty());
+        assertEquals(1, result.slideIntervals().size());
+        assertEquals(new OccurrenceRange(3, 9), result.slideIntervals().get(0).range());
+    }
+
+    @Test
+    void selectedIdentityRepeatedOutsideSelectionStillFreezes() {
+        Fixture fixture = pathWithJunctions(12, 0, -1, false)
+                .withRepeatedSelectedOccurrence().selectRange(3, 7);
+        var result = partition(fixture);
+        assertTrue(result.slideIntervals().isEmpty());
+        assertEquals(List.of(ManualJunctionEligibility.Reason.REPEATED_OCCURRENCE),
+                result.fixedIslands().get(0).reasons());
+    }
+
     private static SelectedWayIntervalPartitioner.Partition partition(Fixture fixture) {
         return SelectedWayIntervalPartitioner.partition(fixture.snapshot, fixture.specification);
     }

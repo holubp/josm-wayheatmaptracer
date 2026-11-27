@@ -403,7 +403,7 @@ public final class LegacyRefinementBootstrap {
                 mode.usesColorMapping()?EvidenceFieldLineage.DerivationKind.NATIVE_PALETTE_MAPPING:EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,
                 sourcePlan.selectedColor(),EvidenceCorrelationGroup.STRAVA_RENDERINGS,false);
             var field=RasterEvidenceCapture.FieldSpec.direct("native",argb->ManagedModernPreviewSource.scalarIntensity(argb,sourcePlan.selectedColor(),intensity),lineage);
-            var transform=SupportedInputRasterTransform.webMercator(mosaic.zoom(),mosaic.originWorldPxX(),mosaic.originWorldPxY(),1.0);
+            var transform=SupportedInputRasterTransform.webMercator(mosaic.zoom(),mosaic.originWorldPxX()/2,mosaic.originWorldPxY()/2,2.0);
             var evidence=work==null?new RasterEvidenceCapture().captureWithMetricSource(facts.network().snapshotId()+"/original-evidence",mosaic.image(),valid,
                 facts.sourceGeographic(),facts.sourceMetric(),transform,grid,EvidenceResolution.nativeSource(mosaic.parameters().metersPerPixel(),grid.pitchMeters()),
                 facts.decisionRadiusMeters(),facts.sourceIdentity(),EvidenceFieldLineage.AcquisitionKind.MANAGED_TILE,List.of(field),cancellation)

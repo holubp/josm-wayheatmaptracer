@@ -46,6 +46,10 @@ class LegacySmoothingBootstrapTest {
                 var actual=new LegacyRefinementBootstrap().completeManaged(captured.get(),coordinator,work);
                 assertSame(seed.facts().network(),actual.authority().network());assertSame(seed.facts().receipt(),actual.receipt());
                 var a=expected.authority().evidence();var b=actual.authority().evidence();
+                var validCoverage = a.fields().get("native").copiedValidity();
+                assertTrue(java.util.stream.IntStream.range(0, validCoverage.length)
+                    .anyMatch(i -> validCoverage[i]),
+                    "The managed mosaic must cover its actual nonzero-origin selected geometry");
                 assertEquals(a.transform(),b.transform());assertEquals(a.coordinateFrame(),b.coordinateFrame());assertEquals(a.resolution(),b.resolution());assertEquals(a.resampling(),b.resampling());
                 assertEquals(a.canonicalHash(),b.canonicalHash());assertEquals(expected.authority().request(),actual.authority().request());
                 assertArrayEquals(a.fields().get("native").copiedValues(),b.fields().get("native").copiedValues());
