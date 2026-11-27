@@ -111,11 +111,7 @@ public final class LegacyRefinementBootstrap {
         }
         var facts=previous==null?new LiveBPreviewService().captureLegacyRootSeed(review.dataSet(),original.selection(),config,radius,step,review.sourceIdentity(),owner,work).value():previous.facts();
         if(facts.decisionRadiusMeters()!=radius||facts.sampleStepMeters()!=step)throw new SmoothingUnavailable(SmoothingUnavailableReason.ORIGINAL_SOURCE_UNAVAILABLE);
-        // Alias an existing original group on Back/Redo rather than registering it twice.
-        try{owner.retainIfAbsent(original);}catch(IllegalArgumentException absent){
-            long estimate=RefinementPayload.estimateBytes(original);if(estimate>maximum)throw new RefinementSession.Refused(RefusalReason.PAYLOAD_LIMIT);
-            work.reserveOn(owner,"original-legacy-source",estimate).adopt(original);
-        }
+        retainOriginalEvidence(original,owner,work);
         review.requireOriginalAttemptCurrent();
         return receipt!=null?new ManagedSeed(facts,original,config,review.choiceId(selected),source,work.owner(),maximum,receipt):
             new VisibleSeed(facts,original,config,review.choiceId(selected),source,work.owner(),maximum,visible);
@@ -371,9 +367,7 @@ public final class LegacyRefinementBootstrap {
         var seed=new LiveBPreviewService().captureLegacyRootSeed(review.dataSet(),original.selection(),config,radius,
             mosaic.parameters().sampleStepMeters(),review.sourceIdentity(),memory,work);
         long maximum=RefinementLimits.defaults().maxPayloadBytes();
-        long estimate=RefinementPayload.estimateBytes(original);
-        if(estimate>maximum)throw new RefinementSession.Refused(RefusalReason.PAYLOAD_LIMIT);
-        (work==null?memory.reserve(estimate):work.reserveOn(memory,"original-legacy-source",estimate)).adopt(original);
+        retainOriginalEvidence(original,memory,work);
         var settings=RefinementSourcePlanner.Settings.capture(true,config.heatmap(),AlignmentService.alternativeDetectorMappings());
         review.requireOriginalAttemptCurrent();receipt.requireCurrent(coordinator,original.tileMosaics());
         return new Seed(seed.value(),original,config,receipt,settings,review.choiceId(review.selectedCandidate()),memory,maximum);
@@ -382,18 +376,35 @@ public final class LegacyRefinementBootstrap {
     public Root complete(Seed seed,TileFetchCoordinator coordinator,CancellationProbe cancellation) {
         return completeManagedBody(seed,coordinator,cancellation,null);
     }
+
+    private static void retainOriginalEvidence(AlignmentResult original,AttemptMemoryLedger.Owner owner,
+            GeometryWorkContext work) {
+        // The original capture is live input. History accounts for the projected root and its descendants.
+        try {
+            owner.retainIfAbsent(original);
+        } catch (IllegalArgumentException absent) {
+            long bytes=RefinementPayload.estimateBytes(original);
+            try (var reservation=work==null?owner.reserve(bytes):work.reserveOn(owner,"original-legacy-source",bytes)) {
+                reservation.adopt(original);
+            }
+        }
+    }
+
     private Root completeManagedBody(Seed seed,TileFetchCoordinator coordinator,CancellationProbe cancellation,GeometryWorkContext work) {
         if(SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Original pixels require worker thread");
         cancellation.checkpoint();seed.receipt().requireCurrent(coordinator,seed.original().tileMosaics());
         var facts=seed.facts();var config=seed.config();var sourcePlan=AlignmentTileSourcePlan.from(config.heatmap());
         var mosaic=seed.original().tileMosaics().require(sourcePlan.selectedColor());
         var grid=ManagedModernPreviewSource.managedOutputGrid(facts.frame(),facts.sourceMetric(),mosaic.zoom(),facts.decisionRadiusMeters());
-        long cells=Math.addExact((long)mosaic.image().getWidth()*mosaic.image().getHeight(),(long)grid.width()*grid.height());
-        long scratchBytes=Math.addExact(1048576L,Math.multiplyExact(cells,96L));
+        long inputCells=(long)mosaic.image().getWidth()*mosaic.image().getHeight();
+        long outputCells=(long)grid.width()*grid.height();
+        // Metered capture reserves its conversion buffers itself. Here we own the validity array
+        // allocated by this caller. The compatibility capture still needs its outer workspace.
+        long scratchBytes=work==null?Math.addExact(1048576L,Math.multiplyExact(Math.addExact(inputCells,outputCells),96L))
+                :Math.addExact(4096L,AttemptMemoryLedger.arrayBytes(inputCells,1));
         long retainedBytes=Math.addExact(1048576L,Math.multiplyExact((long)grid.width()*grid.height(),80L));
-        var scratch=work==null?seed.memory().reserve(scratchBytes):work.reserveOn(seed.memory(),"original-legacy-conversion",scratchBytes);
-        var retained=work==null?seed.memory().reserve(retainedBytes):work.reserveOn(seed.memory(),"original-legacy-retained",retainedBytes);
-        try {
+        try(var scratch=work==null?seed.memory().reserve(scratchBytes):work.reserveOn(seed.memory(),"original-legacy-conversion",scratchBytes);
+                var retained=work==null?seed.memory().reserve(retainedBytes):work.reserveOn(seed.memory(),"original-legacy-retained",retainedBytes)) {
             var valid=new boolean[Math.multiplyExact(mosaic.image().getWidth(),mosaic.image().getHeight())];
             if(work==null)Arrays.fill(valid,true);
             else for(int offset=0;offset<valid.length;offset+=256){int count=Math.min(256,valid.length-offset);work.visit(GeometryWorkContext.Kind.COPY,count);Arrays.fill(valid,offset,offset+count,true);}
@@ -441,7 +452,7 @@ public final class LegacyRefinementBootstrap {
             retained.adopt(authority);
             cancellation.checkpoint();seed.receipt().requireCurrent(coordinator,seed.original().tileMosaics());
             return new Root(authority,stage,facts.receipt());
-        } finally {scratch.close();}
+        }
     }
     private static List<ParentArc> correspondence(LiveBPreviewService.LegacyRootSeed facts,CenterlineCandidate candidate,List<MetricPoint> points) {
         return correspondence(facts.network(),facts.specification().selectedWayKey(),facts.specification().selectedRange(),facts.sourceMetric(),facts.projectionCode(),facts.frame(),candidate,points);

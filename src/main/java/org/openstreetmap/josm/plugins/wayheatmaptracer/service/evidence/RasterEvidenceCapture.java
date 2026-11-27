@@ -118,8 +118,12 @@ public final class RasterEvidenceCapture {
     private static final long RETAINED_STRING_ARRAY_ALIGNMENT_SLACK_BYTES = 7L;
     private static final long RETAINED_STRING_CHAR_BYTES = 2L;
     private static final long RETAINED_METRIC_POINT_BYTES = 32L;
-    private static final long RETAINED_POLYGON_OBJECT_BYTES = 64L;
-    private static final long RETAINED_REGION_OBJECT_BYTES = 64L;
+    // A retained region is also bound into refinement authority. Its inventory charges
+    // the region, both list levels, and each detached point record separately.
+    private static final long RETAINED_REGION_POINT_BYTES = 224L;
+    private static final long RETAINED_REGION_LIST_BYTES = 128L;
+    private static final long RETAINED_REGION_REFERENCE_BYTES = 24L;
+    private static final long RETAINED_REGION_OBJECT_BYTES = 256L;
     private static final long RETAINED_RESOLUTION_SAMPLE_BYTES = 64L;
     private static final long RETAINED_FIXED_PROVENANCE_BYTES = 4_096L;
     private static final long RESAMPLE_OPERATION_CHARS =
@@ -698,11 +702,11 @@ public final class RasterEvidenceCapture {
 
     private static long regionBytes(long polygonCount) {
         try {
-            long polygon = Math.addExact(RETAINED_POLYGON_OBJECT_BYTES,
+            long polygon = Math.addExact(RETAINED_REGION_LIST_BYTES,
                     Math.addExact(Math.multiplyExact(4L,
-                            Math.addExact(RETAINED_METRIC_POINT_BYTES, RETAINED_REFERENCE_BYTES)),
-                            RETAINED_LIST_OBJECT_BYTES));
-            return Math.addExact(RETAINED_REGION_OBJECT_BYTES,
+                            Math.addExact(RETAINED_REGION_POINT_BYTES, RETAINED_REGION_REFERENCE_BYTES)),
+                            RETAINED_REGION_REFERENCE_BYTES));
+            return Math.addExact(Math.addExact(RETAINED_REGION_OBJECT_BYTES, RETAINED_REGION_LIST_BYTES),
                     Math.multiplyExact(polygonCount, polygon));
         } catch (ArithmeticException exception) {
             throw new IllegalArgumentException("Raster retained-evidence estimate overflowed", exception);

@@ -415,6 +415,29 @@ class V022SelectedWayIntervalPartitionerTest {
     }
 
     @Test
+    void longKnownSelectedChordsRemainFrozenWithoutFreezingTheDisjointInterior() {
+        for (double firstInternalOccurrence : new double[] {20, 80}) {
+            Fixture fixed = endpointTJunctions(new double[] {0, firstInternalOccurrence, 100, 120, 140, 160},
+                    Set.of(0), List.of()).withFixedPolicy().withFixedReceiverGeometry();
+            int farEnd = firstInternalOccurrence == 20 ? 2 : 1;
+
+            var result = partition(fixed);
+
+            assertEquals(ManualJunctionEligibility.Reason.FIXED_POLICY,
+                    result.junctionDispositions().get(0).reason());
+            assertEquals(List.of(new OccurrenceRange(0, farEnd)), result.fixedIslands().stream()
+                    .map(SelectedWayIntervalPartitioner.FixedIsland::range).toList());
+            assertEquals(List.of(new OccurrenceRange(farEnd, 5)), result.slideIntervals().stream()
+                    .map(SelectedWayIntervalPartitioner.SlideInterval::traceRange).toList());
+            assertTrue(SelectedWayIntervalPartitioner.verifyFrozenParity(result, fixed.snapshot));
+
+            Fixture unknown = fixed.withUnmaterializedReferrerAt(farEnd);
+            assertFalse(SelectedWayIntervalPartitioner.verifyFrozenParity(result, unknown.snapshot));
+            assertTrue(partition(unknown).slideIntervals().isEmpty());
+        }
+    }
+
+    @Test
     void classificationResourceLimitFreezesTheWholeSelection() {
         Fixture fixture = resourceLimitFixture();
         assertEquals(ManualJunctionEligibility.Reason.RESOURCE_LIMIT,

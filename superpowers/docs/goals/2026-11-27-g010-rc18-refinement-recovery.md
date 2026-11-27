@@ -1,0 +1,27 @@
+# G010 — Restore live refinement and smoothing for RC18
+
+- **Implementation status:** PARTIALLY IMPLEMENTED
+- **Execution state:** ACTIVE
+- **Selected for execution:** Yes
+- **Baseline:** Published RC17, `b5a062d6863bd15ad344f5b8e0db9a70c5dc2514`
+- **Private evidence:** Local RC17 archive and `build/g010-rc18/field-rc17.log` in the parent checkout
+
+## Acceptance and execution
+
+1. Reproduce the captured Legacy → Smoothen, Refine A and Refine B failures using RC17 and the saved OSM and tiles. Check both Move and Precise and the dense version for the reported Smoothen failure.
+2. Add regression coverage for a Legacy result larger than the history limit but within live capacity. Charge the full original result to the live ledger and keep enforcing the history limit on actual history entries. Keep typed refusals for genuine exhaustion, preserving the original preview and export.
+3. Re-run the original cases with the same detector settings. Identify and correct any subsequent demonstrated workflow defects. Retain legitimate protected intervals, source evidence, exact plan and immutable history, and keep the production resource limits. Verify useful descendants and Apply, Undo and Redo through the ordinary production workflow.
+4. Obtain Astra advice and an independent final review of the implementation and evidence. Run focused, full, and headed CI on the candidate source. Compare private cases offline and keep their input and output out of GitHub.
+5. Publish one GitHub prerelease `v0.22.0-rc.18` after qualification. Download and compare the JAR hash and manifest against the validated build. Record commits, CI, field-case dispositions and the asset hash.
+
+The user requires each action to work in Move Existing Nodes and Precise Shape. Scope is engineering recovery. Keep the current tracing and smoothing algorithms. Each action uses only the explicitly selected parent and detector. Keep every source detector and the aggregate option available at review. The selected all-colors detector still uses all five source palettes. Other review choices must remain available on Back without their count driving optional preparation, and a failed or cancelled attempt must preserve the previous forward branch.
+
+## Checkpoint
+
+- Baseline offline replay reproduced all five failures with the published RC17 JAR. Estimated original graphs are 80,451,814 bytes (45-node Move), 81,635,836 (45-node Precise) and 82,151,118 (441-node Move). All five failed before any optional native call.
+- Disabling only all-color aggregation with other detector mappings still enabled reduced the 45-node Precise estimate to 30,138,828 bytes. Smoothen then reached evaluation and reported no movable interior. Admission alone is insufficient evidence of restored user functionality.
+- Astra confirmed that the two Legacy bootstrap entry points compare live original evidence against the logical history limit. The existing live-memory accounting and the separate actual-history charge must both remain enforced. Recheck the later protection and work limits on the field cases.
+- The isolated delta separates capture and history admission, removes a duplicate metered conversion reservation, and allows a watched, wholly selected long chord to terminate a fixed island at its existing far endpoint. Neither caps nor movable-junction arm limits change. The combined local run before the dense accounting fix passed 35 tests. The added 441-node regression failed in both modes with the same undercosted evidence as the archive. The region estimator now includes both retained lists and every detached point. Re-run both dense modes and region budget tests.
+- Private accounting-only replay exposed a second acquisition refusal for A after bootstrap and an all-frozen result for the 45-node smoothing operations. That run used classes compiled before the fixed-island change. The exact first plugin exception for 441-node smoothing was `Root evidence group is undercosted`. See local `field-second-batch.log`.
+- Astra specified the selected-detector contract. Bind the actual palette, mapping and aggregate bit in the parent reference and plan a singleton request. Limit acquisition to that mapping's inputs. Preserve proof/currentness across interval fallback. Then separate the complete review catalog from prepared root payloads, including native owner/route choice. Qualify Back → alternate choice → failed/cancelled operation → Redo and independence from sibling candidate count. Final independent review remains pending.
+- Isolated worktree `build/worktrees/g010-rc18-20261127` on `codex/g010-rc18-20261127`. Parent checkout has unrelated edits.

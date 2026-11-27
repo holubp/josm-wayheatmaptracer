@@ -564,6 +564,9 @@ public final class SelectedWayIntervalPartitioner {
             snapshot.closure().externalPorts().stream().filter(port -> port.wayKey().equals(wayKey))
                     .forEach(localPorts::add);
             if (readOnlyReceiver) continue;
+            boolean freezeLongSelectedChord = fixedReceiverOnly && specification.fixedReceiverGeometry()
+                    && wayKey.equals(selected.key()) && specification.permissions().junctionPolicy()
+                            == org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy.FIXED;
             int[] directions = wayKey.equals(selected.key())
                     ? at == 0
                             ? new int[] {1}
@@ -571,7 +574,8 @@ public final class SelectedWayIntervalPartitioner {
                                     ? new int[] {-1} : new int[] {-1, 1}
                     : new int[] {-1, 1};
             for (int direction : directions) {
-                ArmProof arm = proveArm(snapshot, specification, way, at, direction, proof);
+                ArmProof arm = proveArm(snapshot, specification, way, at, direction, proof,
+                        freezeLongSelectedChord);
                 if (arm == null) return null;
                 localProofKeys.addAll(arm.keys());
                 localPorts.addAll(arm.ports());
@@ -593,7 +597,7 @@ public final class SelectedWayIntervalPartitioner {
 
     private static ArmProof proveArm(NetworkSnapshot snapshot,
             NetworkSnapshotCapture.Specification specification, DetachedWay way,
-            int junctionIndex, int direction, Proof proof) {
+            int junctionIndex, int direction, Proof proof, boolean freezeLongSelectedChord) {
         double distance = 0.0;
         int index = junctionIndex;
         int minimum = junctionIndex;
@@ -622,9 +626,14 @@ public final class SelectedWayIntervalPartitioner {
             } catch (IllegalArgumentException outsideCertifiedFrame) {
                 return null;
             }
-            if (!Double.isFinite(segment) || segment <= 0.0 || distance + segment > MAXIMUM_PORT_METERS) {
+            if (!Double.isFinite(segment) || segment <= 0.0 || current.deleted() || nextNode.deleted()) {
                 return null;
             }
+            boolean beyondProofLimit = distance + segment > MAXIMUM_PORT_METERS;
+            OccurrenceRange selection = specification.selectedRange();
+            if (beyondProofLimit && !(freezeLongSelectedChord
+                    && Math.min(index, next) >= selection.firstIndex()
+                    && Math.max(index, next) <= selection.lastIndex())) return null;
             distance += segment;
             index = next;
             minimum = Math.min(minimum, index);
@@ -640,7 +649,9 @@ public final class SelectedWayIntervalPartitioner {
                 if (proof.authorityIncomplete) return null;
                 return new ArmProof(minimum, maximum, keys, ports);
             }
-            if (index == 0 || index == way.nodeKeys().size() - 1) {
+            // For a fixed island, the first known chord crossing the limit is itself frozen.
+            // Its far occurrence becomes a watched boundary and never an automatic junction arm.
+            if (beyondProofLimit || index == 0 || index == way.nodeKeys().size() - 1) {
                 return new ArmProof(minimum, maximum, keys, ports);
             }
             if (distance >= NORMAL_PORT_METERS

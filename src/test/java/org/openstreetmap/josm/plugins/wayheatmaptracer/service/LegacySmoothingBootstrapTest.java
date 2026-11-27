@@ -43,7 +43,18 @@ class LegacySmoothingBootstrapTest {
                     new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,metered)));
                 assertThrows(IllegalArgumentException.class,()->new LegacyRefinementBootstrap().completeManaged(captured.get(),coordinator,
                     new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,compatibility)));
-                var actual=new LegacyRefinementBootstrap().completeManaged(captured.get(),coordinator,work);
+                var mosaic=seed.original().tileMosaics().require("hot");
+                var facts=seed.facts();
+                var grid=ManagedModernPreviewSource.managedOutputGrid(facts.frame(),facts.sourceMetric(),mosaic.zoom(),
+                        facts.decisionRadiusMeters());
+                long inputCells=(long)mosaic.image().getWidth()*mosaic.image().getHeight();
+                long outputCells=(long)grid.width()*grid.height();
+                // Leave space for one metered conversion and its retained result, not a second raster workspace.
+                long headroom=32L*1024*1024+32L*inputCells+128L*outputCells;
+                LegacyRefinementBootstrap.Root actual;
+                try(var competing=owner.reserve(AttemptMemoryLedger.MAX_BYTES-ledger.currentBytes()-headroom)) {
+                    actual=new LegacyRefinementBootstrap().completeManaged(captured.get(),coordinator,work);
+                }
                 assertSame(seed.facts().network(),actual.authority().network());assertSame(seed.facts().receipt(),actual.receipt());
                 var a=expected.authority().evidence();var b=actual.authority().evidence();
                 var validCoverage = a.fields().get("native").copiedValidity();
@@ -169,9 +180,13 @@ class LegacySmoothingBootstrapTest {
         return selection(data,50);
     }
     private static SelectionContext selection(DataSet data,double latitude) {
-        var nodes=new ArrayList<Node>();for(int i=0;i<5;i++){var node=new Node(new LatLon(latitude,14+(i-2)*.0002));data.addPrimitive(node);nodes.add(node);}
+        return selection(data,latitude,5);
+    }
+    private static SelectionContext selection(DataSet data,double latitude,int count) {
+        var nodes=new ArrayList<Node>();
+        for(int i=0;i<count;i++){var node=new Node(new LatLon(latitude,14+(.0008*i/(count-1)-.0004)));data.addPrimitive(node);nodes.add(node);}
         var way=new Way();way.setNodes(nodes);way.put("highway","path");data.addPrimitive(way);data.allPrimitives().forEach(p->p.setModified(false));
-        return new SelectionContext(way,0,4,nodes,Set.of(nodes.get(0),nodes.get(4)));
+        return new SelectionContext(way,0,count-1,nodes,Set.of(nodes.get(0),nodes.get(count-1)));
     }
     @Test void actualManagedAggregateRetainsAllFiveSourcesBeforeScalarResampling() throws Exception {
         var decoder=new TileDecoderClassifier();var palettes=new HashSet<String>();var calls=new AtomicInteger();
@@ -255,13 +270,22 @@ class LegacySmoothingBootstrapTest {
     }
     @ParameterizedTest @EnumSource(AlignmentMode.class)
     void managedLowerMappingUsesOriginalRasterWithoutRefreshingOrCallingAnEngine(AlignmentMode mode) throws Exception {
+        checkManagedLowerMapping(mode,5);
+    }
+
+    @ParameterizedTest @EnumSource(AlignmentMode.class)
+    void denseManagedSmoothingRootAdmitsItsActualCorridorInventory(AlignmentMode mode) throws Exception {
+        checkManagedLowerMapping(mode,441);
+    }
+
+    private void checkManagedLowerMapping(AlignmentMode mode,int count) throws Exception {
         var requests=new AtomicInteger();var decoder=new TileDecoderClassifier();
         try(var coordinator=new TileFetchCoordinator((r,c)->{requests.incrementAndGet();return new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",ridge(r.address()),null,Duration.ZERO,"");},new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())) {
             var review=new AtomicReference<LegacyReviewOwner>();var seed=new AtomicReference<LegacyRefinementBootstrap.SmoothingSeed>();var ledger=AttemptMemoryLedger.production();
             try(var owner=ledger.rootOwner()) {
-                var work=new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,owner);
+                var work=new GeometryWorkContext(32_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,owner);
                 SwingUtilities.invokeAndWait(()->{
-                    var data=new DataSet();var selected=selection(data);var cfg=config(mode,true);var current=LegacyReviewOwner.begin(data,selected,cfg);review.set(current);
+                    var data=new DataSet();var selected=selection(data,50,count);var cfg=config(mode,true);var current=LegacyReviewOwner.begin(data,selected,cfg);review.set(current);
                     var receipt=new AtomicReference<TileHeatmapSampler.AcquisitionReceipt>();
                     var result=new AlignmentService(new TileHeatmapSampler(coordinator)).alignLegacyReviewed(selected,null,null,cfg,new AlignmentService.LegacyCaptureObserver(){public void managed(TileHeatmapSampler.AcquisitionReceipt actual){receipt.set(actual);}});
                     current.captured(result,null,receipt.get());current.select(lowerMapping(result));
@@ -287,13 +311,12 @@ class LegacySmoothingBootstrapTest {
             assertEquals(0,ledger.currentBytes());
         }
     }
-    @Test void oversizedOriginalSmoothCaptureExportsTypedRefusalAndKeepsExactParent() throws Exception {
+    @Test void originalRasterAboveHistoryLimitCanStartSmoothingWithinLiveCapacity() throws Exception {
         var decoder = new TileDecoderClassifier();
         var epoch = new VisibleSourceEpoch();
         var work = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
         var review = new AtomicReference<LegacyReviewOwner>();
         var workflow = new AtomicReference<LegacyRefinementWorkflow>();
-        var status = new AtomicReference<String>();
         try (var coordinator = new TileFetchCoordinator((request, credentials) -> {
             throw new AssertionError("Original visible bootstrap should not fetch tiles");
         }, new ManagedTileCache(temp, decoder), decoder, TileReliabilityPolicy.defaults())) {
@@ -321,29 +344,16 @@ class LegacySmoothingBootstrapTest {
                     current.select(candidate);
                     assertTrue(RefinementPayload.estimateBytes(result) > 64L * 1024 * 1024);
                     var controller = new LegacyRefinementWorkflow(current, coordinator, current::select,
-                            ignored -> {}, status::set, work::add, SwingUtilities::invokeLater);
+                            ignored -> {}, ignored -> {}, work::add, SwingUtilities::invokeLater);
                     workflow.set(controller);
                     controller.enableRuntimeDiagnostics(() -> null);
                     controller.smooth(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Strength.MEDIUM);
                     assertSame(candidate, current.selectedCandidate());
                     assertTrue(controller.hasCurrentPresentation());
-                    assertFalse(controller.busy());
+                    assertTrue(controller.busy());
                     assertFalse(data.isModified());
-                    assertTrue(work.isEmpty(), "Payload refusal occurs before submitting bootstrap");
+                    assertEquals(1, work.size(), "Original raster belongs to live memory, so bootstrap can run");
                 });
-                Path archivePath = temp.resolve("bootstrap-refusal.zip");
-                org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry.writeLatest(archivePath.toFile());
-                var archive = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader.read(archivePath);
-                var json = jakarta.json.Json.createReader(new java.io.ByteArrayInputStream(
-                        archive.artifact("latest-operation.json").orElseThrow().bytes())).readObject();
-                assertEquals("BOOTSTRAP", json.getString("phase"));
-                assertEquals("RESOURCE_LIMIT", json.getString("cause"));
-                assertEquals("PAYLOAD_LIMIT", json.getString("refusalReason"));
-                assertTrue(json.getString("firstPluginFrame").matches("LegacyRefinementBootstrap\\.captureForSmoothing:[0-9]+"));
-                assertEquals(0, json.getInt("nativeCalls"));
-                assertTrue(archive.artifact("refinement-lineage.json").isEmpty());
-                assertTrue(status.get().contains("smaller selection"), status::get);
-                assertTrue(status.get().contains("fewer palettes"), status::get);
             } finally {
                 SwingUtilities.invokeAndWait(() -> {
                     if (workflow.get() != null) workflow.get().close();
