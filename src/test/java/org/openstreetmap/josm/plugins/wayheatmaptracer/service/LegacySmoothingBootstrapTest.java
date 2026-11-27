@@ -55,6 +55,8 @@ class LegacySmoothingBootstrapTest {
                 assertArrayEquals(a.fields().get("native").copiedValues(),b.fields().get("native").copiedValues());
                 assertArrayEquals(a.fields().get("native").copiedValidity(),b.fields().get("native").copiedValidity());
                 assertArrayEquals(a.fields().get("native").copiedInterpolationValidity(),b.fields().get("native").copiedInterpolationValidity());
+                assertNativeSamplesAlongSelection(b, seed.original().tileMosaics().require("hot"),
+                        seed.facts().sourceMetric());
                 assertEquals(expected.stage().candidates().stream().map(c->c.result().previewPolyline()).toList(),actual.stage().candidates().stream().map(c->c.result().previewPolyline()).toList());
                 assertTrue(work.visits()>before);for(var kind:List.of(GeometryWorkContext.Kind.COPY,GeometryWorkContext.Kind.MAP,GeometryWorkContext.Kind.HASH))assertTrue(work.counters().get(kind)>0,kind.name());
                 long spent=work.visits();var inherited=work.phaseView(8_000_000);assertTrue(inherited.visits()>spent);assertTrue(inherited.sharesAccountingWith(work));
@@ -107,6 +109,46 @@ class LegacySmoothingBootstrapTest {
             }finally{SwingUtilities.invokeAndWait(review::close);}
         }
     }
+    private static void assertNativeSamplesAlongSelection(EvidenceSnapshot evidence,
+            TileHeatmapSampler.TileMosaic mosaic, List<MetricPoint> selection) {
+        var field = evidence.fields().get("native");
+        var values = field.copiedValues();
+        var valid = field.copiedValidity();
+        double worldSize = Math.scalb(512.0, mosaic.zoom());
+        double firstRasterX = Double.NaN;
+        double lastRasterX = Double.NaN;
+        for (var node : selection) {
+            var sample = evidence.transform().metricToPixelCenter(node);
+            int x = (int) Math.round(sample.x());
+            int y = (int) Math.round(sample.y());
+            var coordinate = evidence.coordinateFrame().toGeographic(evidence.transform().pixelCenterToMetric(x, y));
+            double latitudeRadians = Math.toRadians(coordinate.latitudeDegrees());
+            double inputX = worldSize * (coordinate.longitudeDegrees() + 180.0) / 360.0
+                    - mosaic.originWorldPxX() - 0.5;
+            double inputY = worldSize * (1.0 - Math.log(Math.tan(latitudeRadians)
+                    + 1.0 / Math.cos(latitudeRadians)) / Math.PI) / 2.0 - mosaic.originWorldPxY() - 0.5;
+            if (Double.isNaN(firstRasterX)) firstRasterX = inputX;
+            lastRasterX = inputX;
+            int left = (int) Math.floor(inputX);
+            int top = (int) Math.floor(inputY);
+            double dx = inputX - left;
+            double dy = inputY - top;
+            double expected = 0.0;
+            for (int row = 0; row < 2; row++) {
+                for (int column = 0; column < 2; column++) {
+                    double scalar = ManagedModernPreviewSource.scalarIntensity(
+                            mosaic.image().getRGB(left + column, top + row), "hot", IntensitySamplingMode.COLOR_MAPPING);
+                    expected += scalar * (row == 0 ? 1.0 - dy : dy) * (column == 0 ? 1.0 - dx : dx);
+                }
+            }
+            assertTrue(expected > 0.0, "The fixture must have usable signal at the sample");
+            assertTrue(valid[y * field.width() + x]);
+            assertEquals(expected, values[y * field.width() + x], 1.0e-7,
+                    "Native 512-pixel world coordinates must map to the true pixel centers");
+        }
+        assertTrue(lastRasterX - firstRasterX > 20.0, "Probe separated raster locations");
+    }
+
     private static LegacyReviewOwner managedWorkReview(TileFetchCoordinator coordinator) throws Exception {
         var review=new AtomicReference<LegacyReviewOwner>();
         SwingUtilities.invokeAndWait(()->{
