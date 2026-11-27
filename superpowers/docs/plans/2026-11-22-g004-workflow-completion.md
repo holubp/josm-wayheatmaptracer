@@ -4,6 +4,14 @@
 
 **Goal:** Deliver one testable RC with configurable Legacy/A/B first pass, optional repeated A/B/Smoothen operations, modeless result review, cached Undo/Redo and one safe final Apply.
 
+**Completion record, 2026-11-27:** The approved workflow and fixture amendments
+passed independent completion audit and exact-source public validation at
+`3bb4d28fdc78ec3f1f75190265ec4b4c669bb1d4`. All 3,328 full tests and all twelve
+pinned JOSM GUI rows passed. The published RC16 JAR was downloaded and verified
+against the CI-built archive. The checklists below preserve the execution plan.
+[RC16](https://github.com/holubp/josm-wayheatmaptracer/releases/tag/v0.22.0-rc.16)
+· [Validation](https://github.com/holubp/josm-wayheatmaptracer/actions/runs/45988487354)
+
 **Architecture:** Complete the existing G004 branch rather than rebuild it. Generalize only its root/owner boundary to accept factual native A/B captures alongside Legacy, retain existing parent/source/interval/command services, and separate review-window visibility from session lifetime. Integrate the accepted Gaussian helper and preserved adapter fixes; tracing mathematics remain unchanged.
 
 **Tech Stack:** Java 17, JOSM 19555, Swing/EDT, existing Gradle/JUnit 5, Python validation scripts, GitHub Actions/Xvfb. No new dependency or installation on the tablet.

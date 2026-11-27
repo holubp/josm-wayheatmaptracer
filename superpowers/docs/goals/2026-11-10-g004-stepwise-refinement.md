@@ -1,13 +1,15 @@
 # G004 — Stepwise tracing refinement and menu cleanup
 
-> **Current execution —2026-11-26:** ACTIVE, explicitly resumed by user.
-> PARTIAL / NOT RELEASED. Current functional qualification remains incomplete.
->64M A/B preparation was explicitly approved Nov26; implementation/qualification
-> is in progress. Original400m positive assertions remain unchanged.
+> **Status — 2026-11-27: COMPLETED for RC16.** The audited executable commit
+> `3bb4d28fdc78ec3f1f75190265ec4b4c669bb1d4` passed full public verification
+> and all twelve pinned JOSM GUI cases. The published prerelease JAR was
+> downloaded and matched the verified CI artifact byte for byte.
+> [RC16](https://github.com/holubp/josm-wayheatmaptracer/releases/tag/v0.22.0-rc.16)
+> · [Validation](https://github.com/holubp/josm-wayheatmaptracer/actions/runs/45988487354)
 
-## Current shortest path to the next RC
+## Historical execution record
 
-**Nov27 ACTIVE:** the user explicitly approved combined64M and resumed G004.
+**Nov27 amendment:** the user explicitly approved combined64M and resumed G004.
 Implement one cumulative64M allowance per optional click including bootstrap,
 source preparation and Smoothen/A/B; same counters/owner/token/probe/original
 deadline, no phase reset. Native/memory/history/source/quality/algorithm limits
