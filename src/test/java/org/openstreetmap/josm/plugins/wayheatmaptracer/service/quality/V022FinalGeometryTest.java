@@ -156,6 +156,63 @@ class V022FinalGeometryTest {
     }
 
     @Test
+    void deferredCoreMeasurementMatchesExactEagerDirectionAndScalarEvidence() {
+        List<MetricPoint> geometry = List.of(p(5,0),p(10,3),p(15,0));
+        var images = List.of(extendedGraphRidgeImage(geometry), graphRidgeImage(geometry),
+                ridgeImage((x,y) -> gaussian(y),(x,y) -> true),
+                graphRidgeImage(geometry,(x,y) -> x<=10.25));
+        for (var image:images) for (var point:geometry) {
+            var tangent=p(5,3);
+            var eager=image.freezeProfileWithCoreOrientation(point,tangent,CancellationProbe.NONE);
+            var scalar=image.freezeProfileForDeferredCoreOrientation(point,tangent,CancellationProbe.NONE);
+            var core=image.measureFrozenCoreOrientation(scalar,tangent,CancellationProbe.NONE);
+            assertEquals(eager.support(),scalar.support());
+            assertEquals(eager.observedModeStatus(),scalar.observedModeStatus());
+            assertEquals(eager.branchIsolation(),scalar.branchIsolation());
+            assertEquals(eager.positionalReliability(),scalar.positionalReliability());
+            assertEquals(eager.coreMinimumMeters(),scalar.coreMinimumMeters());
+            assertEquals(eager.coreMaximumMeters(),scalar.coreMaximumMeters());
+            assertEquals(eager.normal(),scalar.normal());
+            org.junit.jupiter.api.Assertions.assertArrayEquals(eager.offsetsMeters(),scalar.offsetsMeters());
+            org.junit.jupiter.api.Assertions.assertArrayEquals(eager.values(),scalar.values());
+            assertEquals(eager.evaluate(point),scalar.evaluate(point));
+            assertEquals(eager.orientationModes(),scalar.orientationModes());
+            assertEquals(eager.coreOrientationModes(),core.modes());
+            assertEquals(eager.coreOrientationRadians(),core.radians());
+            assertEquals(eager.coreOrientationCertainty(),core.certainty());
+            assertEquals(eager.directedOrientationModes(),core.directedModes());
+        }
+    }
+
+    @Test
+    void smoothingEvaluationPreservesEagerFindingsAndCostsWithinLowerWorkLimit() {
+        List<MetricPoint> geometry = List.of(p(5,0),p(10,3),p(15,0));
+        var images = List.of(extendedGraphRidgeImage(geometry),graphRidgeImage(geometry),
+                ridgeImage((x,y) -> gaussian(y),(x,y) -> true),
+                graphRidgeImage(geometry,(x,y) -> x<=10.25),
+                ridgeImage((x,y) -> Math.max(gaussian(y-graphCenter(geometry,x)),gaussian(x-10)),
+                        (x,y) -> true));
+        var ledger=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+        try(var owner=ledger.rootOwner()) {
+            for(var image:images) {
+                var request=request("exact-apex",geometry,image,1.0);
+                var eager=new GeometryWorkContext(64_000_000,ledger.limitBytes(),
+                        Long.MAX_VALUE,CancellationProbe.NONE,owner);
+                FinalGeometryEvaluator.Result expected;
+                try(var scope=PostprocessingValidationWork.open(eager)) {
+                    expected=evaluator.evaluate(request,CancellationProbe.NONE);
+                }
+                var lower=new GeometryWorkContext(eager.visits()-1,ledger.limitBytes(),
+                        Long.MAX_VALUE,CancellationProbe.NONE,owner);
+                try(var scope=PostprocessingValidationWork.open(lower)) {
+                    assertEquals(expected,evaluator.evaluateSmoothing(request,CancellationProbe.NONE));
+                }
+                assertTrue(lower.visits()<eager.visits());
+            }
+        }
+    }
+
+    @Test
     void clippedVRidgeWithoutSixMetreApproachRaysRemainsReviewRequired() {
         List<MetricPoint> geometry = List.of(p(5, 0), p(10, 3), p(15, 0));
         FinalGeometryEvaluator.Result result = evaluate("clipped-supported-apex", geometry,

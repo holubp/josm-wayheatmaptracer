@@ -1,6 +1,8 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -220,15 +222,57 @@ public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datas
         return Map.copyOf(result);
     }
 
+    private static final ThreadLocal<BeforeHashMemo> BEFORE_HASH = new ThreadLocal<>();
+
+    /** Keeps only this immutable before-snapshot hash through one synchronous operation. */
+    public BeforeHashMemo memoizeBeforeHash(GeometryWorkContext work) {
+        if (role != SnapshotRole.CAPTURED_BEFORE || BEFORE_HASH.get() != null) {
+            throw new IllegalStateException("One captured before hash is allowed per operation");
+        }
+        var reservation = work.reserve("smoothing-before-network-hash", 1024);
+        var memo = new BeforeHashMemo(this, work, reservation);
+        BEFORE_HASH.set(memo);
+        return memo;
+    }
+
+    public static final class BeforeHashMemo implements AutoCloseable {
+        private final NetworkSnapshot snapshot;
+        private final GeometryWorkContext work;
+        private final AttemptMemoryLedger.Reservation reservation;
+        private String value;
+
+        private BeforeHashMemo(NetworkSnapshot snapshot, GeometryWorkContext work,
+                AttemptMemoryLedger.Reservation reservation) {
+            this.snapshot = snapshot;
+            this.work = work;
+            this.reservation = reservation;
+        }
+
+        @Override public void close() {
+            if (BEFORE_HASH.get() != this) throw new IllegalStateException("Before hash memo ownership differs");
+            BEFORE_HASH.remove();
+            reservation.close();
+        }
+    }
+
     /** Returns a recapture-stable hash excluding attempt-local snapshot ID. */
     public String canonicalHash() {
-        return canonicalHashInternal(PostprocessingValidationWork.current());
+        var work=PostprocessingValidationWork.current();
+        if (work != null) {
+            var memo = BEFORE_HASH.get();
+            if (memo != null && memo.snapshot == this && memo.work == work) {
+                work.visit(GeometryWorkContext.Kind.HASH, 1);
+                if (memo.value == null) memo.value = canonicalHashInternal(work);
+                return memo.value;
+            }
+        }
+        return canonicalHashInternal(work);
     }
     /** Same encoding under the caller's explicit synchronous postprocessing context.
      * Caller-owned materialization scratch covers the encoder and sorted key staging.
      */
     public String canonicalHash(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
-        try(var scope=PostprocessingValidationWork.open(work)) {return canonicalHashInternal(work);}
+        try(var scope=PostprocessingValidationWork.open(work)) {return canonicalHash();}
     }
     private String canonicalHashInternal(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work) {
         CanonicalEncoder encoder = new CanonicalEncoder(work).field("network-snapshot-v5")

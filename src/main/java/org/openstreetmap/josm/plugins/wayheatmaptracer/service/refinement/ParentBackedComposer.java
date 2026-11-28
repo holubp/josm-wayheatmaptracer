@@ -171,6 +171,8 @@ public final class ParentBackedComposer {
             ImageCostField.SegmentSupportBudget sourceCells,SmoothingModels.Parent smoothingParent) {
         cancellation.checkpoint();var root=parent.root();
         root.requireAcquisitionEvidence(evidence);
+        var smoothingTopology=smoothingParent==null?null:requireSmoothingTrialTopology(
+                smoothingParent,candidate,evidence,cancellation);
         var protectedAssignments=new LinkedHashMap<Integer,MetricPoint>();
         var extra=new ArrayList<FinalGeometryEvaluator.Finding>();
         if(root.frozenGeometryProof().isEmpty())extra.add(new FinalGeometryEvaluator.Finding(FinalGeometryEvaluator.FindingCode.CONTEXT_PROOF_UNAVAILABLE,
@@ -219,12 +221,13 @@ public final class ParentBackedComposer {
             if(outside)extra.add(new FinalGeometryEvaluator.Finding(FinalGeometryEvaluator.FindingCode.PROTECTED_ASSIGNMENT_MISMATCH,
                 FinalGeometryEvaluator.Severity.HARD_BLOCK,i,i,0));
         }
-        var quality=new FinalGeometryEvaluator().evaluate(new FinalGeometryEvaluator.Request(candidate.id(),candidate.points(),candidate.pointIds(),
-            image,evidence.resolution().effectivePitchMeters(),protectedAssignments,List.of(),false,false,false,false),cancellation);
-        var graph=topologyDraft(parent,candidate,evidence,cancellation,smoothingParent!=null);
-        var after=graph.after();var replacement=graph.replacement();var disconnections=graph.disconnections();
-        var topology=ModernSingleWayEditPlanAdapter.assessFinalTopology(root,after,evidence,root.request().permissions().ordinaryRadiusMeters());
-        if(smoothingParent!=null)topology=ModernSingleWayEditPlanAdapter.validateSmoothingContacts(smoothingParent,candidate,after,topology);
+        var request=new FinalGeometryEvaluator.Request(candidate.id(),candidate.points(),candidate.pointIds(),
+                image,evidence.resolution().effectivePitchMeters(),protectedAssignments,List.of(),false,false,false,false);
+        var evaluator=new FinalGeometryEvaluator();
+        var quality=smoothingTopology==null?evaluator.evaluate(request,cancellation):evaluator.evaluateSmoothing(request,cancellation);
+        var graph=smoothingTopology==null?topologyDraft(parent,candidate,evidence,cancellation,false):null;
+        var topology=graph==null?smoothingTopology:ModernSingleWayEditPlanAdapter.assessFinalTopology(
+                root,graph.after(),evidence,root.request().permissions().ordinaryRadiusMeters());
         for(String finding:topology.findingCodes())extra.add(new FinalGeometryEvaluator.Finding(
             finding.contains("review-required")?FinalGeometryEvaluator.FindingCode.INDEPENDENT_CONTEXT_CONTACT:FinalGeometryEvaluator.FindingCode.PREJUNCTION_CROSSING,
             finding.contains("review-required")?FinalGeometryEvaluator.Severity.REVIEW:FinalGeometryEvaluator.Severity.HARD_BLOCK,0,candidate.points().size()-1,0));
@@ -233,6 +236,11 @@ public final class ParentBackedComposer {
             var disposition=findings.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(f->f.severity()==FinalGeometryEvaluator.Severity.HARD_BLOCK)?FinalGeometryEvaluator.Disposition.HARD_BLOCKED:FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED;
             quality=new FinalGeometryEvaluator.Result(quality.id(),disposition,findings,quality.totalLengthMeters(),quality.directlySupportedLengthMeters(),quality.worstUnsupportedSpanMeters(),quality.meanImageCenterCost(),quality.bendPreservingRoughness());
         }
+        if(graph==null) {
+            cancellation.checkpoint();
+            return new Assessed(candidate,quality,topology.findingCodes(),List.of());
+        }
+        var after=graph.after();var replacement=graph.replacement();var disconnections=graph.disconnections();
         var copies=new ArrayList<CopyAssessment>();
         for(int i=0;i<candidate.pointIds().size();i++){PostprocessingValidationWork.visit();if(candidate.pointIds().get(i) instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing
                 &&disconnections.replacements().containsKey(existing.originalOccurrenceIndex())) {
@@ -245,6 +253,26 @@ public final class ParentBackedComposer {
         }
         }
         cancellation.checkpoint();return new Assessed(candidate,quality,topology.findingCodes(),copies);
+    }
+
+    private ModernSingleWayEditPlanAdapter.FinalTopologyAssessment requireSmoothingTrialTopology(
+            SmoothingModels.Parent smoothingParent,Composed candidate,EvidenceSnapshot evidence,CancellationProbe cancellation) {
+        var parent=smoothingParent.reference();
+        var root=parent.root();
+        if(!root.request().permissions().sharedNodeDisconnectionIntent().isEmpty()) {
+            throw new IllegalArgumentException("Smoothing cannot create disconnected junction copies");
+        }
+        if(!FinalGeometryEvaluator.backtrackFindings(candidate.points()).isEmpty()) {
+            throw new IllegalArgumentException("Smoothing trial failed the adjacent backtrack check");
+        }
+        var graph=topologyDraft(parent,candidate,evidence,cancellation,true);
+        var topology=ModernSingleWayEditPlanAdapter.validateSmoothingContacts(smoothingParent,candidate,graph.after(),
+                ModernSingleWayEditPlanAdapter.assessFinalTopology(root,graph.after(),evidence,
+                        root.request().permissions().ordinaryRadiusMeters()));
+        if(topology.findingCodes().stream().anyMatch(code->!code.contains("review-required"))) {
+            throw new IllegalArgumentException("Smoothing trial failed final topology");
+        }
+        return topology;
     }
     /** Measures only actual graph contacts before spending quality work on a smoothing proposal. */
     Set<Integer> smoothingContactRollbackSlots(SmoothingModels.Parent parent,Composed proposed,CancellationProbe cancellation) {

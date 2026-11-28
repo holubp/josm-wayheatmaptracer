@@ -13,13 +13,13 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.VisibleRefinement
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.*;
-class RefinementAcquisitionTest {
+public class RefinementAcquisitionTest {
  static ParentTraceReference withSelectedSource(ParentTraceReference parent,String palette,String mapping,boolean aggregate) {
   var selected=new RefinementSourcePlanner.SourceRequest(palette,mapping,aggregate,"");
   return new ParentTraceReference(parent.root(),parent.parentStage(),parent.parentChoice(),parent.nativeCandidateId(),
     selected,parent.parentIdentity(),parent.points(),parent.correspondence());
  }
- static RefinementSourcePlanner.Plan selectedPlan(RefinementSourcePlanner.Plan template,String palette,String mapping,boolean aggregate) {
+ public static RefinementSourcePlanner.Plan selectedPlan(RefinementSourcePlanner.Plan template,String palette,String mapping,boolean aggregate) {
   var parent=withSelectedSource(template.parent(),palette,mapping,aggregate);
   return RefinementSourcePlanner.plan(template.ticket(),template.settings(),parent);
  }

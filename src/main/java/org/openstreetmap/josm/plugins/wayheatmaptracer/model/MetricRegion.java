@@ -25,6 +25,8 @@ public final class MetricRegion {
     public static final class YMembershipIndex {
         private final MetricRegion region;
         private final double[] lower, upper;
+        // The grouped instance is attempt-local. A successful leaf is only a hint.
+        private int lastContainingLeaf;
         private YMembershipIndex(MetricRegion region, double[] lower, double[] upper) {
             this.region = region;
             this.lower = lower;
@@ -45,10 +47,10 @@ public final class MetricRegion {
     /** Array and index storage for the caller's explicitly admitted guarded scope. */
     public long groupedYMembershipBytes() {
         return AttemptMemoryLedger.objectBytes(24) + 2L * AttemptMemoryLedger.arrayBytes(
-                Math.multiplyExact(2,groupedMembershipLeafCount()),Double.BYTES);
+                Math.multiplyExact(4,groupedMembershipLeafCount()),Double.BYTES);
     }
 
-    /** Groups immutable Y bounds in original polygon order for repeated guarded queries. */
+    /** Groups immutable axis bounds in original polygon order for repeated guarded queries. */
     public YMembershipIndex prepareGroupedYMembership(CancellationProbe cancellation,LongConsumer admission) {
         return prepareYMembership(cancellation,admission,null,groupedMembershipLeafCount());
     }
@@ -63,7 +65,8 @@ public final class MetricRegion {
         boolean complete = false;
         try {
             cancellation.checkpoint();
-            int length=firstLeaf==0?polygons.size():Math.multiplyExact(2,firstLeaf);
+            int length=firstLeaf==0?polygons.size():Math.multiplyExact(4,firstLeaf);
+            int xOffset=firstLeaf==0?0:length/2;
             admission.accept(Math.addExact(Math.multiplyExact(2L,length),1L));
             if (inventory != null) inventory.reserve(Math.addExact(AttemptMemoryLedger.objectBytes(24),
                     Math.multiplyExact(2L, AttemptMemoryLedger.arrayBytes(length, Double.BYTES))));
@@ -73,25 +76,54 @@ public final class MetricRegion {
                 cancellation.checkpoint(); admission.accept(1L);
                 List<MetricPoint> polygon = polygons.get(index);
                 double minimum = Double.POSITIVE_INFINITY, maximum = Double.NEGATIVE_INFINITY;
+                double left = Double.POSITIVE_INFINITY, right = Double.NEGATIVE_INFINITY;
                 for (int vertex = 0; vertex < polygon.size(); vertex++) {
                     cancellation.checkpoint(); admission.accept(1L);
                     double y = polygon.get(vertex).yMeters();
                     minimum = Math.min(minimum, y); maximum = Math.max(maximum, y);
+                    if (firstLeaf!=0) {
+                        admission.accept(2L);
+                        var a=polygon.get(vertex);
+                        var b=polygon.get((vertex+1)%polygon.size());
+                        left=Math.min(left,a.xMeters()-1e-9);
+                        right=Math.max(right,a.xMeters()+1e-9);
+                        double dy=b.yMeters()-a.yMeters(),dx=b.xMeters()-a.xMeters();
+                        // For every straddling ordinate the exact existing IEEE expression
+                        // is monotone in y-a.y. Its extrema are reached at 0 and dy.
+                        if (dy!=0) {
+                            if (!Double.isFinite(dx)||!Double.isFinite(dy)) {
+                                left=Double.NEGATIVE_INFINITY;
+                                right=Double.POSITIVE_INFINITY;
+                            } else {
+                                double far=dx*dy/dy+a.xMeters();
+                                left=Math.min(left,far);
+                                right=Math.max(right,far);
+                            }
+                        }
+                    }
                 }
                 // Exactly the original onSegment Y bounds, including conservative overflow.
                 lower[firstLeaf+index] = minimum - 1e-9;
                 upper[firstLeaf+index] = maximum + 1e-9;
+                if(firstLeaf!=0) {
+                    lower[xOffset+firstLeaf+index]=left;
+                    upper[xOffset+firstLeaf+index]=right;
+                }
             }
             if (firstLeaf != 0) {
-                for (int index=firstLeaf+polygons.size(); index<length; index++) {
-                    cancellation.checkpoint(); admission.accept(1L);
+                for (int index=firstLeaf+polygons.size(); index<xOffset; index++) {
+                    cancellation.checkpoint(); admission.accept(2L);
                     lower[index]=Double.POSITIVE_INFINITY;
                     upper[index]=Double.NEGATIVE_INFINITY;
+                    lower[xOffset+index]=Double.POSITIVE_INFINITY;
+                    upper[xOffset+index]=Double.NEGATIVE_INFINITY;
                 }
                 for (int index=firstLeaf-1; index>0; index--) {
-                    cancellation.checkpoint(); admission.accept(1L);
+                    cancellation.checkpoint(); admission.accept(2L);
                     lower[index]=Math.min(lower[2*index],lower[2*index+1]);
                     upper[index]=Math.max(upper[2*index],upper[2*index+1]);
+                    lower[xOffset+index]=Math.min(lower[xOffset+2*index],lower[xOffset+2*index+1]);
+                    upper[xOffset+index]=Math.max(upper[xOffset+2*index],upper[xOffset+2*index+1]);
                 }
             }
             YMembershipIndex result = new YMembershipIndex(this, lower, upper);
@@ -355,8 +387,13 @@ public final class MetricRegion {
         if (index == null || point == null) return contains(point, cancellation, admission);
         cancellation.checkpoint(); admission.accept(1L);
         if (index.region != this) return contains(point, cancellation, admission);
-        if (index.lower.length>polygons.size())
-            return containsInGroup(point,cancellation,admission,index,1,index.lower.length/2);
+        if (index.lower.length>polygons.size()) {
+            int firstLeaf=index.lower.length/4,xOffset=index.lower.length/2;
+            int recent=index.lastContainingLeaf;
+            if(recent>=firstLeaf&&containsInGroup(point,cancellation,admission,index,recent,firstLeaf,xOffset,0))
+                return true;
+            return containsInGroup(point,cancellation,admission,index,1,firstLeaf,xOffset,recent);
+        }
         for (int polygonIndex = 0; polygonIndex < polygons.size(); polygonIndex++) {
             cancellation.checkpoint();
             admission.accept(2L); // Both comparisons precede even an early outside result.
@@ -368,13 +405,22 @@ public final class MetricRegion {
     }
 
     private boolean containsInGroup(MetricPoint point,CancellationProbe cancellation,LongConsumer admission,
-            YMembershipIndex index,int node,int firstLeaf) {
+            YMembershipIndex index,int node,int firstLeaf,int xOffset,int alreadyTested) {
         cancellation.checkpoint();
+        if(node==alreadyTested)return false;
         admission.accept(2L);
         if (point.yMeters()<index.lower[node]||point.yMeters()>index.upper[node]) return false;
-        if (node>=firstLeaf) return contains(polygons.get(node-firstLeaf),point,cancellation,admission);
-        return containsInGroup(point,cancellation,admission,index,2*node,firstLeaf)
-                ||containsInGroup(point,cancellation,admission,index,2*node+1,firstLeaf);
+        admission.accept(2L);
+        if (point.xMeters()<index.lower[xOffset+node]||point.xMeters()>index.upper[xOffset+node]) return false;
+        // Strict ray crossings come in pairs to the left of the complete numerical
+        // X range, and there are none to its right. On-edge tolerance is in the bounds.
+        if (node>=firstLeaf) {
+            if(!contains(polygons.get(node-firstLeaf),point,cancellation,admission))return false;
+            index.lastContainingLeaf=node;
+            return true;
+        }
+        return containsInGroup(point,cancellation,admission,index,2*node,firstLeaf,xOffset,alreadyTested)
+                ||containsInGroup(point,cancellation,admission,index,2*node+1,firstLeaf,xOffset,alreadyTested);
     }
 
     /** Returns whether a segment touches or crosses any polygon in the union. */

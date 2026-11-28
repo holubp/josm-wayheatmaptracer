@@ -443,7 +443,7 @@ public final class ImageCostField {
     /** Freezes one profile with bounded cooperative cancellation during scalar sampling. */
     public FrozenProfile freezeProfile(MetricPoint point, MetricPoint routeTangent,
             CancellationProbe cancellation) {
-        return freezeProfile(point, routeTangent, cancellation, false);
+        return freezeProfile(point, routeTangent, cancellation, OrientationLocation.ORIGIN);
     }
 
     /**
@@ -452,11 +452,52 @@ public final class ImageCostField {
      */
     public FrozenProfile freezeProfileWithCoreOrientation(MetricPoint point,
             MetricPoint routeTangent, CancellationProbe cancellation) {
-        return freezeProfile(point, routeTangent, cancellation, true);
+        return freezeProfile(point, routeTangent, cancellation, OrientationLocation.CORE);
     }
 
+    /** Freezes the selected core and its scalar field without measuring either direction. */
+    public FrozenProfile freezeProfileForDeferredCoreOrientation(MetricPoint point,
+            MetricPoint routeTangent, CancellationProbe cancellation) {
+        return freezeProfile(point, routeTangent, cancellation, OrientationLocation.DEFERRED_CORE);
+    }
+
+    public record CoreOrientation(List<ImageOrientationSupport.AngularMode> modes,
+            double radians, double certainty, List<DirectedOrientationMode> directedModes) {
+        public CoreOrientation {
+            modes = List.copyOf(modes);
+            directedModes = List.copyOf(directedModes);
+        }
+    }
+
+    /** Measures at the identical frozen core and tangent used by the eager path. */
+    public CoreOrientation measureFrozenCoreOrientation(FrozenProfile profile, MetricPoint routeTangent,
+            CancellationProbe cancellation) {
+        if (profile.support() != FrozenSupport.MEASURED) {
+            return new CoreOrientation(List.of(), 0.0, 0.0, List.of());
+        }
+        var center = coreCenter(profile.origin(), profile.normal(),
+                profile.coreMinimumMeters(), profile.coreMaximumMeters());
+        var orientation = measureOrientation(center, routeTangent, cancellation);
+        return new CoreOrientation(orientation.modes(),
+                orientation.measured() ? orientation.radians() : routeBearing(routeTangent),
+                orientation.measured() ? orientation.certainty() : 0.0, orientation.directedModes());
+    }
+
+    private static MetricPoint coreCenter(MetricPoint point, MetricPoint normal,
+            double minimum, double maximum) {
+        double offset = 0.5 * (minimum + maximum);
+        return new MetricPoint(point.xMeters() + normal.xMeters() * offset,
+                point.yMeters() + normal.yMeters() * offset);
+    }
+
+    private static double routeBearing(MetricPoint tangent) {
+        return normalizeBearing(StrictMath.atan2(tangent.yMeters(), tangent.xMeters()));
+    }
+
+    private enum OrientationLocation { ORIGIN, CORE, DEFERRED_CORE }
+
     private FrozenProfile freezeProfile(MetricPoint point, MetricPoint routeTangent,
-            CancellationProbe cancellation, boolean measureAtCoreCenter) {
+            CancellationProbe cancellation, OrientationLocation orientationLocation) {
         if (point == null || routeTangent == null) {
             throw new IllegalArgumentException("Frozen profile requires a point and tangent");
         }
@@ -533,17 +574,12 @@ public final class ImageCostField {
                     extracted.noiseFloor(), extracted.maximumIntensity(), observedModeStatus,
                     branchIsolation);
         }
-        double selectedOffset = 0.5 * (selected.coreMinimumMeters()
-                + selected.coreMaximumMeters());
-        MetricPoint selectedCoreCenter = new MetricPoint(
-                point.xMeters() + normal.xMeters() * selectedOffset,
-                point.yMeters() + normal.yMeters() * selectedOffset);
-        Orientation originOrientation = measureAtCoreCenter ? Orientation.UNKNOWN
-                : measureOrientation(point, routeTangent, cancellation);
-        Orientation coreOrientation = measureAtCoreCenter
-                ? measureOrientation(selectedCoreCenter, routeTangent, cancellation)
-                : Orientation.UNKNOWN;
-        double routeBearing = normalizeBearing(StrictMath.atan2(routeTangent.yMeters(), routeTangent.xMeters()));
+        Orientation originOrientation = orientationLocation == OrientationLocation.ORIGIN
+                ? measureOrientation(point, routeTangent, cancellation) : Orientation.UNKNOWN;
+        Orientation coreOrientation = orientationLocation == OrientationLocation.CORE
+                ? measureOrientation(coreCenter(point, normal, selected.coreMinimumMeters(),
+                        selected.coreMaximumMeters()), routeTangent, cancellation) : Orientation.UNKNOWN;
+        double routeBearing = routeBearing(routeTangent);
         return new FrozenProfile(FrozenSupport.MEASURED, point, normal,
                 selected.coreMinimumMeters(), selected.coreMaximumMeters(),
                 Math.max(sourcePitchMeters * 0.5, selected.localizationSigmaMeters()),

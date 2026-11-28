@@ -17,6 +17,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.G
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport.AngularMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.CoreOrientation;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.FrozenProfile;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.ObservedModeStatus;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.UniqueSegmentStatus;
@@ -293,7 +294,7 @@ public final class FinalGeometryEvaluator {
         MutableLocalWarningStats stats = new MutableLocalWarningStats();
         double onset = Math.max(0.75, 0.5 * request.sourcePitchMeters());
         inspectRepeatedShortWaves(request, findings, chainage(request.points()), onset,
-                cancellation, stats);
+                cancellation, stats, false);
         return new LocalWarningInspection(findings, stats.snapshot());
     }
 
@@ -303,7 +304,7 @@ public final class FinalGeometryEvaluator {
         List<Finding> findings = new ArrayList<>();
         MutableLocalWarningStats stats = new MutableLocalWarningStats();
         inspectLocalExcursions(request, findings, new DirectedSamplingMemo(2_048),
-                cancellation, stats);
+                cancellation, stats, false);
         return new LocalWarningInspection(findings, stats.snapshot());
     }
 
@@ -331,7 +332,7 @@ public final class FinalGeometryEvaluator {
                 Math.ceil(2 * halfWidth / (sourcePitchMeters * .25)) + 2);
         // One frozen profile has two double arrays, two points, key/cache/list overhead,
         // at most one undirected mode per heading and two directed modes per heading.
-        long profileMetadata = 640L + 160L * parameters.orientationHeadingCount();
+        long profileMetadata = 768L + 160L * parameters.orientationHeadingCount();
         long profileBytes = profileMetadata + 16L * profileRows;
         long cachedProfiles = MAXIMUM_CACHED_PROFILE_ROWS / Math.max(34, profileRows - 1);
         double routeRows = Math.ceil(2 * halfWidth / (sourcePitchMeters * .5)) + 3;
@@ -352,6 +353,15 @@ public final class FinalGeometryEvaluator {
 
     /** Evaluates with bounded cooperative cancellation for local physical diagnostics. */
     public Result evaluate(Request request, CancellationProbe cancellation) {
+        return evaluate(request, cancellation, false);
+    }
+
+    /** Smoothing reuses scalar profiles and measures exact core direction only when consumed. */
+    public Result evaluateSmoothing(Request request, CancellationProbe cancellation) {
+        return evaluate(request, cancellation, true);
+    }
+
+    private Result evaluate(Request request, CancellationProbe cancellation, boolean deferCoreOrientation) {
         Objects.requireNonNull(cancellation, "cancellation");
         List<Finding> findings = new ArrayList<>();
         MutableLocalWarningStats localWarningStats = new MutableLocalWarningStats();
@@ -366,7 +376,7 @@ public final class FinalGeometryEvaluator {
         inspectBacktracks(request.points(), findings);
         long backtracksNanos = System.nanoTime() - backtracksStarted;
         long excursionsStarted = System.nanoTime();
-        inspectLocalExcursions(request, findings, sampling, cancellation, localWarningStats);
+        inspectLocalExcursions(request, findings, sampling, cancellation, localWarningStats, deferCoreOrientation);
         long excursionsNanos = System.nanoTime() - excursionsStarted;
         long incidentsStarted = System.nanoTime();
         inspectIncidentCrossings(request, findings);
@@ -532,11 +542,11 @@ public final class FinalGeometryEvaluator {
 
     private static void inspectLocalExcursions(Request request, List<Finding> findings,
             DirectedSamplingMemo sampling, CancellationProbe cancellation,
-            MutableLocalWarningStats localWarningStats) {
+            MutableLocalWarningStats localWarningStats, boolean deferCoreOrientation) {
         double onset = Math.max(0.75, 0.5 * request.sourcePitchMeters());
         double[] chainage = chainage(request.points());
         inspectRepeatedShortWaves(request, findings, chainage, onset, cancellation,
-                localWarningStats);
+                localWarningStats, deferCoreOrientation);
         PhysicalSampleIndex samples = PhysicalSampleIndex.create(request.points(), chainage,
                 Math.min(1.0, request.sourcePitchMeters() / 2.0), cancellation);
         Map<Integer, List<SingleApexCandidate>> candidatesByApex = new LinkedHashMap<>();
@@ -635,7 +645,7 @@ public final class FinalGeometryEvaluator {
             return;
         }
 
-        ProfileCache profiles = new ProfileCache(localWarningStats);
+        ProfileCache profiles = new ProfileCache(localWarningStats, deferCoreOrientation);
         for (List<SingleApexCandidate> candidates : resolutionDistinctCandidateGroups(
                 candidatesByApex.values(), chainage, request.sourcePitchMeters())) {
             PostprocessingValidationWork.visit();
@@ -742,7 +752,7 @@ public final class FinalGeometryEvaluator {
         MetricPoint windowStart = samples.sampleAt(start).point();
         MetricPoint windowTangent = subtract(samples.sampleAt(end).point(), windowStart);
         if (!(norm(windowTangent) > 1.0e-12)) return LocalComparison.AMBIGUOUS;
-        List<FrozenProfile> measured = new ArrayList<>(rows.size());
+        List<CachedProfile> measured = new ArrayList<>(rows.size());
         List<MetricPoint> centers = new ArrayList<>(rows.size());
         List<MetricPoint> alternative = new ArrayList<>(rows.size());
         double[] rowChainage = new double[rows.size()];
@@ -760,8 +770,9 @@ public final class FinalGeometryEvaluator {
             if (row.originalVertex() == candidate.apexVertex()) apexRow = rowIndex;
             boolean exactBoundary = row.chainageMeters() == start
                     || row.chainageMeters() == end;
-            FrozenProfile profile = frozenProfile(request.image(), row.point(), windowTangent,
-                    profiles, cancellation);
+            CachedProfile cached = profiles.getOrMeasure(request.image(),
+                    new ProfileKey(row.point(), windowTangent), cancellation);
+            FrozenProfile profile = cached == null ? null : cached.scalar;
             if (profile == null || profile.support() != ImageCostField.FrozenSupport.MEASURED) {
                 if (exactBoundary) {
                     // An exact local boundary is never moved.  A supported bend may therefore
@@ -810,7 +821,7 @@ public final class FinalGeometryEvaluator {
             alternativeCosts[rowIndex] = proposedSample.orElseThrow().cost();
             routeFollowsMeasuredCenter &= residual
                     <= 0.5 * request.sourcePitchMeters() + 1.0e-9;
-            measured.add(profile);
+            measured.add(cached);
             centers.add(center);
             alternative.add(proposed);
         }
@@ -821,7 +832,8 @@ public final class FinalGeometryEvaluator {
         if (routeFollowsMeasuredCenter) {
             boolean coherent = directionallyCoherent(
                     rows.stream().peek(meteredValue -> PostprocessingValidationWork.visit()).map(PhysicalSample::point).toList(),
-                    centers, measured, rowChainage, apexRow, request.sourcePitchMeters());
+                    centers, measured, rowChainage, apexRow, request.sourcePitchMeters(),
+                    request.image(), cancellation, profiles.deferCoreOrientation);
             if (coherent) {
                 return LocalComparison.SUPPORTED;
             }
@@ -874,7 +886,7 @@ public final class FinalGeometryEvaluator {
             previousProjection = projection;
         }
         if (!directionallyCoherent(centers, centers, measured, rowChainage, apexRow,
-                request.sourcePitchMeters())) {
+                request.sourcePitchMeters(), request.image(), cancellation, profiles.deferCoreOrientation)) {
             stats.singleApexOrientationAmbiguities++;
             return LocalComparison.AMBIGUOUS;
         }
@@ -887,8 +899,9 @@ public final class FinalGeometryEvaluator {
     }
 
     private static boolean directionallyCoherent(List<MetricPoint> route,
-            List<MetricPoint> centers, List<FrozenProfile> profiles, double[] chainage,
-            int apexIndex, double sourcePitchMeters) {
+            List<MetricPoint> centers, List<CachedProfile> profiles, double[] chainage,
+            int apexIndex, double sourcePitchMeters, ImageCostField image,
+            CancellationProbe cancellation, boolean deferCoreOrientation) {
         if (apexIndex < 0 || apexIndex >= centers.size() || centers.get(apexIndex) == null
                 || profiles.get(apexIndex) == null) {
             return false;
@@ -915,17 +928,18 @@ public final class FinalGeometryEvaluator {
                 && continuousCenters(centers, chainage, left, right, sourcePitchMeters)
                 && coherentLeg(route.get(left), route.get(apexIndex), centers.get(left),
                         centers.get(apexIndex), profiles, left, apexIndex - 1,
-                        sourcePitchMeters)
+                        sourcePitchMeters, image, cancellation, deferCoreOrientation)
                 && coherentLeg(route.get(apexIndex), route.get(right), centers.get(apexIndex),
                         centers.get(right), profiles, apexIndex + 1, right,
-                        sourcePitchMeters)
+                        sourcePitchMeters, image, cancellation, deferCoreOrientation)
                 && apexDirectionCoherent(centers.get(left), centers.get(apexIndex),
-                        centers.get(right), profiles.get(apexIndex), sourcePitchMeters);
+                        centers.get(right), profiles.get(apexIndex), sourcePitchMeters, image, cancellation);
     }
 
     private static boolean coherentLeg(MetricPoint routeFirst, MetricPoint routeSecond,
-            MetricPoint centerFirst, MetricPoint centerSecond, List<FrozenProfile> profiles,
-            int firstIndex, int secondIndex, double sourcePitchMeters) {
+            MetricPoint centerFirst, MetricPoint centerSecond, List<CachedProfile> profiles,
+            int firstIndex, int secondIndex, double sourcePitchMeters, ImageCostField image,
+            CancellationProbe cancellation, boolean deferCoreOrientation) {
         double routeLength = routeFirst.distanceTo(routeSecond);
         double centerLength = centerFirst.distanceTo(centerSecond);
         double baseline = Math.min(routeLength, centerLength);
@@ -940,25 +954,25 @@ public final class FinalGeometryEvaluator {
         if (undirectedDistance(routeBearing, centerBearing) > allowance + 1.0e-12) {
             return false;
         }
-        boolean hasMeasuredRayDirection = false;
         boolean hasCoherentRayDirection = false;
         for (int index = Math.min(firstIndex, secondIndex);
                 index <= Math.max(firstIndex, secondIndex); index++) {
             PostprocessingValidationWork.visit();
-            FrozenProfile profile = profiles.get(index);
-            if (profile == null || profile.coreOrientationModes().isEmpty()
-                    || !(profile.coreOrientationCertainty() > 0.0)) {
-                continue;
-            }
-            hasMeasuredRayDirection = true;
-            hasCoherentRayDirection |= profile.coreOrientationModes().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
+            CachedProfile profile = profiles.get(index);
+            if (profile == null) continue;
+            CoreOrientation orientation = profile.coreOrientation(image, cancellation);
+            if (orientation.modes().isEmpty() || !(orientation.certainty() > 0.0)) continue;
+            boolean matches = orientation.modes().stream().peek(meteredValue -> PostprocessingValidationWork.visit())
                     .anyMatch(mode -> mode.distanceTo(centerBearing) <= allowance + 1.0e-12);
+            if (matches && deferCoreOrientation) return true;
+            hasCoherentRayDirection |= matches;
         }
-        return hasMeasuredRayDirection && hasCoherentRayDirection;
+        return hasCoherentRayDirection;
     }
 
     private static boolean apexDirectionCoherent(MetricPoint left, MetricPoint apex,
-            MetricPoint right, FrozenProfile apexProfile, double sourcePitchMeters) {
+            MetricPoint right, CachedProfile cachedApex, double sourcePitchMeters, ImageCostField image,
+            CancellationProbe cancellation) {
         double incomingLength = left.distanceTo(apex);
         double outgoingLength = apex.distanceTo(right);
         double centeredLength = left.distanceTo(right);
@@ -977,11 +991,13 @@ public final class FinalGeometryEvaluator {
         boolean resolutionSignificantCorner = undirectedDistance(incoming, outgoing)
                 > incomingAllowance + outgoingAllowance + 1.0e-12;
         if (!resolutionSignificantCorner) {
-            return Double.isFinite(centeredAllowance)
-                    && apexProfile.coreOrientationCertainty() > 0.0
-                    && apexProfile.coreOrientationModes().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(mode ->
+            if (!Double.isFinite(centeredAllowance)) return false;
+            var orientation = cachedApex.coreOrientation(image, cancellation);
+            return orientation.certainty() > 0.0
+                    && orientation.modes().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).anyMatch(mode ->
                             mode.distanceTo(centered) <= centeredAllowance + 1.0e-12);
         }
+        FrozenProfile apexProfile = cachedApex.scalar;
         if (apexProfile.observedModeStatus() != ObservedModeStatus.OBSERVED_UNIQUE
                 || !apexProfile.branchIsolation().measured()
                 || apexProfile.branchIsolation().nearestCompleteCompetitorDistanceMeters()
@@ -990,13 +1006,14 @@ public final class FinalGeometryEvaluator {
                         != Double.POSITIVE_INFINITY) {
             return false;
         }
-        if (apexProfile.directedOrientationModes().size() != 2) return false;
+        var directed = cachedApex.coreOrientation(image, cancellation).directedModes();
+        if (directed.size() != 2) return false;
         double outwardLeft = incoming + Math.PI;
         int leftMode = -1;
         int rightMode = -1;
-        for (int index = 0; index < apexProfile.directedOrientationModes().size(); index++) {
+        for (int index = 0; index < directed.size(); index++) {
             PostprocessingValidationWork.visit();
-            var mode = apexProfile.directedOrientationModes().get(index);
+            var mode = directed.get(index);
             if (mode.distanceTo(outwardLeft) <= incomingAllowance + 1.0e-12) leftMode = index;
             if (mode.distanceTo(outgoing) <= outgoingAllowance + 1.0e-12) rightMode = index;
         }
@@ -1084,13 +1101,13 @@ public final class FinalGeometryEvaluator {
 
     private static void inspectRepeatedShortWaves(Request request, List<Finding> findings,
             double[] vertexChainage, double onset, CancellationProbe cancellation,
-            MutableLocalWarningStats stats) {
+            MutableLocalWarningStats stats, boolean deferCoreOrientation) {
         PhysicalSampleIndex samples = PhysicalSampleIndex.create(request.points(), vertexChainage,
                 Math.min(1.0, request.sourcePitchMeters() / 2.0), cancellation);
         if (request.points().size() < 5 || exactlyCollinear(request.points())) {
             return;
         }
-        ProfileCache profiles = new ProfileCache(stats);
+        ProfileCache profiles = new ProfileCache(stats, deferCoreOrientation);
         WindowCandidate contradicted = null;
         WindowCandidate ambiguous = null;
         BudgetWindow budgetLimited = null;
@@ -1360,7 +1377,8 @@ public final class FinalGeometryEvaluator {
     private static FrozenProfile frozenProfile(ImageCostField image, MetricPoint point,
             MetricPoint tangent, ProfileCache profiles,
             CancellationProbe cancellation) {
-        return profiles.getOrMeasure(image, new ProfileKey(point, tangent), cancellation);
+        var cached = profiles.getOrMeasure(image, new ProfileKey(point, tangent), cancellation);
+        return cached == null ? null : cached.scalar;
     }
 
     private static MetricPoint localTangent(List<PhysicalSample> rows, int index) {
@@ -1971,24 +1989,46 @@ public final class FinalGeometryEvaluator {
         }
     }
 
+    private static final class CachedProfile {
+        private final FrozenProfile scalar;
+        private final MetricPoint tangent;
+        private CoreOrientation core;
+
+        CachedProfile(FrozenProfile scalar, MetricPoint tangent, boolean deferred) {
+            this.scalar = scalar;
+            this.tangent = tangent;
+            if (!deferred) core = new CoreOrientation(scalar.coreOrientationModes(),
+                    scalar.coreOrientationRadians(), scalar.coreOrientationCertainty(), scalar.directedOrientationModes());
+        }
+
+        CoreOrientation coreOrientation(ImageCostField image, CancellationProbe cancellation) {
+            if (core == null) core = image.measureFrozenCoreOrientation(scalar, tangent, cancellation);
+            return core;
+        }
+    }
+
     private static final class ProfileCache {
-        private final Map<ProfileKey, FrozenProfile> profiles =
+        private final Map<ProfileKey, CachedProfile> profiles =
                 new LinkedHashMap<>(256, 0.75f, true);
         private final MutableLocalWarningStats stats;
         private long retainedRows;
 
-        private ProfileCache(MutableLocalWarningStats stats) {
+        private final boolean deferCoreOrientation;
+
+        private ProfileCache(MutableLocalWarningStats stats, boolean deferCoreOrientation) {
             this.stats = stats;
+            this.deferCoreOrientation = deferCoreOrientation;
         }
 
-        FrozenProfile getOrMeasure(ImageCostField image, ProfileKey key,
+        CachedProfile getOrMeasure(ImageCostField image, ProfileKey key,
                 CancellationProbe cancellation) {
-            FrozenProfile cached = profiles.get(key);
+            CachedProfile cached = profiles.get(key);
             if (cached != null) {
                 return cached;
             }
-            FrozenProfile measured = image.freezeProfileWithCoreOrientation(
-                    key.point(), key.tangent(), cancellation);
+            FrozenProfile measured = deferCoreOrientation
+                    ? image.freezeProfileForDeferredCoreOrientation(key.point(), key.tangent(), cancellation)
+                    : image.freezeProfileWithCoreOrientation(key.point(), key.tangent(), cancellation);
             int rows = measured.sampleCount();
             if (rows > MAXIMUM_CACHED_PROFILE_ROWS) {
                 return null;
@@ -1997,14 +2037,15 @@ public final class FinalGeometryEvaluator {
                     && retainedRows + rows > MAXIMUM_CACHED_PROFILE_ROWS) {
             PostprocessingValidationWork.visit();
                 var iterator = profiles.entrySet().iterator();
-                Map.Entry<ProfileKey, FrozenProfile> eldest = iterator.next();
-                retainedRows -= eldest.getValue().sampleCount();
+                Map.Entry<ProfileKey, CachedProfile> eldest = iterator.next();
+                retainedRows -= eldest.getValue().scalar.sampleCount();
                 iterator.remove();
             }
-            profiles.put(key, measured);
+            CachedProfile profile = new CachedProfile(measured, key.tangent(), deferCoreOrientation);
+            profiles.put(key, profile);
             retainedRows += rows;
             stats.maximumCachedProfileRows = Math.max(stats.maximumCachedProfileRows, retainedRows);
-            return measured;
+            return profile;
         }
     }
 

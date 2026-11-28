@@ -1070,7 +1070,7 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
             AttemptMemoryLedger.Owner publication,long allowance,List<Map<Object,Long>> baseline) {
         progress.phase=RefinementAttemptDiagnostics.Phase.PREPARATION;
         computationEvidence="smoothing-preparation";
-        try {
+        try(var beforeHash=root.authority().network().memoizeBeforeHash(work)) {
             var bound=new SmoothingParentBinder().bind(root.authority(),ticket,parent,source,work);
             try(var result=new RefinementSmoothingAdapter().smooth(bound,strength==RefinementControls.Strength.STRONG?SmoothingModels.Preset.STRONG_2PX:SmoothingModels.Preset.MEDIUM_1PX,work,probe)) {
                 progress.smoothingReceipt=Optional.of(result.receipt());progress.smoothingProtocol=Optional.of(source.inputHashProtocol());

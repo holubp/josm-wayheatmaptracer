@@ -106,7 +106,7 @@ class WorkflowSourcePreparationDiagnosticsTest {
     }
     @ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(ints = {8, 48})
-    void managedFailureExportsItsOwnPhysicalReservationBeforeAnyNativeCall(int availableMiB) throws Exception {
+    void managedSelectedOnlyPreparationRespectsPhysicalHeadroom(int availableMiB) throws Exception {
         var decoder = new TileDecoderClassifier();
         var work = new LinkedBlockingQueue<Runnable>();
         var publications = new LinkedBlockingQueue<Runnable>();
@@ -140,15 +140,20 @@ class WorkflowSourcePreparationDiagnosticsTest {
                 }
                 var diagnostic = workflow[0].latestAttemptDiagnostics().orElseThrow();
                 assertEquals(RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT, diagnostic.cause(), workflow[0]::computationEvidence);
-                assertEquals(0, workflow[0].actualNativeCalls());
                 SwingUtilities.invokeAndWait(() -> assertFalse(review[0].dataSet().isModified()));
+                if (availableMiB == 48) {
+                    assertTrue(workflow[0].actualNativeCalls() > 0,
+                            "Preparing only the chosen detector leaves room to enter the actual engine");
+                    return;
+                }
+                assertEquals(0, workflow[0].actualNativeCalls());
                 Path file = temp.resolve("managed-memory-" + availableMiB + ".zip");
                 DiagnosticsRegistry.writeLatest(file.toFile());
                 var archive = Format15ArchiveReader.read(file);
                 var artifact = archive.artifact(RefinementLineageCodec.ARTIFACT).orElseThrow();
                 var json = jakarta.json.Json.createReader(new java.io.ByteArrayInputStream(artifact.bytes())).readObject();
                 var source = json.getJsonObject("latestPublication").getJsonObject("sourcePreparation");
-                var observedPhase = availableMiB == 8 ? "ACQUISITION" : "SOURCE_PREPARATION";
+                var observedPhase = "ACQUISITION";
                 assertEquals(observedPhase, diagnostic.phase().name(), workflow[0]::computationEvidence);
                 var failure = source.getJsonObject("failure");
                 assertNotNull(failure, () -> "Expected physical refusal at " + observedPhase + " in " + source);

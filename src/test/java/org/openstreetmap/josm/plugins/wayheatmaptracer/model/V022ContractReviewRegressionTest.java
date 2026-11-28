@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -11,6 +12,9 @@ import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /** Regressions for counterexamples found by the independent CP01 contract review. */
 class V022ContractReviewRegressionTest {
@@ -52,6 +56,34 @@ class V022ContractReviewRegressionTest {
         EvidenceSnapshot second = evidence(new double[] {0.0, 0.2, 0.4, 0.9});
 
         assertNotEquals(first.canonicalHash(), second.canonicalHash());
+    }
+
+    @Test
+    void oneSmoothingOperationReusesOnlyItsImmutableBeforeSnapshotHash() {
+        var key = node(1);
+        var original = Map.<PrimitiveKey, DetachedPrimitive>of(key, detachedNode(key, 42.0));
+        var changed = Map.<PrimitiveKey, DetachedPrimitive>of(key, detachedNode(key, 42.0001));
+        var authority = closure(original.keySet(), Set.of(), Set.of(key), Map.of(), List.of());
+        var before = new NetworkSnapshot("before", SnapshotRole.CAPTURED_BEFORE, "dataset", 1,
+                authority, original, V022SnapshotFixtures.closedWorldReferrerWatches(original));
+        var other = new NetworkSnapshot("other", SnapshotRole.CAPTURED_BEFORE, "dataset", 1,
+                authority, changed, V022SnapshotFixtures.closedWorldReferrerWatches(changed));
+        var ledger = AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            var work = new GeometryWorkContext(100_000, AttemptMemoryLedger.MAX_BYTES, Long.MAX_VALUE,
+                    CancellationProbe.NONE, owner);
+            try (var memo = before.memoizeBeforeHash(work)) {
+                assertEquals(before.canonicalHash(), before.canonicalHash(work));
+                long first = work.visits();
+                assertEquals(before.canonicalHash(), before.canonicalHash(work));
+                assertEquals(1, work.visits() - first);
+                assertNotEquals(before.canonicalHash(work), other.canonicalHash(work));
+            }
+            long closed = work.visits();
+            assertEquals(before.canonicalHash(), before.canonicalHash(work));
+            assertTrue(work.visits() - closed > 1);
+        }
+        assertEquals(0, ledger.currentBytes());
     }
 
     @Test

@@ -325,8 +325,14 @@ class LegacyVisibleRefinementBootstrapTest {
                     current.select(other);alternative.set(new LegacyRefinementBootstrap().captureForSmoothingFromOriginal(current,coordinator,alternativeWork,oldSeed.get()));
                 });
                 assertSame(oldSeed.get().facts(),alternative.get().facts());assertNotEquals(later.get().selectedSource(),alternative.get().selectedSource());
-                var alternativeBound=new LegacyRefinementBootstrap().completeForSmoothing(alternative.get(),coordinator,alternativeWork,oldRoot);
-                assertSame(oldRoot,alternativeBound.root());assertEquals(alternative.get().selectedSource(),alternativeBound.source().source());assertEquals(before,calls.get());
+                var alternateCandidate=new LegacyRefinementBootstrap().materializeLegacyChoice(
+                        oldSeed.get(),alternative.get().selectedChoice(),owner);
+                var alternateRoot=new LegacyRefinementBootstrap.Root(authority,
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Stage.root(
+                                List.of(alternateCandidate),alternateCandidate.id()),oldRoot.receipt(),oldRoot.originalConversion());
+                var alternativeBound=new LegacyRefinementBootstrap().completeForSmoothing(alternative.get(),coordinator,alternativeWork,alternateRoot);
+                assertSame(alternateRoot,alternativeBound.root());assertSame(authority,alternativeBound.root().authority());
+                assertEquals(alternative.get().selectedSource(),alternativeBound.source().source());assertEquals(before,calls.get());
                 coordinator.updateActiveGeneration(new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(coordinator.activeGenerationValue()+1));
                 assertThrows(IllegalStateException.class,alternativeBound.source()::requireCurrent);
                 SwingUtilities.invokeAndWait(()->assertThrows(IllegalStateException.class,()->new LegacyRefinementBootstrap().captureForSmoothingFromOriginal(review.get(),coordinator,alternativeWork,oldSeed.get())));

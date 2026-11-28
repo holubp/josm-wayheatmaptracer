@@ -37,6 +37,75 @@ class V022MetricRegionYMembershipTest {
     }
 
     @Test
+    void guardedPointSamplingSkipsFarGroupsSharingTheSameYBounds() {
+        var polygons = new ArrayList<List<MetricPoint>>();
+        for (int i=0; i<100; i++)
+            polygons.add(MetricRegion.rectangle(10+4*i,-2,12+4*i,2).polygons().get(0));
+        polygons.add(MetricRegion.rectangle(-2,-2,2,2).polygons().get(0));
+        var region = new MetricRegion(polygons);
+        var ledger = AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            var work = new GeometryWorkContext(14_000, AttemptMemoryLedger.MAX_BYTES,
+                    Long.MAX_VALUE, CancellationProbe.NONE, owner);
+            try (var scope = PostprocessingValidationWork.openGrowingScratch(work)) {
+                for (int repetition=0; repetition<70; repetition++) {
+                    assertTrue(region.contains(new MetricPoint(0,0)));
+                    assertTrue(region.contains(new MetricPoint(Math.nextDown(2+1e-9),0)));
+                    assertFalse(region.contains(new MetricPoint(Math.nextUp(2+1e-9),0)));
+                }
+            }
+            assertEquals(0,owner.currentBytes());
+        }
+    }
+
+    @Test
+    void guardedPointAndSegmentPredicatesMatchOnPathologicalBoundaries() {
+        var fixture = List.of(List.of(new MetricPoint(-3,-2),new MetricPoint(5,-1),
+                new MetricPoint(2,3),new MetricPoint(1,.5),new MetricPoint(-4,3)),
+                List.of(new MetricPoint(20,0),new MetricPoint(24,Double.MIN_VALUE),
+                        new MetricPoint(26,3),new MetricPoint(19,3)),
+                MetricRegion.rectangle(-1e300,-1e300,1e300,1e300).polygons().get(0),
+                List.of(new MetricPoint(-1e308,0),new MetricPoint(1e308,2),
+                        new MetricPoint(1e308,3),new MetricPoint(-1e308,3)));
+        var remoteEvent = List.of(MetricRegion.rectangle(-6,-1,-1.5e-9,1).polygons().get(0),
+                MetricRegion.rectangle(1.5e-9,-1,6,1).polygons().get(0),
+                MetricRegion.rectangle(0,5e-9,.1,100).polygons().get(0),
+                MetricRegion.rectangle(100,100,101,101).polygons().get(0));
+        var random = new Random(26319);
+        var ledger = AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            var work = new GeometryWorkContext(1_000_000,AttemptMemoryLedger.MAX_BYTES,
+                    Long.MAX_VALUE,CancellationProbe.NONE,owner);
+            for (var polygons : List.of(fixture.subList(0,2),fixture.subList(2,4),fixture.subList(3,4),remoteEvent)) {
+                var withFiller = new ArrayList<>(polygons);
+                while (withFiller.size()<4) {
+                    int next=withFiller.size();
+                    withFiller.add(MetricRegion.rectangle(-20-next,-20,-19-next,-19).polygons().get(0));
+                }
+                var region=new MetricRegion(withFiller);
+                var samples=new ArrayList<MetricPoint>();
+                for (var polygon:withFiller) for (var vertex:polygon) {
+                    samples.add(vertex);
+                    samples.add(new MetricPoint(vertex.xMeters()-1e-9,vertex.yMeters()+1e-9));
+                    samples.add(new MetricPoint(Math.nextUp(vertex.xMeters()+1e-9),vertex.yMeters()));
+                }
+                for(int index=0;index<300;index++)
+                    samples.add(new MetricPoint(random.nextDouble()*60-30,random.nextDouble()*10-5));
+                var expected=samples.stream().map(region::contains).toList();
+                var before=new MetricPoint(-5,0);
+                var after=new MetricPoint(5,0);
+                boolean expectedSegment=V022MetricRegionSegmentWorkTest.historicalSegment(region,before,after);
+                boolean expectedReverse=V022MetricRegionSegmentWorkTest.historicalSegment(region,after,before);
+                try (var scope=PostprocessingValidationWork.openGrowingScratch(work)) {
+                    assertEquals(expected,samples.stream().map(region::contains).toList());
+                    assertEquals(expectedSegment,region.containsSegment(before,after));
+                    assertEquals(expectedReverse,region.containsSegment(after,before));
+                }
+            }
+        }
+    }
+
+    @Test
     void repeatedExactInteriorProofsFitUnchangedSharedWorkLimit() {
         var region = remoteFirst();
         var ledger = AttemptMemoryLedger.production();

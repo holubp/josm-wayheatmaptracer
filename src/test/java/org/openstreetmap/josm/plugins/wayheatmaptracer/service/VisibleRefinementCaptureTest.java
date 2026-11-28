@@ -327,7 +327,9 @@ public class VisibleRefinementCaptureTest {
   }
  }
  @Test void completedRecaptureFeedsTheSameFrozenScalarGridWithoutChangingRootAuthority() {
-  var s=VisibleEvidencePlanTest.source(TrackerMode.CORRIDOR_AWARE);var epoch=new VisibleSourceEpoch();var ledger=AttemptMemoryLedger.production();
+  var s=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementAcquisitionTest.selectedPlan(
+      VisibleEvidencePlanTest.source(TrackerMode.CORRIDOR_AWARE),"blue","blue",false);
+  var epoch=new VisibleSourceEpoch();var ledger=AttemptMemoryLedger.production();
   try(var owner=ledger.rootOwner()) {
    var work=VisibleEvidencePlanTest.work(owner);var o=VisibleEvidencePlanTest.original(s,epoch,1);
    var metadata=VisibleEvidencePlanTest.factual(new LegacyVisibleSource(o.minimumEast(),o.minimumNorth(),o.maximumEast(),o.maximumNorth(),10,6,o.nativePitchMeters(),o.projectionCode(),o.sourceReceipt(),o.decisionRadiusMeters(),o.sampleStepMeters()));

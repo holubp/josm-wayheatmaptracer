@@ -17,7 +17,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.*;
 class MarginalPayloadAdmissionTest {
     @TempDir java.nio.file.Path temp;
     @Test void newlySharedGroupCountsOnceHistoryCountsZeroAndDifferentMappingsRemainSeparate() throws Exception {
-        var parent=RefinementSourcePlannerTest.parent();var ticket=RefinementSourcePlannerTest.ticket(parent);var plan=RefinementSourcePlanner.plan(ticket,RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.COLOR_MAPPING,false),parent);
+        var parent=RefinementAcquisitionTest.withSelectedSource(RefinementSourcePlannerTest.parent(),"blue","blue",false);
+        var ticket=RefinementSourcePlannerTest.ticket(parent);var plan=RefinementSourcePlanner.plan(ticket,RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.COLOR_MAPPING,false),parent);
         var image=new BufferedImage(512,512,BufferedImage.TYPE_INT_ARGB);for(int y=0;y<512;y++)for(int x=0;x<512;x++)image.setRGB(x,y,0xff8090ff);
         var png=new ByteArrayOutputStream();ImageIO.write(image,"png",png);var bytes=png.toByteArray();var decoder=new TileDecoderClassifier();
         try(var coordinator=new TileFetchCoordinator((r,c)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",bytes,null,Duration.ZERO,""),new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults());var owner=AttemptMemoryLedger.production().rootOwner()) {
