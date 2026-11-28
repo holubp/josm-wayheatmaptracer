@@ -1322,7 +1322,13 @@ public final class PublicGuiSmokeMain {
             if (current == root) reachedRoot = true;
             if (current != control) {
                 var inAncestor = SwingUtilities.convertRectangle(control, rectangle, current);
-                requireFooterBounds(new java.awt.Rectangle(0, 0, current.getWidth(), current.getHeight()), inAncestor);
+                try {
+                    requireFooterBounds(new java.awt.Rectangle(0, 0, current.getWidth(), current.getHeight()), inAncestor);
+                } catch (IllegalStateException clipped) {
+                    throw new IllegalStateException("Clipped review control " + control.getName() + " at "
+                            + inAncestor + " inside " + current.getClass().getSimpleName()
+                            + " of size " + current.getSize(), clipped);
+                }
             }
             if (windowBoundary.test(current)) break;
         }

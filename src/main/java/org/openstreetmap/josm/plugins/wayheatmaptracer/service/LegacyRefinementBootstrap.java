@@ -180,9 +180,8 @@ public final class LegacyRefinementBootstrap {
                     inputHash=RasterEvidenceCapture.hashOriginalArgbSet(originals,work,owner);currentness.run();
                     try(var scalarMemory=work.reserve("original-aggregate-scalar",AttemptMemoryLedger.arrayBytes(count,8))) {
                         var scalar=new double[Math.toIntExact(count)];
-                        Runnable visitPalette=()->work.visit(GeometryWorkContext.Kind.MAP,1);
                         for(int y=0;y<height;y++)for(int x=0;x<width;x++)
-                            scalar[y*width+x]=RenderedHeatmapSampler.aggregatedSourceIntensityAt(images,x,y,visitPalette);
+                            scalar[y*width+x]=mapAggregatePixel(images,x,y,work);
                         admitted=capture.captureWithMetricScalarSource(facts.network().snapshotId()+"/smoothing-source/"+selected.mapping(),mosaic.image(),valid,scalar,facts.sourceGeographic(),facts.sourceMetric(),transform,grid,
                             EvidenceResolution.nativeSource(mosaic.parameters().metersPerPixel(),grid.pitchMeters()),facts.decisionRadiusMeters(),facts.sourceIdentity(),lineage.acquisitionKind(),"native",lineage,CancellationProbe.NONE,work,owner);
                     }
@@ -232,6 +231,12 @@ public final class LegacyRefinementBootstrap {
         var candidate=root.stage().candidates().stream().filter(c->c.id().value().equals(seed.selectedChoice())).findFirst().orElseThrow();
         source.requireCurrent();return new SmoothingRoot(root,candidate,source);
         }
+    }
+
+    /** Admit every palette read before invoking the unchanged Legacy scalar fusion. */
+    static double mapAggregatePixel(Map<String,java.awt.image.BufferedImage> images,int x,int y,GeometryWorkContext work) {
+        work.visit(GeometryWorkContext.Kind.MAP,images.size());
+        return RenderedHeatmapSampler.aggregatedSourceIntensityAt(images,x,y);
     }
 
     private static void requireCovered(SupportedInputRasterTransform transform,MetricRasterGrid grid,int width,int height) {

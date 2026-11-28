@@ -53,26 +53,33 @@ class ManagedModernPreviewSourceTest {
     void meteredAggregateVisitsEachPaletteBeforeItsOnePixelRead() {
         var images = new java.util.LinkedHashMap<String, BufferedImage>();
         var reads = new AtomicInteger();
-        var visits = new AtomicInteger();
-        var metered = new AtomicBoolean();
-        for (var palette : List.of("bluered", "hot", "blue", "purple", "gray")) {
-            var image = new BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB) {
-                @Override public int getRGB(int x, int y) {
-                    int read = reads.incrementAndGet();
-                    if (metered.get()) assertEquals(read, visits.get());
-                    return super.getRGB(x, y);
-                }
-            };
-            image.setRGB(0, 1, 0xff772add + images.size());
-            images.put(palette, image);
+        var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            var work = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(
+                    5, Long.MAX_VALUE, Long.MAX_VALUE, () -> false, owner);
+            var metered = new AtomicBoolean();
+            for (var palette : List.of("bluered", "hot", "blue", "purple", "gray")) {
+                var image = new BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB) {
+                    @Override public int getRGB(int x, int y) {
+                        reads.incrementAndGet();
+                        if (metered.get()) assertEquals(5, work.visits());
+                        return super.getRGB(x, y);
+                    }
+                };
+                image.setRGB(0, 1, 0xff772add + images.size());
+                images.put(palette, image);
+            }
+            double expected = RenderedHeatmapSampler.aggregatedSourceIntensityAt(images, 0, 1);
+            assertEquals(5, reads.getAndSet(0));
+            metered.set(true);
+            double measured = LegacyRefinementBootstrap.mapAggregatePixel(images, 0, 1, work);
+            assertEquals(5, reads.get());
+            assertEquals(5, work.visits());
+            assertEquals(Double.doubleToRawLongBits(expected), Double.doubleToRawLongBits(measured));
+            assertThrows(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached.class,
+                    () -> LegacyRefinementBootstrap.mapAggregatePixel(images, 0, 1, work));
+            assertEquals(5, reads.get(), "Refusal must precede all further palette reads");
         }
-        double expected = RenderedHeatmapSampler.aggregatedSourceIntensityAt(images, 0, 1);
-        assertEquals(5, reads.getAndSet(0));
-        metered.set(true);
-        double measured = RenderedHeatmapSampler.aggregatedSourceIntensityAt(images, 0, 1, visits::incrementAndGet);
-        assertEquals(5, reads.get());
-        assertEquals(5, visits.get());
-        assertEquals(Double.doubleToRawLongBits(expected), Double.doubleToRawLongBits(measured));
     }
 
     @Test

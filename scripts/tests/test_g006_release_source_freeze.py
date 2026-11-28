@@ -1,8 +1,9 @@
-"""G006 released-source freeze with reviewed G004 amendments to RC15 pins.
+"""G006 released-source freeze with reviewed G004 and G010 amendments to RC15 pins.
 
 The Legacy58 path set and original RC15 digests remain historical authority;
 two reviewed G004 capture-file digests override those RC15 pins. Embedded
-digests keep this guard usable in shallow public CI checkouts.
+digests keep this guard usable in shallow public CI checkouts. G010 changes
+only the lifetime of B's temporary binding-workspace reservation.
 """
 import hashlib
 import pathlib
@@ -18,6 +19,10 @@ B_DIR = "src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/service/t
 G004_REVIEWED_SOURCE_SHA256 = {
     "src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/ProbabilisticTraceEngine.java":
         "ecf57b8bd8ad06f89afa304111837c9832d1f51c519b1cc8909611e938efc28e",
+}
+G010_REVIEWED_B_OWNERSHIP_SHA256 = {
+    f"{B_DIR}/ProbabilisticTraceEngine.java":
+        "a99e798b42abb8026b23f15e10699bbcfe4dc88a0683840112d50921c3ad6fc8",
 }
 SERVICE_DIR = "src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/service"
 G004_REVIEWED_LEGACY_CAPTURE_SHA256 = {
@@ -207,8 +212,9 @@ class ReleasedSourceFreezeTest(unittest.TestCase):
         self.assertEqual(set(B_SHA256), actual, "B source additions and deletions are forbidden")
         engine_path = f"{B_DIR}/ProbabilisticTraceEngine.java"
         self.assertEqual({engine_path}, set(G004_REVIEWED_SOURCE_SHA256))
+        self.assertEqual({engine_path}, set(G010_REVIEWED_B_OWNERSHIP_SHA256))
         self.assertIn(engine_path, B_SHA256)
-        expected = {**B_SHA256, **G004_REVIEWED_SOURCE_SHA256}
+        expected = {**B_SHA256, **G004_REVIEWED_SOURCE_SHA256, **G010_REVIEWED_B_OWNERSHIP_SHA256}
         self.assert_bytes(expected)
 
     def test_guard_rejects_changed_unlisted_b_file(self):
@@ -229,9 +235,8 @@ class ReleasedSourceFreezeTest(unittest.TestCase):
                 case.run(result)
             self.assertEqual([], result.errors)
             self.assertEqual(1, len(result.failures))
-            expected_digest = G004_REVIEWED_SOURCE_SHA256.get(
-                f"{B_DIR}/{filename}", B_SHA256[f"{B_DIR}/{filename}"]
-            )
+            expected = {**B_SHA256, **G004_REVIEWED_SOURCE_SHA256, **G010_REVIEWED_B_OWNERSHIP_SHA256}
+            expected_digest = expected[f"{B_DIR}/{filename}"]
             self.assertIn(expected_digest, result.failures[0][1])
 
     def test_protected_legacy58_bytes_match_rc15_except_reviewed_g004_capture(self):
