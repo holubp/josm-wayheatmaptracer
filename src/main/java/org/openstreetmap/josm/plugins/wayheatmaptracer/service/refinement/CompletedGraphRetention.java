@@ -10,7 +10,11 @@ final class CompletedGraphRetention {
     // This is transient metadata capacity, charged to the unchanged operation ledger, not a new work pool.
     private static final long METADATA_BYTES=64L*1024*1024;
     private static final int METADATA_ENTRIES=(int)((METADATA_BYTES-4096)/512);
-    private static final class InventoryCapacity {
+    // Exchange stages references to existing objects, not the recursive graph inventory.
+    // 256 bytes per slot covers list/identity-table references, boxed counts, HashMap nodes
+    // (including collision tree nodes), and spare/new map capacity while a table grows.
+    private static final long EXCHANGE_SLOT_BYTES=256L;
+    static final class InventoryCapacity {
         private final AttemptMemoryLedger.Owner owner;
         private long admitted;
         private boolean exchanging;
@@ -26,9 +30,15 @@ final class CompletedGraphRetention {
         void prepareExchange(RefinementRootAuthority.Inventory.Traversal traversal,
                 AttemptMemoryLedger.Owner working,AttemptMemoryLedger.Owner destination) {
             long exchangeSlots=working.retainedExchangeEntries(destination);
-            // One additional reservation made by this step is in the metadata owner
-            // outside the retiring subtree, and does not add a ledger charge identity.
-            admit(Math.addExact(traversal.entries(),exchangeSlots));
+            long combinedSlots=Math.addExact(traversal.entries(),exchangeSlots);
+            if(combinedSlots>METADATA_ENTRIES)throw new RefinementSession.Refused(RefinementModels.RefusalReason.PAYLOAD_LIMIT);
+            long rounded=Math.min(METADATA_ENTRIES,((combinedSlots+63)/64)*64);
+            // The graph inventory remains admitted while the independent exchange tables are staged.
+            long exchangeBytes=Math.addExact(4096L,Math.multiplyExact(EXCHANGE_SLOT_BYTES,rounded-traversal.entries()));
+            long graphBytes=Math.addExact(4096L,Math.multiplyExact(512L,admitted));
+            if(exchangeBytes>METADATA_BYTES-graphBytes)throw new RefinementSession.Refused(RefinementModels.RefusalReason.PAYLOAD_LIMIT);
+            owner.reserve(exchangeBytes);
+            admitted=rounded;
             exchanging=true;
         }
     }

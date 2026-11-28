@@ -116,7 +116,7 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
         String hashProtocol=RasterEvidenceCapture.ORIGINAL_ARGB_PROTOCOL;
         if(request.aggregate()) {
             var sources=capture.sourceRasters();
-            if(sources==null||!sources.provenCompleteAggregate(context.coordinator)||!sources.allRequiredZoomsWereAvailableAtAcquisition())
+            if(sources==null||!sources.provenCompleteAggregate(context.coordinator,work)||!sources.allRequiredZoomsWereAvailableAtAcquisition())
                 throw new IllegalStateException("Complete original aggregate input unavailable");
             var selected=sources.selectedRaster();width=selected.image().getWidth();height=selected.image().getHeight();transform=selected.transform();
             hash=hashes.get(sources);

@@ -400,7 +400,10 @@ public final class PublicGuiSmokeMain {
         clickAndAwaitStage(report,preview,owner,"refineA",StageKind.REFINE_A);
         checkModernLayout(preview, true, true);
         var firstParent=onEventThread(()->owner.currentStage().parentChoice().orElseThrow());int calls=owner.actualNativeCalls();
-        onEventThread(()->{requiredNamed(preview.getContentPane(),"undo",javax.swing.JButton.class).doClick();return null;});
+        int firstSource=onEventThread(()->{
+            requiredNamed(preview.getContentPane(),"undo",javax.swing.JButton.class).doClick();
+            return requiredNamed(preview.getContentPane(),"refinement-root-source",JComboBox.class).getSelectedIndex();
+        });
         awaitIntervalSelection(preview,owner,()->{
             var sources=requiredNamed(preview.getContentPane(),"refinement-root-source",JComboBox.class);
             if(!sources.isShowing()||sources.getItemCount()<2)throw new IllegalStateException("Native interval fixture needs actual source alternatives");sources.setSelectedIndex(1);
@@ -410,7 +413,12 @@ public final class PublicGuiSmokeMain {
             var id=owner.selectedChoiceIdentity();requiredNamed(preview.getContentPane(),"redo",javax.swing.JButton.class).doClick();
             if(!owner.currentStage().parentChoice().orElseThrow().equals(firstParent))throw new IllegalStateException("Root selection rewrote saved descendant lineage");
             requiredNamed(preview.getContentPane(),"undo",javax.swing.JButton.class).doClick();
-            if(!id.equals(owner.selectedChoiceIdentity())||requiredNamed(preview.getContentPane(),"refinement-root-source",JComboBox.class).getSelectedIndex()!=1)throw new IllegalStateException("Cached native interval root controls were not restored");return id;
+            var sources=requiredNamed(preview.getContentPane(),"refinement-root-source",JComboBox.class);
+            if(!sources.isShowing()||!firstParent.value().equals(owner.selectedChoiceIdentity())
+                    ||sources.getSelectedIndex()!=firstSource)throw new IllegalStateException("Undo did not restore the saved interval parent and its controls");
+            sources.setSelectedIndex(1);
+            if(!id.equals(owner.selectedChoiceIdentity()))throw new IllegalStateException("The alternate interval detector is no longer available");
+            return id;
         });
         requireUnchanged(fixture,original,originalUndo);
         onEventThread(()->{if(owner.actualNativeCalls()!=calls)throw new IllegalStateException("Cached interval navigation performed inference");preview.dispatchEvent(new WindowEvent(preview,WindowEvent.WINDOW_CLOSING));return null;});

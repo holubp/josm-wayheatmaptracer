@@ -24,6 +24,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRasterGrid;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.MetricCorridorRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CancellationToken;
@@ -160,22 +161,38 @@ public final class ManagedModernPreviewSource {
         private final Map<String, Raster> rasters;
         private final AlignmentTileSourcePlan plan;
         private final byte[] rasterFingerprint;
+        private final Map<String, String> refinementFingerprints;
+        private final TileBounds refinementBounds;
         private final Map<Integer, ZoomReceipt> zoomReceipts;
         private AcquisitionProof(TileFetchCoordinator owner, Map<String, Raster> rasters,
                 AlignmentTileSourcePlan plan, Map<Integer, ZoomReceipt> zoomReceipts) {
-            this(owner, rasters, plan, zoomReceipts, null);
+            this(owner, rasters, plan, zoomReceipts, Map.of(), null);
         }
         private AcquisitionProof(TileFetchCoordinator owner, Map<String, Raster> rasters,
-                AlignmentTileSourcePlan plan, Map<Integer, ZoomReceipt> zoomReceipts, GeometryWorkContext work) {
+                AlignmentTileSourcePlan plan, Map<Integer, ZoomReceipt> zoomReceipts,
+                Map<String, String> refinementFingerprints, TileBounds refinementBounds) {
             this.owner = owner;
             this.rasters = Map.copyOf(rasters);
             this.plan = plan;
             this.zoomReceipts = Map.copyOf(zoomReceipts);
-            this.rasterFingerprint = SourceRasters.fingerprint(rasters, work);
+            this.refinementFingerprints = Map.copyOf(refinementFingerprints);
+            this.refinementBounds = refinementBounds;
+            if (!this.refinementFingerprints.isEmpty() && !rasters.keySet().equals(this.refinementFingerprints.keySet())) {
+                throw new IllegalArgumentException("Refinement aggregate fingerprints are incomplete");
+            }
+            this.rasterFingerprint = this.refinementFingerprints.isEmpty() ? SourceRasters.fingerprint(rasters) : null;
         }
         private boolean matches(Map<String, Raster> candidate, AlignmentTileSourcePlan candidatePlan) {
-            return matchesReferences(candidate, candidatePlan)
-                    && MessageDigest.isEqual(rasterFingerprint, SourceRasters.fingerprint(candidate));
+            return matches(candidate,candidatePlan,PostprocessingValidationWork.current());
+        }
+        private boolean matches(Map<String, Raster> candidate, AlignmentTileSourcePlan candidatePlan,
+                GeometryWorkContext work) {
+            if (!matchesReferences(candidate, candidatePlan)) return false;
+            if (rasterFingerprint != null) {
+                return MessageDigest.isEqual(rasterFingerprint, SourceRasters.fingerprint(candidate,work));
+            }
+            return candidate.entrySet().stream().allMatch(entry -> matchesRasterReceipt(entry.getValue(),
+                    refinementBounds, refinementFingerprints.get(entry.getKey()), work));
         }
         private boolean matchesReferences(Map<String, Raster> candidate,
                 AlignmentTileSourcePlan candidatePlan) {
@@ -291,9 +308,7 @@ public final class ManagedModernPreviewSource {
                         || selected.image().getHeight() != raster.image().getHeight()
                         || selected.zoom() != raster.zoom()
                         || !selected.generation().equals(raster.generation())
-                        || !selected.sourceIdentity().equals(raster.sourceIdentity())
-                        || aggregateAvailability == AggregateAvailability.COMPLETE
-                                && !allValid(raster.validity())) {
+                        || !selected.sourceIdentity().equals(raster.sourceIdentity())) {
                     throw new IllegalArgumentException("Managed palette rasters do not share one source frame");
                 }
             }
@@ -327,8 +342,11 @@ public final class ManagedModernPreviewSource {
         }
         public Raster selectedRaster() { return palettes.get(plan.selectedColor()); }
         public boolean provenCompleteAggregate(TileFetchCoordinator owner) {
+            return provenCompleteAggregate(owner,PostprocessingValidationWork.current());
+        }
+        public boolean provenCompleteAggregate(TileFetchCoordinator owner,GeometryWorkContext work) {
             return aggregateAvailability == AggregateAvailability.COMPLETE
-                    && proof != null && proof.owner == owner && proof.matches(palettes, plan);
+                    && proof != null && proof.owner == owner && proof.matches(palettes, plan,work);
         }
         /** Converts every required native palette and fuses their normalized scalar values. */
         public double[] completeAggregateScalars(CancellationProbe cancellation) {
@@ -415,7 +433,14 @@ public final class ManagedModernPreviewSource {
         }
     }
 
-    private static byte[] rasterDigest(Raster raster, int zoom, TileBounds bounds) {
+    private static boolean matchesRasterReceipt(Raster raster, TileBounds bounds, String expected,
+            GeometryWorkContext work) {
+        return expected.equals(java.util.HexFormat.of().formatHex(rasterDigest(raster, raster.zoom(), bounds, work).digest()));
+    }
+
+    private record RasterDigest(byte[] digest, boolean completeSupport) { }
+
+    private static RasterDigest rasterDigest(Raster raster, int zoom, TileBounds bounds, GeometryWorkContext work) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             digest.update(raster.palette().getBytes(StandardCharsets.US_ASCII));
@@ -425,16 +450,25 @@ public final class ManagedModernPreviewSource {
             int width = raster.image().getWidth();
             int[] row = new int[width];
             ByteBuffer bytes = ByteBuffer.allocate(Math.multiplyExact(width, 4));
-            boolean[] support = raster.validity();
+            boolean[] support = raster.validity;
+            boolean completeSupport = true;
             for (int y = 0; y < raster.image().getHeight(); y++) {
-                raster.image().getRGB(0, y, width, 1, row, 0, width);
                 bytes.clear();
-                for (int argb : row) bytes.putInt(argb);
+                for(int x=0;x<width;x+=256) {
+                    int length=Math.min(256,width-x);
+                    if(work!=null)work.visit(GeometryWorkContext.Kind.HASH,length);
+                    raster.image().getRGB(x,y,length,1,row,x,width);
+                    for(int column=x;column<x+length;column++)bytes.putInt(row[column]);
+                }
                 digest.update(bytes.array());
                 int start = y * width;
-                for (int x = 0; x < width; x++) digest.update(support[start + x] ? (byte) 1 : (byte) 0);
+                for (int x = 0; x < width; x++) {
+                    boolean valid = support[start + x];
+                    digest.update(valid ? (byte) 1 : (byte) 0);
+                    completeSupport &= valid;
+                }
             }
-            return digest.digest();
+            return new RasterDigest(digest.digest(),completeSupport);
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 is unavailable", exception);
         }
@@ -495,12 +529,12 @@ public final class ManagedModernPreviewSource {
 
     private SourceRasters acquireSources(Request request, AlignmentTileSourcePlan plan,
             CredentialSnapshot credentials, CancellationProbe cancellation,RefinementSourceBudget budget) {
-        return acquireSources(request,plan,credentials,cancellation,budget,null);
+        return acquireSources(request,plan,credentials,cancellation,budget,null,null);
     }
 
     private SourceRasters acquireSources(Request request, AlignmentTileSourcePlan plan,
             CredentialSnapshot credentials, CancellationProbe cancellation,RefinementSourceBudget budget,
-            Map<Integer,ZoomGrid> preparedGrids) {
+            Map<Integer,ZoomGrid> preparedGrids,GeometryWorkContext work) {
         if (javax.swing.SwingUtilities.isEventDispatchThread()) {
             throw new IllegalStateException("Managed preview acquisition must execute off the EDT");
         }
@@ -552,10 +586,10 @@ public final class ManagedModernPreviewSource {
                         : AggregateAvailability.BUDGET_UNAVAILABLE;
         AggregateFailure failure = null;
         LinkedHashSet<String> inferenceAcquired = new LinkedHashSet<>();
-        boolean selectedComplete = selectedAcquisition.failure() == null
-                && allValid(selectedAcquisition.raster().validity());
+        var selectedDigest = rasterDigest(selected, inferenceZoom, inferenceGrid.bounds(), work);
+        boolean selectedComplete = selectedAcquisition.failure() == null && selectedDigest.completeSupport();
         if (selectedComplete) inferenceAcquired.add(request.palette());
-        byte[] inferenceDigest = rasterDigest(selected, inferenceZoom, inferenceGrid.bounds());
+        byte[] inferenceDigest = selectedDigest.digest();
         boolean inferencePaletteSetComplete = selectedComplete;
         if (aggregateRequested && allFramesBudgetAvailable) {
             if (!selectedComplete) {
@@ -572,7 +606,11 @@ public final class ManagedModernPreviewSource {
                     requireActiveGeneration(request);
                     PaletteAcquisition acquired = acquirePalette(request, inferenceZoom, inferenceGrid,
                             palette, credentials, cancellation, true,budget);
-                    if (acquired.failure() != null || !allValid(acquired.raster().validity())) {
+                    var paletteRaster = acquired.failure() == null
+                            ? toRaster(acquired.raster(), transform, request, palette, inferenceZoom) : null;
+                    var paletteDigest = paletteRaster == null ? null
+                            : rasterDigest(paletteRaster, inferenceZoom, inferenceGrid.bounds(), work);
+                    if (paletteDigest == null || !paletteDigest.completeSupport()) {
                         availability = AggregateAvailability.PALETTE_UNAVAILABLE;
                         failure = new AggregateFailure(inferenceZoom, palette,
                                 acquired.failure() == null ? TileFetchStatus.DECODE_ERROR : acquired.failure());
@@ -581,11 +619,10 @@ public final class ManagedModernPreviewSource {
                         rasters.put(request.palette(), selected);
                         break;
                     }
-                    Raster paletteRaster = toRaster(acquired.raster(), transform, request, palette, inferenceZoom);
                     rasters.put(palette, paletteRaster);
                     inferenceAcquired.add(palette);
                     inferenceDigest = combineDigests(inferenceDigest,
-                            rasterDigest(paletteRaster, inferenceZoom, inferenceGrid.bounds()));
+                            paletteDigest.digest());
                 }
             }
         }
@@ -618,7 +655,7 @@ public final class ManagedModernPreviewSource {
                 continue;
             }
             PaletteVerification verification = verifyZoom(request, zoom, grids.get(zoom),
-                    plan.orderedColors(), credentials, cancellation,budget);
+                    plan.orderedColors(), credentials, cancellation,budget,work);
             receipts.put(zoom, new ZoomReceipt(zoom, plan.orderedColors(), verification.acquiredPalettes(),
                     verification.failure() == null ? ZoomAvailability.COMPLETE
                             : ZoomAvailability.PALETTE_UNAVAILABLE,
@@ -731,7 +768,10 @@ public final class ManagedModernPreviewSource {
         private final TileFetchCoordinator owner;
         private final Map<String, SourceRasters> sources;
         private final Map<String, RefinementStatus> outcomes;
-        private final Map<String, byte[]> fingerprints;
+        private final Map<String, String> fingerprints;
+        private final TileBounds inferenceBounds;
+        private boolean inputReferencesExposed;
+        private boolean inputReferencesClaimed;
         private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner memory;
         private final Request request;
         private final SourceRasters aggregate;
@@ -740,15 +780,15 @@ public final class ManagedModernPreviewSource {
         private RefinementSources(TileFetchCoordinator owner,Request request,Map<String,SourceRasters> sources,
                 Map<String,RefinementStatus> outcomes,SourceRasters aggregate,
                 org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner memory,
-                RefinementWorkReceipt work,Map<String,Map<Integer,ZoomReceipt>> receipts,GeometryWorkContext geometryWork) {
+                RefinementWorkReceipt work,Map<String,Map<Integer,ZoomReceipt>> receipts,
+                Map<String,String> fingerprints,TileBounds inferenceBounds) {
             this.work=work;var frozen=new LinkedHashMap<String,Map<Integer,ZoomReceipt>>();
             receipts.forEach((p,r)->frozen.put(p,Map.copyOf(r)));this.receipts=Collections.unmodifiableMap(frozen);
             this.owner=owner;this.request=request;this.memory=memory;
             this.sources=Collections.unmodifiableMap(new LinkedHashMap<>(sources));
             this.outcomes=Collections.unmodifiableMap(new LinkedHashMap<>(outcomes));this.aggregate=aggregate;
-            var digests=new LinkedHashMap<String,byte[]>();
-            sources.forEach((palette,value)->digests.put(palette,SourceRasters.fingerprint(value.palettes(),geometryWork)));
-            fingerprints=Collections.unmodifiableMap(digests);
+            this.fingerprints=Map.copyOf(fingerprints);
+            this.inferenceBounds=inferenceBounds;
         }
         public Map<String,RefinementStatus> sourceOutcomes(){return outcomes;}
         public RefinementWorkReceipt workReceipt(){return work;}
@@ -759,13 +799,15 @@ public final class ManagedModernPreviewSource {
         }
         public void requireCurrent(TileFetchCoordinator actualOwner) {
             if(!isCurrent(actualOwner))throw new IllegalStateException("Refinement source owner or generation is stale");
-            for(var entry:sources.entrySet())if(!MessageDigest.isEqual(fingerprints.get(entry.getKey()),
-                    SourceRasters.fingerprint(entry.getValue().palettes())))
+            for(var entry:sources.entrySet())if(!matchesRasterReceipt(entry.getValue().selectedRaster(),
+                    inferenceBounds,fingerprints.get(entry.getKey()),null))
                 throw new IllegalStateException("Refinement source pixels changed after acquisition");
         }
-        public Raster raster(String palette,TileFetchCoordinator actualOwner) {
+        public synchronized Raster raster(String palette,TileFetchCoordinator actualOwner) {
+            requireUnclaimed();
             requireCurrent(actualOwner);var value=sources.get(palette);
             if(value==null)throw new IllegalArgumentException("Refinement palette unavailable");
+            inputReferencesExposed=true;
             return value.selectedRaster();
         }
         public boolean completeAggregate(){return aggregate!=null&&isCurrent(owner)&&aggregate.provenCompleteAggregate(owner);}
@@ -793,10 +835,39 @@ public final class ManagedModernPreviewSource {
                 }
                 return aggregate.mapAggregate(cancellation, work);
             }
+
+            public void requireUnchanged(GeometryWorkContext work) {
+                requireMatchingInputs(owner,rasters,work);
+            }
         }
 
-        public VerifiedInputs verifiedInputs(TileFetchCoordinator actualOwner, String palette,
+        public synchronized VerifiedInputs verifiedInputs(TileFetchCoordinator actualOwner, String palette,
                 boolean allColors, GeometryWorkContext work) {
+            requireUnclaimed();
+            var inputs=selectedInputs(actualOwner,palette,allColors);
+            requireMatchingInputs(actualOwner,inputs,work);
+            inputReferencesExposed=true;
+            return new VerifiedInputs(inputs, allColors);
+        }
+
+        /** Exclusively consumes a new acquisition whose detached mosaics have never been exposed. */
+        public synchronized VerifiedInputs claimFreshInputs(TileFetchCoordinator actualOwner, String palette,
+                boolean allColors, GeometryWorkContext work) {
+            requireUnclaimed();
+            if(inputReferencesExposed||!memory.sharesLedgerWith(work.owner())) {
+                throw new IllegalStateException("Refinement inputs are not exclusively owned by this operation");
+            }
+            work.visit(GeometryWorkContext.Kind.BIND,1);
+            var inputs=selectedInputs(actualOwner,palette,allColors);
+            inputReferencesClaimed=true;
+            return new VerifiedInputs(inputs,allColors);
+        }
+
+        private void requireUnclaimed() {
+            if(inputReferencesClaimed)throw new IllegalStateException("Refinement raster inputs were already claimed");
+        }
+
+        private Map<String,Raster> selectedInputs(TileFetchCoordinator actualOwner,String palette,boolean allColors) {
             if (!isCurrent(actualOwner)) throw new IllegalStateException("Refinement source owner or generation is stale");
             if (allColors && !aggregateReceiptsComplete(actualOwner)) {
                 throw new IllegalStateException("Complete refinement aggregate unavailable");
@@ -805,13 +876,19 @@ public final class ManagedModernPreviewSource {
             for (String name : allColors ? BASE_PALETTES : List.of(palette)) {
                 var source = sources.get(name);
                 if (source == null) throw new IllegalArgumentException("Refinement palette unavailable");
-                if (!MessageDigest.isEqual(fingerprints.get(name), SourceRasters.fingerprint(source.palettes(), work))) {
-                    throw new IllegalStateException("Refinement source pixels changed after acquisition");
-                }
                 inputs.put(name, source.selectedRaster());
             }
+            return inputs;
+        }
+
+        private void requireMatchingInputs(TileFetchCoordinator actualOwner,Map<String,Raster> inputs,GeometryWorkContext work) {
+            if (!isCurrent(actualOwner)) throw new IllegalStateException("Refinement source owner or generation is stale");
+            for(var input:inputs.entrySet()) {
+                if (!matchesRasterReceipt(input.getValue(),inferenceBounds,fingerprints.get(input.getKey()),work)) {
+                    throw new IllegalStateException("Refinement source pixels changed after acquisition");
+                }
+            }
             if (!isCurrent(actualOwner)) throw new IllegalStateException("Refinement source generation changed");
-            return new VerifiedInputs(inputs, allColors);
         }
         public double[] aggregateScalars(CancellationProbe cancellation) {
             requireCurrent(owner);
@@ -909,7 +986,7 @@ public final class ManagedModernPreviewSource {
                 var plan=new AlignmentTileSourcePlan(palette,Set.of(palette),Set.of(),zooms,false);
                 SourceRasters result;
                 int requestsBefore=budget.tileRequests();activePalette=palette;requestsAtPaletteStart=requestsBefore;
-                try {result=acquireSources(single,plan,credentials,cancellation,budget,preparedGrids);}
+                try {result=acquireSources(single,plan,credentials,cancellation,budget,preparedGrids,work);}
                 catch(SourceBudgetRefused refused) {
                     if(budget.tileRequests()>requestsBefore)outcomes.put(palette,RefinementStatus.UNAVAILABLE);
                     break;
@@ -924,6 +1001,11 @@ public final class ManagedModernPreviewSource {
                     throw new IllegalStateException("Refinement source access invalidated");}
                 activePalette=null;
             }
+            // The single-palette inference receipt already covers the exact decoded raster and support.
+            var fingerprints=new LinkedHashMap<String,String>();
+            var inferenceBounds=preparedGrids.get(request.zoom()).bounds();
+            acquired.forEach((palette,value)->fingerprints.put(palette,
+                    value.zoomReceipts().get(request.zoom()).contentSupportDigest()));
             SourceRasters aggregate=null;
             if(aggregateRequested&&acquired.size()==BASE_PALETTES.size()) {
                 var optional=new LinkedHashSet<>(request.requiredPalettes());optional.remove(request.palette());
@@ -935,11 +1017,12 @@ public final class ManagedModernPreviewSource {
                     digest=combineDigests(digest,java.util.HexFormat.of().parseHex(acquired.get(p).zoomReceipts().get(zoom).contentSupportDigest()));
                     receipts.put(zoom,new ZoomReceipt(zoom,aggregatePlan.orderedColors(),rasters.keySet(),ZoomAvailability.COMPLETE,
                         null,null,request.generation(),request.sourceIdentity(),digest));}
-                var proof=new AcquisitionProof(coordinator,rasters,aggregatePlan,receipts,work);
+                var proof=new AcquisitionProof(coordinator,rasters,aggregatePlan,receipts,fingerprints,inferenceBounds);
                 aggregate=new SourceRasters(rasters,aggregatePlan,AggregateAvailability.COMPLETE,null,proof,receipts);
             }
             cancellation.checkpoint();requireActiveGeneration(request);
-            var result=new RefinementSources(coordinator,request,acquired,outcomes,aggregate,memory,budget.receipt(),sourceReceipts,work);
+            var result=new RefinementSources(coordinator,request,acquired,outcomes,aggregate,memory,
+                    budget.receipt(),sourceReceipts,fingerprints,inferenceBounds);
             reservation.adopt(result);
             return new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted<>(result,memory);
             } // All inner acquisition, validation and fingerprint/proof calls have returned.
@@ -967,14 +1050,14 @@ public final class ManagedModernPreviewSource {
     private record TileVerification(byte[] digest, TileFetchStatus failure) { }
 
     private PaletteVerification verifyZoom(Request request, int zoom, ZoomGrid grid, List<String> palettes,
-            CredentialSnapshot credentials, CancellationProbe cancellation,RefinementSourceBudget budget) {
+            CredentialSnapshot credentials, CancellationProbe cancellation,RefinementSourceBudget budget,GeometryWorkContext work) {
         LinkedHashSet<String> acquired = new LinkedHashSet<>();
         byte[] digest = emptyDigest();
         for (String palette : palettes) {
             cancellation.checkpoint();
             requireActiveGeneration(request);
             TileVerification paletteVerification = verifyPaletteTiles(request, zoom, grid.bounds(), palette, credentials,
-                    cancellation, !palette.equals(request.palette()),budget);
+                    cancellation, !palette.equals(request.palette()),budget,work);
             if (paletteVerification.failure() != null) {
                 return new PaletteVerification(acquired,
                         new PaletteFailure(palette, paletteVerification.failure()), digest);
@@ -986,7 +1069,8 @@ public final class ManagedModernPreviewSource {
     }
 
     private TileVerification verifyPaletteTiles(Request request, int zoom, TileBounds bounds, String palette,
-            CredentialSnapshot credentials, CancellationProbe cancellation, boolean optional,RefinementSourceBudget budget) {
+            CredentialSnapshot credentials, CancellationProbe cancellation, boolean optional,RefinementSourceBudget budget,
+            GeometryWorkContext work) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             for (int x = bounds.minimumX(); x <= bounds.maximumX(); x++) {
@@ -1003,9 +1087,13 @@ public final class ManagedModernPreviewSource {
                     int[] row = new int[result.image().getWidth()];
                     ByteBuffer bytes = ByteBuffer.allocate(Math.multiplyExact(row.length, 4));
                     for (int rowIndex = 0; rowIndex < result.image().getHeight(); rowIndex++) {
-                        result.image().getRGB(0, rowIndex, row.length, 1, row, 0, row.length);
                         bytes.clear();
-                        for (int argb : row) bytes.putInt(argb);
+                        for(int column=0;column<row.length;column+=256) {
+                            int length=Math.min(256,row.length-column);
+                            if(work!=null)work.visit(GeometryWorkContext.Kind.HASH,length);
+                            result.image().getRGB(column,rowIndex,length,1,row,column,row.length);
+                            for(int k=column;k<column+length;k++)bytes.putInt(row[k]);
+                        }
                         digest.update(bytes.array());
                         digest.update(new byte[row.length]); // all pixels in a usable decoded tile are supported
                     }
@@ -1109,11 +1197,6 @@ public final class ManagedModernPreviewSource {
             throw new IllegalStateException("Managed preview settings changed during acquisition");
         }
         return result;
-    }
-
-    private static boolean allValid(boolean[] validity) {
-        for (boolean value : validity) if (!value) return false;
-        return true;
     }
 
     private void requireActiveGeneration(Request request) {

@@ -304,7 +304,8 @@ public final class RefinementAcquisition {
                 if(!owner.sharesLedgerWith(work.owner()))throw new IllegalArgumentException("Original hash owner belongs to another attempt");
                 if(inputHashes==null){hashWork=work;inputHashes=new RasterEvidenceCapture.OriginalInputHashes(work);}else inputHashes.requireContext(work);
             }
-            var inputs=sources.verifiedInputs(coordinator,palette,aggregate,work);
+            var inputs=work==null?sources.verifiedInputs(coordinator,palette,aggregate,null):
+                    sources.claimFreshInputs(coordinator,palette,aggregate,work);
             var raster=inputs.raster(palette);
             String inputHash="",inputHashProtocol="";
             if(work!=null) {
@@ -353,7 +354,7 @@ public final class RefinementAcquisition {
                     result=admitted.evidence();
                     backingBytes=admitted.retainedBytes();
                 }
-                cancellation.checkpoint();requireCurrent();sources.verifiedInputs(coordinator,palette,aggregate,work);
+                cancellation.checkpoint();requireCurrent();inputs.requireUnchanged(work);
                 // Capture only the external generation owner, never the disposed five-palette acquisition.
                 var externalCoordinator=coordinator;var stamp=generationStamp;
                 var descriptor=new RetainedSmoothingSource(request,plan.settings().intensity(),"native",result,raster.transform(),

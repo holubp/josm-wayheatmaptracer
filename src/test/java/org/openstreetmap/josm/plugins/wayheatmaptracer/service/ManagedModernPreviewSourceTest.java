@@ -437,6 +437,15 @@ class ManagedModernPreviewSourceTest {
             sources.palettes().forEach((palette, raster) -> acquiredImages.put(palette, raster.image()));
 
             assertTrue(sources.provenCompleteAggregate(coordinator));
+            var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+            try (var owner = ledger.rootOwner()) {
+                var work = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(
+                        0, Long.MAX_VALUE, Long.MAX_VALUE, () -> false, owner);
+                try (var scope = org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.open(work)) {
+                    assertThrows(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached.class,
+                            () -> sources.provenCompleteAggregate(coordinator));
+                }
+            }
             double[] scalars = sources.completeAggregateScalars(() -> false);
             var selected = sources.selectedRaster();
             int width = selected.image().getWidth();
