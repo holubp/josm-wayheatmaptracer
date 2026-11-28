@@ -251,14 +251,14 @@ class RefinementRepairContractTest {
     assertEquals(cancel?Outcome.CANCELLED:Outcome.COMPLETE,run.outcome());assertEquals(1,run.nativeCalls());
     var actual=run.nativeRun().orElseThrow();var receipt=actual.corridorReceipt().orElseThrow();
     long finalBytes=(16384L+2048L*(run.request().profileChainage().cumulativeGroundMeters().size()+run.request().selectedRange().size()))*run.request().budgets().maximumDistinctAlternatives();
-    long outputBase=parent.bindingScratchBytes(root.evidence())+finalBytes;
-    assertTrue(owner.currentBytes()>=outputBase,"Full binding/output allowance survives native scratch settlement");
+    assertTrue(owner.currentBytes()>=finalBytes,"Full output allowance survives native scratch settlement");
     assertEquals(ledger.peakBytes(),actual.peakAdditionalRetainedBytes());
     if(cancel){
      assertTrue(run.finalized().isEmpty());
      if(phase==1) {
-      assertTrue(receipt.sampling().isEmpty());assertEquals(outputBase,owner.currentBytes());
-      assertTrue(duringSampling.get()>=outputBase+samplerEstimate.get(),"Full original sampler bound remains live at cancellation");
+      assertTrue(receipt.sampling().isEmpty());assertEquals(finalBytes,owner.currentBytes());
+      long activeBindingAndOutput=parent.bindingScratchBytes(root.evidence())+finalBytes;
+      assertTrue(duringSampling.get()>=activeBindingAndOutput+samplerEstimate.get(),"Full original sampler bound remains live at cancellation");
      } else {
       assertTrue(receipt.sampling().isPresent());assertEquals(completedWork,run.actualWork());
       assertEquals(retainedOnSuccess,owner.currentBytes(),"Finalization cancellation retains every tracker/domain/output charge");
@@ -297,7 +297,9 @@ class RefinementRepairContractTest {
    var field=root.evidence().fields().get("native");
    long scratch=run.nativeRun().orElseThrow().corridorReceipt().orElseThrow().sampling().orElseThrow().materializationEstimateBytes()
        +65536L+2L*(5L*field.width()*field.height()+(long)(field.width()-1)*(field.height()-1));
-   assertEquals(cap-scratch,owner.currentBytes(),"Competing and tracker/domain charges persist; only expired sampler/certificate scratch settles");assertEquals(cap,ledger.peakBytes());
+   assertEquals(cap-scratch-parent.bindingScratchBytes(root.evidence()),owner.currentBytes(),
+       "Competing and tracker/domain charges persist after sampler, certificate and validation scratch settle");
+   assertEquals(cap,ledger.peakBytes());
   }
   assertEquals(0,ledger.currentBytes());
  }
@@ -333,7 +335,13 @@ class RefinementRepairContractTest {
   var thread=new Thread(()->{try{workspace.requireCapacity(parent,root.evidence(),owner);}catch(Throwable failure){rejected.set(failure);}});
   thread.start();thread.join();assertInstanceOf(IllegalArgumentException.class,rejected.get());
   workspace.requireCapacity(parent,root.evidence(),owner);
-  javax.swing.SwingUtilities.invokeAndWait(owner::close);assertEquals(0,ledger.currentBytes(),"Borrowing affinity must never prevent cross-thread settlement");
+  var retained=owner.reserve(1024);
+  javax.swing.SwingUtilities.invokeAndWait(workspace::close);
+  assertEquals(1024,ledger.currentBytes(),"Completed canonical validation releases only its temporary capacity");
+  assertTrue(retained.isActiveFor(owner));
+  assertThrows(IllegalArgumentException.class,()->workspace.requireCapacity(parent,root.evidence(),owner));
+  owner.close();
+  assertEquals(0,ledger.currentBytes());
  }
  static RefinementRootAuthority largeRoot(){
   var old=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);int side=1024;double[] values=new double[side*side];boolean[] valid=new boolean[values.length];Arrays.fill(valid,true);

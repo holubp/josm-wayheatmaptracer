@@ -136,8 +136,7 @@ public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngin
             EvidenceSnapshot evidence, NetworkSnapshot network, CancellationProbe cancellation,
             AttemptMemoryLedger.Owner attemptOwner) {
         var scope=java.util.Objects.requireNonNull(attemptOwner).child("stepwise-b-validation");
-        try {
-            var workspace=parent.reserveBindingWorkspace(evidence,scope);
+        try(var workspace=parent.reserveBindingWorkspace(evidence,scope)) {
             var run=traceRefinedWithUsage(parent,request,evidence,network,cancellation,scope,workspace);
             return new Accounted<>(run.value(),scope);
         }catch(RuntimeException|Error failure){scope.close();throw failure;}

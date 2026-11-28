@@ -180,10 +180,9 @@ public final class LegacyRefinementBootstrap {
                     inputHash=RasterEvidenceCapture.hashOriginalArgbSet(originals,work,owner);currentness.run();
                     try(var scalarMemory=work.reserve("original-aggregate-scalar",AttemptMemoryLedger.arrayBytes(count,8))) {
                         var scalar=new double[Math.toIntExact(count)];
-                        for(int y=0;y<height;y++)for(int x=0;x<width;x++) {
-                            // The unchanged native aggregate reads four image samples from each of five palettes.
-                            work.visit(GeometryWorkContext.Kind.MAP,20);scalar[y*width+x]=RenderedHeatmapSampler.aggregatedSourceIntensityAt(images,x,y);
-                        }
+                        Runnable visitPalette=()->work.visit(GeometryWorkContext.Kind.MAP,1);
+                        for(int y=0;y<height;y++)for(int x=0;x<width;x++)
+                            scalar[y*width+x]=RenderedHeatmapSampler.aggregatedSourceIntensityAt(images,x,y,visitPalette);
                         admitted=capture.captureWithMetricScalarSource(facts.network().snapshotId()+"/smoothing-source/"+selected.mapping(),mosaic.image(),valid,scalar,facts.sourceGeographic(),facts.sourceMetric(),transform,grid,
                             EvidenceResolution.nativeSource(mosaic.parameters().metersPerPixel(),grid.pitchMeters()),facts.decisionRadiusMeters(),facts.sourceIdentity(),lineage.acquisitionKind(),"native",lineage,CancellationProbe.NONE,work,owner);
                     }
@@ -253,9 +252,12 @@ public final class LegacyRefinementBootstrap {
     private Root materializeSmoothingRoot(SmoothingSeed seed,RetainedSmoothingSource source,GeometryWorkContext work,AttemptMemoryLedger.Owner owner) {
         var facts=seed.facts();var evidence=source.evidence();var config=seed.config();
         var chainage=new ProbabilisticProfileFactory().profileChainage(facts.sourceMetric(),facts.sampleStepMeters());
-        var request=new TraceRequest(facts.specification().selectedWayKey(),facts.specification().selectedRange(),TrackerMode.LEGACY_V02,config.heatmap().alignmentMode(),facts.specification().permissions(),TraceBudgets.defaults(),
-            evidence.snapshotId(),evidence.canonicalHash(work),facts.network().snapshotId(),facts.network().canonicalHash(),facts.settingsHash(),"original-legacy-authority-v1","original-legacy-reference-window-v1",facts.sampleStepMeters(),chainage,evidence.resolution());
-        var authority=new RefinementRootAuthority(facts.network(),request,evidence,config,facts.projectionCode(),facts.sourceIdentity(),facts.partition(),source,work,owner);
+        var authority=RefinementRootAuthority.fromAdmittedLegacySource(facts.network(),hash->new TraceRequest(
+            facts.specification().selectedWayKey(),facts.specification().selectedRange(),TrackerMode.LEGACY_V02,
+            config.heatmap().alignmentMode(),facts.specification().permissions(),TraceBudgets.defaults(),evidence.snapshotId(),
+            hash,facts.network().snapshotId(),facts.network().canonicalHash(),facts.settingsHash(),"original-legacy-authority-v1",
+            "original-legacy-reference-window-v1",facts.sampleStepMeters(),chainage,evidence.resolution()),
+            config,facts.projectionCode(),facts.sourceIdentity(),facts.partition(),source,work,owner);
         var selected=materializeLegacyChoice(facts,seed.original(),seed.selectedChoice(),seed.payloadLimit(),owner,work);
         return new Root(authority,Stage.root(List.of(selected),selected.id()),facts.receipt(),source);
     }

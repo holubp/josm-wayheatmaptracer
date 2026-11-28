@@ -39,21 +39,18 @@ class RefinementPipelineTest {
         assertEquals(0,ledger.currentBytes());
     }
 
-    @Test void completedNativeRetentionAdmissionHasItsOwnTypedBoundaryAndActualWork() {
+    @Test void completedNativeRetentionDoesNotRequireBlanketSixtyFourMiB() {
         var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
         var ledger=new AttemptMemoryLedger(32L*1024*1024);
         try(var owner=ledger.rootOwner();var observed=PipelineAdmissionObserver.openForTesting(value->{})) {
             var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),new RefinementPipeline.Adapters(sources(parent),RefinementPipeline.productionRunner(),owner),
                 RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
-            assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());assertTrue(result.candidates().isEmpty());
+            var receipt=observed.latest(ticket);
+            assertTrue(receipt.isEmpty()||receipt.orElseThrow().gate()!=PipelineAdmissionObserver.Gate.NATIVE_RETENTION,
+                ()->receipt.toString());
             assertTrue(result.attempts().stream().flatMap(a->a.run().stream()).anyMatch(run->run.outcome()==Outcome.COMPLETE&&run.actualWorkAvailability().isPresent()));
             assertTrue(result.actualWork().orElseThrow().transitions()>0);
-            assertTrue(result.attempts().stream().anyMatch(a->a.kind()==RefinementPipeline.AttemptKind.UNATTEMPTED&&a.nativeCallAvailability().orElse(-1)==0));
-            var refusal=observed.latest(ticket).orElseThrow(()->new AssertionError("Actual completed-native retention refusal needs its own admission receipt"));
-            assertEquals("NATIVE_RETENTION",refusal.gate().name());assertEquals(64L*1024*1024,refusal.requestedBytes().orElseThrow());
-            assertTrue(refusal.requestedBytes().orElseThrow()>refusal.limitBytes().orElseThrow()-refusal.currentBytes().orElseThrow());
-            assertEquals(32L*1024*1024,refusal.limitBytes().orElseThrow());assertTrue(refusal.currentEvidence().isPresent());
-            assertTrue(owner.currentBytes()>0,"Old native/result owners remain charged on admission refusal");
+            assertTrue(owner.currentBytes()>0,"Completed native/result owners remain accounted");
         }
         assertEquals(0,ledger.currentBytes());
     }
@@ -143,27 +140,42 @@ class RefinementPipelineTest {
         var forged=new ParentBackedComposer.Assessed(corrupt,assessed.quality(),List.of());
         assertThrows(IllegalArgumentException.class,()->adapter.adaptRefinement(parent,forged,parent.root().evidence()));
     }
-    @ParameterizedTest @ValueSource(ints={0,1})
-    void sourcePreparationDeadlineKeepsResourceOutcomeAndPriorNativeCandidates(int failingSource) {
+    @ParameterizedTest @ValueSource(strings={"waterway","highway"})
+    void exactRefinementPlanPreservesTheEstablishedCrossingClassification(String crossingTag) {
+        var root=RefinementParentFixtures.authority(AlignmentMode.MOVE_EXISTING_NODES,false,false,false,crossingTag);
+        var parent=new ParentReferenceBinder().bind(root,new StageId(UUID.randomUUID()),RefinementParentFixtures.parent(root,"blue"));
+        var composer=new ParentBackedComposer();
+        var composed=composer.compose("crossing",parent,List.of(ParentBackedComposerTest.choice(parent,new OccurrenceRange(1,3),54)));
+        var assessed=composer.assess(parent,composed,root.evidence(),"native",CancellationProbe.NONE);
+        var adapter=new ModernSingleWayEditPlanAdapter();
+        var review="independent-context-contact-review-required";
+        assertTrue(assessed.topologyFindings().contains(review),assessed.topologyFindings().toString());
+        var plan=adapter.adaptRefinement(parent,assessed,root.evidence());
+        assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED,plan.validation().disposition());
+        assertTrue(plan.validation().findingCodes().contains(review));
+        var receivingWay=PrimitiveKey.existing(PrimitiveKey.Type.WAY,100);
+        assertEquals(plan.before().primitives().get(receivingWay),plan.after().primitives().get(receivingWay));
+        var blocked=new ParentBackedComposer.Assessed(composed,assessed.quality(),List.of(review,"final-topology:CROSSING"));
+        assertThrows(IllegalArgumentException.class,()->adapter.adaptRefinement(parent,blocked,root.evidence()));
+    }
+    @Test void selectedSourcePreparationDeadlineStopsBeforeTheOnlyNativeEntry() {
         var parent=ParentBackedComposerTest.copyParent();var ticket=ticket(parent,TrackerMode.PROBABILISTIC);var plan=plan(ticket,parent,true);
         var clock=new AtomicLong();var budget=new RefinementPipeline.OperationBudget(parent.root().request().budgets(),clock::get,1000,200);
-        var ordinal=new java.util.concurrent.atomic.AtomicInteger();var entries=new java.util.concurrent.atomic.AtomicInteger();
+        var entries=new java.util.concurrent.atomic.AtomicInteger();
         var sources=new RefinementPipeline.Sources(){
             public void requireCurrent(){}
             public EvidenceSnapshot evidence(RefinementSourcePlanner.SourceRequest source,CancellationProbe cancellation){
-                if(ordinal.getAndIncrement()==failingSource){clock.set(1001);cancellation.checkpoint();fail("Expired final probe must stop evidence preparation");}
-                return parent.root().evidence();
+                clock.set(1001);cancellation.checkpoint();
+                throw new AssertionError("Expired final probe must stop evidence preparation");
             }
         };
         try(var scope=PipelineAdmissionObserver.openForTesting(value->{});var owner=AttemptMemoryLedger.production().rootOwner()) {
             var result=new RefinementPipeline().run(ticket,parent,plan,new RefinementPipeline.Adapters(sources,RefinementPipeline.productionRunner(t->entries.incrementAndGet()),owner),budget,CancellationProbe.NONE);
-            System.out.println("source-deadline ordinal="+failingSource+" outcome="+result.outcome()+" candidates="+result.candidates().size()+" native="+entries.get()+" work="+result.actualWork()+" attempts="+result.attempts().stream().map(a->a.kind()+":"+a.reason()).toList());
-            assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());assertEquals(failingSource,entries.get());
-            var failed=result.attempts().stream().filter(a->a.source().equals(plan.requests().get(failingSource))).findFirst().orElseThrow();
+            assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());assertEquals(0,entries.get());
+            var failed=result.attempts().stream().filter(a->a.source().equals(plan.requests().get(0))).findFirst().orElseThrow();
             assertEquals(RefinementPipeline.AttemptKind.UNAVAILABLE,failed.kind());assertEquals("source-preparation-resource-limit",failed.reason());assertEquals(0,failed.nativeCallAvailability().orElseThrow());
             assertEquals(PipelineAdmissionObserver.Gate.FINAL_DEADLINE,scope.latest(ticket).orElseThrow().gate());
-            if(failingSource==0){assertTrue(result.candidates().isEmpty());assertEquals(TraceWorkUsage.none(),result.actualWork().orElseThrow());}
-            else {assertFalse(result.candidates().isEmpty(),"Deadline during a later source must retain the earlier actual assessed native candidates");assertTrue(result.actualWork().orElseThrow().transitions()>0);assertTrue(result.attempts().stream().anyMatch(a->a.kind()==RefinementPipeline.AttemptKind.WHOLE&&a.nativeCallAvailability().orElseThrow()==1));}
+            assertTrue(result.candidates().isEmpty());assertEquals(TraceWorkUsage.none(),result.actualWork().orElseThrow());
             var receipt=RefinementOperationReceipt.capture(ticket,parent,result);assertEquals(result.actualWork(),receipt.actualWork());assertEquals(Outcome.RESOURCE_LIMIT,receipt.outcome());
         }
     }
@@ -191,7 +203,7 @@ class RefinementPipelineTest {
         for(var engine:List.of(TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC))for(var mode:AlignmentMode.values()) {
             var parent=ParentBackedComposerTest.parent(mode);var ticket=ticket(parent,engine);
             try(var owner=AttemptMemoryLedger.production().rootOwner()) {
-                var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,false),
+                var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),
                     new RefinementPipeline.Adapters(sources(parent),RefinementPipeline.productionRunner(),owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
                 assertNotEquals(Outcome.FAILED,result.outcome(),engine+"/"+mode+" must preserve inspectable assessed native results");
                 assertTrue(result.actualWork().orElseThrow().transitions()>0);
@@ -210,23 +222,22 @@ class RefinementPipelineTest {
             }
         }
     }
-    @Test void localFailureRetainsSelectedParentAndDoesNotDiscardSuccessfulNativeIntervals() throws Exception {
+    @ParameterizedTest @org.junit.jupiter.params.provider.EnumSource(value=Outcome.class,names={"NO_USABLE_RESULT","RESOURCE_LIMIT"})
+    void localFailureRetainsSelectedParentAndDoesNotDiscardSuccessfulNativeIntervals(Outcome localFailure) {
         var parent=RefinementIntervalPlannerTest.capturedTopologyParent(List.of(new OccurrenceRange(0,18)),Set.of(),Set.of());
         var ticket=ticket(parent,TrackerMode.PROBABILISTIC);var ranges=new ArrayList<OccurrenceRange>();
-        var vertexMethod=RefinementPipeline.class.getDeclaredMethod("maximumAssembledVertices",ParentTraceReference.class,int.class);vertexMethod.setAccessible(true);
-        long vertices=(long)vertexMethod.invoke(null,parent,new RefinementIntervalPlanner().plan(parent).size());
-        var nativeBytes=new AtomicLong(1_048_576L+32L*vertices*2048L);
+        var nativeBytes=new AtomicLong(1_048_576L);
         var real=RefinementPipeline.productionRunner();
         RefinementPipeline.NativeRunner runner=(t,p,e,b,c,o)-> {
             assertEquals(nativeBytes.get(),o.currentBytes(),"WHOLE and INTERVAL native entries never hold assessment scratch");
             ranges.add(p.originalRange());
-            if(p.originalRange().firstIndex()==8)return refusal(p,Outcome.NO_USABLE_RESULT,0);
+            if(p.originalRange().firstIndex()==8)return refusal(p,localFailure,0);
             var run=real.run(t,p,e,b,c,o);nativeBytes.set(o.currentBytes());return run;
         };
         try(var owner=AttemptMemoryLedger.production().rootOwner()) {
-            var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,false),new RefinementPipeline.Adapters(sources(parent),runner,owner),
+            var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),new RefinementPipeline.Adapters(sources(parent),runner,owner),
                 RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
-            assertFalse(result.candidates().isEmpty(),"outcome="+result.outcome()+" rejections="+result.rejected().stream().map(a->a.quality().findings()).toList());var candidate=result.candidates().get(0).assessed().candidate();
+            assertFalse(result.candidates().isEmpty(),()->"outcome="+result.outcome()+" attempts="+result.attempts().stream().map(a->a.range()+":"+a.reason()).toList()+" rejections="+result.rejected().stream().map(a->a.quality().findings()).toList());var candidate=result.candidates().get(0).assessed().candidate();
             assertTrue(candidate.points().contains(parent.occurrencePosition(9)),"failed middle interval must retain selected A geometry");
             assertTrue(candidate.spans().stream().anyMatch(s->!s.parentRetained()));
             assertEquals(parent.originalRange(),ranges.get(0));assertTrue(ranges.contains(new OccurrenceRange(0,4)));
@@ -247,6 +258,31 @@ class RefinementPipelineTest {
             assertTrue(result.actualWork().isPresent());
         }
     }
+    @Test void inferenceDeadlineRetainsCompletedIntervalsWithinFinalizationReserve() {
+        var parent=RefinementIntervalPlannerTest.capturedTopologyParent(List.of(new OccurrenceRange(0,18)),Set.of(),Set.of());
+        var ticket=ticket(parent,TrackerMode.PROBABILISTIC);var clock=new AtomicLong();
+        var budget=new RefinementPipeline.OperationBudget(TraceBudgets.defaults(),clock::get,1000,200);
+        var real=RefinementPipeline.productionRunner();var calls=new ArrayList<OccurrenceRange>();
+        try(var owner=AttemptMemoryLedger.production().rootOwner()) {
+            var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),new RefinementPipeline.Adapters(
+                    sources(parent),(t,p,e,b,c,o)->{
+                        calls.add(p.originalRange());
+                        if(p.originalRange().firstIndex()==8) {
+                            clock.set(800);
+                            return refusal(p,Outcome.CANCELLED,0);
+                        }
+                        return real.run(t,p,e,b,c,o);
+                    },owner),budget,CancellationProbe.NONE);
+            assertTrue(calls.contains(new OccurrenceRange(8,10)));
+            assertFalse(calls.contains(new OccurrenceRange(14,18)));
+            assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());
+            assertTrue(result.actualWork().orElseThrow().transitions()>0);
+            assertFalse(result.candidates().isEmpty(),"Finalization reserve must still assemble the completed interval");
+            var assembled=result.candidates().get(0).assessed().candidate();
+            assertTrue(assembled.points().contains(parent.occurrencePosition(9)));
+            assertTrue(assembled.points().contains(parent.occurrencePosition(16)));
+        }
+    }
     @Test void unknownNativeWorkAndControlledCancellationAbortAllSuccess() {
         var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
         for(boolean unknown:List.of(false,true))try(var owner=AttemptMemoryLedger.production().rootOwner()) {
@@ -261,7 +297,7 @@ class RefinementPipelineTest {
         var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
         var clock=new AtomicLong();var budget=new RefinementPipeline.OperationBudget(TraceBudgets.defaults(),clock::get,100,20);clock.set(81);
         for(boolean deadline:List.of(true,false))try(var owner=new AttemptMemoryLedger(deadline?AttemptMemoryLedger.MAX_BYTES:1024).rootOwner()) {
-            var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,false),new RefinementPipeline.Adapters(sources(parent),
+            var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),new RefinementPipeline.Adapters(sources(parent),
                 (t,p,e,b,c,o)->{fail("native entry was not reserved");return null;},owner),deadline?budget:RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
             assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());assertTrue(result.candidates().isEmpty());
             assertEquals(TraceWorkUsage.none(),result.actualWork().orElseThrow());
@@ -390,7 +426,7 @@ class RefinementPipelineTest {
             return new RefinementEngineAdapter.Run(run.reference(),run.request(),run.execution(),run.nativeRun(),Optional.of(new ModernTracePipeline.Result(finalized.inference(),routes)),run.nativePointReferenceChainages(),run.finalCorrespondence(),run.nativeCalls(),run.unavailable(),run.outcome());
         };
         try(var owner=AttemptMemoryLedger.production().rootOwner()) {
-            var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,false),new RefinementPipeline.Adapters(sources(parent),reviewed,owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
+            var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),new RefinementPipeline.Adapters(sources(parent),reviewed,owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
             assertFalse(result.candidates().isEmpty());var quality=result.candidates().get(0).assessed().quality();
             assertEquals(FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED,quality.disposition());assertTrue(quality.has(FinalGeometryEvaluator.FindingCode.SEARCH_TRUNCATED));
             assertEquals(1,result.attempts().stream().filter(a->a.run().isPresent()).count());
@@ -409,30 +445,29 @@ class RefinementPipelineTest {
             assertEquals(1,result.attempts().stream().filter(a->a.run().isPresent()).count());
         }
     }
-    @Test void completedPalettesConsumeOneActualBudgetAndDedupKeepsEveryPaletteProvenance() {
+    @Test void selectedDetectorConsumesOneActualBudgetAndKeepsItsProvenance() {
         var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
+        var sourcePlan=plan(ticket,parent,true);
         var issued=new ArrayList<TraceBudgets>();var real=RefinementPipeline.productionRunner();
         try(var owner=AttemptMemoryLedger.production().rootOwner()) {
-            var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),new RefinementPipeline.Adapters(sources(parent),(t,p,e,b,c,o)->{issued.add(b);return real.run(t,p,e,new TraceBudgets(b.maximumStatesPerProfile(),b.maximumPairVisits(),b.maximumTransitions(),1,1),c,o);},owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
-            var runs=result.attempts().stream().flatMap(a->a.run().stream()).toList();assertTrue(runs.size()>=2,"public B scene should complete more than one palette");
+            var result=new RefinementPipeline().run(ticket,parent,sourcePlan,new RefinementPipeline.Adapters(sources(parent),(t,p,e,b,c,o)->{issued.add(b);return real.run(t,p,e,b,c,o);},owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
+            var runs=result.attempts().stream().flatMap(a->a.run().stream()).toList();assertEquals(1,runs.size());
             var sum=TraceWorkUsage.none();for(int i=0;i<runs.size();i++) {
                 assertEquals(TraceBudgets.defaults().maximumTransitions()-sum.transitions(),issued.get(i).maximumTransitions());
                 assertEquals(TraceBudgets.defaults().maximumPairVisits()-sum.pairVisits(),issued.get(i).maximumPairVisits());
                 sum=sum.plus(runs.get(i).actualWork());
             }
             assertEquals(sum,result.actualWork().orElseThrow());assertFalse(result.candidates().isEmpty());
-            assertTrue(result.candidates().get(0).sources().size()>=2,"dedup must retain alternate palette attribution");assertTrue(result.candidates().size()<=32);
-            assertTrue(result.sourceOutcomes().stream().filter(s->!s.assessments().isEmpty()).count()>=2,"every completed palette keeps its own full assessment before dedup");
+            assertEquals(sourcePlan.requests(),result.candidates().get(0).sources());assertTrue(result.candidates().size()<=32);
+            assertEquals(1,result.sourceOutcomes().stream().filter(s->!s.assessments().isEmpty()).count());
         }
     }
-    @ParameterizedTest @ValueSource(booleans={true,false})
-    void identicalGeometryWithConflictingNativeReviewKeepsSourceQualifiedChoicesInBothOrders(boolean reviewedFirst) {
-        var parent=straightScene(ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE));var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
-        var sourcePlan=plan(ticket,parent,true);var reviewedSource=sourcePlan.requests().get(reviewedFirst?0:1);var real=RefinementPipeline.productionRunner();
-        int[] calls={0};
+    @Test void identicalGeometryFromSeparateDetectorSelectionsKeepsItsOwnReviewFindings() {
+        var scene=straightScene(ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE));
+        var real=RefinementPipeline.productionRunner();
         RefinementPipeline.NativeRunner controlled=(t,p,e,b,c,o)-> {
-            var run=real.run(t,p,e,new TraceBudgets(b.maximumStatesPerProfile(),b.maximumPairVisits(),b.maximumTransitions(),1,1),c,o);
-            boolean review=calls[0]++==(reviewedFirst?0:1);var finalized=run.finalized().orElseThrow();var routes=new ArrayList<ModernTracePipeline.Route>();
+            var run=real.run(t,p,e,b,c,o);
+            boolean review=p.selectedSource().palette().equals("blue");var finalized=run.finalized().orElseThrow();var routes=new ArrayList<ModernTracePipeline.Route>();
             for(var route:finalized.routes()) {
                 var q=route.quality();var findings=review?List.of(new FinalGeometryEvaluator.Finding(FinalGeometryEvaluator.FindingCode.SEARCH_TRUNCATED,
                     FinalGeometryEvaluator.Severity.REVIEW,0,route.pointIds().size()-1,0)):List.<FinalGeometryEvaluator.Finding>of();
@@ -442,27 +477,27 @@ class RefinementPipelineTest {
             }
             return new RefinementEngineAdapter.Run(run.reference(),run.request(),run.execution(),run.nativeRun(),Optional.of(new ModernTracePipeline.Result(finalized.inference(),routes)),run.nativePointReferenceChainages(),run.finalCorrespondence(),run.nativeCalls(),run.unavailable(),run.outcome());
         };
-        try(var owner=AttemptMemoryLedger.production().rootOwner()) {
-            var result=new RefinementPipeline().run(ticket,parent,sourcePlan,new RefinementPipeline.Adapters(sources(parent),controlled,owner),
-                RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
-            var reviewed=result.candidates().stream().filter(r->r.sources().contains(reviewedSource)).findFirst().orElseThrow();
-            assertEquals(FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED,reviewed.assessed().quality().disposition(),"another palette must not launder this source's native review");
-            assertTrue(reviewed.assessed().quality().has(FinalGeometryEvaluator.FindingCode.SEARCH_TRUNCATED));assertEquals(List.of(reviewedSource),reviewed.sources());
-            assertEquals(2,result.candidates().size(),"compatible applicable palettes still deduplicate; incompatible review remains separately selectable");
-            var applicable=result.candidates().get(0);assertEquals(FinalGeometryEvaluator.Disposition.APPLICABLE,applicable.assessed().quality().disposition());
-            assertFalse(applicable.assessed().quality().has(FinalGeometryEvaluator.FindingCode.SEARCH_TRUNCATED));
-            assertEquals(sourcePlan.requests().size()-1,applicable.sources().size());assertFalse(applicable.sources().contains(reviewedSource));
-            assertEquals(applicable.assessed().candidate().points(),reviewed.assessed().candidate().points());
+        var variants=new ArrayList<RefinementPipeline.Retained>();
+        for(String palette:List.of("blue","hot"))try(var owner=AttemptMemoryLedger.production().rootOwner()) {
+            var parent=selectedPalette(scene,palette);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
+            var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),new RefinementPipeline.Adapters(sources(parent),controlled,owner),
+                    RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
+            assertEquals(1,result.sourceOutcomes().size());
+            variants.add(result.candidates().get(0));
             for(var retained:result.candidates()) {
-                var own=result.sourceOutcomes().stream().filter(s->s.source().equals(retained.sources().get(0))).findFirst().orElseThrow().assessments().get(0);
-                assertEquals(own.quality(),retained.assessed().quality(),"ranked metrics/findings belong to one factual source, never a cross-source measurement");
+                assertEquals(List.of(parent.selectedSource()),retained.sources());
+                assertTrue(result.sourceOutcomes().get(0).assessments().stream().anyMatch(own->own.quality().equals(retained.assessed().quality())));
             }
-            var sum=TraceWorkUsage.none();for(var attempt:result.attempts())if(attempt.run().isPresent()) {
-                assertEquals(RefinementPipeline.AttemptKind.WHOLE,attempt.kind());sum=sum.plus(attempt.run().orElseThrow().actualWork());
-            }
-            assertEquals(sourcePlan.requests().size(),calls[0]);assertEquals(sum,result.actualWork().orElseThrow());
-            assertTrue(sum.rawAlternatives()<=32);assertTrue(sum.distinctAlternatives()<=8);assertTrue(result.candidates().size()<=32);
+            var attempt=result.attempts().get(0);
+            assertEquals(1,result.attempts().size());assertEquals(RefinementPipeline.AttemptKind.WHOLE,attempt.kind());
+            var work=attempt.run().orElseThrow().actualWork();
+            assertEquals(work,result.actualWork().orElseThrow());
+            assertTrue(work.rawAlternatives()<=32);assertTrue(work.distinctAlternatives()<=8);assertTrue(result.candidates().size()<=32);
         }
+        assertEquals(variants.get(0).assessed().candidate().points(),variants.get(1).assessed().candidate().points());
+        assertEquals(FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED,variants.get(0).assessed().quality().disposition());
+        assertTrue(variants.get(0).assessed().quality().has(FinalGeometryEvaluator.FindingCode.SEARCH_TRUNCATED));
+        assertFalse(variants.get(1).assessed().quality().has(FinalGeometryEvaluator.FindingCode.SEARCH_TRUNCATED));
     }
     @Test void sourceCaptureFromAnotherOperationIsRefusedBeforeAnyInference() {
         var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);var actualPlan=plan(ticket,parent,false);
@@ -481,7 +516,7 @@ class RefinementPipelineTest {
         for(var engine:List.of(TrackerMode.CORRIDOR_AWARE,TrackerMode.PROBABILISTIC)) {
             var parent=straightScene(ParentBackedComposerTest.parent(AlignmentMode.MOVE_EXISTING_NODES));var ticket=ticket(parent,engine);
             try(var owner=AttemptMemoryLedger.production().rootOwner()) {
-                var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,false),new RefinementPipeline.Adapters(sources(parent),RefinementPipeline.productionRunner(),owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
+                var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),new RefinementPipeline.Adapters(sources(parent),RefinementPipeline.productionRunner(),owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
                 assertFalse(result.candidates().isEmpty(),"representable Move "+engine+" outcome="+result.outcome());
                 assertEquals(1,result.attempts().stream().filter(a->a.run().isPresent()).count());
                 var finalGeometry=result.candidates().get(0).assessed().candidate();assertEquals(5,finalGeometry.points().size());
@@ -490,46 +525,63 @@ class RefinementPipelineTest {
             }
         }
     }
-    @Test void defaultProductionSharesPaletteSlotsAndPreservesTheSmallSceneNativeBestGeometry() {
+    @Test void selectedPaletteGetsTheFullInitialBudgetAndPreservesTheSmallSceneNativeBestGeometry() {
         var parent=straightScene(ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE));var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
         try(var baselineOwner=AttemptMemoryLedger.production().rootOwner();var owner=AttemptMemoryLedger.production().rootOwner()) {
             var baseline=new RefinementEngineAdapter(TrackerMode.PROBABILISTIC,"native").run(ticket,parent,parent.root().evidence(),TraceBudgets.defaults(),CancellationProbe.NONE,baselineOwner).value();
             var reference=baseline.finalized().orElseThrow().routes().get(0);
             var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),new RefinementPipeline.Adapters(sources(parent),RefinementPipeline.productionRunner(),owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
-            assertTrue(result.attempts().stream().filter(a->a.run().isPresent()).count()>=2,"default production must share alternative slots across affordable base palettes");
+            assertEquals(1,result.attempts().stream().filter(a->a.run().isPresent()).count(),"optional refinement must use one selected detector");
             for(var attempt:result.attempts())if(attempt.run().isPresent()) {
                 assertEquals(RefinementPipeline.AllocationPolicy.BASE_COVERAGE_ORDERED_EXTRAS_V2,attempt.allocationPolicy());
+                assertEquals(TraceBudgets.defaults(),attempt.issuedBudgets().orElseThrow());
                 assertEquals(attempt.issuedBudgets().orElseThrow(),attempt.run().get().request().budgets());
             }
             var first=result.sourceOutcomes().stream().filter(s->!s.assessments().isEmpty()).findFirst().orElseThrow().assessments().get(0);
             assertEquals(reference.hypothesis().points(),first.candidate().points(),"allocation must preserve the native best geometry in this public analytic scene");
             assertEquals(reference.quality().disposition(),first.quality().disposition(),"surface any changed native review status before accepting allocation");
-            assertTrue(result.candidates().get(0).sources().size()>=2);
+            assertEquals(List.of(parent.selectedSource()),result.candidates().get(0).sources());
         }
     }
-    @Test void commonWholeGeometryQualityRanksAffordablePaletteResultsBeforeCanonicalOrder() {
+    @Test void unselectedStrongerPaletteCannotReplaceTheSelectedDetectorsEvidence() {
         var parent=ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
         var straight=straightScene(parent).root().evidence();
         var sources=new RefinementPipeline.Sources() {
             public void requireCurrent(){ }
-            public EvidenceSnapshot evidence(RefinementSourcePlanner.SourceRequest s,CancellationProbe c){return s.palette().equals("hot")?straight:parent.root().evidence();}
+            public EvidenceSnapshot evidence(RefinementSourcePlanner.SourceRequest s,CancellationProbe c){
+                assertEquals(parent.selectedSource(),s,"Even better unselected evidence cannot replace the selected source");
+                return parent.root().evidence();
+            }
         };
         try(var owner=AttemptMemoryLedger.production().rootOwner()) {
             var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),new RefinementPipeline.Adapters(sources,RefinementPipeline.productionRunner(),owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
-            assertTrue(result.candidates().size()>=2);
-            assertEquals("hot",result.candidates().get(0).sources().get(0).palette(),"a completely supported straight whole preview wins over the earlier palette's unsupported endpoint approaches");
+            assertFalse(result.candidates().isEmpty());
+            assertEquals(List.of(parent.selectedSource()),result.candidates().get(0).sources());
         }
+        var hot=selectedPalette(parent,"hot");var hotTicket=ticket(hot,TrackerMode.PROBABILISTIC);
+        try(var owner=AttemptMemoryLedger.production().rootOwner()) {
+            var result=new RefinementPipeline().run(hotTicket,hot,plan(hotTicket,hot,true),new RefinementPipeline.Adapters(new RefinementPipeline.Sources() {
+                public void requireCurrent(){ }
+                public EvidenceSnapshot evidence(RefinementSourcePlanner.SourceRequest s,CancellationProbe c){assertEquals(hot.selectedSource(),s);return straight;}
+            },RefinementPipeline.productionRunner(),owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
+            assertFalse(result.candidates().isEmpty());
+            assertEquals(List.of(hot.selectedSource()),result.candidates().get(0).sources());
+        }
+    }
+    private static ParentTraceReference selectedPalette(ParentTraceReference parent,String palette) {
+        return new ParentTraceReference(parent.root(),parent.parentStage(),parent.parentChoice(),parent.nativeCandidateId(),palette,
+                parent.parentIdentity(),parent.points(),parent.correspondence());
     }
     @Test void actualAThenBPartialFailureKeepsTheSelectedAFinalGeometryAndOriginalAuthority() {
         var legacy=RefinementIntervalPlannerTest.capturedTopologyParent(List.of(new OccurrenceRange(0,18)),Set.of(),Set.of());
         var aTicket=ticket(legacy,TrackerMode.CORRIDOR_AWARE);var hash=legacy.root().network().canonicalHash();
         try(var owner=AttemptMemoryLedger.production().rootOwner()) {
-            var a=new RefinementPipeline().run(aTicket,legacy,plan(aTicket,legacy,false),new RefinementPipeline.Adapters(sources(legacy),RefinementPipeline.productionRunner(),owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
+            var a=new RefinementPipeline().run(aTicket,legacy,plan(aTicket,legacy,true),new RefinementPipeline.Adapters(sources(legacy),RefinementPipeline.productionRunner(),owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
             assertFalse(a.candidates().isEmpty(),"actual A stage must produce an assessed parent");var selected=a.candidates().get(0);
             var geometry=selected.assessed().candidate();var parent=new ParentTraceReference(legacy.root(),new StageId(UUID.randomUUID()),new CandidateId("actual-selected-A"),geometry.id(),selected.sources().get(0).palette(),geometry.id(),geometry.points(),geometry.correspondence());
             var bTicket=new OperationTicket(aTicket.session(),2,parent.parentStage(),parent.parentChoice(),TrackerMode.PROBABILISTIC,AlignmentMode.PRECISE_SHAPE);
             var actual=RefinementPipeline.productionRunner();var called=new ArrayList<OccurrenceRange>();
-            var b=new RefinementPipeline().run(bTicket,parent,plan(bTicket,parent,false),new RefinementPipeline.Adapters(sources(parent),(t,p,e,budget,c,o)-> {
+            var b=new RefinementPipeline().run(bTicket,parent,plan(bTicket,parent,true),new RefinementPipeline.Adapters(sources(parent),(t,p,e,budget,c,o)-> {
                 called.add(p.originalRange());if(p.originalRange().firstIndex()==8)return refusal(p,Outcome.NO_USABLE_RESULT,0);return actual.run(t,p,e,budget,c,o);
             },owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
             assertTrue(called.contains(new OccurrenceRange(8,10)));assertTrue(called.contains(new OccurrenceRange(14,18)));assertFalse(b.candidates().isEmpty());
@@ -544,15 +596,15 @@ class RefinementPipelineTest {
             assertSame(legacy.root().network(),parent.root().network());assertEquals(hash,parent.root().network().canonicalHash());
         }
     }
-    @Test void defaultSlotPolicyKeepsStrongCurvedAndCompetingRidgeBestGeometryAndPreferredBreadth() {
+    @Test void selectedPaletteKeepsStrongCurvedAndCompetingRidgeBestGeometryAndBreadth() {
         for(boolean competing:List.of(false,true)) {
             var parent=curvedScene(ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE),competing);var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
             try(var baselineOwner=AttemptMemoryLedger.production().rootOwner();var owner=AttemptMemoryLedger.production().rootOwner()) {
                 var baseline=new RefinementEngineAdapter(TrackerMode.PROBABILISTIC,"native").run(ticket,parent,parent.root().evidence(),TraceBudgets.defaults(),CancellationProbe.NONE,baselineOwner).value();
                 var reference=baseline.finalized().orElseThrow().routes().get(0);
                 var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),new RefinementPipeline.Adapters(sources(parent),RefinementPipeline.productionRunner(),owner),RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
-                var attempts=result.attempts().stream().filter(a->a.run().isPresent()&&a.run().get().nativeCalls()>0).toList();assertTrue(attempts.size()>=2);
-                assertTrue(attempts.get(0).issuedBudgets().orElseThrow().maximumDistinctAlternatives()>=attempts.get(attempts.size()-1).issuedBudgets().orElseThrow().maximumDistinctAlternatives(),"preferred palette must not receive less breadth than the last palette");
+                var attempts=result.attempts().stream().filter(a->a.run().isPresent()&&a.run().get().nativeCalls()>0).toList();assertEquals(1,attempts.size());
+                assertEquals(TraceBudgets.defaults(),attempts.get(0).issuedBudgets().orElseThrow());
                 var assessed=result.sourceOutcomes().stream().filter(s->!s.assessments().isEmpty()).findFirst().orElseThrow().assessments().get(0);
                 assertEquals(reference.hypothesis().points(),assessed.candidate().points(),"unsplit best geometry changed; competing="+competing);
                 assertEquals(reference.quality().disposition(),assessed.quality().disposition(),"unsplit review status changed; competing="+competing);

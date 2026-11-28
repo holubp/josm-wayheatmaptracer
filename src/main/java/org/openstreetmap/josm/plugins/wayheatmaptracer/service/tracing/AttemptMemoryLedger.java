@@ -264,6 +264,20 @@ public final class AttemptMemoryLedger {
         if(exchangePreflight==Thread.currentThread())throw new IllegalStateException("Ledger mutation during retained-group preflight");
     }
 
+    private synchronized long retainedExchangeEntries(Owner source,Owner destination) {
+        source.ensureOpen();destination.ensureOpen();
+        if(destination.ledger!=this)throw new IllegalArgumentException("Retained exchange requires one ledger");
+        // Include one slot per global charge and destination lease. Each source lease can
+        // appear in both the lease staging and its grouped-reference staging.
+        return Math.addExact(Math.addExact(8L,(long)charges.size()+destination.leases.size()),exchangeOwnerEntries(source));
+    }
+
+    private static long exchangeOwnerEntries(Owner owner) {
+        long count=1L+owner.reservations.size()+2L*owner.leases.size();
+        for(var child:owner.children)count=Math.addExact(count,exchangeOwnerEntries(child));
+        return count;
+    }
+
     /** All validation/allocation precedes the one monitored, nonthrowing state transition. */
     private synchronized MemoryLease replace(Owner source,Owner destination,Object identity,long bytes,CancellationProbe probe) {
         rejectExchangeMutation();source.ensureOpen();Objects.requireNonNull(destination).ensureOpen();
@@ -431,6 +445,10 @@ public final class AttemptMemoryLedger {
         /** The caller supplies its same operation's nonblocking cancellation/deadline probe. */
         public MemoryLease replaceWithRetainedGroup(Owner destination,Object identity,long bytes,CancellationProbe probe) {
             return ledger.replace(this,destination,identity,bytes,probe);
+        }
+        /** Conservative preflight slots to admit before entering the non-mutating exchange callback. */
+        public long retainedExchangeEntries(Owner destination) {
+            return ledger.retainedExchangeEntries(this,destination);
         }
         /** Atomic tighter total-attempt admission; never raises the attempt's production cap. */
         public Reservation reserveWithin(long maximumAttemptBytes,long bytes) {

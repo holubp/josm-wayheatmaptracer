@@ -107,7 +107,24 @@ class LegacyRefinementWorkflowTest {
                     assertTrue(chosen.payload().detectorAttempts().stream().anyMatch(a->a.mappingName().equals("hot-corridor")&&a.candidateIds().contains(chosen.nativeCandidateId())));
                 });
                 int before=requests.get(),nativeCalls=workflow[0].actualNativeCalls();assertRetainedBinderConsumesPublishedSources(workflow[0],true);assertEquals(before,requests.get());assertEquals(nativeCalls,workflow[0].actualNativeCalls());
-                SwingUtilities.invokeAndWait(()->{var stage=workflow[0].currentStage();((JButton)find(workflow[0].controls(),"undo")).doClick();((JButton)find(workflow[0].controls(),"redo")).doClick();assertEquals(stage.id(),workflow[0].currentStage().id());assertFalse(data[0].isModified());});
+                SwingUtilities.invokeAndWait(()->{
+                    var stage=workflow[0].currentStage();
+                    ((JButton)find(workflow[0].controls(),"undo")).doClick();
+                    var combo=(JComboBox<?>)find(workflow[0].controls(),"candidate");
+                    assertEquals(review[0].choices().size(),combo.getItemCount(),"Back restores the complete detector chooser");
+                    var nativeChoice=detectorChoice(review[0].originalResult(),"hot");
+                    var id=review[0].choiceId(nativeChoice);
+                    for(int index=0;index<combo.getItemCount();index++) {
+                        var entry=(org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Choice)combo.getItemAt(index);
+                        if(entry.id().equals(id))combo.setSelectedIndex(index);
+                    }
+                    assertSame(nativeChoice,review[0].selectedCandidate());
+                    assertEquals(id,workflow[0].currentStage().selected().value());
+                    ((JButton)find(workflow[0].controls(),"redo")).doClick();
+                    assertEquals(stage.id(),workflow[0].currentStage().id());
+                    assertEquals(stage.parentChoice(),workflow[0].currentStage().parentChoice());
+                    assertFalse(data[0].isModified());
+                });
                 assertEquals(before,requests.get());assertEquals(nativeCalls,workflow[0].actualNativeCalls());
             }finally{
                 SwingUtilities.invokeAndWait(()->{if(workflow[0]!=null)workflow[0].close();});

@@ -96,7 +96,8 @@ public final class SmoothingParentBinder {
                 source.evidence().resampling().inputCoordinateConvention(),affine(source));}
             catch(IllegalArgumentException missing){throw new Unavailable(Reason.SOURCE_FRAME_UNAVAILABLE);}
             var image=ImageCostField.fromEvidence(source.evidence(),source.fieldName(),work,bindingOwner);
-            var hashProof=recordedAlias?root.registeredOriginalEvidenceHashProof(candidate,source,work):Optional.<RefinementRootAuthority.OriginalEvidenceHashProof>empty();
+            var hashProof=root.legacyOriginalEvidenceHashProof(source,work);
+            if(hashProof.isEmpty()&&recordedAlias)hashProof=root.registeredOriginalEvidenceHashProof(candidate,source,work);
             hashProof.ifPresent(hashAuthority->work.reserveOn(bindingOwner,"smoothing-original-hash-proof",256).adopt(hashAuthority));
             String evidenceHash=hashProof.map(hashAuthority->hashAuthority.requireMatches(root,source.evidence(),source,work)).orElseGet(()->source.evidence().canonicalHash(work));
             String identity=identity(reference,frame,ids,fixed,evidenceHash,facts,work);

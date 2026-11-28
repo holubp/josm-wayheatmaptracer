@@ -207,6 +207,27 @@ class RefinementSmoothingAdapterTest {
         var r=old.request();var request=new TraceRequest(r.selectedWayKey(),r.selectedRange(),r.engine(),r.geometryMode(),r.permissions(),r.budgets(),curved.snapshotId(),curved.canonicalHash(),r.networkSnapshotId(),r.networkContentHash(),r.settingsHash(),r.parameterHash(),r.samplerId(),r.configuredSampleStepMeters(),r.profileChainage(),r.evidenceResolution());
         return new RefinementRootAuthority(old.network(),request,curved,old.effectiveConfig(),old.projectionCode(),old.sourceIdentity());
     }
+    @Test void exactlyUnchangedSelectedContactEdgeRemainsReviewRequiredWhileOtherSlotsMove() {
+        var root=RefinementParentFixtures.authority(AlignmentMode.MOVE_EXISTING_NODES,false,false,false,"path");
+        var candidate=RefinementParentFixtures.parent(root,"blue");
+        try(var owner=AttemptMemoryLedger.production().rootOwner()) {
+            var work=work(owner);
+            var selected=bind(root,candidate,SmoothingParentBinderTest.source(root,"blue",owner,()->{}),
+                    TrackerMode.LEGACY_V02,work);
+            var original=selected.reference().points();
+            assertFalse(selected.smoothingBasis().protectedIndices().contains(1));
+            assertFalse(selected.smoothingBasis().protectedIndices().contains(2));
+            try(var smoothed=new RefinementSmoothingAdapter().smooth(selected,SmoothingModels.Preset.STRONG_2PX,work,CancellationProbe.NONE)) {
+                assertEquals(RefinementSmoothingAdapter.Outcome.CHANGED,smoothed.receipt().outcome());
+                assertEquals(original.get(1),smoothed.points().get(1));
+                assertEquals(original.get(2),smoothed.points().get(2));
+                assertNotEquals(original.get(3),smoothed.points().get(3));
+                assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED,smoothed.plan().orElseThrow().validation().disposition());
+                assertTrue(smoothed.plan().orElseThrow().validation().findingCodes().contains(ContextContactAssessment.REVIEW_CODE));
+            }
+        }
+    }
+
     @Test void aNewReadonlyContextContactCannotBePromotedToAReviewOnlySmoothPlan() {
         var old=RefinementParentFixtures.authority(AlignmentMode.MOVE_EXISTING_NODES);var frame=old.evidence().coordinateFrame();var original=old.network();
         var values=new LinkedHashMap<>(original.primitives());var first=PrimitiveKey.existing(PrimitiveKey.Type.NODE,99);var last=PrimitiveKey.existing(PrimitiveKey.Type.NODE,100);
@@ -224,6 +245,30 @@ class RefinementSmoothingAdapterTest {
             assertTrue(composer.assess(parent.reference(),unchanged,parent.evidence(),"native",CancellationProbe.NONE).topologyFindings().isEmpty(),"The selected parent must really be contact-free");
             try(var result=new RefinementSmoothingAdapter().smooth(parent,SmoothingModels.Preset.STRONG_2PX,work,CancellationProbe.NONE)) {
                 assertEquals(RefinementSmoothingAdapter.Outcome.RETAINED_UNSAFE,result.receipt().outcome());assertTrue(result.plan().isEmpty());assertEquals(parent.reference().points(),result.points());
+            }
+        }
+    }
+    @Test void oneActualGaussianPlanFitsWithOnlyTwelveMiBOfLiveHeadroom() {
+        for(var mode:List.of(AlignmentMode.MOVE_EXISTING_NODES,AlignmentMode.PRECISE_SHAPE)) {
+            var ledger=new AttemptMemoryLedger(AttemptMemoryLedger.MAX_BYTES);
+            try(var owner=ledger.rootOwner()) {
+                var parent=parent(mode,owner,work(owner),()->{});
+                var adapter=new RefinementSmoothingAdapter();
+                List<MetricPoint> expectedPoints;
+                String expectedPlanHash;
+                try(var unpressured=adapter.smooth(parent,SmoothingModels.Preset.STRONG_2PX,work(owner),CancellationProbe.NONE)) {
+                    assertEquals(RefinementSmoothingAdapter.Outcome.CHANGED,unpressured.receipt().outcome());
+                    expectedPoints=List.copyOf(new ArrayList<>(unpressured.points()));
+                    expectedPlanHash=unpressured.plan().orElseThrow().canonicalHash();
+                }
+                owner.reserve(AttemptMemoryLedger.MAX_BYTES-owner.currentBytes()-12L*1024*1024).adopt(new Object());
+                long live=owner.currentBytes();
+                try(var pressured=adapter.smooth(parent,SmoothingModels.Preset.STRONG_2PX,work(owner),CancellationProbe.NONE)) {
+                    assertEquals(RefinementSmoothingAdapter.Outcome.CHANGED,pressured.receipt().outcome(),mode.toString());
+                    assertEquals(expectedPoints,pressured.points());
+                    assertEquals(expectedPlanHash,pressured.plan().orElseThrow().canonicalHash());
+                }
+                assertEquals(live,owner.currentBytes());
             }
         }
     }

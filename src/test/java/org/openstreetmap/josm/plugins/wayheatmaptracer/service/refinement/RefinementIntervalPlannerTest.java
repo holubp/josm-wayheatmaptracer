@@ -94,6 +94,10 @@ class RefinementIntervalPlannerTest {
     }
     /** Larger public scene: existing captured 30 m island policy is explicit input, never a new planner buffer. */
     static ParentTraceReference capturedTopologyParent(List<OccurrenceRange> editableRanges,Set<Integer> tagged,Set<Integer> related) {
+        return capturedTopologyParent(editableRanges,tagged,related,true);
+    }
+    static ParentTraceReference capturedTopologyParent(List<OccurrenceRange> editableRanges,Set<Integer> tagged,Set<Integer> related,
+            boolean protectEveryIslandOccurrence) {
         var template=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);var e=template.evidence();var frame=e.coordinateFrame();
         int width=401,height=101;var scalar=new double[width*height];var valid=new boolean[scalar.length];Arrays.fill(valid,true);
         for(int y=0;y<height;y++)for(int x=0;x<width;x++)scalar[y*width+x]=.02+.98*Math.exp(-.5*Math.pow((y-50.)/1.5,2));
@@ -122,7 +126,8 @@ class RefinementIntervalPlannerTest {
         var specification=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture.Specification(initial.snapshotId(),initial.datasetIdentity(),initial.sourceGeneration(),wayKey,new OccurrenceRange(0,18),frame,region,edit,closure.editableWayOccurrences(),editable,Set.of(),removable,fixed,true,r.permissions()).withFixedReceiverGeometry();
         var partition=org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner.partition(initial,specification);
         if(tagged.isEmpty()&&related.isEmpty())assertEquals(List.of(new OccurrenceRange(4,8),new OccurrenceRange(10,14)),partition.fixedIslands().stream().map(org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner.FixedIsland::range).toList());
-        for(var island:partition.fixedIslands())fixed.addAll(island.occurrenceKeys());removable.removeAll(fixed);editable.removeAll(fixed);
+        if(protectEveryIslandOccurrence)for(var island:partition.fixedIslands())fixed.addAll(island.occurrenceKeys());
+        removable.removeAll(fixed);editable.removeAll(fixed);
         closure=new ClosureDescriptor(closure.scope(),closure.queryVersion(),values.keySet(),editable,Set.of(),fixed,removable,Map.of(wayKey,editableRanges),List.copyOf(partition.provedPorts()),region,edit,true,true,true,true);
         var network=new NetworkSnapshot("captured-frozen-island-source",SnapshotRole.CAPTURED_BEFORE,initial.datasetIdentity(),initial.sourceGeneration(),closure,values,initial.incomingReferrerWatches());
         assertTrue(org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner.verifyFrozenParity(partition,network));

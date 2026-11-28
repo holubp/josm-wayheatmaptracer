@@ -197,7 +197,7 @@ public final class RefinementAcquisition {
             plan.aggregateRequested(),credentials,cancellation,operation,budget,grid);
         acquired.value().requireCurrent(coordinator);
         if(!coordinator.isCurrent(stamp))throw new IllegalStateException("Acquired source generation is stale");
-        var capture=new Capture(plan,acquired.value(),operation,coordinator,grid,geographic,stamp);
+        var capture=new Capture(plan,acquired.value(),operation,coordinator,grid,geographic,stamp,acquired.owner());
         geometry.adopt(capture);
         return new Accounted<>(capture,operation);
         } catch(RuntimeException|Error failure){operation.close();throw failure;}
@@ -205,33 +205,54 @@ public final class RefinementAcquisition {
     /** Immutable provenance plus coordinator-sealed source ownership; all pixel work remains off EDT. */
     public static final class Capture {
         private final RefinementSourcePlanner.Plan plan;
-        private final ManagedModernPreviewSource.RefinementSources sources;
+        private ManagedModernPreviewSource.RefinementSources sources;
         private final AttemptMemoryLedger.Owner owner;
+        private final AttemptMemoryLedger.Owner rasterOwner;
         private final TileFetchCoordinator coordinator;
         private final MetricRasterGrid grid;
         private final List<GeographicPoint> geographic;
         private final TileFetchCoordinator.GenerationStamp generationStamp;
+        private final ManagedModernPreviewSource.RefinementWorkReceipt workReceipt;
+        private final Set<String> acquiredPalettes;
+        private final boolean aggregateComplete;
+        private final Map<String,ManagedModernPreviewSource.RefinementStatus> sourceOutcomes;
+        private final Map<String,Map<Integer,ManagedModernPreviewSource.ZoomReceipt>> sourceReceipts;
         private final Map<EvidenceSnapshot,RetainedSmoothingSource> retainedSources=new IdentityHashMap<>();
         private GeometryWorkContext hashWork;
         private RasterEvidenceCapture.OriginalInputHashes inputHashes;
         private Capture(RefinementSourcePlanner.Plan plan,ManagedModernPreviewSource.RefinementSources sources,
                 AttemptMemoryLedger.Owner owner,TileFetchCoordinator coordinator,MetricRasterGrid grid,List<GeographicPoint> geographic) {
-            this(plan,sources,owner,coordinator,grid,geographic,coordinator.captureGenerationStamp(plan.settings().generation()));
+            this(plan,sources,owner,coordinator,grid,geographic,coordinator.captureGenerationStamp(plan.settings().generation()),null);
         }
         private Capture(RefinementSourcePlanner.Plan plan,ManagedModernPreviewSource.RefinementSources sources,
                 AttemptMemoryLedger.Owner owner,TileFetchCoordinator coordinator,MetricRasterGrid grid,List<GeographicPoint> geographic,
-                TileFetchCoordinator.GenerationStamp generationStamp) {
+                TileFetchCoordinator.GenerationStamp generationStamp,AttemptMemoryLedger.Owner rasterOwner) {
             this.plan=plan;this.sources=sources;this.owner=owner;this.coordinator=coordinator;this.grid=grid;this.geographic=List.copyOf(geographic);
             this.generationStamp=generationStamp;
+            this.rasterOwner=rasterOwner;
+            this.workReceipt=sources.workReceipt();
+            this.acquiredPalettes=Set.copyOf(sources.palettes());
+            this.aggregateComplete=sources.completeAggregate();
+            this.sourceOutcomes=sources.sourceOutcomes();
+            this.sourceReceipts=sources.sourceReceipts();
         }
         public RefinementSourcePlanner.Plan plan(){return plan;}
-        public Set<String> palettes(){return sources.palettes();}
-        public Map<String,ManagedModernPreviewSource.RefinementStatus> sourceOutcomes(){return sources.sourceOutcomes();}
-        public boolean completeAggregate(){return sources.completeAggregate();}
-        public Map<String,Map<Integer,ManagedModernPreviewSource.ZoomReceipt>> sourceReceipts(){return sources.sourceReceipts();}
-        public ManagedModernPreviewSource.RefinementWorkReceipt workReceipt(){return sources.workReceipt();}
-        public boolean isCurrent(TileFetchCoordinator actual){return actual==coordinator&&coordinator.isCurrent(generationStamp)&&sources.isCurrent(actual);}
+        public Set<String> palettes(){return acquiredPalettes;}
+        public Map<String,ManagedModernPreviewSource.RefinementStatus> sourceOutcomes(){return sourceOutcomes;}
+        public boolean completeAggregate(){return aggregateComplete;}
+        public Map<String,Map<Integer,ManagedModernPreviewSource.ZoomReceipt>> sourceReceipts(){return sourceReceipts;}
+        public ManagedModernPreviewSource.RefinementWorkReceipt workReceipt(){return workReceipt;}
+        public boolean isCurrent(TileFetchCoordinator actual){return actual==coordinator&&!owner.isClosed()
+                &&coordinator.isCurrent(generationStamp)&&(sources==null||sources.isCurrent(actual));}
         private void requireCurrent(){if(!isCurrent(coordinator))throw new IllegalStateException("Acquired source generation is stale");}
+        /** The exact selected scalar field supersedes the serialized acquisition's raw pixels. */
+        void releaseRasterInputs(EvidenceSnapshot evidence) {
+            requireCurrent();
+            if(!retainedSources.containsKey(evidence))throw new IllegalArgumentException("Selected scalar source was not frozen");
+            if(rasterOwner==null||sources==null)return;
+            inputHashes=null;hashWork=null;sources=null;
+            rasterOwner.close();
+        }
         /** Only a scalar snapshot produced by this capture may be published as its retained source. */
         public RetainedSmoothingSource retentionDescriptor(RefinementSourcePlanner.SourceRequest source,EvidenceSnapshot evidence) {
             var descriptor=retainedSources.get(evidence);
@@ -268,7 +289,9 @@ public final class RefinementAcquisition {
             var request=plan.requests().stream().filter(s->s.palette().equals(palette)&&s.mapping().equals(mapping)
                     &&s.aggregate()==aggregate&&s.unavailableReason().isEmpty()).findFirst()
                     .orElseThrow(()->new IllegalArgumentException("Detector source was not requested"));
-            cancellation.checkpoint();requireCurrent();sources.requireCurrent(coordinator);
+            cancellation.checkpoint();requireCurrent();
+            if(sources==null)throw new IllegalStateException("Selected scalar source was already frozen");
+            sources.requireCurrent(coordinator);
             if(work!=null) {
                 if(!owner.sharesLedgerWith(work.owner()))throw new IllegalArgumentException("Original hash owner belongs to another attempt");
                 if(inputHashes==null){hashWork=work;inputHashes=new RasterEvidenceCapture.OriginalInputHashes(work);}else inputHashes.requireContext(work);

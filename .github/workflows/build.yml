@@ -61,9 +61,9 @@ jobs:
           retention-days: 5
 
   g004-focused-tests:
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/codex/g004-stepwise-20261119' || github.ref == 'refs/heads/codex/g004-smoothing-adapter-20261121' || github.ref == 'refs/heads/codex/g009-rc17-20261127')
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/codex/g004-stepwise-20261119' || github.ref == 'refs/heads/codex/g004-smoothing-adapter-20261121' || github.ref == 'refs/heads/codex/g009-rc17-20261127' || github.ref == 'refs/heads/codex/g010-rc18-20261127')
     env:
-      FOCUSED_SUITE: ${{ github.ref == 'refs/heads/codex/g009-rc17-20261127' && 'refs/heads/codex/g004-stepwise-20261119' || github.ref }}
+      FOCUSED_SUITE: ${{ (github.ref == 'refs/heads/codex/g009-rc17-20261127' || github.ref == 'refs/heads/codex/g010-rc18-20261127') && 'refs/heads/codex/g004-stepwise-20261119' || github.ref }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -428,7 +428,7 @@ jobs:
           retention-days: 5
 
   g004-gui-diagnostic:
-    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/heads/codex/g004-') || github.ref == 'refs/heads/codex/g009-rc17-20261127')
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/heads/codex/g004-') || github.ref == 'refs/heads/codex/g009-rc17-20261127' || github.ref == 'refs/heads/codex/g010-rc18-20261127')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:

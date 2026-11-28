@@ -35,6 +35,8 @@ public final class ParentTraceReference {
     private final OccurrenceRange range;
     private final String operationIdentity;
     private final Optional<ProfileChainage> measuredSampling;
+    private record SliceProof(List<MetricPoint> enclosingPoints,List<MetricPoint> cutPoints) { }
+    private final SliceProof sliceProof;
 
     /** Reads the producer's actual fields; the private chainage buffer is charged without cloning. */
     void inventoryInto(RefinementRootAuthority.Inventory inventory) {
@@ -42,6 +44,7 @@ public final class ParentTraceReference {
         inventory.visit(root);inventory.visit(stage);inventory.visit(choice);inventory.visit(nativeId);inventory.visit(selectedSource);
         inventory.visit(parentIdentity);inventory.visit(identity);inventory.visit(points);inventory.visit(arcs);inventory.visit(byOccurrence);
         inventory.visit(frozen);inventory.visit(missing);inventory.visit(ambiguous);inventory.visit(range);inventory.visit(operationIdentity);inventory.visit(measuredSampling);
+        inventory.visit(sliceProof);
     }
     // Package-private: the validating binder is the only public construction entry.
     ParentTraceReference(RefinementRootAuthority root,StageId stage,CandidateId choice,String nativeId,
@@ -50,12 +53,13 @@ public final class ParentTraceReference {
     }
     ParentTraceReference(RefinementRootAuthority root,StageId stage,CandidateId choice,String nativeId,
             RefinementSourcePlanner.SourceRequest selectedSource,String parentIdentity,List<MetricPoint> points,List<ParentArc> arcs) {
-        this(root,stage,choice,nativeId,selectedSource,parentIdentity,points,arcs,root.request().selectedRange(),"stage-reference",Optional.empty());
+        this(root,stage,choice,nativeId,selectedSource,parentIdentity,points,arcs,root.request().selectedRange(),"stage-reference",Optional.empty(),null);
     }
     private ParentTraceReference(RefinementRootAuthority root,StageId stage,CandidateId choice,String nativeId,
             RefinementSourcePlanner.SourceRequest selectedSource,String parentIdentity,List<MetricPoint> points,List<ParentArc> arcs,
-            OccurrenceRange range,String operationIdentity,Optional<ProfileChainage> measuredSampling) {
+            OccurrenceRange range,String operationIdentity,Optional<ProfileChainage> measuredSampling,SliceProof sliceProof) {
         this.measuredSampling=Objects.requireNonNull(measuredSampling);
+        this.sliceProof=sliceProof;
         this.range=Objects.requireNonNull(range);this.operationIdentity=Objects.requireNonNull(operationIdentity);
         if(operationIdentity.isBlank()||range.firstIndex()<root.request().selectedRange().firstIndex()
                 ||range.lastIndex()>root.request().selectedRange().lastIndex())throw new IllegalArgumentException("Reference cannot expand original selection");
@@ -183,10 +187,10 @@ public final class ParentTraceReference {
     public MetricPoint occurrencePosition(int occurrence){var arc=byOccurrence.get(occurrence);if(arc==null)throw new UnavailableException(Unavailable.MAPPING_UNAVAILABLE);return interpolate(points.get(arc.parentEdge()),points.get(arc.parentEdge()+1),arc.fraction());}
     /** Pins generated identities to one explicit operation without changing its selected parent. */
     public ParentTraceReference withSampling(ProfileChainage measured) {
-        return new ParentTraceReference(root,stage,choice,nativeId,selectedSource,parentIdentity,points,arcs,range,operationIdentity,Optional.of(measured));
+        return new ParentTraceReference(root,stage,choice,nativeId,selectedSource,parentIdentity,points,arcs,range,operationIdentity,Optional.of(measured),sliceProof);
     }
     public ParentTraceReference forOperation(String operation) {
-        return new ParentTraceReference(root,stage,choice,nativeId,selectedSource,parentIdentity,points,arcs,range,operation,measuredSampling);
+        return new ParentTraceReference(root,stage,choice,nativeId,selectedSource,parentIdentity,points,arcs,range,operation,measuredSampling,sliceProof);
     }
     /** Exact edge subdivision for an original-occurrence interval. Missing lineage remains local. */
     public ParentTraceReference slice(OccurrenceRange selected) {
@@ -200,10 +204,15 @@ public final class ParentTraceReference {
         for(var arc:arcs)if(arc.originalOccurrence()>=selected.firstIndex()&&arc.originalOccurrence()<=selected.lastIndex()) {
             double target=chainageAt(arc);int edge=0;
             while(edge<positions.size()-2&&positions.get(edge+1)<=target)edge++;
-            double fraction=(target-positions.get(edge))/(positions.get(edge+1)-positions.get(edge));
+            double edgeStart=positions.get(edge),edgeEnd=positions.get(edge+1);
+            // Whole retained edges keep their exact occurrence fraction. Subtracting two
+            // cumulative distances can move a frozen cut even when no vertex changed.
+            boolean wholeEdge=edgeStart==chainage[arc.parentEdge()]&&edgeEnd==chainage[arc.parentEdge()+1];
+            double fraction=wholeEdge?arc.fraction():(target-edgeStart)/(edgeEnd-edgeStart);
             cuts.add(new ParentArc(arc.originalOccurrence(),edge,fraction));
         }
-        return new ParentTraceReference(root,stage,choice,nativeId,selectedSource,parentIdentity,cutPoints,cuts,selected,operationIdentity,Optional.empty());
+        return new ParentTraceReference(root,stage,choice,nativeId,selectedSource,parentIdentity,cutPoints,cuts,selected,operationIdentity,
+                Optional.empty(),new SliceProof(points,List.copyOf(cutPoints)));
     }
     public void requireComplete(){
         if(!missing.isEmpty())throw new UnavailableException(Unavailable.MAPPING_UNAVAILABLE);
@@ -249,27 +258,27 @@ public final class ParentTraceReference {
         }catch(ArithmeticException overflow){return Long.MAX_VALUE;}
     }
     /** One thread-confined validation workspace. Its ledger owner may settle on any thread. */
-    public static final class BindingWorkspace {
+    public static final class BindingWorkspace implements AutoCloseable {
         private final RefinementRootAuthority root;
         private final EvidenceSnapshot evidence;
         private final AttemptMemoryLedger.Owner owner;
         private final Thread worker;
-        private final long bytes;
-        private BindingWorkspace(ParentTraceReference reference,EvidenceSnapshot evidence,AttemptMemoryLedger.Owner owner,long bytes) {
-            this.root=reference.root;this.evidence=evidence;this.owner=owner;this.bytes=bytes;worker=Thread.currentThread();
+        private final AttemptMemoryLedger.Reservation reservation;
+        private BindingWorkspace(ParentTraceReference reference,EvidenceSnapshot evidence,AttemptMemoryLedger.Owner owner,
+                AttemptMemoryLedger.Reservation reservation) {
+            this.root=reference.root;this.evidence=evidence;this.owner=owner;this.reservation=reservation;worker=Thread.currentThread();
         }
         /** Proves capacity/lifetime only; every entry still validates the actual request/source authority. */
         public void requireCapacity(ParentTraceReference reference,EvidenceSnapshot source,AttemptMemoryLedger.Owner actualOwner) {
-            if(root!=reference.root||evidence!=source||owner!=actualOwner||owner.isClosed()||worker!=Thread.currentThread()
-                    ||reference.bindingScratchBytes(source)>bytes)
+            if(root!=reference.root||evidence!=source||owner!=actualOwner||worker!=Thread.currentThread()
+                    ||!reservation.isActiveFor(owner)||reference.bindingScratchBytes(source)>reservation.bytes())
                 throw new IllegalArgumentException("Validation workspace belongs to another owner/source/worker or is insufficient");
         }
+        @Override public void close(){reservation.close();}
     }
     /** Reserves before deriving a request, hashing buffers or constructing profile locations. */
     public BindingWorkspace reserveBindingWorkspace(EvidenceSnapshot evidence,AttemptMemoryLedger.Owner owner) {
-        long bytes=bindingScratchBytes(evidence);
-        owner.reserve(bytes);
-        return new BindingWorkspace(this,evidence,owner,bytes);
+        return new BindingWorkspace(this,evidence,owner,owner.reserve(bindingScratchBytes(evidence)));
     }
 
     /** Request preparation acquires nothing and allocates no new authority or solver work. */
@@ -286,7 +295,9 @@ public final class ParentTraceReference {
         root.requireAcquisitionEvidence(evidence);
         if(evidence.resolution().spatialPitchSamples().size()!=1)throw new UnavailableException(Unavailable.SPATIAL_RESOLUTION_UNAVAILABLE);
         var corridor=MetricCorridorRegion.aroundPolyline(points,original.permissions().ordinaryRadiusMeters());
-        if(!decisionRegionContains(evidence.decisionRegion(),corridor,cancellation)||!evidence.evidenceRegion().containsRegion(corridor))
+        if((!hasEnclosingSliceProof(evidence.decisionRegion(),cancellation)
+                &&!decisionRegionContains(evidence.decisionRegion(),corridor,cancellation))
+                ||!evidence.evidenceRegion().containsRegion(corridor))
             throw new UnavailableException(Unavailable.EVIDENCE_COVERAGE);
         if(engine==TrackerMode.PROBABILISTIC&&measuredSampling.isPresent())
             throw new IllegalArgumentException("B requires its unchanged deterministic profile resampling");
@@ -296,6 +307,18 @@ public final class ParentTraceReference {
         return new TraceRequest(original.selectedWayKey(),originalRange(),engine,original.geometryMode(),original.permissions(),remaining,
             evidence.snapshotId(),evidence.canonicalHash(),original.networkSnapshotId(),original.networkContentHash(),original.settingsHash(),
             parameterHash(engine,evidence),original.samplerId()+SAMPLER_SUFFIX,original.configuredSampleStepMeters(),profiles,evidence.resolution(),input,original.disconnectionSource());
+    }
+    boolean hasEnclosingSliceProof(MetricRegion decision,CancellationProbe cancellation) {
+        if(sliceProof!=null&&points.equals(sliceProof.cutPoints())) {
+            cancellation.checkpoint();
+            // Each cut edge is either an unchanged parent chord or a subdivision of one chord.
+            // With the same radius and orientation, its capped rectangle lies inside the
+            // corresponding parent rectangle. Use that construction proof only for the exact
+            // captured parent corridor. Area subtraction can leave slivers at recomputed caps.
+            var enclosing=MetricCorridorRegion.aroundPolyline(sliceProof.enclosingPoints(),root.request().permissions().ordinaryRadiusMeters());
+            if(decision.polygons().equals(enclosing.polygons()))return true;
+        }
+        return false;
     }
     static boolean decisionRegionContains(MetricRegion decision,MetricRegion corridor,CancellationProbe cancellation) {
         // A local occurrence cut usually keeps these exact segment rectangles in their original order.

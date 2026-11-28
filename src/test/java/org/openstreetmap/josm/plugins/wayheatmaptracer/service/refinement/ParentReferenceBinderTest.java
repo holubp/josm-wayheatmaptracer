@@ -41,6 +41,23 @@ class ParentReferenceBinderTest {
    }
   }
  }
+ @Test void fractionalSliceCanUseProofOfTheExactEnclosingParentCorridor(){
+  var root=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);
+  var points=List.of(new MetricPoint(20,50),new MetricPoint(50,53),new MetricPoint(80,53),
+      new MetricPoint(110,53),new MetricPoint(140,50));
+  var arcs=List.of(new ParentArc(0,0,0),new ParentArc(1,0,.01),
+      new ParentArc(2,1,.5),new ParentArc(3,3,.01),new ParentArc(4,3,1));
+  var parent=new ParentTraceReference(root,new StageId(UUID.randomUUID()),new CandidateId("selected"),
+      "selected","blue","exact-parent",points,arcs);
+  var cut=parent.slice(new OccurrenceRange(1,3)).forOperation("test-cut");
+  var whole=MetricCorridorRegion.aroundPolyline(parent.points(),8);
+  var interval=MetricCorridorRegion.aroundPolyline(cut.points(),8);
+
+  assertFalse(ParentTraceReference.decisionRegionContains(whole,interval,CancellationProbe.NONE),
+      "Recomputed fractional caps reproduce the original Area sliver");
+  assertTrue(cut.hasEnclosingSliceProof(whole,CancellationProbe.NONE));
+  assertFalse(cut.hasEnclosingSliceProof(MetricRegion.rectangle(100,100,102,102),CancellationProbe.NONE));
+ }
  @Test void pinsExactNonTopCandidateAndPaletteWithoutDefaultPreviewSubstitution(){
   var root=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);var id=new StageId(UUID.randomUUID());var blue=new ParentReferenceBinder().bind(root,id,RefinementParentFixtures.parent(root,"blue"));
   assertEquals("blue",blue.parentPalette());assertEquals("blue-native",blue.nativeCandidateId());assertEquals(53,blue.points().get(2).yMeters(),1e-7);assertSame(root.network(),blue.root().network());

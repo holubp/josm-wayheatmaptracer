@@ -9,6 +9,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.Refine
 final class RefinementParentFixtures {
  static RefinementRootAuthority authority(AlignmentMode mode) {return authority(mode,false,false,false);}
  static RefinementRootAuthority authority(AlignmentMode mode,boolean cleanup,boolean sparse,boolean gap) {
+  return authority(mode,cleanup,sparse,gap,null);
+ }
+ static RefinementRootAuthority authority(AlignmentMode mode,boolean cleanup,boolean sparse,boolean gap,String crossingTag) {
   var frame=LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(50,14),new GeographicPoint(49.99,13.99),new GeographicPoint(50.01,14.02));
   int w=161,h=101;double[] scalar=new double[w*h];boolean[] valid=new boolean[scalar.length];Arrays.fill(valid,true);
   for(int y=0;y<h;y++)for(int x=0;x<w;x++)scalar[y*w+x]=gap&&x>=70&&x<=86?.02:.02+.98*Math.exp(-.5*Math.pow((y-54.)/1.5,2));
@@ -18,6 +21,13 @@ final class RefinementParentFixtures {
   var way=PrimitiveKey.existing(PrimitiveKey.Type.WAY,10);var keys=new ArrayList<PrimitiveKey>();var values=new LinkedHashMap<PrimitiveKey,DetachedPrimitive>();
   for(int i=0;i<(sparse?2:5);i++){var key=PrimitiveKey.existing(PrimitiveKey.Type.NODE,i+1);keys.add(key);values.put(key,new DetachedNode(key,frame.toGeographic(new MetricPoint(sparse?20+120*i:20+30*i,50)),Map.of(),false,false));}
   values.put(way,new DetachedWay(way,keys,Map.of("highway","path"),false,false));
+  if(crossingTag!=null) {
+   var first=PrimitiveKey.existing(PrimitiveKey.Type.NODE,101);var last=PrimitiveKey.existing(PrimitiveKey.Type.NODE,102);
+   var crossing=PrimitiveKey.existing(PrimitiveKey.Type.WAY,100);
+   values.put(first,new DetachedNode(first,frame.toGeographic(new MetricPoint(65,51)),Map.of(),false,false));
+   values.put(last,new DetachedNode(last,frame.toGeographic(new MetricPoint(65,62)),Map.of(),false,false));
+   values.put(crossing,new DetachedWay(crossing,List.of(first,last),Map.of(crossingTag,crossingTag.equals("waterway")?"stream":"path"),false,false));
+  }
   var fixed=Set.of(keys.get(0),keys.get(keys.size()-1));var ordinary=new HashSet<>(keys);ordinary.removeAll(fixed);var editable=new HashSet<>(ordinary);editable.add(way);
   var closure=new ClosureDescriptor(ClosureDescriptor.Scope.EDIT_COMPONENT,"stepwise-test",values.keySet(),editable,mode==AlignmentMode.MOVE_EXISTING_NODES?ordinary:Set.of(),fixed,mode==AlignmentMode.PRECISE_SHAPE?ordinary:Set.of(),Map.of(way,List.of(new OccurrenceRange(0,keys.size()-1))),List.of(),region,MetricRegion.rectangle(5,40,155,65),mode==AlignmentMode.PRECISE_SHAPE,true,true,true);
   var network=new NetworkSnapshot("root-network",SnapshotRole.CAPTURED_BEFORE,"synthetic",1,closure,values,V022SnapshotFixtures.closedWorldReferrerWatches(values));

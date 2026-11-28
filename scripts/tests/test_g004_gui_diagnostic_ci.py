@@ -52,7 +52,8 @@ def test_g004_diagnostic_gui_is_fast_native_and_diagnostic_only() -> None:
     assert isinstance(job, dict)
     assert job.get("if") == (
         "github.event_name == 'push' && (startsWith(github.ref, 'refs/heads/codex/g004-') "
-        "|| github.ref == 'refs/heads/codex/g009-rc17-20261127')"
+        "|| github.ref == 'refs/heads/codex/g009-rc17-20261127' "
+        "|| github.ref == 'refs/heads/codex/g010-rc18-20261127')"
     )
     assert job["runs-on"] == "ubuntu-24.04"
     assert job["timeout-minutes"] == "15"

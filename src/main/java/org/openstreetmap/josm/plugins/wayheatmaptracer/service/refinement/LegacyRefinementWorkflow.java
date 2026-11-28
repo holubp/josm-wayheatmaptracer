@@ -998,10 +998,6 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                 else {
                     var child=computed.stage().orElseThrow();
                     if(session.publish(ticket,child,()->{
-                        var metadata=new IdentityHashMap<Object,Long>();
-                        for(var candidate:child.candidates()){candidate.payload().retainSmoothingSources(publication);metadata.putAll(candidate.payload().publicationCharges());}
-                        long bytes=64;for(long charge:metadata.values())bytes=Math.addExact(bytes,charge);
-                        synchronized(memory){computed.publicationAllowance().orElseThrow().close();publication.reserve(bytes).adopt(child);}
                         progress.presentationAttempted=true;showStage(child);probe.checkpoint();review.requireOriginalAttemptCurrent();
                     })) {
                         retainedStages.put(child.id(),new RetainedStage(publication,child));
@@ -1057,8 +1053,8 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                     var cause=result.receipt().outcome()==RefinementSmoothingAdapter.Outcome.RETAINED_RESOURCE?RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT:RefinementAttemptDiagnostics.Cause.PLAN_REFUSED;
                     progress.pipelineOutcome=Outcome.NO_USABLE_RESULT;return new Computed(Optional.empty(),cause);
                 }
-                var reserve=publication.reserve(allowance);
-                try {
+                try(var workspace=work.reserveOn(publication,"smoothing-child-materialization",result.publicationWorkspaceBytes());
+                    var scope=org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.open(work)) {
                     var assessed=result.assessment().orElseThrow();var edit=result.plan().orElseThrow();
                     var projection=Projections.getProjectionByCode(root.authority().projectionCode());
                     var points=result.points().stream().map(p->{var g=edit.metricFrame().toGeographic(p);return projection.latlon2eastNorth(new LatLon(g.latitudeDegrees(),g.longitudeDegrees()));}).toList();
@@ -1073,8 +1069,15 @@ public final class LegacyRefinementWorkflow implements AutoCloseable, org.openst
                     long header=RefinementSession.stageMetadataBytes(1)+RefinementSession.candidateMetadataBytes(id,identity,nativeId,source.source().palette(),assessed.candidate().correspondence().size());
                     var payload=RefinementPayload.captureNative(alignment,parent.payload(),nativeReview,admission,header);
                     var child=Stage.child(ticket,List.of(new Candidate(id,payload,assessed.candidate().correspondence(),identity,nativeId,source.source().palette())),id);
-                    progress.pipelineOutcome=Outcome.COMPLETE;return new Computed(Optional.of(child),RefinementAttemptDiagnostics.Cause.NONE,Optional.of(reserve));
-                }catch(RuntimeException|Error failure){reserve.close();throw failure;}
+                    // Keep exact plan and source owned through the worker-to-EDT handoff.
+                    // The session independently checks the marginal logical history allowance.
+                    payload.retainSmoothingSources(publication);
+                    long retainedBytes=Math.addExact(header,payload.publicationBytes());
+                    try(var retained=work.reserveOn(publication,"smoothing-child-retained",retainedBytes)) {
+                        retained.adopt(child);
+                    }
+                    progress.pipelineOutcome=Outcome.COMPLETE;return new Computed(Optional.of(child),RefinementAttemptDiagnostics.Cause.NONE);
+                }
             }
         } catch(SmoothingParentBinder.Unavailable unavailable) {
             computationEvidence="smoothing-binding-"+unavailable.reason();throw unavailable;

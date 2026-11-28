@@ -51,6 +51,35 @@ class ParentBackedComposerTest {
         assertEquals(List.of(0,1,2,3,4),result.pointIds().stream().map(i->((FinalRoutePointId.ExistingWayNodeOccurrence)i).originalOccurrenceIndex()).toList());
         for(int i=0;i<5;i++)assertEquals(result.points().get(i),result.assignments().get(result.pointIds().get(i)));
     }
+    @Test void retainedPreciseFractionIsNotRecomputedWhenItsWholeEdgeSurvives() {
+        var source=parent(AlignmentMode.PRECISE_SHAPE);
+        var fractional=new ParentArc(1,1,0.12345678901234567);
+        var parent=new ParentTraceReference(source.root(),source.parentStage(),source.parentChoice(),
+                source.nativeCandidateId(),source.selectedSource(),source.parentIdentity(),source.points(),
+                List.of(new ParentArc(0,0,0),fractional,new ParentArc(2,2,0),
+                        new ParentArc(3,3,0),new ParentArc(4,3,1)));
+        var result=new ParentBackedComposer().compose("exact-retained-cut",parent,
+                List.of(choice(parent,new OccurrenceRange(2,4),55)));
+        assertEquals(fractional,result.correspondence().stream().filter(arc->arc.originalOccurrence()==1)
+                .findFirst().orElseThrow());
+    }
+    @Test void frozenPreciseSpanPreservesGeometryAndMandatoryIdentitiesWhenParentHasRemovableOccurrences() {
+        var parent=RefinementIntervalPlannerTest.capturedTopologyParent(List.of(new OccurrenceRange(0,18)),Set.of(),Set.of(),false);
+        var composer=new ParentBackedComposer();
+        var result=composer.compose("retained-island",parent,List.of(choice(parent,new OccurrenceRange(0,4),51)));
+        var original=(DetachedWay)parent.root().network().primitives().get(parent.root().request().selectedWayKey());
+        var anchor=new FinalRoutePointId.ExistingWayNodeOccurrence(original.key(),original.nodeKeys().get(6),6);
+        assertEquals(parent.occurrencePosition(6),result.assignments().get(anchor));
+        var removable=new FinalRoutePointId.ExistingWayNodeOccurrence(original.key(),original.nodeKeys().get(5),5);
+        assertFalse(result.assignments().containsKey(removable));
+        assertDoesNotThrow(()->ParentBackedComposer.requireFrozenGeometryPreserved(parent,result));
+        var ids=new ArrayList<>(result.pointIds());int index=ids.indexOf(anchor);
+        var forged=new FinalRoutePointId.GeneratedCandidatePoint(result.id(),index);
+        ids.set(index,forged);
+        var assignments=new LinkedHashMap<>(result.assignments());assignments.put(forged,assignments.remove(anchor));
+        var missingMandatory=new ParentBackedComposer.Composed(result.id(),result.points(),ids,assignments,result.correspondence(),result.spans());
+        assertThrows(IllegalArgumentException.class,()->ParentBackedComposer.requireFrozenGeometryPreserved(parent,missingMandatory));
+    }
     @Test void completeFinalAssessmentCountsRetainedLengthsOnceAndBlocksFinalSelfCrossing() {
         var parent=parent(AlignmentMode.PRECISE_SHAPE);var composer=new ParentBackedComposer();
         var assembled=composer.compose("physical",parent,List.of(choice(parent,new OccurrenceRange(1,3),54)));

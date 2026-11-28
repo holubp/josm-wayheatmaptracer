@@ -14,8 +14,17 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.*;
 class RefinementAcquisitionTest {
+ static ParentTraceReference withSelectedSource(ParentTraceReference parent,String palette,String mapping,boolean aggregate) {
+  var selected=new RefinementSourcePlanner.SourceRequest(palette,mapping,aggregate,"");
+  return new ParentTraceReference(parent.root(),parent.parentStage(),parent.parentChoice(),parent.nativeCandidateId(),
+    selected,parent.parentIdentity(),parent.points(),parent.correspondence());
+ }
+ static RefinementSourcePlanner.Plan selectedPlan(RefinementSourcePlanner.Plan template,String palette,String mapping,boolean aggregate) {
+  var parent=withSelectedSource(template.parent(),palette,mapping,aggregate);
+  return RefinementSourcePlanner.plan(template.ticket(),template.settings(),parent);
+ }
  @Test void frozenVisiblePlanConvertsSameEpochPixelsAndRejectsShortFrameBeforeScalarWork() {
-  var source=VisibleEvidencePlanTest.source(TrackerMode.CORRIDOR_AWARE);var epoch=new org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch();
+  var source=selectedPlan(VisibleEvidencePlanTest.source(TrackerMode.CORRIDOR_AWARE),"blue","blue",false);var epoch=new org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch();
   var ledger=AttemptMemoryLedger.production();try(var owner=ledger.rootOwner()) {
    var work=VisibleEvidencePlanTest.work(owner);var old=VisibleEvidencePlanTest.original(source,epoch,1);
    var original=new LegacyVisibleSource(old.minimumEast(),old.minimumNorth(),old.maximumEast(),old.maximumNorth(),10,6,OptionalDouble.of(1),old.projectionCode(),old.sourceReceipt(),old.decisionRadiusMeters(),old.sampleStepMeters());
@@ -65,6 +74,12 @@ class RefinementAcquisitionTest {
     var request=plan.requests().stream().filter(s->s.palette().equals("blue")&&s.mapping().equals("blue")).findFirst().orElseThrow();
     var evidence=capture.evidence("blue",CancellationProbe.NONE);
     var retained=capture.retentionDescriptor(request,evidence);
+    long withRaw=ledger.currentBytes();
+    capture.releaseRasterInputs(evidence);
+    assertTrue(ledger.currentBytes()<withRaw,"Frozen scalar evidence no longer pins the acquired mosaics");
+    assertTrue(capture.isCurrent(coordinator));
+    assertSame(retained,capture.retentionDescriptor(request,evidence));
+    assertFalse(capture.sourceReceipts().isEmpty(),"Raw-pixel settlement preserves factual receipts");
     assertTrue(retained.inputByteHash().isEmpty());assertTrue(retained.inputHashProtocol().isEmpty(),"Old source API keeps honest ineligible absence and performs no optional input hashing");
     assertSame(evidence,retained.evidence());assertEquals(IntensitySamplingMode.DIRECT_VALUE,retained.intensityMode());
     assertEquals(9,retained.generation().orElseThrow());assertTrue(retained.visibleReceipt().isEmpty());
@@ -82,19 +97,23 @@ class RefinementAcquisitionTest {
   }
  }
  @Test void sameImageMappingsHaveDistinctChargedEvidenceGroupsAfterSettlement() throws Exception {
-  var parent=RefinementSourcePlannerTest.parent();var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(parent),RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.COLOR_MAPPING,false),parent);
+  var parent=withSelectedSource(RefinementSourcePlannerTest.parent(),"blue","blue",false);var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(parent),RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.COLOR_MAPPING,false),parent);
+  var alternativeParent=withSelectedSource(parent,"blue","hot-corridor",false);var alternativePlan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(alternativeParent),RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.COLOR_MAPPING,false),alternativeParent);
   var bytes=png();var decoder=new TileDecoderClassifier();
   try(var coordinator=new TileFetchCoordinator((r,c)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",bytes,null,Duration.ZERO,""),new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())) {
    coordinator.updateActiveGeneration(new ManagedTileGeneration(9));var ledger=AttemptMemoryLedger.production();try(var root=ledger.rootOwner()) {
     var worker=root.child("mapping-worker");var publication=root.child("mapping-publication");
-    var capture=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,worker).value();
+    var acquisition=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator);
+    var capture=acquisition.acquire(plan,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,worker).value();
+    var alternativeCapture=acquisition.acquire(alternativePlan,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,worker).value();
     var hashWork=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,System.nanoTime()+300_000_000_000L,CancellationProbe.NONE,worker);
-    var base=capture.evidence("blue",CancellationProbe.NONE,hashWork);long firstHashVisits=hashWork.visits();var alternative=capture.mappingEvidence("hot-corridor",CancellationProbe.NONE,hashWork);
-    assertTrue(hashWork.visits()-firstHashVisits<=2,"Actual second mapping must reuse the factual acquired-image hash");
+    var base=capture.evidence("blue",CancellationProbe.NONE,hashWork);
+    var alternative=alternativeCapture.mappingEvidence("hot-corridor",CancellationProbe.NONE,hashWork);
+    assertTrue(hashWork.visits()>0,"Each separately selected operation hashes its actual acquired image");
     var first=capture.retentionDescriptor(plan.requests().stream().filter(s->s.palette().equals("blue")&&s.mapping().equals("blue")).findFirst().orElseThrow(),base);
-    var second=capture.retentionDescriptor(plan.requests().stream().filter(s->s.mapping().equals("hot-corridor")).findFirst().orElseThrow(),alternative);
+    var second=alternativeCapture.retentionDescriptor(alternativePlan.requests().get(0),alternative);
     assertNotSame(base,alternative);assertNotSame(base.fields().get("native"),alternative.fields().get("native"));
-    assertEquals(first.imageOwnershipIdentity(),second.imageOwnershipIdentity());assertNotEquals(first.source(),second.source());
+    assertNotEquals(first.imageOwnershipIdentity(),second.imageOwnershipIdentity());assertNotEquals(first.source(),second.source());
     var sourceField=RefinementAcquisition.Capture.class.getDeclaredField("sources");sourceField.setAccessible(true);
     var actualInputs=(ManagedModernPreviewSource.RefinementSources)sourceField.get(capture);var inputImage=actualInputs.raster("blue",coordinator).image();
     var independent=java.security.MessageDigest.getInstance("SHA-256");for(int y=0;y<inputImage.getHeight();y++)for(int x=0;x<inputImage.getWidth();x++){int pixel=inputImage.getRGB(x,y);independent.update((byte)(pixel>>>24));independent.update((byte)(pixel>>>16));independent.update((byte)(pixel>>>8));independent.update((byte)pixel);}
@@ -109,7 +128,7 @@ class RefinementAcquisitionTest {
   }
  }
  @Test void admittedOriginalHashRefusesBeforeCopiesAndRejectsStaleGenerationDuringHashing() throws Exception {
-  var parent=RefinementSourcePlannerTest.parent();var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(parent),RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.COLOR_MAPPING,false),parent);var bytes=png();var decoder=new TileDecoderClassifier();
+  var parent=withSelectedSource(RefinementSourcePlannerTest.parent(),"blue","blue",false);var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(parent),RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.COLOR_MAPPING,false),parent);var bytes=png();var decoder=new TileDecoderClassifier();
   try(var coordinator=new TileFetchCoordinator((r,c)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",bytes,null,Duration.ZERO,""),new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())) {
    coordinator.updateActiveGeneration(new ManagedTileGeneration(9));var ledger=AttemptMemoryLedger.production();try(var owner=ledger.rootOwner()) {
     var capture=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,owner).value();long before=ledger.currentBytes();
@@ -124,7 +143,7 @@ class RefinementAcquisitionTest {
   }
  }
  @Test void managedNearTileBoundaryRidgeRetainsMeasuredNativeAReductionFour() throws Exception {
-  var parent=nearBoundaryHaloParent();
+  var parent=withSelectedSource(nearBoundaryHaloParent(),"blue","blue",false);
   var ticket=new OperationTicket(new SessionId(UUID.randomUUID()),1,parent.parentStage(),parent.parentChoice(),TrackerMode.CORRIDOR_AWARE,AlignmentMode.PRECISE_SHAPE);
   var plan=RefinementSourcePlanner.plan(ticket,RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.DIRECT_VALUE,false),parent);
   var frame=parent.root().evidence().coordinateFrame();
@@ -156,8 +175,8 @@ class RefinementAcquisitionTest {
    var ledger=AttemptMemoryLedger.production();
    try(var owner=ledger.rootOwner()){
     var acquired=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,owner);
-    assertEquals(5,acquired.value().palettes().size(),"all palettes must be usable, not rejected placeholder fixtures");
-    assertEquals(Set.of("hot","blue","bluered","purple","gray"),requested.stream().map(ManagedTileAddress::color).collect(java.util.stream.Collectors.toSet()));
+    assertEquals(Set.of("blue"),acquired.value().palettes(),"only the selected detector source is acquired for refinement");
+    assertEquals(Set.of("blue"),requested.stream().map(ManagedTileAddress::color).collect(java.util.stream.Collectors.toSet()));
     assertEquals(requested.size(),acquired.value().workReceipt().logicalTileRequests());
     var evidence=acquired.value().evidence("blue",CancellationProbe.NONE);
     var field=evidence.fields().get("native");
@@ -181,16 +200,17 @@ class RefinementAcquisitionTest {
     assertTrue(measured>0,"native A R4 must retain measured ridge rows; fully observed imagery must not become crop-induced nodata");
     assertEquals(115,field.width());assertEquals(37,field.height());
     assertTrue(requested.stream().anyMatch(address->address.y()==11113),"native context requires the south tile without changing r=8m");
-    assertEquals(10,requested.size(),"five palettes each acquire both actual tile rows");
+    assertEquals(2,requested.size(),"the selected palette acquires both actual tile rows");
    }
    assertEquals(0,ledger.currentBytes());
   }
  }
 
  @Test void observedZeroHaloStaysMeasuredWhileMissingTileStaysUnavailable() throws Exception {
-  var parent=nearBoundaryHaloParent();
+  var parent=withSelectedSource(nearBoundaryHaloParent(),"blue","blue",false);
   var ticket=new OperationTicket(new SessionId(UUID.randomUUID()),1,parent.parentStage(),parent.parentChoice(),TrackerMode.CORRIDOR_AWARE,AlignmentMode.PRECISE_SHAPE);
   var plan=RefinementSourcePlanner.plan(ticket,RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.DIRECT_VALUE,false),parent);
+  var grayParent=withSelectedSource(parent,"gray","gray",false);var grayPlan=RefinementSourcePlanner.plan(ticket,RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.DIRECT_VALUE,false),grayParent);
   var bytes=new ByteArrayOutputStream();ImageIO.write(new BufferedImage(512,512,BufferedImage.TYPE_INT_ARGB),"png",bytes);
   var decoder=new TileDecoderClassifier();
   try(var coordinator=new TileFetchCoordinator((request,credentials)->request.address().color().equals("gray")&&request.address().y()==11113
@@ -198,10 +218,12 @@ class RefinementAcquisitionTest {
     :new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",bytes.toByteArray(),null,Duration.ZERO,""),new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())){
    coordinator.updateActiveGeneration(new ManagedTileGeneration(9));var ledger=AttemptMemoryLedger.production();
    try(var owner=ledger.rootOwner()){
-    var acquired=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,owner);
-    assertEquals(Set.of("hot","blue","bluered","purple"),acquired.value().palettes());
-    assertEquals(ManagedModernPreviewSource.RefinementStatus.UNAVAILABLE,acquired.value().sourceOutcomes().get("gray"));
-    assertEquals(10,acquired.value().workReceipt().logicalTileRequests());
+    var acquisition=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator);
+    var acquired=acquisition.acquire(plan,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,owner);
+    var grayAcquired=acquisition.acquire(grayPlan,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,owner);
+    assertEquals(Set.of("blue"),acquired.value().palettes());
+    assertEquals(ManagedModernPreviewSource.RefinementStatus.UNAVAILABLE,grayAcquired.value().sourceOutcomes().get("gray"));
+    assertEquals(2,acquired.value().workReceipt().logicalTileRequests());assertEquals(2,grayAcquired.value().workReceipt().logicalTileRequests());
     var evidence=acquired.value().evidence("blue",CancellationProbe.NONE);var field=evidence.fields().get("native");
     for(boolean valid:field.copiedValidity())assertTrue(valid,"transparent observed pixels remain valid measurements");
     assertTrue(Arrays.stream(field.copiedValues()).allMatch(value->value==0));
@@ -218,14 +240,14 @@ class RefinementAcquisitionTest {
  }
 
  @Test void managedBUsesFactualOrientationContextWithoutChangingAuthority() throws Exception {
-  var parent=nearBoundaryHaloParent();var ticket=new OperationTicket(new SessionId(UUID.randomUUID()),1,parent.parentStage(),parent.parentChoice(),TrackerMode.PROBABILISTIC,AlignmentMode.PRECISE_SHAPE);
+  var parent=withSelectedSource(nearBoundaryHaloParent(),"blue","blue",false);var ticket=new OperationTicket(new SessionId(UUID.randomUUID()),1,parent.parentStage(),parent.parentChoice(),TrackerMode.PROBABILISTIC,AlignmentMode.PRECISE_SHAPE);
   var plan=RefinementSourcePlanner.plan(ticket,RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.DIRECT_VALUE,false),parent);
   var calls=new ArrayList<ManagedTileAddress>();var decoder=new TileDecoderClassifier();var bytes=png();
   try(var coordinator=new TileFetchCoordinator((r,c)->{calls.add(r.address());return new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",bytes,null,Duration.ZERO,"");},new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())){
    coordinator.updateActiveGeneration(new ManagedTileGeneration(9));var ledger=AttemptMemoryLedger.production();try(var owner=ledger.rootOwner()){
     var captured=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,owner);
     var evidence=captured.value().evidence("blue",CancellationProbe.NONE);var field=evidence.fields().get("native");
-    assertEquals(99,field.width());assertEquals(21,field.height());assertEquals(10,calls.size());assertTrue(calls.stream().anyMatch(a->a.y()==11113));
+    assertEquals(99,field.width());assertEquals(21,field.height());assertEquals(2,calls.size());assertTrue(calls.stream().anyMatch(a->a.y()==11113));
     assertSame(parent.root().evidence().coordinateFrame(),evidence.coordinateFrame());assertEquals(8,parent.root().request().permissions().ordinaryRadiusMeters());
     assertEquals(parent.root().evidence().sourceIdentity(),evidence.sourceIdentity());for(boolean valid:field.copiedValidity())assertTrue(valid);
     var orientation=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.ImageOrientationDescriptor().describe(evidence,field,new MetricPoint(0,-7),evidence.resolution().outputRasterPitchMeters());
@@ -299,11 +321,11 @@ class RefinementAcquisitionTest {
  @Test void realCoordinatorKeepsIndependentSiblingsAfterPaletteFailure() throws Exception {
   var order=new ArrayList<String>();var bytes=png();var decoder=new TileDecoderClassifier();
   try(var coordinator=new TileFetchCoordinator((request,credentials)->{var color=request.address().color();if(!order.contains(color))order.add(color);return color.equals("blue")?new TransportResponse(TileFetchStatus.NO_TILE,404,"",null,null,Duration.ZERO,""):new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",bytes,null,Duration.ZERO,"");},new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())){
-   coordinator.updateActiveGeneration(new ManagedTileGeneration(9));var parent=RefinementSourcePlannerTest.parent(true);var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(parent),RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.COLOR_MAPPING,true),parent);var ledger=AttemptMemoryLedger.production();try(var owner=ledger.rootOwner()){
+   coordinator.updateActiveGeneration(new ManagedTileGeneration(9));var parent=withSelectedSource(RefinementSourcePlannerTest.parent(true),"purple","all-colors-combined",true);var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(parent),RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.COLOR_MAPPING,true),parent);var ledger=AttemptMemoryLedger.production();try(var owner=ledger.rootOwner()){
     var result=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),()->false,owner);
     assertEquals(List.of("purple","hot","blue","bluered","gray"),order);assertEquals(Set.of("purple","hot","bluered","gray"),result.value().palettes());assertEquals(ManagedModernPreviewSource.RefinementStatus.UNAVAILABLE,result.value().sourceOutcomes().get("blue"));assertTrue(result.value().sourceReceipts().containsKey("blue"));assertFalse(result.value().completeAggregate());assertTrue(result.value().isCurrent(coordinator));assertTrue(ledger.currentBytes()>0);
-    var evidence=result.value().evidence("purple",()->false);assertEquals(parent.root().evidence().coordinateFrame(),evidence.coordinateFrame());assertTrue(evidence.decisionRegion().contains(parent.points().get(2)));assertSame(parent.root(),result.value().plan().parent().root());assertNotEquals(parent.root().evidence().snapshotId(),evidence.snapshotId());var scoped=parent.forOperation(plan.operationIdentity());scoped.reserveBindingWorkspace(evidence,result.owner());var derived=scoped.request(TrackerMode.PROBABILISTIC,evidence,parent.root().request().budgets(),evidence.resolution().outputRasterPitchMeters());assertNotEquals(parent.root().request().profileChainage(),derived.profileChainage());assertEquals(parent.root().request().permissions(),derived.permissions());assertEquals(parent.root().request().selectedRange(),derived.selectedRange());
-    coordinator.updateActiveGeneration(new ManagedTileGeneration(10));assertFalse(result.value().isCurrent(coordinator));assertThrows(IllegalStateException.class,()->result.value().evidence("purple",()->false));
+    assertEquals("all-colors-combined",plan.requests().get(0).mapping());
+    coordinator.updateActiveGeneration(new ManagedTileGeneration(10));assertFalse(result.value().isCurrent(coordinator));assertThrows(IllegalStateException.class,()->result.value().aggregateEvidence(()->false));
    }assertEquals(0,ledger.currentBytes());
   }
  }
@@ -319,7 +341,7 @@ class RefinementAcquisitionTest {
   }
  }
  @Test void visibleFreshParentEvidenceUsesActualEpochAndRefusesHaloOutsideCapture() throws Exception {
-  var p=RefinementSourcePlannerTest.parent();var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(p),RefinementSourcePlannerTest.settings(false,IntensitySamplingMode.COLOR_MAPPING,false),p);
+  var p=withSelectedSource(RefinementSourcePlannerTest.parent(),"blue","blue",false);var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(p),RefinementSourcePlannerTest.settings(false,IntensitySamplingMode.COLOR_MAPPING,false),p);
   var projection=org.openstreetmap.josm.data.projection.Projections.getProjectionByCode("EPSG:3857");
   var geo=p.root().evidence().coordinateFrame().origin();var center=projection.latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(geo.latitudeDegrees(),geo.longitudeDegrees()));
   var epoch=new org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch();int size=600;var pixels=new int[size*size];Arrays.fill(pixels,0xffff4000);
@@ -328,10 +350,10 @@ class RefinementAcquisitionTest {
    var hashWork=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,System.nanoTime()+300_000_000_000L,CancellationProbe.NONE,owner);
    var hashes=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEvidenceCapture.OriginalInputHashes(hashWork);
    var result=RefinementAcquisition.captureVisible(plan,raster,"blue",()->false,owner,hashWork,hashes);assertEquals(p.root().evidence().coordinateFrame(),result.value().evidence().coordinateFrame());assertTrue(result.value().evidence().decisionRegion().contains(p.points().get(2)));assertEquals(EvidenceFieldLineage.AcquisitionKind.VISIBLE_RENDER,result.value().evidence().fields().get("native").lineage().acquisitionKind());
-   var descriptor=result.value().retentionDescriptor(plan.requests().stream().filter(s->s.palette().equals("blue")&&s.mapping().equals("blue")).findFirst().orElseThrow(),result.value().evidence());
+   var descriptor=result.value().retentionDescriptor(plan.requests().get(0),result.value().evidence());
    var expected=java.security.MessageDigest.getInstance("SHA-256");for(int pixel:pixels){expected.update((byte)(pixel>>>24));expected.update((byte)(pixel>>>16));expected.update((byte)(pixel>>>8));expected.update((byte)pixel);}
    assertEquals(java.util.HexFormat.of().formatHex(expected.digest()),descriptor.inputByteHash());
-   long visits=hashWork.visits();var other=RefinementAcquisition.captureVisible(plan,raster,"hot-corridor",()->false,owner,hashWork,hashes);
+   var alternatePlan=selectedPlan(plan,"blue","hot-corridor",false);long visits=hashWork.visits();var other=RefinementAcquisition.captureVisible(alternatePlan,raster,"hot-corridor",()->false,owner,hashWork,hashes);
    assertEquals(1,hashes.singleImagesHashed());assertTrue(hashWork.visits()-visits<=2);assertNotEquals(other.value().evidence().canonicalHash(),result.value().evidence().canonicalHash());
    var publication=owner.child("visible-publication");descriptor.retainInto(publication);result.owner().close();descriptor.requireCurrent();
    assertSame(raster.sourceReceipt(),descriptor.visibleReceipt().orElseThrow());assertTrue(descriptor.generation().isEmpty());
@@ -356,13 +378,13 @@ class RefinementAcquisitionTest {
   for(boolean cancel:List.of(false,true)){
    var entered=new java.util.concurrent.CountDownLatch(1);var release=new java.util.concurrent.CountDownLatch(1);var bytes=png();var decoder=new TileDecoderClassifier();var cancelled=new EventCancellation();var seenAddress=new java.util.concurrent.atomic.AtomicReference<ManagedTileAddress>();var cache=new ManagedTileCache(temp.resolve(Boolean.toString(cancel)),decoder);
    try(var coordinator=new TileFetchCoordinator((r,c)->{seenAddress.set(r.address());entered.countDown();try {assertTrue(release.await(3,java.util.concurrent.TimeUnit.SECONDS));}catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new AssertionError(interrupted);}return new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",bytes,null,Duration.ZERO,"");},cache,decoder,TileReliabilityPolicy.defaults())){
-    coordinator.updateActiveGeneration(new ManagedTileGeneration(9));var p=RefinementSourcePlannerTest.parent();var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(p),RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.COLOR_MAPPING,false),p);var ledger=AttemptMemoryLedger.production();var owner=ledger.rootOwner();var failed=new java.util.concurrent.atomic.AtomicReference<Throwable>();var published=new java.util.concurrent.atomic.AtomicReference<Object>();
+    coordinator.updateActiveGeneration(new ManagedTileGeneration(9));var p=withSelectedSource(RefinementSourcePlannerTest.parent(),"blue","blue",false);var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(p),RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.COLOR_MAPPING,false),p);var ledger=AttemptMemoryLedger.production();var owner=ledger.rootOwner();var failed=new java.util.concurrent.atomic.AtomicReference<Throwable>();var published=new java.util.concurrent.atomic.AtomicReference<Object>();
     var worker=new Thread(()->{try{published.set(new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),cancelled,owner));}catch(Throwable failure){failed.set(failure);}});worker.start();assertTrue(entered.await(3,java.util.concurrent.TimeUnit.SECONDS));if(cancel)cancelled.cancel();else coordinator.updateActiveGeneration(new ManagedTileGeneration(10));release.countDown();worker.join(4000);assertFalse(worker.isAlive());assertNull(published.get());assertNotNull(failed.get());if(cancel)assertInstanceOf(java.util.concurrent.CancellationException.class,failed.get());else assertInstanceOf(IllegalStateException.class,failed.get());assertEquals(0,ledger.currentBytes());owner.close();long settle=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(3);while(coordinator.stats().inFlight()>0&&System.nanoTime()<settle)Thread.sleep(5);assertEquals(0,coordinator.stats().inFlight());assertFalse(java.nio.file.Files.exists(cache.path(new ManagedTileGeneration(9),seenAddress.get())));
    }
   }
  }
  @Test void visibleOffRasterHaloRefusesBeforeOwnedPixelsAreAllocated() throws Exception {
-  var p=RefinementSourcePlannerTest.parent();var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(p),RefinementSourcePlannerTest.settings(false,IntensitySamplingMode.COLOR_MAPPING,false),p);var projection=org.openstreetmap.josm.data.projection.Projections.getProjectionByCode("EPSG:3857");var geo=p.root().evidence().coordinateFrame().origin();var center=projection.latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(geo.latitudeDegrees(),geo.longitudeDegrees()));var epoch=new org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch();
+  var p=withSelectedSource(RefinementSourcePlannerTest.parent(),"blue","blue",false);var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(p),RefinementSourcePlannerTest.settings(false,IntensitySamplingMode.COLOR_MAPPING,false),p);var projection=org.openstreetmap.josm.data.projection.Projections.getProjectionByCode("EPSG:3857");var geo=p.root().evidence().coordinateFrame().origin();var center=projection.latlon2eastNorth(new org.openstreetmap.josm.data.coor.LatLon(geo.latitudeDegrees(),geo.longitudeDegrees()));var epoch=new org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch();
   var raster=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService.VisibleRaster(100,100,new int[10000],center.east(),center.north(),center.east()+100,center.north()+100,6,3.86,OptionalDouble.empty(),p.root().sourceIdentity(),"EPSG:3857",epoch.captureStable());var ledger=AttemptMemoryLedger.production();try(var owner=ledger.rootOwner()){var failure=assertThrows(IllegalStateException.class,()->RefinementAcquisition.captureVisible(plan,raster,"blue",()->false,owner));assertTrue(failure.getMessage().contains("halo"));assertTrue(ledger.peakBytes()<1024*1024,"only bounded frame planning precedes halo refusal");}
  }
  @Test void completeAggregateRequiresAllFiveCoordinatorPalettesAtBothZooms() throws Exception {
@@ -376,8 +398,8 @@ class RefinementAcquisitionTest {
   var bytes=png();var decoder=new TileDecoderClassifier();try(var coordinator=new TileFetchCoordinator((r,c)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",bytes,null,Duration.ZERO,""),new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())){
    coordinator.updateActiveGeneration(new ManagedTileGeneration(9));for(var mode:List.of(IntensitySamplingMode.DIRECT_ALPHA,IntensitySamplingMode.DIRECT_LUMINANCE,IntensitySamplingMode.DIRECT_VALUE)){
     var p=RefinementSourcePlannerTest.parent(false,mode);var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(p),RefinementSourcePlannerTest.settings(true,mode,false),p);var ledger=AttemptMemoryLedger.production();try(var owner=ledger.rootOwner()){
-     var result=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),()->false,owner);assertEquals(5,result.value().palettes().size());for(var palette:result.value().palettes()){
-      var field=result.value().evidence(palette,()->false).fields().get("native");assertEquals(EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,field.lineage().derivationKind());assertEquals(palette+"/"+mode.detectorName(),field.lineage().sourcePalette());if(mode==IntensitySamplingMode.DIRECT_ALPHA)assertTrue(Arrays.stream(field.copiedValues()).filter(Double::isFinite).allMatch(v->v==1));
+     var result=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),()->false,owner);assertEquals(Set.of("purple"),result.value().palettes());{
+      var palette="purple";var field=result.value().evidence(palette,()->false).fields().get("native");assertEquals(EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,field.lineage().derivationKind());assertEquals(palette+"/"+mode.detectorName(),field.lineage().sourcePalette());if(mode==IntensitySamplingMode.DIRECT_ALPHA)assertTrue(Arrays.stream(field.copiedValues()).filter(Double::isFinite).allMatch(v->v==1));
      }
     }assertEquals(0,ledger.currentBytes());
    }
@@ -398,7 +420,7 @@ class RefinementAcquisitionTest {
   var patterns=new HashMap<Integer,byte[]>();for(int code=0;code<8;code++){var image=new BufferedImage(512,512,BufferedImage.TYPE_INT_ARGB);for(int y=0;y<512;y++)for(int x=0;x<512;x++)image.setRGB(x,y,0xff000000|((16+x%128+y%64+4*code)<<16)|(((x/8+3*(y/8))%8)<<8));var out=new ByteArrayOutputStream();ImageIO.write(image,"png",out);patterns.put(code,out.toByteArray());}
   var decoder=new TileDecoderClassifier();try(var coordinator=new TileFetchCoordinator((r,c)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",patterns.get(Math.floorMod(r.address().x()+3*r.address().y(),8)),null,Duration.ZERO,""),new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())){
    coordinator.updateActiveGeneration(new ManagedTileGeneration(9));var p=RefinementSourcePlannerTest.parent(false,IntensitySamplingMode.DIRECT_VALUE);var plan=RefinementSourcePlanner.plan(RefinementSourcePlannerTest.ticket(p),RefinementSourcePlannerTest.settings(true,IntensitySamplingMode.DIRECT_VALUE,false),p);var ledger=AttemptMemoryLedger.production();try(var owner=ledger.rootOwner()){
-    var capture=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),()->false,owner);for(String palette:List.of("purple","gray")){var evidence=capture.value().evidence(palette,()->false);var field=evidence.fields().get("native");var probes=List.of(new int[]{2,2},new int[]{field.width()/3,field.height()/3},new int[]{field.width()-3,field.height()-3},new int[]{3*field.width()/4,field.height()/2});for(var xy:probes){var geo=evidence.coordinateFrame().toGeographic(evidence.transform().pixelCenterToMetric(xy[0],xy[1]));assertEquals(expectedMarkedScalar(geo,15),field.sample(xy[0],xy[1]).orElseThrow(),1e-9,"global512px center oracle "+palette+" at "+Arrays.toString(xy));}}
+    var capture=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),()->false,owner);for(String palette:List.of("purple")){var evidence=capture.value().evidence(palette,()->false);var field=evidence.fields().get("native");var probes=List.of(new int[]{2,2},new int[]{field.width()/3,field.height()/3},new int[]{field.width()-3,field.height()-3},new int[]{3*field.width()/4,field.height()/2});for(var xy:probes){var geo=evidence.coordinateFrame().toGeographic(evidence.transform().pixelCenterToMetric(xy[0],xy[1]));assertEquals(expectedMarkedScalar(geo,15),field.sample(xy[0],xy[1]).orElseThrow(),1e-9,"global512px center oracle "+palette+" at "+Arrays.toString(xy));}}
    }assertEquals(0,ledger.currentBytes());
   }
  }
@@ -438,7 +460,7 @@ class RefinementAcquisitionTest {
         +" nativeResource="+attempt.run().flatMap(RefinementEngineAdapter.Run::nativeRun).filter(run->run.result().status()==TraceHypothesisSet.Status.RESOURCE_LIMIT)
           .map(run->run.result().explanation()).orElse("UNAVAILABLE"));
       assertTrue(entries.get()>0,mode+"/"+engine+" requires actual native entry");
-      assertEquals(List.of("purple","hot","blue","bluered","gray","all-colors-combined"),result.sourceOutcomes().stream().map(o->o.source().mapping()).toList());
+      assertEquals(List.of("purple"),result.sourceOutcomes().stream().map(o->o.source().mapping()).toList());
       assertTrue(result.sourceOutcomes().stream().allMatch(o->!o.attempts().isEmpty()),"requested sources retain factual attempts or explicit unattempted rows");
       assertFalse(result.candidates().isEmpty(),mode+"/"+engine+" requires actual assessed native geometry: "+result.outcome());
       assertTrue(result.actualWork().orElseThrow().transitions()>0);assertTrue(ledger.peakBytes()<=AttemptMemoryLedger.MAX_BYTES);

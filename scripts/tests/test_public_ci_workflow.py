@@ -82,8 +82,10 @@ def test_diagnostic_engine_metadata_keeps_mismatch_and_unavailable_evidence(tmp_
 def test_focused_xml_gate_uses_suite_identity_and_requires_executed_green_tests(tmp_path, monkeypatch) -> None:
     job = _workflow()["jobs"]["g004-focused-tests"]
     assert "github.ref == 'refs/heads/codex/g009-rc17-20261127'" in job["if"]
+    assert "github.ref == 'refs/heads/codex/g010-rc18-20261127'" in job["if"]
     assert job["env"]["FOCUSED_SUITE"] == (
-        "${{ github.ref == 'refs/heads/codex/g009-rc17-20261127' && "
+        "${{ (github.ref == 'refs/heads/codex/g009-rc17-20261127' || "
+        "github.ref == 'refs/heads/codex/g010-rc18-20261127') && "
         "'refs/heads/codex/g004-stepwise-20261119' || github.ref }}"
     )
     focused = next(step for step in job["steps"] if step.get("name") == "Run focused public JUnit tests")
@@ -93,7 +95,7 @@ def test_focused_xml_gate_uses_suite_identity_and_requires_executed_green_tests(
     gate = next(step for step in job["steps"] if step.get("name") == "Require selected JUnit XML after a passing run")
     script = gate["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("FOCUSED_REF", "refs/heads/codex/g009-rc17-20261127")
+    monkeypatch.setenv("FOCUSED_REF", "refs/heads/codex/g010-rc18-20261127")
     monkeypatch.setenv("FOCUSED_SUITE", "refs/heads/codex/g004-stepwise-20261119")
     reports = tmp_path / "build/test-results/test"
     reports.mkdir(parents=True)

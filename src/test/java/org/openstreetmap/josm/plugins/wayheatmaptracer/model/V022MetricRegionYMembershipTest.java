@@ -9,11 +9,33 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongConsumer;
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /** Conservative membership exclusion must retain the complete event proof. */
 class V022MetricRegionYMembershipTest {
+    @Test
+    void guardedPointSamplingReusesOneOwnedIndexWithoutChangingBoundaryResults() {
+        var region = remoteFirst();
+        var ledger = AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            List<MetricPoint> points = List.of(new MetricPoint(0,0), new MetricPoint(2,0),
+                    new MetricPoint(0,2+1e-9), new MetricPoint(0,Math.nextUp(2+1e-9)),
+                    new MetricPoint(0,-3), new MetricPoint(3,0));
+            var expected = points.stream().map(region::contains).toList();
+            var work = new GeometryWorkContext(9_000, AttemptMemoryLedger.MAX_BYTES,
+                    Long.MAX_VALUE, CancellationProbe.NONE, owner);
+            try (var scope = PostprocessingValidationWork.openGrowingScratch(work)) {
+                for (int repetition = 0; repetition < 20; repetition++)
+                    assertEquals(expected, points.stream().map(region::contains).toList());
+                assertTrue(owner.currentBytes() > 0, "Guarded membership indexes must remain admitted");
+            }
+            assertEquals(0, owner.currentBytes());
+        }
+    }
+
     @Test
     void repeatedExactInteriorProofsFitUnchangedSharedWorkLimit() {
         var region = remoteFirst();

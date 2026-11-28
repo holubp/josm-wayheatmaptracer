@@ -1916,10 +1916,17 @@ public final class RenderedHeatmapSampler {
     }
 
     static double aggregatedSourceIntensityAt(java.util.Map<String, BufferedImage> rastersByColor, double x, double y) {
+        return aggregatedSourceIntensityAt(rastersByColor,x,y,null);
+    }
+
+    /** Meter each palette's factual nearest-neighbor mapping before performing it. */
+    static double aggregatedSourceIntensityAt(java.util.Map<String, BufferedImage> rastersByColor,
+            double x, double y, Runnable visitPalette) {
         double weighted = 0.0;
         double totalWeight = 0.0;
         double power = AGGREGATE_POWER_MEAN;
         for (java.util.Map.Entry<String, BufferedImage> entry : rastersByColor.entrySet()) {
+            if (visitPalette != null) visitPalette.run();
             double weight = aggregateSourceWeight(entry.getKey());
             weighted += weight * Math.pow(sourceIntensityAt(entry.getValue(), x, y, entry.getKey()), power);
             totalWeight += weight;

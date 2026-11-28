@@ -1,6 +1,8 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.SmoothingModels;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -751,7 +753,7 @@ public final class ModernSingleWayEditPlanAdapter {
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference parent,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.Assessed assessed,
             EvidenceSnapshot evidence) {
-        return adaptRefinementInternal(parent,assessed,evidence,false,Optional.empty(),Optional.empty());
+        return adaptRefinementInternal(parent,assessed,evidence,false,Optional.empty(),Optional.empty(),null);
     }
     /** Same immutable plan contract for an already assessed whole-output postprocessing result. */
     public AlignmentEditPlan adaptPostprocessed(
@@ -767,7 +769,7 @@ public final class ModernSingleWayEditPlanAdapter {
             EvidenceSnapshot evidence,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,
             Optional<ValidationReport> inheritedValidation) {
         java.util.Objects.requireNonNull(inheritedValidation);
-        try(var scope=PostprocessingValidationWork.open(work)) {return adaptRefinementInternal(parent,assessed,evidence,true,inheritedValidation,Optional.empty());}
+        try(var scope=PostprocessingValidationWork.open(work)) {return adaptRefinementInternal(parent,assessed,evidence,true,inheritedValidation,Optional.empty(),null);}
     }
     /** Reuses only an opaque producer proof from the exact admitted smoothing source. */
     public AlignmentEditPlan adaptPostprocessed(
@@ -777,18 +779,20 @@ public final class ModernSingleWayEditPlanAdapter {
         java.util.Objects.requireNonNull(inheritedValidation);
         try(var scope=PostprocessingValidationWork.open(work)) {
             var evidenceHash=parent.originalEvidenceHashProof().map(proof->proof.requireMatches(parent.reference().root(),parent.evidence(),parent.nativeFacts().source(),work));
-            return adaptRefinementInternal(parent.reference(),assessed,parent.evidence(),true,inheritedValidation,evidenceHash);
+            return adaptRefinementInternal(parent.reference(),assessed,parent.evidence(),true,inheritedValidation,evidenceHash,parent);
         }
     }
     private AlignmentEditPlan adaptRefinementInternal(
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentTraceReference parent,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.Assessed assessed,
-            EvidenceSnapshot evidence,boolean postprocessing,Optional<ValidationReport> inheritedValidation,Optional<String> provedEvidenceHash) {
+            EvidenceSnapshot evidence,boolean postprocessing,Optional<ValidationReport> inheritedValidation,
+            Optional<String> provedEvidenceHash,SmoothingModels.Parent smoothingParent) {
         org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentBackedComposer.requireFrozenGeometryPreserved(parent,assessed.candidate());
         var root=parent.root();var request=root.request();var before=root.network();
         root.requireAcquisitionEvidence(evidence);
+        boolean strictWithoutSelectedSlots=postprocessing&&smoothingParent==null;
         if(assessed.quality().disposition()==FinalGeometryEvaluator.Disposition.HARD_BLOCKED
-                ||!assessed.topologyFindings().isEmpty()
+                ||assessed.topologyFindings().stream().anyMatch(finding->strictWithoutSelectedSlots||blocksTopology(finding))
                 ||inheritedValidation.filter(v->v.disposition()==ValidationReport.Disposition.HARD_BLOCKED).isPresent())throw new IllegalArgumentException("Refinement final geometry is blocked");
         if(!assessed.copies().isEmpty())throw new IllegalArgumentException("Refinement copy destinations need a qualified plan adapter");
         var composed=assessed.candidate();var ids=composed.pointIds();var assignments=composed.assignments();
@@ -811,10 +815,14 @@ public final class ModernSingleWayEditPlanAdapter {
         }
         afterValues.put(selected.key(),new DetachedWay(selected.key(),replacement,selected.tags(),false,selected.modified()||!selected.nodeKeys().equals(replacement)));
         var topology=assessFinalTopology(before,afterValues,selected.key(),request.selectedRange(),evidence,request.permissions().ordinaryRadiusMeters(),Map.of(),Map.of());
-        if(!topology.findingCodes().isEmpty())throw new IllegalArgumentException("Refinement final topology is blocked");
+        if(smoothingParent!=null)topology=validateSmoothingContacts(smoothingParent,composed,afterValues,topology);
+        if(topology.findingCodes().stream().anyMatch(finding->strictWithoutSelectedSlots||blocksTopology(finding)))
+            throw new IllegalArgumentException("Refinement final topology is blocked");
         var findings=assessed.quality().findings().stream().peek(meteredValue -> PostprocessingValidationWork.visit()).map(f->"refinement-final:"+f.code().name()).collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        findings.addAll(topology.findingCodes());
         inheritedValidation.ifPresent(v->{PostprocessingValidationWork.charge(v.findingCodes().size());findings.addAll(v.findingCodes());});
         var disposition=assessed.quality().disposition()==FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED
+                ||!topology.findingCodes().isEmpty()
                 ||inheritedValidation.filter(v->v.disposition()==ValidationReport.Disposition.REVIEW_REQUIRED).isPresent()
             ?ValidationReport.Disposition.REVIEW_REQUIRED:ValidationReport.Disposition.APPLICABLE;
         if(request.permissions().junctionPolicy()!=JunctionPolicy.FIXED){disposition=ValidationReport.Disposition.REVIEW_REQUIRED;findings.add("network-review-required");}
@@ -2376,6 +2384,84 @@ public final class ModernSingleWayEditPlanAdapter {
         return assessFinalTopology(before,after,request.selectedWayKey(),request.selectedRange(),evidence,
             searchHalfWidthMeters,authority.replacements(),authority.proposedPortReplacements());
     }
+    /** Node identity used by both detached smoothing drafts and their exact edit plans. */
+    public static PrimitiveKey smoothingSlotKey(FinalRoutePointId id) {
+        return id instanceof ExistingWayNodeOccurrence existing?existing.nodeKey():plannedKey((GeneratedCandidatePoint)id);
+    }
+
+    /** An independent contact can remain a review finding only on an unchanged selected slot edge. */
+    public static FinalTopologyAssessment validateSmoothingContacts(SmoothingModels.Parent parent,
+            ParentBackedComposer.Composed candidate,Map<PrimitiveKey,DetachedPrimitive> after,
+            FinalTopologyAssessment measured) {
+        if(measured.findingCodes().isEmpty()||measured.findingCodes().stream().anyMatch(ModernSingleWayEditPlanAdapter::blocksTopology))
+            return measured;
+        boolean witnessed=false;
+        for(var contact:measured.contacts()) {
+            PostprocessingValidationWork.visit();
+            if(contact.disposition()!=ContextContactAssessment.Disposition.REVIEW_REQUIRED)continue;
+            if(!isUnchangedSmoothingContact(parent,candidate,after,contact))return unprovedSmoothingContact(measured);
+            witnessed=true;
+        }
+        return witnessed?measured:unprovedSmoothingContact(measured);
+    }
+
+    /** Admits only factual selected-parent slots; no proposed crossing can authorize retention. */
+    public static Set<Integer> retainedSmoothingContactSlots(SmoothingModels.Parent parent,
+            ParentBackedComposer.Composed candidate,Map<PrimitiveKey,DetachedPrimitive> after,
+            FinalTopologyAssessment measured) {
+        var slots=new LinkedHashSet<Integer>();
+        for(var contact:measured.contacts()) {
+            PostprocessingValidationWork.visit();
+            if(contact.disposition()==ContextContactAssessment.Disposition.REVIEW_REQUIRED
+                    &&isUnchangedSmoothingContact(parent,candidate,after,contact)) {
+                slots.add(contact.routeSegmentIndex());
+                slots.add(contact.routeSegmentIndex()+1);
+            }
+        }
+        return Set.copyOf(slots);
+    }
+
+    private static FinalTopologyAssessment unprovedSmoothingContact(FinalTopologyAssessment measured) {
+        var findings=new ArrayList<>(measured.findingCodes());
+        findings.add("final-topology:smoothing-contact-changed-or-unproved");
+        return new FinalTopologyAssessment(findings,measured.contacts());
+    }
+
+    private static boolean isUnchangedSmoothingContact(SmoothingModels.Parent parent,
+            ParentBackedComposer.Composed candidate,Map<PrimitiveKey,DetachedPrimitive> after,
+            ContextContactAssessment contact) {
+        var root=parent.reference().root();
+        var request=root.request();
+        var before=root.network().primitives();
+        int index=contact.routeSegmentIndex(),contextIndex=contact.contextSegmentIndex();
+        int first=request.selectedRange().firstIndex();
+        int slots=parent.pointIds().size();
+        if(!request.selectedWayKey().equals(contact.selectedWayKey())||contact.selectedSegmentIndex()!=first+index
+                ||index<0||index>=slots-1||candidate.points().size()!=slots||candidate.pointIds().size()!=slots
+                ||!(after.get(contact.selectedWayKey()) instanceof DetachedWay selected)
+                ||!(before.get(contact.contextWayKey()) instanceof DetachedWay context)
+                ||!context.equals(after.get(contact.contextWayKey()))||contextIndex<0||contextIndex>=context.nodeKeys().size()-1
+                ||first+index+1>=selected.nodeKeys().size())return false;
+        for(int offset=0;offset<2;offset++) {
+            PostprocessingValidationWork.visit();
+            int slot=index+offset;
+            var id=parent.pointIds().get(slot);
+            var expected=parent.reference().points().get(slot);
+            var key=smoothingSlotKey(id);
+            var contextKey=context.nodeKeys().get(contextIndex+offset);
+            if(!id.equals(candidate.pointIds().get(slot))||!expected.equals(candidate.points().get(slot))
+                    ||!key.equals(selected.nodeKeys().get(first+slot))
+                    ||!(after.get(key) instanceof DetachedNode actual)||!(before.get(contextKey) instanceof DetachedNode contextNode)
+                    ||!contextNode.equals(after.get(contextKey)))return false;
+            var frame=parent.evidence().coordinateFrame();
+            var geographic=frame.toGeographic(expected);
+            if(id instanceof ExistingWayNodeOccurrence&&before.get(key) instanceof DetachedNode source
+                    &&expected.equals(frame.toMetric(source.coordinate())))geographic=source.coordinate();
+            if(!geographic.equals(actual.coordinate()))return false;
+        }
+        return true;
+    }
+
     /** Assesses a complete validated plan, including its exact disconnected endpoint identities. */
     public static FinalTopologyAssessment assessFinalTopology(AlignmentEditPlan plan,
             EvidenceSnapshot evidence, double searchHalfWidthMeters) {
@@ -2441,7 +2527,7 @@ public final class ModernSingleWayEditPlanAdapter {
                         var originalChord = CertifiedContextSegmentClipper.originalChord(
                                 geographicFirst, geographicSecond, evidence.coordinateFrame());
                         boolean changed = segmentChanged(before, way.key(), firstKey,
-                                secondKey, after);
+                                secondKey, index, after);
                         MetricPoint first;
                         MetricPoint second;
                         boolean originalFirst = true;
@@ -2498,15 +2584,41 @@ public final class ModernSingleWayEditPlanAdapter {
                     ()->{ PostprocessingValidationWork.visit();PostprocessingValidationWork.visit();return false;},PostprocessingValidationWork::charge,sharedWork.owner());
         var contactFrame = CertifiedContextSegmentClipper.prepareOriginalContactFrame(evidence.coordinateFrame());
         var inheritedConnectorRuns = inheritedConnectorRuns(before.primitives(), after);
+        try (var pairIndex = sharedWork == null ? null : sharedWork.reserve("changed-topology-pair-index",
+                AttemptMemoryLedger.arrayBytes(segments.size() + 1L, Integer.BYTES))) {
+            inspectFinalTopologyPairs(before,after,selectedWay,selectedRange,evidence,searchHalfWidthMeters,
+                    replacements,proposedPorts,policy,segments,findings,contacts,inherited,contactFrame,inheritedConnectorRuns);
+        }
+        return new FinalTopologyAssessment(List.copyOf(findings), contacts);
+    }
+
+    private static int[] nextChangedSegmentIndexes(List<Segment> segments) {
+        int end=segments.size();
+        int[] next=new int[end+1];
+        next[end]=end;
+        for(int i=end-1;i>=0;i--) {
+            PostprocessingValidationWork.visit();
+            next[i]=segments.get(i).changed()?i:next[i+1];
+        }
+        return next;
+    }
+
+    private static void inspectFinalTopologyPairs(NetworkSnapshot before,Map<PrimitiveKey,DetachedPrimitive> after,
+            PrimitiveKey selectedWay,OccurrenceRange selectedRange,EvidenceSnapshot evidence,double searchHalfWidthMeters,
+            Map<Integer,PrimitiveKey> replacements,Map<ExternalPort,PrimitiveKey> proposedPorts,ContextContactPolicy policy,
+            List<Segment> segments,Set<String> findings,List<ContextContactAssessment> contacts,Set<PrimitiveKey> inherited,
+            CertifiedContextSegmentClipper.OriginalContactFrame contactFrame,Map<PrimitiveKey,int[]> inheritedConnectorRuns) {
+        int[] nextChanged=nextChangedSegmentIndexes(segments);
         for (int firstIndex = 0; firstIndex < segments.size(); firstIndex++) {
             PostprocessingValidationWork.visit();
             Segment first = segments.get(firstIndex);
-            for (int secondIndex = firstIndex + 1; secondIndex < segments.size(); secondIndex++) {
-            PostprocessingValidationWork.visit();
+            // Omit only pairs the old loop immediately skipped. Keep the relative order
+            // of every remaining pair, including adjacency, shared contacts and findings.
+            for (int secondIndex = first.changed()?firstIndex+1:nextChanged[firstIndex+1];
+                    secondIndex < segments.size();
+                    secondIndex = first.changed()?secondIndex+1:nextChanged[secondIndex+1]) {
+                PostprocessingValidationWork.visit();
                 Segment second = segments.get(secondIndex);
-                if (!first.changed() && !second.changed()) {
-                    continue;
-                }
                 boolean sameWay = first.wayKey().equals(second.wayKey());
                 boolean adjacent = sameWay && Math.abs(first.index() - second.index()) == 1;
                 if (adjacent) {
@@ -2548,6 +2660,7 @@ public final class ModernSingleWayEditPlanAdapter {
                         selectedWay, selectedSegment.index(), proposedPorts);
                 if (policy == ContextContactPolicy.CURRENT_INDEPENDENT_REVIEW && context != null
                         && (selectedSegment.insideSelectedRange() || boundaryProof != null)) {
+                    PostprocessingValidationWork.growScratch(512);
                     ContextContactAssessment assessment = ContextContactAssessment.assess(before, after,
                             selectedWay, selectedRange, selectedSegment.index(), context,
                             contextSegment.index(), ContextContactAssessment.ContactType.valueOf(defect.name()),
@@ -2570,7 +2683,6 @@ public final class ModernSingleWayEditPlanAdapter {
                 findings.add("final-topology:" + defect.name());
             }
         }
-        return new FinalTopologyAssessment(List.copyOf(findings), contacts);
     }
 
     private static MetricPoint metric(Map<PrimitiveKey, DetachedPrimitive> values,
@@ -2591,19 +2703,25 @@ public final class ModernSingleWayEditPlanAdapter {
     }
 
     private static boolean segmentChanged(NetworkSnapshot before, PrimitiveKey wayKey,
-            PrimitiveKey firstKey, PrimitiveKey secondKey,
+            PrimitiveKey firstKey, PrimitiveKey secondKey, int afterEdgeEnd,
             Map<PrimitiveKey, DetachedPrimitive> after) {
         DetachedPrimitive beforePrimitive = before.primitives().get(wayKey);
         if (!(beforePrimitive instanceof DetachedWay beforeWay)) {
             return true;
         }
-        boolean sameEdge = false;
-        for (int index = 1; index < beforeWay.nodeKeys().size(); index++) {
-            PostprocessingValidationWork.visit();
-            if (beforeWay.nodeKeys().get(index - 1).equals(firstKey)
-                    && beforeWay.nodeKeys().get(index).equals(secondKey)) {
-                sameEdge = true;
-                break;
+        List<PrimitiveKey> originalOrder=beforeWay.nodeKeys();
+        PostprocessingValidationWork.visit();
+        boolean sameEdge=afterEdgeEnd<originalOrder.size()
+                && originalOrder.get(afterEdgeEnd-1).equals(firstKey)
+                && originalOrder.get(afterEdgeEnd).equals(secondKey);
+        if(!sameEdge) {
+            for (int index = 1; index < originalOrder.size(); index++) {
+                PostprocessingValidationWork.visit();
+                if (originalOrder.get(index - 1).equals(firstKey)
+                        && originalOrder.get(index).equals(secondKey)) {
+                    sameEdge = true;
+                    break;
+                }
             }
         }
         if (!sameEdge) {
@@ -2756,8 +2874,7 @@ public final class ModernSingleWayEditPlanAdapter {
         List<String> findings = new ArrayList<>(quality.findings().stream()
             .map(finding -> "modern-final:" + finding.code().name()).distinct().toList());
         findings.addAll(topologyFindings);
-        if (topologyFindings.stream().anyMatch(finding -> !finding.equals(
-                "inherited-nontransport-contact-review-required") && !finding.equals(ContextContactAssessment.REVIEW_CODE))) {
+        if (topologyFindings.stream().anyMatch(ModernSingleWayEditPlanAdapter::blocksTopology)) {
             disposition = ValidationReport.Disposition.HARD_BLOCKED;
         } else if (!topologyFindings.isEmpty() && disposition != ValidationReport.Disposition.HARD_BLOCKED) {
             disposition = ValidationReport.Disposition.REVIEW_REQUIRED;
@@ -2769,6 +2886,11 @@ public final class ModernSingleWayEditPlanAdapter {
             findings.add("network-review-required");
         }
         return new ValidationReport(disposition, findings);
+    }
+
+    private static boolean blocksTopology(String finding) {
+        return !finding.equals("inherited-nontransport-contact-review-required")
+                && !finding.equals(ContextContactAssessment.REVIEW_CODE);
     }
 
     private static final class TopologyConversion {

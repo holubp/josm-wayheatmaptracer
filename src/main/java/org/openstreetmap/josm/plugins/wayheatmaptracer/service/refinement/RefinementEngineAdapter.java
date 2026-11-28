@@ -128,6 +128,7 @@ public final class RefinementEngineAdapter {
         var invocation=owner.child("stepwise-refinement");
         TraceRequest request=null;
         AttemptMemoryLedger.Reservation finalization=null;
+        ParentTraceReference.BindingWorkspace bindingWorkspace=null;
         NativeExecution execution=null;
         boolean nativeEntered=false;
         try {
@@ -135,7 +136,7 @@ public final class RefinementEngineAdapter {
             unscoped.requireRefinementGeometryAuthority();
             // Canonical validation itself clones scalar arrays. Claim its workspace before
             // deriving operation/reference identities or requesting any hashes/profile containers.
-            var bindingWorkspace=unscoped.reserveBindingWorkspace(evidence,invocation);
+            bindingWorkspace=unscoped.reserveBindingWorkspace(evidence,invocation);
             parent=unscoped.forOperation(operation);
             request=parent.request(engine,evidence,remaining,evidence.resolution().outputRasterPitchMeters(),cancellation);
             if(!evidence.fields().containsKey(field))throw new IllegalArgumentException("Requested scalar field unavailable");
@@ -191,6 +192,8 @@ public final class RefinementEngineAdapter {
             if(finalization!=null)finalization.close();invocation.close();throw invalid;
         } catch(RuntimeException|Error failure) {
             if(finalization!=null)finalization.close();invocation.close();throw failure;
+        } finally {
+            if(bindingWorkspace!=null)bindingWorkspace.close();
         }
     }
     private static Run incomplete(ParentTraceReference parent,TraceRequest request,NativeExecution execution,

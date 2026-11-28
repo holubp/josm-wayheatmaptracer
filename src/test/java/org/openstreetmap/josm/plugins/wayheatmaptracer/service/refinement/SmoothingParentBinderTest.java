@@ -48,6 +48,39 @@ class SmoothingParentBinderTest {
             assertEquals(source.inputByteHash(),parent.frame().inputHash());assertEquals(64,parent.frame().inputHash().length());
         }
     }
+    @Test void originalLegacyProofReusesOnlyTheExactCurrentAdmittedDescriptor() {
+        var old=RefinementParentFixtures.authority(AlignmentMode.MOVE_EXISTING_NODES);
+        var candidate=RefinementParentFixtures.parent(old,"blue");
+        try(var owner=AttemptMemoryLedger.production().rootOwner()) {
+            var fresh=source(old,"blue",owner,()->{});
+            var stale=new java.util.concurrent.atomic.AtomicBoolean();
+            var actual=new RetainedSmoothingSource(fresh.source(),fresh.intensityMode(),fresh.fieldName(),fresh.evidence(),
+                    fresh.referenceTransform(),fresh.referenceWidth(),fresh.referenceHeight(),fresh.backingBytes(),
+                    ()->{if(stale.get())throw new IllegalStateException("source changed");},fresh.imageOwnershipIdentity(),
+                    fresh.inputByteHash(),fresh.generation(),fresh.visibleReceipt(),
+                    Optional.of(new RetainedSmoothingSource.LegacyDisposition(candidate.nativeCandidateId(),true)),fresh.inputHashProtocol());
+            owner.reserve(actual.descriptorBytes()).adopt(actual);
+            var canonicalWork=work(owner);
+            String expected=actual.evidence().canonicalHash(canonicalWork);
+            var r=old.request();
+            var creation=work(owner);
+            var root=RefinementRootAuthority.fromAdmittedLegacySource(old.network(),hash->new TraceRequest(
+                    r.selectedWayKey(),r.selectedRange(),r.engine(),r.geometryMode(),r.permissions(),r.budgets(),
+                    actual.evidence().snapshotId(),hash,r.networkSnapshotId(),r.networkContentHash(),r.settingsHash(),
+                    r.parameterHash(),r.samplerId(),r.configuredSampleStepMeters(),r.profileChainage(),r.evidenceResolution()),
+                    old.effectiveConfig(),old.projectionCode(),old.sourceIdentity(),null,actual,creation,owner);
+            assertEquals(canonicalWork.counters().get(GeometryWorkContext.Kind.HASH),
+                    creation.counters().get(GeometryWorkContext.Kind.HASH));
+            var parent=new SmoothingParentBinder().bind(root,ticket(candidate,r.geometryMode()),candidate,actual,work(owner));
+            var proof=parent.originalEvidenceHashProof().orElseThrow();
+            assertEquals(expected,parent.baselineReference().evidenceHash());
+            assertEquals(expected,proof.requireMatches(root,actual.evidence(),actual,work(owner)));
+            assertTrue(root.legacyOriginalEvidenceHashProof(fresh,work(owner)).isEmpty());
+            assertThrows(IllegalArgumentException.class,()->proof.requireMatches(root,fresh.evidence(),fresh,work(owner)));
+            stale.set(true);
+            assertThrows(IllegalStateException.class,()->proof.requireMatches(root,actual.evidence(),actual,work(owner)));
+        }
+    }
     @Test void legacyMissingNativeMapIsNotMissingSmoothingAssignments() {
         var root=RefinementParentFixtures.authority(AlignmentMode.PRECISE_SHAPE);var candidate=RefinementParentFixtures.parent(root,"blue");
         assertTrue(candidate.payload().nativeGeometry().get(1).proposedNodePositions().isEmpty());

@@ -312,6 +312,44 @@ public final class FinalGeometryEvaluator {
         return evaluate(request, CancellationProbe.NONE);
     }
 
+    /** Workspace bound for one guarded route evaluation, including profiles evicted while a
+     * comparison window still owns them. Growing intersection findings are admitted separately. */
+    public static long postprocessingWorkspaceBytes(int points, double maximumLengthMeters, double sourcePitchMeters) {
+        var parameters = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters.defaults().localization();
+        double spacing = Math.min(1.0, sourcePitchMeters / 2.0);
+        double uniformIntervals = Math.ceil(maximumLengthMeters / spacing);
+        if (!Double.isFinite(uniformIntervals) || uniformIntervals > Integer.MAX_VALUE - 1.0) {
+            throw new GeometryWorkContext.LimitReached();
+        }
+        double windowMeters = Math.min(maximumLengthMeters, LOCAL_WINDOW_SPANS_METERS[LOCAL_WINDOW_SPANS_METERS.length - 1]);
+        // Equal-spacing indexes use length / ceil(length / step), which can be smaller than step.
+        long uniformWindowRows = maximumLengthMeters == 0 ? 2 : 4L
+                + (long) Math.ceil(windowMeters * uniformIntervals / maximumLengthMeters);
+        long windowRows = Math.min(MAXIMUM_LOCAL_WINDOW_ROWS, uniformWindowRows + points);
+        double halfWidth = Math.max(parameters.routeProfileHalfWidthMeters(), 4 * sourcePitchMeters);
+        long profileRows = (long) Math.min(MAXIMUM_CACHED_PROFILE_ROWS + 1L,
+                Math.ceil(2 * halfWidth / (sourcePitchMeters * .25)) + 2);
+        // One frozen profile has two double arrays, two points, key/cache/list overhead,
+        // at most one undirected mode per heading and two directed modes per heading.
+        long profileMetadata = 640L + 160L * parameters.orientationHeadingCount();
+        long profileBytes = profileMetadata + 16L * profileRows;
+        long cachedProfiles = MAXIMUM_CACHED_PROFILE_ROWS / Math.max(34, profileRows - 1);
+        double routeRows = Math.ceil(2 * halfWidth / (sourcePitchMeters * .5)) + 3;
+        if (!Double.isFinite(routeRows) || routeRows > Integer.MAX_VALUE) {
+            throw new GeometryWorkContext.LimitReached();
+        }
+        // The route extractor has a coarser step but a separate bound. Both raw
+        // extraction and orientation-ray arrays are temporary to one measurement.
+        long oneMeasurement = 65_536L + 1536L * Math.max(profileRows, (long) routeRows)
+                + 32L * parameters.maximumOrientationSampleCount();
+        long indexesAndMemos = 1024L * (Math.min(2049, points) + Math.min(2049L, 2L + (long) uniformIntervals));
+        long supportAndRoughness = 64L * ((long) Math.ceil(maximumLengthMeters) + points + 2)
+                + (long) uniformIntervals + points + 64;
+        long perVertex = 1024L * points; // chainages, bounded apex candidates, indexes and linear findings
+        return Math.addExact(oneMeasurement + indexesAndMemos + supportAndRoughness + perVertex,
+                Math.addExact(Math.multiplyExact(profileBytes, cachedProfiles + windowRows), 512L * windowRows));
+    }
+
     /** Evaluates with bounded cooperative cancellation for local physical diagnostics. */
     public Result evaluate(Request request, CancellationProbe cancellation) {
         Objects.requireNonNull(cancellation, "cancellation");
@@ -424,6 +462,7 @@ public final class FinalGeometryEvaluator {
                     case OVERLAP -> FindingCode.COLLINEAR_OVERLAP;
                     case NONE -> throw new IllegalStateException();
                 };
+                PostprocessingValidationWork.growScratch(256);
                 findings.add(hard(code, first, second + 1, 0));
             }
         }

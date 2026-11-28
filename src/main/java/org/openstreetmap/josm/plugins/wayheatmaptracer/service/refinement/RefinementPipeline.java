@@ -31,12 +31,16 @@ public final class RefinementPipeline {
             public void requireCurrent(){if(!capture.isCurrent(coordinator))throw new IllegalStateException("Refinement source invalidated");}
             public EvidenceSnapshot evidence(RefinementSourcePlanner.SourceRequest source,CancellationProbe cancellation) {
                 requireCurrent();
+                EvidenceSnapshot evidence;
                 if(source.aggregate()) {
                     if(!capture.completeAggregate())throw new SourceUnavailable();
-                    return capture.aggregateEvidence(cancellation,hashWork);
+                    evidence=capture.aggregateEvidence(cancellation,hashWork);
+                } else {
+                    if(!capture.palettes().contains(source.palette()))throw new SourceUnavailable();
+                    evidence=source.mapping().equals(source.palette())?capture.evidence(source.palette(),cancellation,hashWork):capture.mappingEvidence(source.mapping(),cancellation,hashWork);
                 }
-                if(!capture.palettes().contains(source.palette()))throw new SourceUnavailable();
-                return source.mapping().equals(source.palette())?capture.evidence(source.palette(),cancellation,hashWork):capture.mappingEvidence(source.mapping(),cancellation,hashWork);
+                capture.releaseRasterInputs(evidence);
+                return evidence;
             }
             public Optional<ManagedModernPreviewSource.RefinementWorkReceipt> actualSourceWork(){return Optional.of(capture.workReceipt());}
             public Optional<RefinementSourcePlanner.Plan> binding(){return Optional.of(capture.plan());}
@@ -249,7 +253,7 @@ public final class RefinementPipeline {
         var spanProvenance=new IdentityHashMap<ParentBackedComposer.Assessed,List<Optional<ModernTracePipeline.FinalProvenance>>>();
         long fallbackCalls=intervals.stream().filter(i->i.eligible()&&!i.range().equals(parent.originalRange())).count();
         var owner=adapters.owner().child("refinement-operation");AttemptMemoryLedger.Reservation retained=null;
-        Outcome outcome=Outcome.COMPLETE;boolean stopped=false,partial=false;int sourceIndex=0;
+        Outcome outcome=Outcome.COMPLETE;boolean stopped=false,partial=false,localResourceLimit=false;int sourceIndex=0;
         var admissionObserver=PipelineAdmissionObserver.active();
         var admissionGate=PipelineAdmissionObserver.Gate.ASSEMBLED_RETENTION;
         long vertices=-1;EvidenceSnapshot observedEvidence=null;
@@ -313,9 +317,26 @@ public final class RefinementPipeline {
                         if(stopped||budget.exhausted()||budget.inferenceExpired()) {
                             stopped=true;outcome=Outcome.RESOURCE_LIMIT;attempts.add(unattempted(source,interval.range(),"operation-budget-stopped"));continue;
                         }
-                        var local=invoke(ticket,interval.reference().orElseThrow(),evidence,source,AttemptKind.INTERVAL,adapters,budget,nativeProbe,owner,attempts,potentialCalls,completion.retention,retentionProbe);
-                        if(aborts(local,budget))throw terminal(local,budget);
-                        if(local.outcome()==Outcome.RESOURCE_LIMIT){stopped=true;outcome=Outcome.RESOURCE_LIMIT;partial=true;continue;}
+                        RefinementEngineAdapter.Run local;
+                        int attemptsBefore=attempts.size();
+                        try {
+                            local=invoke(ticket,interval.reference().orElseThrow(),evidence,source,AttemptKind.INTERVAL,adapters,budget,nativeProbe,owner,attempts,potentialCalls,completion.retention,retentionProbe);
+                            if(aborts(local,budget))throw terminal(local,budget);
+                        } catch(DeadlineReached deadline) {
+                            if(budget.unknown)throw deadline;
+                            // The inference cutoff has a separate finalization reserve. Keep
+                            // completed interval choices unless final time or ownership is lost.
+                            finalProbe.checkpoint();
+                            if(attempts.size()==attemptsBefore)attempts.add(unattempted(source,interval.range(),"operation-budget-stopped"));
+                            stopped=true;outcome=Outcome.RESOURCE_LIMIT;partial=true;continue;
+                        }
+                        if(local.outcome()==Outcome.RESOURCE_LIMIT) {
+                            // A smaller later interval may still fit. Reuse the same charged budget and
+                            // deadline at the next entry; unknown native work has already aborted.
+                            localResourceLimit=true;
+                            partial=true;
+                            continue;
+                        }
                         var usable=local.finalized().stream().flatMap(r->r.routes().stream()).filter(r->r.quality().disposition()!=FinalGeometryEvaluator.Disposition.HARD_BLOCKED).toList();
                         if(usable.isEmpty()){partial=true;continue;}
                         selected.add(new Selected(choice(local,usable.get(0),source),usable.get(0),Optional.ofNullable(local.finalProvenance().get(usable.get(0).hypothesis().id()))));
@@ -385,7 +406,10 @@ public final class RefinementPipeline {
             return new Retained(candidate.assessed(),candidate.sources(),bound,spans);
         }).toList();
         if(budget.unknown||outcome==Outcome.CANCELLED||outcome==Outcome.STALE||outcome==Outcome.FAILED)retainedCandidates=List.of();
-        if(outcome==Outcome.COMPLETE)outcome=retainedCandidates.isEmpty()?Outcome.NO_USABLE_RESULT:partial?Outcome.PARTIAL:Outcome.COMPLETE;
+        if(outcome==Outcome.COMPLETE) {
+            if(retainedCandidates.isEmpty())outcome=localResourceLimit?Outcome.RESOURCE_LIMIT:Outcome.NO_USABLE_RESULT;
+            else if(partial)outcome=Outcome.PARTIAL;
+        }
         var sourceOutcomes=sourcePlan.requests().stream().map(s->new SourceOutcome(s,assessedBySource.getOrDefault(s,List.of()),attempts.stream().filter(a->a.source().equals(s)).toList())).toList();
         boolean nativeTruncated=attempts.stream().flatMap(a->a.run().stream()).flatMap(r->r.nativeRun().stream())
             .anyMatch(r->r.result().alternativesTruncated());

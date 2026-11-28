@@ -12,6 +12,7 @@ import java.util.Objects;
 import java.util.RandomAccess;
 import java.util.function.LongConsumer;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
@@ -25,13 +26,35 @@ public final class MetricRegion {
         private final MetricRegion region;
         private final double[] lower, upper;
         private YMembershipIndex(MetricRegion region, double[] lower, double[] upper) {
-            this.region = region; this.lower = lower; this.upper = upper;
+            this.region = region;
+            this.lower = lower;
+            this.upper = upper;
         }
     }
 
     /** Prepares owned point bounds; segment edge events always remain complete. */
     public YMembershipIndex prepareYMembership(CancellationProbe cancellation,
             LongConsumer admission, AttemptMemoryLedger.Owner owner) {
+        return prepareYMembership(cancellation,admission,owner,0);
+    }
+
+    private int groupedMembershipLeafCount() {
+        return Math.multiplyExact(2,Integer.highestOneBit(Math.max(1,polygons.size()-1)));
+    }
+
+    /** Array and index storage for the caller's explicitly admitted guarded scope. */
+    public long groupedYMembershipBytes() {
+        return AttemptMemoryLedger.objectBytes(24) + 2L * AttemptMemoryLedger.arrayBytes(
+                Math.multiplyExact(2,groupedMembershipLeafCount()),Double.BYTES);
+    }
+
+    /** Groups immutable Y bounds in original polygon order for repeated guarded queries. */
+    public YMembershipIndex prepareGroupedYMembership(CancellationProbe cancellation,LongConsumer admission) {
+        return prepareYMembership(cancellation,admission,null,groupedMembershipLeafCount());
+    }
+
+    private YMembershipIndex prepareYMembership(CancellationProbe cancellation,LongConsumer admission,
+            AttemptMemoryLedger.Owner owner,int firstLeaf) {
         if (cancellation == null || admission == null)
             throw new IllegalArgumentException("Membership work controls are required");
         cancellation.checkpoint();
@@ -40,11 +63,12 @@ public final class MetricRegion {
         boolean complete = false;
         try {
             cancellation.checkpoint();
-            admission.accept(Math.addExact(Math.multiplyExact(2L, polygons.size()), 1L));
+            int length=firstLeaf==0?polygons.size():Math.multiplyExact(2,firstLeaf);
+            admission.accept(Math.addExact(Math.multiplyExact(2L,length),1L));
             if (inventory != null) inventory.reserve(Math.addExact(AttemptMemoryLedger.objectBytes(24),
-                    Math.multiplyExact(2L, AttemptMemoryLedger.arrayBytes(polygons.size(), Double.BYTES))));
-            double[] lower = new double[polygons.size()];
-            double[] upper = new double[polygons.size()];
+                    Math.multiplyExact(2L, AttemptMemoryLedger.arrayBytes(length, Double.BYTES))));
+            double[] lower = new double[length];
+            double[] upper = new double[length];
             for (int index = 0; index < polygons.size(); index++) {
                 cancellation.checkpoint(); admission.accept(1L);
                 List<MetricPoint> polygon = polygons.get(index);
@@ -55,8 +79,20 @@ public final class MetricRegion {
                     minimum = Math.min(minimum, y); maximum = Math.max(maximum, y);
                 }
                 // Exactly the original onSegment Y bounds, including conservative overflow.
-                lower[index] = minimum - 1e-9;
-                upper[index] = maximum + 1e-9;
+                lower[firstLeaf+index] = minimum - 1e-9;
+                upper[firstLeaf+index] = maximum + 1e-9;
+            }
+            if (firstLeaf != 0) {
+                for (int index=firstLeaf+polygons.size(); index<length; index++) {
+                    cancellation.checkpoint(); admission.accept(1L);
+                    lower[index]=Double.POSITIVE_INFINITY;
+                    upper[index]=Double.NEGATIVE_INFINITY;
+                }
+                for (int index=firstLeaf-1; index>0; index--) {
+                    cancellation.checkpoint(); admission.accept(1L);
+                    lower[index]=Math.min(lower[2*index],lower[2*index+1]);
+                    upper[index]=Math.max(upper[2*index],upper[2*index+1]);
+                }
             }
             YMembershipIndex result = new YMembershipIndex(this, lower, upper);
             complete = true;
@@ -100,15 +136,17 @@ public final class MetricRegion {
 
     /** Returns whether any polygon contains the point, including its boundary. */
     public boolean contains(MetricPoint point) {
-        if(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.current()!=null)
-            return contains(point,CancellationProbe.NONE,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork::charge,null);
+        if(PostprocessingValidationWork.current()!=null)
+            return contains(point,CancellationProbe.NONE,PostprocessingValidationWork::charge,
+                    point==null?null:PostprocessingValidationWork.membershipIndex(this));
         return point != null && polygons.stream().anyMatch(polygon -> contains(polygon, point));
     }
 
     /** Proves a whole segment lies inside the polygon union without discrete-step gaps. */
     public boolean containsSegment(MetricPoint start, MetricPoint end) {
-        if(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork.current()!=null)
-            return containsSegment(start,end,CancellationProbe.NONE,org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork::charge,null,false,null,true);
+        if(PostprocessingValidationWork.current()!=null)
+            return containsSegment(start,end,CancellationProbe.NONE,PostprocessingValidationWork::charge,null,false,
+                    PostprocessingValidationWork.membershipIndex(this),true);
         return containsSegment(start, end, CancellationProbe.NONE, ignored -> { }, null, false, null, true);
     }
 
@@ -317,6 +355,8 @@ public final class MetricRegion {
         if (index == null || point == null) return contains(point, cancellation, admission);
         cancellation.checkpoint(); admission.accept(1L);
         if (index.region != this) return contains(point, cancellation, admission);
+        if (index.lower.length>polygons.size())
+            return containsInGroup(point,cancellation,admission,index,1,index.lower.length/2);
         for (int polygonIndex = 0; polygonIndex < polygons.size(); polygonIndex++) {
             cancellation.checkpoint();
             admission.accept(2L); // Both comparisons precede even an early outside result.
@@ -325,6 +365,16 @@ public final class MetricRegion {
             if (contains(polygons.get(polygonIndex), point, cancellation, admission)) return true;
         }
         return false;
+    }
+
+    private boolean containsInGroup(MetricPoint point,CancellationProbe cancellation,LongConsumer admission,
+            YMembershipIndex index,int node,int firstLeaf) {
+        cancellation.checkpoint();
+        admission.accept(2L);
+        if (point.yMeters()<index.lower[node]||point.yMeters()>index.upper[node]) return false;
+        if (node>=firstLeaf) return contains(polygons.get(node-firstLeaf),point,cancellation,admission);
+        return containsInGroup(point,cancellation,admission,index,2*node,firstLeaf)
+                ||containsInGroup(point,cancellation,admission,index,2*node+1,firstLeaf);
     }
 
     /** Returns whether a segment touches or crosses any polygon in the union. */

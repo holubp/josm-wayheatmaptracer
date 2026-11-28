@@ -7,7 +7,6 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.Postproce
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /** Guarded existing-Gaussian postprocessing; this API performs no native inference or acquisition. */
@@ -31,15 +30,20 @@ public final class RefinementSmoothingAdapter {
         private final AttemptMemoryLedger.Owner owner;
         private final LongScaleNormalFairing.OwnedCaptureRequest proposal;
         private final SmoothingModels.NativeFacts inheritedFacts;
+        private final long outputBytes;
         Result(List<MetricPoint> points,Optional<AlignmentEditPlan> plan,Receipt receipt,
-                Optional<Assessment> assessment,AttemptMemoryLedger.Owner owner,LongScaleNormalFairing.OwnedCaptureRequest proposal,SmoothingModels.NativeFacts inheritedFacts){
-            this.points=points;this.plan=plan;this.receipt=receipt;this.assessment=assessment;this.owner=owner;this.proposal=proposal;this.inheritedFacts=inheritedFacts;
+                Optional<Assessment> assessment,AttemptMemoryLedger.Owner owner,LongScaleNormalFairing.OwnedCaptureRequest proposal,SmoothingModels.NativeFacts inheritedFacts,long outputBytes){
+            this.points=points;this.plan=plan;this.receipt=receipt;this.assessment=assessment;this.owner=owner;this.proposal=proposal;this.inheritedFacts=inheritedFacts;this.outputBytes=outputBytes;
         }
         public List<MetricPoint> points(){return points;}
         public Optional<AlignmentEditPlan> plan(){return plan;}
         public Receipt receipt(){return receipt;}
         public Optional<Assessment> assessment(){return assessment;}
         public SmoothingModels.NativeFacts inheritedFacts(){return inheritedFacts;}
+        long publicationWorkspaceBytes() {
+            // Detached inventory copies, projected point/assignment wrappers and the single payload.
+            return Math.addExact(524_288L+1024L*points.size(),outputBytes);
+        }
         @Override public void close(){if(proposal!=null)proposal.close();if(owner!=null)owner.close();}
     }
     public Result smooth(SmoothingModels.Parent parent,SmoothingModels.Preset strength,GeometryWorkContext work,CancellationProbe cancellation) {
@@ -69,28 +73,39 @@ public final class RefinementSmoothingAdapter {
             owner=work.owner().child("guarded-baseline-smoothing");
             parent.nativeFacts().source().retainInto(owner);owner.retain(parent);owner.retain(parent.image());
             long graphUnits=graphUnits(parent,work);
+            long graphScratch=Math.addExact(262_144L,Math.multiplyExact(1024L,graphUnits+requested.size()));
+            long inheritedFindings=parent.nativeFacts().quality().map(q->(long)q.findings().size()).orElse(0L);
             long inheritedCodes=parent.nativeFacts().nativeValidation().map(v->(long)v.findingCodes().size()).orElse(0L);
-            long outputBytes=Math.addExact(Math.multiplyExact(64L,inheritedCodes),Math.addExact(16384L,Math.addExact(Math.multiplyExact(8192L,graphUnits),Math.multiplyExact(2048L,parent.pointIds().size()))));
-            try(var scratch=work.reserve("baseline-smoothing-assessment-scratch",assessmentBytes(parent,requested,graphUnits,work));
-                var retained=work.reserveOn(owner,"baseline-smoothing-plan",outputBytes)) {
+            // One composition and one plan. Source graph and images are already leased;
+            // include the new primitive/watch maps, preview lists and validation wrappers.
+            long outputBytes=Math.addExact(16_384L+128L*(inheritedCodes+inheritedFindings),
+                    Math.multiplyExact(1536L,graphUnits+requested.size()));
+            try(var retained=work.reserveOn(owner,"baseline-smoothing-plan",outputBytes)) {
+                var adjusted=retainParentContactSlots(parent,requested,strength,work,cancellation,graphScratch);
+                if(adjusted.equals(parent.reference().points()))
+                    return retained(parent,strength,Outcome.RETAINED_UNSAFE,work.visits()-started,proposalWork,0,"contact-slots-retained");
+                long assessmentScratch=assessmentBytes(parent,adjusted,work);
                 var sourceCells=new ImageCostField.SegmentSupportBudget(Long.MAX_VALUE);
                 for(double scale:new double[]{1,.5,.25,.125}) {
                     cancellation.checkpoint();PostprocessingValidationWork.visit();current(parent);trials++;
-                    var points=scale==1?requested:backtrack(parent.reference().points(),requested,scale,work);
+                    var points=scale==1?adjusted:backtrack(parent.reference().points(),adjusted,scale,work);
                     if(points.equals(parent.reference().points()))continue;
                     var candidate=composition(parent,points,strength,work);
                     Assessment assessed;
                     AlignmentEditPlan plan;
                     try {
-                        var evaluated=new ParentBackedComposer().assessPostprocessed(parent.reference(),candidate,parent.evidence(),parent.image(),work,cancellation,sourceCells);
+                        var evaluated=assessTrial(parent,candidate,work,cancellation,sourceCells,assessmentScratch,graphScratch);
                         if(evaluated.quality().disposition()==FinalGeometryEvaluator.Disposition.HARD_BLOCKED)continue;
                         assessed=inheritReview(parent,evaluated);
-                        plan=new ModernSingleWayEditPlanAdapter().adaptPostprocessed(parent,assessed.evaluated(),work,assessed.inheritedValidation());
+                        try(var scratch=work.reserve("baseline-smoothing-plan-scratch",graphScratch);
+                            var growing=PostprocessingValidationWork.openGrowingScratch(work)) {
+                            plan=new ModernSingleWayEditPlanAdapter().adaptPostprocessed(parent,assessed.evaluated(),work,assessed.inheritedValidation());
+                        }
                     }
                     catch(IllegalArgumentException unsafe){continue;}
                     cancellation.checkpoint();PostprocessingValidationWork.visit();current(parent);
                     var receipt=receipt(parent,strength,Outcome.CHANGED,work.visits()-started,proposalWork,trials,scale,scale==1?"accepted":"safety-backtrack");
-                    var result=new Result(assessed.candidate().points(),Optional.of(plan),receipt,Optional.of(assessed),owner,proposal,parent.nativeFacts());
+                    var result=new Result(assessed.candidate().points(),Optional.of(plan),receipt,Optional.of(assessed),owner,proposal,parent.nativeFacts(),outputBytes);
                     retained.adopt(result);owner=null;proposal=null;return result;
                 }
             }
@@ -103,6 +118,34 @@ public final class RefinementSmoothingAdapter {
             return retained(parent,strength,Outcome.RETAINED_STALE,work.visits()-started,proposalWork,trials,"stale-selected-source");
         } finally {if(proposal!=null)proposal.close();if(owner!=null)owner.close();}
     }
+    private static List<MetricPoint> retainParentContactSlots(SmoothingModels.Parent parent,List<MetricPoint> requested,
+            SmoothingModels.Preset strength,GeometryWorkContext work,CancellationProbe cancellation,long graphScratch) {
+        try(var scratch=work.reserve("baseline-smoothing-contact-retention",graphScratch);
+            var growing=PostprocessingValidationWork.openGrowingScratch(work)) {
+            var original=parent.reference().points();
+            var baseline=composition(parent,original,strength,work);
+            var retainedSlots=new ParentBackedComposer().retainedSmoothingContactSlots(parent,baseline,cancellation);
+            if(retainedSlots.isEmpty())return requested;
+            var adjusted=new ArrayList<>(requested);
+            for(int index:retainedSlots) {
+                work.visit(GeometryWorkContext.Kind.COPY,1);
+                adjusted.set(index,original.get(index));
+            }
+            return List.copyOf(adjusted);
+        }
+    }
+    private static ParentBackedComposer.Assessed assessTrial(SmoothingModels.Parent parent,
+            ParentBackedComposer.Composed candidate,GeometryWorkContext work,CancellationProbe cancellation,
+            ImageCostField.SegmentSupportBudget sourceCells,long assessmentScratch,long graphScratch) {
+        // Evaluation and topology are sequential within the composer. Its common detached
+        // original geometry and protected assignments are covered by the graph/point workspace.
+        try(var scratch=work.reserve("baseline-smoothing-evaluation-scratch",
+                    Math.addExact(Math.max(assessmentScratch,graphScratch),1024L*candidate.points().size()));
+            var growing=PostprocessingValidationWork.openGrowingScratch(work);
+            var routeSamples=parent.image().memoizeRouteSamples(work)) {
+            return new ParentBackedComposer().assessSmoothing(parent,candidate,work,cancellation,sourceCells);
+        }
+    }
     private static final class StaleSource extends IllegalStateException { }
     private static void current(SmoothingModels.Parent parent) {
         try {parent.nativeFacts().source().requireCurrent();}
@@ -114,7 +157,7 @@ public final class RefinementSmoothingAdapter {
             "postprocessing-final-slots-v1",outcome,work,proposal,trials,scale,reason,parent.ticket().mode());
     }
     private static Result retained(SmoothingModels.Parent parent,SmoothingModels.Preset strength,Outcome outcome,long work,long proposal,int trials,String reason) {
-        return new Result(parent.reference().points(),Optional.empty(),receipt(parent,strength,outcome,work,proposal,trials,0,reason),Optional.empty(),null,null,parent.nativeFacts());
+        return new Result(parent.reference().points(),Optional.empty(),receipt(parent,strength,outcome,work,proposal,trials,0,reason),Optional.empty(),null,null,parent.nativeFacts(),0);
     }
     private static List<MetricPoint> backtrack(List<MetricPoint> parent,List<MetricPoint> requested,double scale,GeometryWorkContext work) {
         var points=new ArrayList<MetricPoint>(parent.size());
@@ -149,16 +192,11 @@ public final class RefinementSmoothingAdapter {
             for(var polygon:region.polygons()){work.visit(GeometryWorkContext.Kind.BIND,1);units=Math.addExact(units,polygon.size());}
         return units;
     }
-    private static long assessmentBytes(SmoothingModels.Parent parent,List<MetricPoint> requested,long graphUnits,GeometryWorkContext work) {
+    private static long assessmentBytes(SmoothingModels.Parent parent,List<MetricPoint> requested,GeometryWorkContext work) {
         double length=0,proposedLength=0;var points=parent.reference().points();
         for(int i=1;i<points.size();i++){work.visit(GeometryWorkContext.Kind.BIND,1);length+=points.get(i-1).distanceTo(points.get(i));proposedLength+=requested.get(i-1).distanceTo(requested.get(i));}
-        // Every bounded backtrack is a convex combination; its total length is at most this maximum.
-        length=Math.max(length,proposedLength);
-        double pitch=parent.evidence().resolution().effectivePitchMeters(),spacing=Math.min(1,pitch/2);
-        double profileRows=Math.ceil(2*Math.max(EvidenceModelParameters.defaults().localization().routeProfileHalfWidthMeters(),4*pitch)/(pitch*.25))+3;
-        double rows=Math.ceil(length/spacing)+points.size()+8;
-        if(!Double.isFinite(rows)||!Double.isFinite(profileRows))throw new GeometryWorkContext.LimitReached();
-        long cached=(long)Math.min(65536,rows*profileRows),window=(long)Math.min(65536,Math.ceil(20/spacing)+2L*points.size()+8);
-        return Math.addExact(2_097_152L,Math.addExact(Math.multiplyExact(16384L,graphUnits+points.size()),Math.multiplyExact(2048L,cached+window+(long)Math.min(65536,profileRows))));
+        // Every bounded backtrack is a convex combination, so its length is at most this maximum.
+        return FinalGeometryEvaluator.postprocessingWorkspaceBytes(points.size(),
+                Math.max(length,proposedLength),parent.evidence().resolution().effectivePitchMeters());
     }
 }

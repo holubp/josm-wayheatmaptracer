@@ -41,6 +41,7 @@ public final class RefinementRootAuthority {
     private final Map<Object,Long> charges;
     private final long retainedBytes;
     private final Map<EvidenceSnapshot,NativeAcquisition> nativeAcquisitions;
+    private final RetainedSmoothingSource originalLegacySource;
     private record NativeAcquisition(RetainedSmoothingSource source,TraceRequest request,
             NetworkSnapshotCapture.CapturedSnapshot receipt,AttemptMemoryLedger.Owner owner) {
         void requireCurrent(){
@@ -76,6 +77,20 @@ public final class RefinementRootAuthority {
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner owner) {
         this(network,request,evidence,effectiveConfig,projectionCode,sourceIdentity,capturedPartition,source,work,owner,null);
     }
+    /** Creates original Legacy authority from the exact admitted conversion and its one produced digest. */
+    public static RefinementRootAuthority fromAdmittedLegacySource(NetworkSnapshot network,
+            java.util.function.Function<String,TraceRequest> requestForHash,AlignmentConfig config,
+            String projectionCode,String sourceIdentity,SelectedWayIntervalPartitioner.Partition partition,
+            RetainedSmoothingSource source,GeometryWorkContext work,AttemptMemoryLedger.Owner owner) {
+        if(source.legacyDisposition().isEmpty())
+            throw new IllegalArgumentException("Original Legacy conversion disposition is required");
+        source.requireCurrent();
+        String hash=source.evidence().canonicalHash(work);
+        TraceRequest request=requestForHash.apply(hash);
+        if(request.engine()!=TrackerMode.LEGACY_V02)
+            throw new IllegalArgumentException("Original Legacy conversion engine differs");
+        return new RefinementRootAuthority(network,request,source.evidence(),config,projectionCode,sourceIdentity,partition,source,work,owner,hash);
+    }
     private RefinementRootAuthority(NetworkSnapshot network,TraceRequest request,EvidenceSnapshot evidence,
             AlignmentConfig effectiveConfig,String projectionCode,String sourceIdentity,SelectedWayIntervalPartitioner.Partition capturedPartition,
             RetainedSmoothingSource source,GeometryWorkContext work,AttemptMemoryLedger.Owner owner,String producedHash) {
@@ -88,6 +103,7 @@ public final class RefinementRootAuthority {
         Objects.requireNonNull(network); Objects.requireNonNull(request); Objects.requireNonNull(evidence);
         Objects.requireNonNull(effectiveConfig);
         nativeAcquisitions=Map.of();
+        originalLegacySource=request.engine()==TrackerMode.LEGACY_V02&&source!=null&&source.legacyDisposition().isPresent()?source:null;
         org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Reservation metadata=null;
         if(source!=null||work!=null) {
             if(source==null||work==null||source.evidence()!=evidence)throw new IllegalArgumentException("Root evidence group is foreign");
@@ -187,6 +203,13 @@ public final class RefinementRootAuthority {
     Optional<OriginalEvidenceHashProof> registeredOriginalEvidenceHashProof(RefinementModels.Candidate candidate,RetainedSmoothingSource source,GeometryWorkContext work) {
         return registeredOriginalEvidenceHash(candidate,source,work).map(hash->new OriginalEvidenceHashProof(this,source));
     }
+    /** Legacy reuse belongs to the actual root conversion, including its retained epoch. */
+    Optional<OriginalEvidenceHashProof> legacyOriginalEvidenceHashProof(RetainedSmoothingSource source,GeometryWorkContext work) {
+        work.visit(GeometryWorkContext.Kind.BIND,1);
+        if(source!=originalLegacySource)return Optional.empty();
+        source.requireCurrent();
+        return Optional.of(new OriginalEvidenceHashProof(this,source));
+    }
     /** No hash supplied by a caller can construct this proof. It retains no candidate or history. */
     public static final class OriginalEvidenceHashProof {
         private final RefinementRootAuthority root;
@@ -196,6 +219,10 @@ public final class RefinementRootAuthority {
             work.visit(GeometryWorkContext.Kind.BIND,8);
             if(actualRoot!=root||actualSource!=source||evidence!=source.evidence())
                 throw new IllegalArgumentException("Original evidence hash proof belongs to another acquisition");
+            if(source==root.originalLegacySource&&evidence==root.evidence) {
+                source.requireCurrent();
+                return root.request.evidenceContentHash();
+            }
             var registered=root.nativeAcquisitions.get(evidence);
             if(registered==null||registered.source()!=source)throw new IllegalArgumentException("Original evidence hash proof is not registered");
             registered.requireCurrent();root.requireAcquisitionFrame(evidence);
@@ -222,6 +249,7 @@ public final class RefinementRootAuthority {
         network=original.network;request=original.request;evidence=original.evidence;effectiveConfig=original.effectiveConfig;
         projectionCode=original.projectionCode;sourceIdentity=original.sourceIdentity;frozenGeometryProof=original.frozenGeometryProof;
         nativeAcquisitions=Collections.unmodifiableMap(new IdentityHashMap<>(acquisitions));
+        originalLegacySource=original.originalLegacySource;
         var inventory=new IdentityHashMap<Object,Long>(original.charges);
         additional.forEach((identity,bytes)->{if(identity==null||bytes==null||bytes<0)throw new IllegalArgumentException("Invalid admitted native ownership");inventory.merge(identity,bytes,Math::max);});
         inventory.put(this,256L);long total=0;for(long value:inventory.values())total=Math.addExact(total,value);
@@ -390,13 +418,21 @@ public final class RefinementRootAuthority {
         static final class Traversal {
             private final org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe probe;
             private final long maximum;private final boolean strict;private long entries;
+            private final java.util.function.LongConsumer admitEntries;
             Traversal(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe probe,long maximum,boolean strict) {
+                this(probe,maximum,strict,ignored->{});
+            }
+            Traversal(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe probe,long maximum,
+                    boolean strict,java.util.function.LongConsumer admitEntries) {
                 this.probe=Objects.requireNonNull(probe);if(maximum<0)throw new IllegalArgumentException("Negative metadata capacity");this.maximum=maximum;this.strict=strict;
+                this.admitEntries=Objects.requireNonNull(admitEntries);
             }
             void allocate(long count) {
                 probe.checkpoint();entries=Math.addExact(entries,count);
                 if(entries>maximum)throw new RefinementSession.Refused(RefinementModels.RefusalReason.PAYLOAD_LIMIT);
+                admitEntries.accept(entries);
             }
+            long entries(){return entries;}
         }
         private final IdentityHashMap<Object,Long> owned=new IdentityHashMap<>();
         private final Map<Class<?>,RecordComponent[]> records=new HashMap<>();

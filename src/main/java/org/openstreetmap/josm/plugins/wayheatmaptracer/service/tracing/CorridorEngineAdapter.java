@@ -85,8 +85,7 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
     public Accounted<TraceEngineRun> traceRefinedWithUsage(ParentTraceReference parent,TraceRequest request,
             EvidenceSnapshot evidence,NetworkSnapshot network,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner) {
         var scope=java.util.Objects.requireNonNull(owner).child("a-native-validation");
-        try {
-            var workspace=parent.reserveBindingWorkspace(evidence,scope);
+        try(var workspace=parent.reserveBindingWorkspace(evidence,scope)) {
             var run=traceRefinedWithUsage(parent,request,evidence,network,cancellation,scope,workspace);
             return new Accounted<>(run.value(),scope);
         }catch(RuntimeException|Error failure){scope.close();throw failure;}

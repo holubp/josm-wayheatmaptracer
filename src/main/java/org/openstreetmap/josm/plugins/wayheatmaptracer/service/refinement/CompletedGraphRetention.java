@@ -10,6 +10,28 @@ final class CompletedGraphRetention {
     // This is transient metadata capacity, charged to the unchanged operation ledger, not a new work pool.
     private static final long METADATA_BYTES=64L*1024*1024;
     private static final int METADATA_ENTRIES=(int)((METADATA_BYTES-4096)/512);
+    private static final class InventoryCapacity {
+        private final AttemptMemoryLedger.Owner owner;
+        private long admitted;
+        private boolean exchanging;
+        InventoryCapacity(AttemptMemoryLedger.Owner owner){this.owner=owner;owner.reserve(4096);}
+        void admit(long needed) {
+            if(needed>METADATA_ENTRIES)throw new RefinementSession.Refused(RefinementModels.RefusalReason.PAYLOAD_LIMIT);
+            if(needed<=admitted)return;
+            if(exchanging)throw new RefinementSession.Refused(RefinementModels.RefusalReason.PAYLOAD_LIMIT);
+            long rounded=Math.min(METADATA_ENTRIES,((needed+63)/64)*64);
+            owner.reserve(Math.multiplyExact(512L,rounded-admitted));
+            admitted=rounded;
+        }
+        void prepareExchange(RefinementRootAuthority.Inventory.Traversal traversal,
+                AttemptMemoryLedger.Owner working,AttemptMemoryLedger.Owner destination) {
+            long exchangeSlots=working.retainedExchangeEntries(destination);
+            // One additional reservation made by this step is in the metadata owner
+            // outside the retiring subtree, and does not add a ledger charge identity.
+            admit(Math.addExact(traversal.entries(),exchangeSlots));
+            exchanging=true;
+        }
+    }
     private final RefinementRootAuthority root;
     private final AttemptMemoryLedger.Owner operation;
     private record RetainedGroup(long bytes,Set<Object> members) { }
@@ -52,27 +74,31 @@ final class CompletedGraphRetention {
     }
     void settleRun(RefinementEngineAdapter.CompletedRun completed,Optional<RetainedSmoothingSource> source,CancellationProbe probe) {
         var working=completed.completedOwner();var destination=operation.child("completed-native-retained");boolean exchanged=false;
-        try(var metadata=operation.child("completed-native-inventory");var admitted=metadata.reserve(METADATA_BYTES)) {
-            var traversal=new RefinementRootAuthority.Inventory.Traversal(probe,METADATA_ENTRIES,true);
+        try(var metadata=operation.child("completed-native-inventory")) {
+            var capacity=new InventoryCapacity(metadata);
+            var traversal=new RefinementRootAuthority.Inventory.Traversal(probe,METADATA_ENTRIES,true,capacity::admit);
             var borrowed=inputs(destination,traversal);source.ifPresent(value->source(value,destination,borrowed,traversal));
             var run=completed.run();var charges=RefinementRootAuthority.completedCharges(borrowed,traversal,run);
             // Preserve the producer-computed identity membership so Result aliases to provenance,
             // basis and receipt payload borrow the same Run group rather than charging it again.
             // Presize from the already-measured identity union: 64 bytes/member plus the
             // 256-byte header conservatively covers the actual table, set and registry record.
+            traversal.allocate(charges.size());
             var members=Collections.newSetFromMap(new IdentityHashMap<Object,Boolean>(charges.size()));
-            for(Object member:charges.keySet()){traversal.allocate(1);members.add(member);}
+            for(Object member:charges.keySet()){probe.checkpoint();members.add(member);}
             long bytes=Math.addExact(256L,Math.multiplyExact(64L,members.size()));
             for(long value:charges.values()){probe.checkpoint();bytes=Math.addExact(bytes,value);}
             var group=new RetainedGroup(bytes,members);
+            capacity.prepareExchange(traversal,working,destination);
             working.replaceWithRetainedGroup(destination,run,bytes,()->{traversal.allocate(1);return false;});exchanged=true;
             settled.put(run,group);status=Status.SETTLED;
         } finally {if(!exchanged){destination.close();status=Status.UNAVAILABLE;}}
     }
     void settleResult(RefinementPipeline.Result result,AttemptMemoryLedger.Owner capacity,CancellationProbe probe) {
         var destination=operation.child("completed-pipeline-retained");boolean exchanged=false;
-        try(var metadata=operation.child("completed-pipeline-inventory");var admitted=metadata.reserve(METADATA_BYTES)) {
-            var traversal=new RefinementRootAuthority.Inventory.Traversal(probe,METADATA_ENTRIES,true);
+        try(var metadata=operation.child("completed-pipeline-inventory")) {
+            var inventoryCapacity=new InventoryCapacity(metadata);
+            var traversal=new RefinementRootAuthority.Inventory.Traversal(probe,METADATA_ENTRIES,true,inventoryCapacity::admit);
             var borrowed=inputs(destination,traversal);
             for(var entry:settled.entrySet()) {
                 traversal.allocate(1);var lease=destination.retainIfAbsent(entry.getKey());
@@ -84,6 +110,7 @@ final class CompletedGraphRetention {
             for(var candidate:result.candidates())for(var source:candidate.retainedSources().values())source(source,destination,borrowed,traversal);
             var charges=RefinementRootAuthority.completedCharges(borrowed,traversal,result);
             long bytes=headerInCapacity?4096:0;for(long value:charges.values()){probe.checkpoint();bytes=Math.addExact(bytes,value);}
+            inventoryCapacity.prepareExchange(traversal,capacity,destination);
             capacity.replaceWithRetainedGroup(destination,result,bytes,()->{traversal.allocate(1);return false;});exchanged=true;status=Status.SETTLED;
         } finally {if(!exchanged){destination.close();status=Status.UNAVAILABLE;}}
     }

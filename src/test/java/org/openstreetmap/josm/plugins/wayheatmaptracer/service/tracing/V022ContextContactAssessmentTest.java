@@ -13,6 +13,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.PostprocessingValidationWork;
 
 /** Hand-constructed final contacts, independent of tracing/search and dataset mutation. */
 class V022ContextContactAssessmentTest {
@@ -63,6 +65,28 @@ class V022ContextContactAssessmentTest {
     void sharedNodeAtActualContactKeepsExistingConnectionRule() {
         Fixture fixture = fixture(new double[][] {{-8, 0}, {-8, 5}}, "highway", true, false);
         assertEquals(List.of(), findings(fixture));
+    }
+
+    @Test
+    void oneChangedWayKeepsItsContactProofWithHundredsOfUnchangedContextSegments() {
+        var points = new double[600][2];
+        points[0] = new double[] {0, 1};
+        points[1] = new double[] {0, 5};
+        for (int i = 2; i < points.length; i++) {
+            points[i] = new double[] {20 + 20.0 * i / points.length, 12 + i % 2};
+        }
+        var fixture = fixture(points, "waterway", false, false);
+        var unmetered = details(fixture);
+        assertEquals(List.of(ContextContactAssessment.REVIEW_CODE), unmetered.findingCodes());
+        var ledger = AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            var work = new GeometryWorkContext(100_000, AttemptMemoryLedger.MAX_BYTES, Long.MAX_VALUE,
+                    CancellationProbe.NONE, owner);
+            try (var scope = PostprocessingValidationWork.open(work)) {
+                assertEquals(unmetered, details(fixture));
+            }
+            assertEquals(0, ledger.currentBytes());
+        }
     }
 
     @Test

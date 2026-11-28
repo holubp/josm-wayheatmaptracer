@@ -47,7 +47,7 @@ public final class ParentBackedComposer {
         Objects.requireNonNull(parent);var ordered=new ArrayList<>(choices);
         ordered.sort(Comparator.comparingInt(c->c.reference().originalRange().firstIndex()));
         var points=new ArrayList<MetricPoint>();var ids=new ArrayList<FinalRoutePointId>();
-        var positions=new TreeMap<Integer,Double>();var spans=new ArrayList<Span>();
+        var positions=new TreeMap<Integer,ParentArc>();var spans=new ArrayList<Span>();
         int cursor=parent.originalRange().firstIndex();
         for(var choice:ordered) {
             PostprocessingValidationWork.visit();
@@ -70,11 +70,10 @@ public final class ParentBackedComposer {
         if(ordered.isEmpty())appendParent(parent,points,ids,positions,spans);
         else if(cursor<parent.originalRange().lastIndex())appendParent(parent.slice(new OccurrenceRange(cursor,parent.originalRange().lastIndex())),points,ids,positions,spans);
         var arcs=new ArrayList<ParentArc>();
-        for(var entry:positions.entrySet()) {
+        for(var arc:positions.values()) {
             PostprocessingValidationWork.visit();
-            double value=entry.getValue();int edge=(int)Math.floor(value);double fraction=value-edge;
-            if(edge==points.size()-1){edge--;fraction=1;}
-            arcs.add(new ParentArc(entry.getKey(),edge,fraction));
+            arcs.add(arc.parentEdge()==points.size()-1
+                    ?new ParentArc(arc.originalOccurrence(),arc.parentEdge()-1,1):arc);
         }
         // Only permanent original identities are required by a Precise parent with no optional
         // Legacy assignment map. A cut on a removed occurrence never invents node reuse.
@@ -117,12 +116,12 @@ public final class ParentBackedComposer {
         return new Composed(id,points,ids,assignments,arcs,spans);
     }
     private static void appendParent(ParentTraceReference part,List<MetricPoint> points,List<FinalRoutePointId> ids,
-            Map<Integer,Double> positions,List<Span> spans) {
+            Map<Integer,ParentArc> positions,List<Span> spans) {
         var generated=new ArrayList<FinalRoutePointId>();for(int i=0;i<part.points().size();i++)generated.add(new FinalRoutePointId.GeneratedCandidatePoint("parent",i));
         append(part.points(),generated,part.correspondence(),true,part.nativeCandidateId(),part.parentPalette(),points,ids,positions,spans);
     }
     private static void append(List<MetricPoint> part,List<FinalRoutePointId> partIds,List<ParentArc> arcs,boolean retained,
-            String nativeId,String palette,List<MetricPoint> points,List<FinalRoutePointId> ids,Map<Integer,Double> positions,List<Span> spans) {
+            String nativeId,String palette,List<MetricPoint> points,List<FinalRoutePointId> ids,Map<Integer,ParentArc> positions,List<Span> spans) {
         int base=points.isEmpty()?0:points.size()-1;
         if(!points.isEmpty()&&!points.get(base).equals(part.get(0)))throw new IllegalArgumentException("Parent interval join differs");
         for(int i=points.isEmpty()?0:1;i<part.size();i++){
@@ -131,15 +130,20 @@ public final class ParentBackedComposer {
         for(var arc:arcs) {
             PostprocessingValidationWork.visit();
             if(arc.parentEdge()>=part.size()-1)throw new IllegalArgumentException("Interval correspondence exceeds final geometry");
-            double value=base+arc.parentEdge()+arc.fraction();var previous=positions.put(arc.originalOccurrence(),value);
-            if(previous!=null&&Double.compare(previous,value)!=0)throw new IllegalArgumentException("Join occurrence maps twice");
+            int edge=base+arc.parentEdge();
+            // Canonicalize a join vertex as fraction zero of its outgoing edge.
+            // Adding an edge ordinal to a fractional coordinate loses precision.
+            var mapped=arc.fraction()==1?new ParentArc(arc.originalOccurrence(),edge+1,0)
+                    :new ParentArc(arc.originalOccurrence(),edge,arc.fraction());
+            var previous=positions.put(arc.originalOccurrence(),mapped);
+            if(previous!=null&&!previous.equals(mapped))throw new IllegalArgumentException("Join occurrence maps twice");
         }
         spans.add(new Span(base,points.size()-1,retained,nativeId,palette));
     }
     public Assessed assess(ParentTraceReference parent,Composed candidate,EvidenceSnapshot evidence,String field,CancellationProbe cancellation) {
         cancellation.checkpoint();var root=parent.root();
         root.requireAcquisitionEvidence(evidence);
-        return assessInternal(parent,candidate,evidence,ImageCostField.fromEvidence(evidence,field),cancellation,null);
+        return assessInternal(parent,candidate,evidence,ImageCostField.fromEvidence(evidence,field),cancellation,null,null);
     }
     /** Postprocessing reuses the exact admitted selected-source image; no second raster copy. */
     public Assessed assessPostprocessed(ParentTraceReference parent,Composed candidate,EvidenceSnapshot evidence,
@@ -152,11 +156,19 @@ public final class ParentBackedComposer {
             ImageCostField.SegmentSupportBudget sourceCells) {
         Objects.requireNonNull(sourceCells);
         try(var scope=PostprocessingValidationWork.open(work)) {
-            return assessInternal(parent,candidate,evidence,image,cancellation,sourceCells);
+            return assessInternal(parent,candidate,evidence,image,cancellation,sourceCells,null);
+        }
+    }
+    /** Uses the same admitted slots for draft topology and later exact-plan topology. */
+    Assessed assessSmoothing(SmoothingModels.Parent parent,Composed candidate,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext work,
+            CancellationProbe cancellation,ImageCostField.SegmentSupportBudget sourceCells) {
+        try(var scope=PostprocessingValidationWork.open(work)) {
+            return assessInternal(parent.reference(),candidate,parent.evidence(),parent.image(),cancellation,sourceCells,parent);
         }
     }
     private Assessed assessInternal(ParentTraceReference parent,Composed candidate,EvidenceSnapshot evidence,ImageCostField image,CancellationProbe cancellation,
-            ImageCostField.SegmentSupportBudget sourceCells) {
+            ImageCostField.SegmentSupportBudget sourceCells,SmoothingModels.Parent smoothingParent) {
         cancellation.checkpoint();var root=parent.root();
         root.requireAcquisitionEvidence(evidence);
         var protectedAssignments=new LinkedHashMap<Integer,MetricPoint>();
@@ -209,27 +221,10 @@ public final class ParentBackedComposer {
         }
         var quality=new FinalGeometryEvaluator().evaluate(new FinalGeometryEvaluator.Request(candidate.id(),candidate.points(),candidate.pointIds(),
             image,evidence.resolution().effectivePitchMeters(),protectedAssignments,List.of(),false,false,false,false),cancellation);
-        var after=new LinkedHashMap<>(root.network().primitives());var replacement=new ArrayList<PrimitiveKey>();
-        var disconnections=SharedNodeDisconnectionPlanner.forRequest(root.request(),root.network());
-        for(int i=0;i<candidate.points().size();i++) {
-            PostprocessingValidationWork.visit();
-            cancellation.checkpoint();var id=candidate.pointIds().get(i);
-            var key=id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing?disconnections.destinationKey(existing):PrimitiveKey.planned(PrimitiveKey.Type.NODE,i+1);
-            var old=after.get(key);if(!(id instanceof FinalRoutePointId.ExistingWayNodeOccurrence)&&old!=null)throw new IllegalArgumentException("Generated topology identity collision");
-            var tags=old instanceof DetachedNode node?node.tags():Map.<String,String>of();
-            var coordinate=evidence.coordinateFrame().toGeographic(candidate.points().get(i));
-            if(id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing) {
-                var source=(DetachedNode)root.network().primitives().get(existing.nodeKey());
-                if(candidate.points().get(i).equals(evidence.coordinateFrame().toMetric(source.coordinate())))coordinate=source.coordinate();
-            }
-            if(!(old instanceof DetachedNode node)||!node.coordinate().equals(coordinate))
-                after.put(key,new DetachedNode(key,coordinate,tags,false,true));
-            replacement.add(key);
-        }
-        var whole=new ArrayList<>(way.nodeKeys().subList(0,parent.originalRange().firstIndex()));whole.addAll(replacement);
-        whole.addAll(way.nodeKeys().subList(parent.originalRange().lastIndex()+1,way.nodeKeys().size()));
-        after.put(way.key(),new DetachedWay(way.key(),whole,way.tags(),false,true));
+        var graph=topologyDraft(parent,candidate,evidence,cancellation,smoothingParent!=null);
+        var after=graph.after();var replacement=graph.replacement();var disconnections=graph.disconnections();
         var topology=ModernSingleWayEditPlanAdapter.assessFinalTopology(root,after,evidence,root.request().permissions().ordinaryRadiusMeters());
+        if(smoothingParent!=null)topology=ModernSingleWayEditPlanAdapter.validateSmoothingContacts(smoothingParent,candidate,after,topology);
         for(String finding:topology.findingCodes())extra.add(new FinalGeometryEvaluator.Finding(
             finding.contains("review-required")?FinalGeometryEvaluator.FindingCode.INDEPENDENT_CONTEXT_CONTACT:FinalGeometryEvaluator.FindingCode.PREJUNCTION_CROSSING,
             finding.contains("review-required")?FinalGeometryEvaluator.Severity.REVIEW:FinalGeometryEvaluator.Severity.HARD_BLOCK,0,candidate.points().size()-1,0));
@@ -250,6 +245,45 @@ public final class ParentBackedComposer {
         }
         }
         cancellation.checkpoint();return new Assessed(candidate,quality,topology.findingCodes(),copies);
+    }
+    /** Identifies exact selected-parent contact endpoints before any quality evaluation of a proposal. */
+    Set<Integer> retainedSmoothingContactSlots(SmoothingModels.Parent parent,Composed baseline,CancellationProbe cancellation) {
+        if(!baseline.points().equals(parent.reference().points())||!baseline.pointIds().equals(parent.pointIds()))
+            throw new IllegalArgumentException("Smoothing contact retention requires the exact selected parent");
+        var root=parent.reference().root();
+        var graph=topologyDraft(parent.reference(),baseline,parent.evidence(),cancellation,true);
+        var measured=ModernSingleWayEditPlanAdapter.assessFinalTopology(root,graph.after(),parent.evidence(),
+                root.request().permissions().ordinaryRadiusMeters());
+        return ModernSingleWayEditPlanAdapter.retainedSmoothingContactSlots(parent,baseline,graph.after(),measured);
+    }
+    private record TopologyDraft(Map<PrimitiveKey,DetachedPrimitive> after,List<PrimitiveKey> replacement,
+            SharedNodeDisconnectionPlanner.Authority disconnections) { }
+    private static TopologyDraft topologyDraft(ParentTraceReference parent,Composed candidate,
+            EvidenceSnapshot evidence,CancellationProbe cancellation,boolean smoothing) {
+        var root=parent.root();
+        var way=(DetachedWay)root.network().primitives().get(root.request().selectedWayKey());
+        var after=new LinkedHashMap<>(root.network().primitives());var replacement=new ArrayList<PrimitiveKey>();
+        var disconnections=SharedNodeDisconnectionPlanner.forRequest(root.request(),root.network());
+        for(int i=0;i<candidate.points().size();i++) {
+            PostprocessingValidationWork.visit();
+            cancellation.checkpoint();var id=candidate.pointIds().get(i);
+            var key=smoothing?ModernSingleWayEditPlanAdapter.smoothingSlotKey(id):
+                    id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing?disconnections.destinationKey(existing):PrimitiveKey.planned(PrimitiveKey.Type.NODE,i+1);
+            var old=after.get(key);if(!(id instanceof FinalRoutePointId.ExistingWayNodeOccurrence)&&old!=null)throw new IllegalArgumentException("Generated topology identity collision");
+            var tags=old instanceof DetachedNode node?node.tags():Map.<String,String>of();
+            var coordinate=evidence.coordinateFrame().toGeographic(candidate.points().get(i));
+            if(id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing) {
+                var source=(DetachedNode)root.network().primitives().get(existing.nodeKey());
+                if(candidate.points().get(i).equals(evidence.coordinateFrame().toMetric(source.coordinate())))coordinate=source.coordinate();
+            }
+            if(!(old instanceof DetachedNode node)||!node.coordinate().equals(coordinate))
+                after.put(key,new DetachedNode(key,coordinate,tags,false,true));
+            replacement.add(key);
+        }
+        var whole=new ArrayList<>(way.nodeKeys().subList(0,parent.originalRange().firstIndex()));whole.addAll(replacement);
+        whole.addAll(way.nodeKeys().subList(parent.originalRange().lastIndex()+1,way.nodeKeys().size()));
+        after.put(way.key(),new DetachedWay(way.key(),whole,way.tags(),false,true));
+        return new TopologyDraft(after,replacement,disconnections);
     }
     private static double distanceToPolyline(MetricPoint point,List<MetricPoint> polyline) {
         double best=Double.POSITIVE_INFINITY;
@@ -276,11 +310,24 @@ public final class ParentBackedComposer {
                 PostprocessingValidationWork.visit();final int current=occurrence;
                 var arcs=candidate.correspondence().stream().peek(value->PostprocessingValidationWork.visit()).filter(a->a.originalOccurrence()==current).toList();
                 if(arcs.size()!=1)throw new IllegalArgumentException("Frozen occurrence correspondence is unavailable");
-                var arc=arcs.get(0);int vertex=arc.fraction()==0?arc.parentEdge():arc.fraction()==1?arc.parentEdge()+1:-1;
-                var id=new FinalRoutePointId.ExistingWayNodeOccurrence(way.key(),way.nodeKeys().get(occurrence),occurrence);
-                if(vertex<0||vertex>=candidate.pointIds().size()||!id.equals(candidate.pointIds().get(vertex))
-                        ||!parent.occurrencePosition(occurrence).equals(candidate.assignments().get(id)))
+                var arc=arcs.get(0);
+                var expectedPosition=parent.occurrencePosition(occurrence);
+                if(arc.parentEdge()>=candidate.points().size()-1
+                        ||!expectedPosition.equals(ParentTraceReference.interpolate(candidate.points().get(arc.parentEdge()),
+                                candidate.points().get(arc.parentEdge()+1),arc.fraction())))
                     throw new IllegalArgumentException("Final composition changed a frozen occurrence assignment");
+                var key=way.nodeKeys().get(occurrence);
+                // The Precise parent may have removed an ordinary original vertex already.
+                // Its exact arc position and curve still have to match. The captured
+                // protection contract and Move mode additionally require the original ID.
+                boolean needsOriginalId=parent.root().request().geometryMode()==AlignmentMode.MOVE_EXISTING_NODES
+                        ||!parent.root().network().closure().removableExistingNodeKeys().contains(key);
+                if(needsOriginalId) {
+                    int vertex=arc.fraction()==0?arc.parentEdge():arc.fraction()==1?arc.parentEdge()+1:-1;
+                    var id=new FinalRoutePointId.ExistingWayNodeOccurrence(way.key(),key,occurrence);
+                    if(vertex<0||!id.equals(candidate.pointIds().get(vertex))||!expectedPosition.equals(candidate.assignments().get(id)))
+                        throw new IllegalArgumentException("Final composition changed a mandatory frozen node identity");
+                }
             }
         }
     }
