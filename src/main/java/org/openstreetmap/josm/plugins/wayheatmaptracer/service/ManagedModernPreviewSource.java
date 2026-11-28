@@ -23,6 +23,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRasterGrid;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.MetricCorridorRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CancellationToken;
@@ -162,11 +163,15 @@ public final class ManagedModernPreviewSource {
         private final Map<Integer, ZoomReceipt> zoomReceipts;
         private AcquisitionProof(TileFetchCoordinator owner, Map<String, Raster> rasters,
                 AlignmentTileSourcePlan plan, Map<Integer, ZoomReceipt> zoomReceipts) {
+            this(owner, rasters, plan, zoomReceipts, null);
+        }
+        private AcquisitionProof(TileFetchCoordinator owner, Map<String, Raster> rasters,
+                AlignmentTileSourcePlan plan, Map<Integer, ZoomReceipt> zoomReceipts, GeometryWorkContext work) {
             this.owner = owner;
             this.rasters = Map.copyOf(rasters);
             this.plan = plan;
             this.zoomReceipts = Map.copyOf(zoomReceipts);
-            this.rasterFingerprint = SourceRasters.fingerprint(rasters);
+            this.rasterFingerprint = SourceRasters.fingerprint(rasters, work);
         }
         private boolean matches(Map<String, Raster> candidate, AlignmentTileSourcePlan candidatePlan) {
             return matchesReferences(candidate, candidatePlan)
@@ -207,6 +212,11 @@ public final class ManagedModernPreviewSource {
         /** Maps this one native palette raster before any geometry extraction. */
         public double[] scalarValues(String mapping, IntensitySamplingMode samplingMode,
                 CancellationProbe cancellation) {
+            return scalarValues(mapping, samplingMode, cancellation, null);
+        }
+
+        public double[] scalarValues(String mapping, IntensitySamplingMode samplingMode,
+                CancellationProbe cancellation, GeometryWorkContext work) {
             Objects.requireNonNull(cancellation, "cancellation");
             IntensitySamplingMode effective = samplingMode == null
                     ? IntensitySamplingMode.COLOR_MAPPING : samplingMode;
@@ -221,6 +231,9 @@ public final class ManagedModernPreviewSource {
             for (int y = 0; y < image.getHeight(); y++) {
                 cancellation.checkpoint();
                 for (int x = 0; x < image.getWidth(); x++) {
+                    if (work != null && x % 256 == 0) {
+                        work.visit(GeometryWorkContext.Kind.MAP, Math.min(256, image.getWidth() - x));
+                    }
                     int index = y * image.getWidth() + x;
                     if (!validity[index]) continue;
                     int argb = image.getRGB(x, y);
@@ -324,6 +337,10 @@ public final class ManagedModernPreviewSource {
                     || proof == null || !proof.matches(palettes, plan)) {
                 throw new IllegalStateException("Complete managed all-color evidence is unavailable");
             }
+            return mapAggregate(cancellation, null);
+        }
+
+        private double[] mapAggregate(CancellationProbe cancellation, GeometryWorkContext work) {
             Raster selected = selectedRaster();
             Map<String, BufferedImage> images = new LinkedHashMap<>();
             palettes.forEach((palette, raster) -> images.put(palette, raster.image()));
@@ -332,6 +349,10 @@ public final class ManagedModernPreviewSource {
             for (int y = 0; y < selected.image().getHeight(); y++) {
                 cancellation.checkpoint();
                 for (int x = 0; x < selected.image().getWidth(); x++) {
+                    if (work != null && x % 32 == 0) {
+                        work.visit(GeometryWorkContext.Kind.MAP,
+                                (long) palettes.size() * Math.min(32, selected.image().getWidth() - x));
+                    }
                     values[y * selected.image().getWidth() + x] =
                             RenderedHeatmapSampler.aggregatedSourceIntensityAt(images, x, y);
                 }
@@ -340,6 +361,10 @@ public final class ManagedModernPreviewSource {
         }
 
         private static byte[] fingerprint(Map<String, Raster> rasters) {
+            return fingerprint(rasters, null);
+        }
+
+        private static byte[] fingerprint(Map<String, Raster> rasters, GeometryWorkContext work) {
             try {
                 MessageDigest digest = MessageDigest.getInstance("SHA-256");
                 for (String palette : rasters.keySet().stream().sorted().toList()) {
@@ -348,11 +373,15 @@ public final class ManagedModernPreviewSource {
                     BufferedImage image = raster.image();
                     int[] row = new int[image.getWidth()];
                     ByteBuffer bytes = ByteBuffer.allocate(Math.multiplyExact(image.getWidth(), 4));
-                    boolean[] support = raster.validity();
+                    boolean[] support = raster.validity;
                     for (int y = 0; y < image.getHeight(); y++) {
-                        image.getRGB(0, y, image.getWidth(), 1, row, 0, image.getWidth());
                         bytes.clear();
-                        for (int argb : row) bytes.putInt(argb);
+                        for (int x = 0; x < image.getWidth(); x += 256) {
+                            int length = Math.min(256, image.getWidth() - x);
+                            if (work != null) work.visit(GeometryWorkContext.Kind.HASH, length);
+                            image.getRGB(x, y, length, 1, row, x, image.getWidth());
+                            for (int column = x; column < x + length; column++) bytes.putInt(row[column]);
+                        }
                         digest.update(bytes.array());
                         int start = y * image.getWidth();
                         for (int x = 0; x < image.getWidth(); x++) {
@@ -711,14 +740,14 @@ public final class ManagedModernPreviewSource {
         private RefinementSources(TileFetchCoordinator owner,Request request,Map<String,SourceRasters> sources,
                 Map<String,RefinementStatus> outcomes,SourceRasters aggregate,
                 org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner memory,
-                RefinementWorkReceipt work,Map<String,Map<Integer,ZoomReceipt>> receipts) {
+                RefinementWorkReceipt work,Map<String,Map<Integer,ZoomReceipt>> receipts,GeometryWorkContext geometryWork) {
             this.work=work;var frozen=new LinkedHashMap<String,Map<Integer,ZoomReceipt>>();
             receipts.forEach((p,r)->frozen.put(p,Map.copyOf(r)));this.receipts=Collections.unmodifiableMap(frozen);
             this.owner=owner;this.request=request;this.memory=memory;
             this.sources=Collections.unmodifiableMap(new LinkedHashMap<>(sources));
             this.outcomes=Collections.unmodifiableMap(new LinkedHashMap<>(outcomes));this.aggregate=aggregate;
             var digests=new LinkedHashMap<String,byte[]>();
-            sources.forEach((palette,value)->digests.put(palette,SourceRasters.fingerprint(value.palettes())));
+            sources.forEach((palette,value)->digests.put(palette,SourceRasters.fingerprint(value.palettes(),geometryWork)));
             fingerprints=Collections.unmodifiableMap(digests);
         }
         public Map<String,RefinementStatus> sourceOutcomes(){return outcomes;}
@@ -740,6 +769,50 @@ public final class ManagedModernPreviewSource {
             return value.selectedRaster();
         }
         public boolean completeAggregate(){return aggregate!=null&&isCurrent(owner)&&aggregate.provenCompleteAggregate(owner);}
+        public boolean aggregateReceiptsComplete(TileFetchCoordinator actualOwner) {
+            return isCurrent(actualOwner) && aggregate != null && aggregate.proof != null
+                    && aggregate.proof.matchesReferences(aggregate.palettes, aggregate.plan);
+        }
+
+        public final class VerifiedInputs {
+            private final Map<String, Raster> rasters;
+            private final boolean allColors;
+
+            private VerifiedInputs(Map<String, Raster> rasters, boolean allColors) {
+                this.rasters = Collections.unmodifiableMap(rasters);
+                this.allColors = allColors;
+            }
+
+            public Raster raster(String name) {
+                return Objects.requireNonNull(rasters.get(name), "Verified refinement palette unavailable");
+            }
+
+            public double[] aggregateScalars(CancellationProbe cancellation, GeometryWorkContext work) {
+                if (!allColors || !aggregateReceiptsComplete(owner)) {
+                    throw new IllegalStateException("Complete refinement aggregate unavailable");
+                }
+                return aggregate.mapAggregate(cancellation, work);
+            }
+        }
+
+        public VerifiedInputs verifiedInputs(TileFetchCoordinator actualOwner, String palette,
+                boolean allColors, GeometryWorkContext work) {
+            if (!isCurrent(actualOwner)) throw new IllegalStateException("Refinement source owner or generation is stale");
+            if (allColors && !aggregateReceiptsComplete(actualOwner)) {
+                throw new IllegalStateException("Complete refinement aggregate unavailable");
+            }
+            var inputs = new LinkedHashMap<String, Raster>();
+            for (String name : allColors ? BASE_PALETTES : List.of(palette)) {
+                var source = sources.get(name);
+                if (source == null) throw new IllegalArgumentException("Refinement palette unavailable");
+                if (!MessageDigest.isEqual(fingerprints.get(name), SourceRasters.fingerprint(source.palettes(), work))) {
+                    throw new IllegalStateException("Refinement source pixels changed after acquisition");
+                }
+                inputs.put(name, source.selectedRaster());
+            }
+            if (!isCurrent(actualOwner)) throw new IllegalStateException("Refinement source generation changed");
+            return new VerifiedInputs(inputs, allColors);
+        }
         public double[] aggregateScalars(CancellationProbe cancellation) {
             requireCurrent(owner);
             if(!completeAggregate())throw new IllegalStateException("Complete refinement aggregate unavailable");
@@ -775,6 +848,14 @@ public final class ManagedModernPreviewSource {
             CredentialSnapshot credentials,CancellationProbe cancellation,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner caller,
             RefinementSourceBudget budget,MetricRasterGrid imageGrid) {
+        return acquireRefinementSources(request,zooms,aggregateRequested,credentials,cancellation,caller,budget,imageGrid,null);
+    }
+
+    public org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted<RefinementSources>
+            acquireRefinementSources(Request request,Set<Integer> zooms,boolean aggregateRequested,
+            CredentialSnapshot credentials,CancellationProbe cancellation,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner caller,
+            RefinementSourceBudget budget,MetricRasterGrid imageGrid,GeometryWorkContext work) {
         if(javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Refinement acquisition requires worker thread");
         Objects.requireNonNull(caller);Objects.requireNonNull(cancellation);Objects.requireNonNull(credentials);Objects.requireNonNull(budget);
         zooms=Set.copyOf(zooms);
@@ -854,11 +935,11 @@ public final class ManagedModernPreviewSource {
                     digest=combineDigests(digest,java.util.HexFormat.of().parseHex(acquired.get(p).zoomReceipts().get(zoom).contentSupportDigest()));
                     receipts.put(zoom,new ZoomReceipt(zoom,aggregatePlan.orderedColors(),rasters.keySet(),ZoomAvailability.COMPLETE,
                         null,null,request.generation(),request.sourceIdentity(),digest));}
-                var proof=new AcquisitionProof(coordinator,rasters,aggregatePlan,receipts);
+                var proof=new AcquisitionProof(coordinator,rasters,aggregatePlan,receipts,work);
                 aggregate=new SourceRasters(rasters,aggregatePlan,AggregateAvailability.COMPLETE,null,proof,receipts);
             }
             cancellation.checkpoint();requireActiveGeneration(request);
-            var result=new RefinementSources(coordinator,request,acquired,outcomes,aggregate,memory,budget.receipt(),sourceReceipts);
+            var result=new RefinementSources(coordinator,request,acquired,outcomes,aggregate,memory,budget.receipt(),sourceReceipts,work);
             reservation.adopt(result);
             return new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted<>(result,memory);
             } // All inner acquisition, validation and fingerprint/proof calls have returned.
@@ -870,6 +951,7 @@ public final class ManagedModernPreviewSource {
                 if(activePalette!=null)outcomes.put(activePalette,RefinementStatus.UNAVAILABLE);
             }
             memory.close();
+            if(failure instanceof GeometryWorkContext.LimitReached)throw failure;
             if(failure instanceof java.util.concurrent.CancellationException)
                 throw new RefinementCancelled(new RefinementFailureReceipt(RefinementAbortReason.CANCELLED,request.requiredPalettes(),outcomes,budget.receipt()));
             if(failure instanceof IllegalStateException)

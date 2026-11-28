@@ -38,7 +38,7 @@ final class LegacyRefinementSourceContext implements RefinementSourceContext {
             AttemptMemoryLedger.Owner owner,CancellationProbe cancellation) {
         facts=Optional.empty();requireCurrent();
         if(originalSource.managed()) {
-            var acquired=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,credentials,cancellation,owner);
+            var acquired=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquireMetered(plan,credentials,cancellation,owner,work);
             return RefinementPipeline.managedSources(acquired.value(),coordinator,work);
         }
         var metadata=((LegacyRefinementBootstrap.VisibleOriginalSource)originalSource).metadata();

@@ -246,15 +246,15 @@ public final class ParentBackedComposer {
         }
         cancellation.checkpoint();return new Assessed(candidate,quality,topology.findingCodes(),copies);
     }
-    /** Identifies exact selected-parent contact endpoints before any quality evaluation of a proposal. */
-    Set<Integer> retainedSmoothingContactSlots(SmoothingModels.Parent parent,Composed baseline,CancellationProbe cancellation) {
-        if(!baseline.points().equals(parent.reference().points())||!baseline.pointIds().equals(parent.pointIds()))
-            throw new IllegalArgumentException("Smoothing contact retention requires the exact selected parent");
+    /** Measures only actual graph contacts before spending quality work on a smoothing proposal. */
+    Set<Integer> smoothingContactRollbackSlots(SmoothingModels.Parent parent,Composed proposed,CancellationProbe cancellation) {
+        if(proposed.points().size()!=parent.reference().points().size()||!proposed.pointIds().equals(parent.pointIds()))
+            throw new IllegalArgumentException("Smoothing contact rollback requires the exact selected slots");
         var root=parent.reference().root();
-        var graph=topologyDraft(parent.reference(),baseline,parent.evidence(),cancellation,true);
+        var graph=topologyDraft(parent.reference(),proposed,parent.evidence(),cancellation,true);
         var measured=ModernSingleWayEditPlanAdapter.assessFinalTopology(root,graph.after(),parent.evidence(),
                 root.request().permissions().ordinaryRadiusMeters());
-        return ModernSingleWayEditPlanAdapter.retainedSmoothingContactSlots(parent,baseline,graph.after(),measured);
+        return ModernSingleWayEditPlanAdapter.smoothingContactRollbackSlots(parent,proposed,graph.after(),measured);
     }
     private record TopologyDraft(Map<PrimitiveKey,DetachedPrimitive> after,List<PrimitiveKey> replacement,
             SharedNodeDisconnectionPlanner.Authority disconnections) { }

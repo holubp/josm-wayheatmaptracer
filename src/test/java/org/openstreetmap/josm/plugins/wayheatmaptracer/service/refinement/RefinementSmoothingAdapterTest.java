@@ -228,7 +228,7 @@ class RefinementSmoothingAdapterTest {
         }
     }
 
-    @Test void aNewReadonlyContextContactCannotBePromotedToAReviewOnlySmoothPlan() {
+    @Test void aNewReadonlyContextContactIsRemovedWhileDisjointSlotsStillChange() {
         var old=RefinementParentFixtures.authority(AlignmentMode.MOVE_EXISTING_NODES);var frame=old.evidence().coordinateFrame();var original=old.network();
         var values=new LinkedHashMap<>(original.primitives());var first=PrimitiveKey.existing(PrimitiveKey.Type.NODE,99);var last=PrimitiveKey.existing(PrimitiveKey.Type.NODE,100);
         values.put(first,new DetachedNode(first,frame.toGeographic(new MetricPoint(50,52.5)),Map.of(),false,false));
@@ -243,8 +243,29 @@ class RefinementSmoothingAdapterTest {
             var work=work(owner);var selected=RefinementParentFixtures.parent(root,"blue");var source=SmoothingParentBinderTest.source(root,"blue",owner,()->{});var parent=bind(root,selected,source,TrackerMode.LEGACY_V02,work);
             var composer=new ParentBackedComposer();var unchanged=composer.compose("valid-selected-parent",parent.reference(),List.of());
             assertTrue(composer.assess(parent.reference(),unchanged,parent.evidence(),"native",CancellationProbe.NONE).topologyFindings().isEmpty(),"The selected parent must really be contact-free");
+            var ref=parent.baselineReference();
+            var policy=new CaptureScaleFairingPolicy(parent.frame().inputHash(),parent.frame().imageIdentity(),
+                    ref.width(),ref.height(),ref.transform(),2,1);
+            try(var proposal=LongScaleNormalFairing.requestCaptureScale(new LongScaleNormalFairing.CaptureRequest(
+                    parent.smoothingBasis(),policy,Long.MAX_VALUE,AttemptMemoryLedger.MAX_BYTES),CancellationProbe.NONE,work)) {
+                var points=proposal.result().requestedPoints().orElseThrow();
+                var assignments=new LinkedHashMap<FinalRoutePointId,MetricPoint>();
+                for(int i=0;i<points.size();i++)assignments.put(parent.pointIds().get(i),points.get(i));
+                var proposed=new ParentBackedComposer.Composed("new-contact-proposal",points,parent.pointIds(),
+                        assignments,parent.reference().correspondence(),List.of());
+                var measured=composer.assessPostprocessed(parent.reference(),proposed,parent.evidence(),parent.image(),
+                        work,CancellationProbe.NONE);
+                assertTrue(measured.topologyFindings().contains(ContextContactAssessment.REVIEW_CODE),
+                        "The raw Gaussian proposal truly introduces a contact");
+            }
             try(var result=new RefinementSmoothingAdapter().smooth(parent,SmoothingModels.Preset.STRONG_2PX,work,CancellationProbe.NONE)) {
-                assertEquals(RefinementSmoothingAdapter.Outcome.RETAINED_UNSAFE,result.receipt().outcome());assertTrue(result.plan().isEmpty());assertEquals(parent.reference().points(),result.points());
+                assertEquals(RefinementSmoothingAdapter.Outcome.CHANGED,result.receipt().outcome());
+                assertEquals(parent.reference().points().get(1),result.points().get(1));
+                assertNotEquals(parent.reference().points().get(3),result.points().get(3));
+                var plan=result.plan().orElseThrow();
+                var actual=ModernSingleWayEditPlanAdapter.assessFinalTopology(plan,parent.evidence(),8);
+                assertTrue(actual.findingCodes().isEmpty());
+                assertTrue(actual.contacts().isEmpty(),"The newly introduced contact must never reach the edit plan");
             }
         }
     }

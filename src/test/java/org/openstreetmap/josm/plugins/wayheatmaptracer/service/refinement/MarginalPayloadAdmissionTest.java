@@ -22,9 +22,12 @@ class MarginalPayloadAdmissionTest {
         var png=new ByteArrayOutputStream();ImageIO.write(image,"png",png);var bytes=png.toByteArray();var decoder=new TileDecoderClassifier();
         try(var coordinator=new TileFetchCoordinator((r,c)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",bytes,null,Duration.ZERO,""),new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults());var owner=AttemptMemoryLedger.production().rootOwner()) {
             coordinator.updateActiveGeneration(new ManagedTileGeneration(9));var capture=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,owner).value();
-            var evidence=capture.evidence("blue",CancellationProbe.NONE);var mapped=capture.mappingEvidence("hot-corridor",CancellationProbe.NONE);
+            var alternative=RefinementAcquisitionTest.selectedPlan(plan,"blue","hot-corridor",false);
+            var otherCapture=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator)
+                    .acquire(alternative,CredentialSnapshot.fromConfig(null),CancellationProbe.NONE,owner).value();
+            var evidence=capture.evidence("blue",CancellationProbe.NONE);var mapped=otherCapture.mappingEvidence("hot-corridor",CancellationProbe.NONE);
             var first=capture.retentionDescriptor(plan.requests().stream().filter(s->s.palette().equals("blue")&&s.mapping().equals("blue")).findFirst().orElseThrow(),evidence);
-            var other=capture.retentionDescriptor(plan.requests().stream().filter(s->s.mapping().equals("hot-corridor")).findFirst().orElseThrow(),mapped);assertNotSame(first.evidence(),other.evidence());
+            var other=otherCapture.retentionDescriptor(alternative.requests().get(0),mapped);assertNotSame(first.evidence(),other.evidence());
             long group=first.charges().values().stream().mapToLong(Long::longValue).sum();long metadata=4096;
             var a=inventory(first,metadata);var b=inventory(first,metadata);var distinct=inventory(other,metadata);
             var union=new MarginalPayloadAdmission(List.of(),group+2*metadata,CancellationProbe.NONE);

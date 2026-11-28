@@ -174,12 +174,23 @@ class V022LiveBPreviewServiceTest {
                     run.pipeline().inference().engine() == TrackerMode.PROBABILISTIC));
             var nativeChoices=service.adaptChoices(computed,p->ProjectionRegistry.getProjection().latlon2eastNorth(new LatLon(p.latitudeDegrees(),p.longitudeDegrees())));
             var root=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ModernReviewRoot[1];
-            SwingUtilities.invokeAndWait(()->root[0]=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ModernReviewRoot.fromFullChoices(fixture.dataSet(),fixture.selection(),new AlignmentConfig(requested,GeometryCleanupConfig.disabled()),nativeChoices,coordinator,()->{}));
+            var selectedChoice=nativeChoices.stream().filter(choice->choice.owner()!=computed).findFirst().orElseThrow();
+            SwingUtilities.invokeAndWait(()->{
+                root[0]=org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ModernReviewRoot.fromFullChoices(fixture.dataSet(),fixture.selection(),new AlignmentConfig(requested,GeometryCleanupConfig.disabled()),nativeChoices,coordinator,()->{});
+                root[0].select(selectedChoice.candidate());
+            });
             try(var memory=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production().rootOwner()) {
                 var work=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(8_000_000,org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,memory);
                 try(var prepared=new ModernRefinementBootstrap().complete(root[0],work)) {
-                    assertEquals(nativeChoices.size(),prepared.root().stage().candidates().size());
-                    var aggregate=prepared.root().stage().candidates().stream().map(c->c.payload().nativeReview().orElseThrow()).flatMap(n->n.retainedSources().values().stream()).filter(s->s.source().aggregate()).findFirst().orElseThrow();
+                    assertSame(selectedChoice.owner().request(),prepared.root().authority().request());
+                    assertEquals(1,prepared.root().stage().candidates().size());
+                    assertEquals(nativeChoices.size(),root[0].choices().size());
+                    assertThrows(IllegalArgumentException.class,()->prepared.memory().retainIfAbsent(computed));
+                    var stage=prepared.root().stage();
+                    var candidate=stage.candidates().get(0);
+                    var parent=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ParentReferenceBinder().bind(prepared.root().authority(),stage.id(),candidate);
+                    assertEquals("all-colors-combined",parent.selectedSource().mapping());
+                    var aggregate=candidate.payload().nativeReview().orElseThrow().retainedSources().get(parent.selectedSource());
                     assertEquals(RasterEvidenceCapture.ORIGINAL_ARGB_SET_PROTOCOL,aggregate.inputHashProtocol());
                     assertTrue(aggregate.hasFactualInputHash());assertSame(sources,captured.sourceRasters());
                 }

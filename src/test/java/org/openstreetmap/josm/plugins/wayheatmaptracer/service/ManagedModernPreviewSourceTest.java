@@ -479,6 +479,26 @@ class ManagedModernPreviewSourceTest {
     }
 
     @Test
+    void selectedScalarMappingChargesItsExactRasterWorkWithoutChangingValues() {
+        var image = new BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB);
+        image.setRGB(0, 0, 0xffff0000);
+        var raster = new ManagedModernPreviewSource.Raster(image, new boolean[] {true, true, false, false},
+                SupportedInputRasterTransform.webMercator(1, 0.0, 0.0, 2.0),
+                "blue", 1, "selected-mapping", new ManagedTileGeneration(3));
+        var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            var intensity = IntensitySamplingMode.COLOR_MAPPING;
+            var work = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(
+                    4, Long.MAX_VALUE, Long.MAX_VALUE, () -> false, owner);
+            org.junit.jupiter.api.Assertions.assertArrayEquals(raster.scalarValues("hot", intensity, () -> false),
+                    raster.scalarValues("hot", intensity, () -> false, work));
+            assertEquals(4, work.visits());
+            assertThrows(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.LimitReached.class,
+                    () -> raster.scalarValues("hot", intensity, () -> false, work));
+        }
+    }
+
+    @Test
     void namedBlueredScalarProducerMustNormalizeItsDocumentedRedBoost() {
         BufferedImage image = new BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB);
         for (int y = 0; y < 2; y++) for (int x = 0; x < 2; x++) image.setRGB(x, y, 0xffff2200);

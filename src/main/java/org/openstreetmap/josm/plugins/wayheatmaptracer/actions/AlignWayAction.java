@@ -1199,6 +1199,10 @@ public class AlignWayAction extends JosmAction {
                 confirm.setEnabled(!busy&&plan.filter(value->value.validation().disposition()==ValidationReport.Disposition.REVIEW_REQUIRED).isPresent()&&!workflow.canApplyNative());
                 apply.setEnabled(!busy&&!applying[0]&&workflow.canApplyNative());disconnect.setEnabled(false);return;
             }
+            sourceChoices.setVisible(sourceChoices.getItemCount()>1);intervalScroll.setVisible(true);qualityScroll.setVisible(true);
+            sourceChoices.setEnabled(true);
+            for(int i=0;i<choices.size();i++)choices.get(i).setEnabled(!state.batch().runs().get(i).routes().isEmpty());
+            if(refinement[0]!=null)refinement[0].controls().externalRootSelection(true);
             FixedIntervalEditPlanComposer.Assessment assessment = state.assessment();
             List<EastNorth> selectedPreview = assessment.selectedWayPreview().stream()
                     .map(AlignWayAction::projectGeographic).toList();
@@ -1430,6 +1434,8 @@ public class AlignWayAction extends JosmAction {
                     ()->requireLiveBSourceOwnerCurrent(dataSet,imageryLayer,slideConfig,persistedSlideConfig,tracingAtCapture,computed.captured(),previewSourceOwner));
                 refinement[0]=new LegacyRefinementWorkflow(refinementRoot[0],previewSourceOwner,candidate->{
                     state.restoreSelection(refinementRoot[0].retainedIntervalSelection(refinementRoot[0].choiceId(candidate)));refresh.run();
+                    if(!refinement[0].handlesRuntimeDiagnostics())
+                        recordIntervalDiagnostics(computed,state,IntervalArtifactStatus.PREVIEW,diagnosticAttemptIdentity);
                 },displayed->{
                     showNativeRefinementDisplay(selection,displayed,computed.captured().projectionCode());
                 },message->{
@@ -1908,7 +1914,8 @@ public class AlignWayAction extends JosmAction {
                     ? "MANUAL_JUNCTION"
                     : plan[0] == null ? disposition.name()
                     : plan[0].validation().disposition().name();
-            recordModernDiagnostics(computed, run, modernPreviewStatus(
+            if(refinement[0]==null||!refinement[0].handlesRuntimeDiagnostics())
+                recordModernDiagnostics(computed, run, modernPreviewStatus(
                     run.pipeline().inference().status(), displayedDisposition),
                     routeIndex, plan[0], false, false, diagnosticAttemptIdentity,
                     assessment[0] == null ? null : assessment[0].junctionReason(),
@@ -1952,7 +1959,7 @@ public class AlignWayAction extends JosmAction {
             try {
                 if(refinementRoot[0]!=null)refinementRoot[0].select(previewChoices.get(Math.max(0,choices.getSelectedIndex())).candidate());
                 refresh.run();
-                if(refinement[0]!=null)refinement[0].refresh();
+                if(refinement[0]!=null)refinement[0].originalNativeSelectionPresented();
             } catch (RuntimeException exception) {
                 LiveBPreviewService.PreviewChoice failedChoice = previewChoices.get(
                         Math.max(0, choices.getSelectedIndex()));
@@ -2187,8 +2194,9 @@ public class AlignWayAction extends JosmAction {
                     },message->{
                         if(refinement[0]==null)return;
                         boolean nativeStage=refinement[0].nativeSelected(),busy=refinement[0].busy();
-                        refinement[0].controls().externalRootSelection(!nativeStage);
-                        choices.setVisible(!nativeStage&&candidates.size()>1);
+                        refinement[0].controls().externalRootSelection(refinement[0].atRoot());
+                        choices.setVisible(refinement[0].atRoot()&&candidates.size()>1);
+                        choices.setEnabled(!busy);
                         if(nativeStage) {
                             quality.setText(message);quality.setCaretPosition(0);
                             if(refinement[0].currentNoChangeRoot().isPresent())confirm.setEnabled(false);

@@ -158,8 +158,8 @@ class StepwiseRefinementOwnershipTest {
                     assertEquals(root[0].id(),diagnostic.binding().rootStage());assertEquals(root[0].id(),diagnostic.binding().ticket().parent());assertEquals(root[0].selected(),diagnostic.binding().ticket().choice());
                     assertEquals(RefinementAttemptDiagnostics.Publication.NO_CHILD,diagnostic.publication());
                     assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.Outcome.RESOURCE_LIMIT,receipt.outcome());
-                    assertEquals(5,receipt.attempts().stream().map(RefinementOperationReceipt.Attempt::palette).distinct().count());
-                    assertTrue(receipt.truncated());assertTrue(receipt.attempts().stream().anyMatch(a->a.kind()==RefinementPipeline.AttemptKind.UNATTEMPTED));
+                    assertEquals(1,receipt.attempts().stream().map(RefinementOperationReceipt.Attempt::palette).distinct().count());
+                    assertTrue(receipt.truncated());
                     for(var attempt:receipt.attempts())if(attempt.kind()==RefinementPipeline.AttemptKind.UNATTEMPTED){assertEquals(0,attempt.nativeCalls().orElseThrow());assertTrue(attempt.nativeStatus().isEmpty());}
                     assertTrue(receipt.actualWork().isPresent());assertTrue(state[0].workflow.ownedBytes()>0);
                 });

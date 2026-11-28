@@ -237,7 +237,8 @@ class VisibleRefinementWorkflowTest {
                     assertEquals("legacy-choice-1",workflow[0].currentStage().parentChoice().orElseThrow().value());
                     assertFalse(nativeReview.retainedSources().isEmpty());nativeReview.retainedSources().values().forEach(source->{source.requireCurrent();assertEquals("hot",source.source().palette());assertEquals(200,source.referenceWidth());assertEquals(200,source.referenceHeight());});
                     var receipt=nativeReview.operation().orElseThrow();assertTrue(receipt.actualWork().isPresent());
-                    assertEquals(4,receipt.attempts().stream().filter(attempt->attempt.kind()==RefinementPipeline.AttemptKind.UNAVAILABLE).count());
+                    assertEquals(1,receipt.attempts().size());
+                    assertEquals("hot",receipt.attempts().get(0).palette());
                     assertEquals(1,receipt.attempts().stream().filter(attempt->attempt.nativeCalls().orElse(0)>0).count());
                     assertVisibleExport(workflow[0],temp.resolve("current-visible.zip"));
                     int calls=workflow[0].actualNativeCalls();((JButton)find(workflow[0].controls(),"undo")).doClick();assertEquals("legacy-choice-1",workflow[0].selectedChoiceIdentity());((JButton)find(workflow[0].controls(),"redo")).doClick();assertEquals(calls,workflow[0].actualNativeCalls());

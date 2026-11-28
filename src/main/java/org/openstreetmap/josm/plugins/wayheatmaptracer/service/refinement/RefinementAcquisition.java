@@ -175,6 +175,16 @@ public final class RefinementAcquisition {
     /** Allows the pipeline to pass its one remaining source/deadline envelope without restarting it. */
     public Accounted<Capture> acquire(RefinementSourcePlanner.Plan plan,CredentialSnapshot credentials,
             CancellationProbe cancellation,AttemptMemoryLedger.Owner owner,ManagedModernPreviewSource.RefinementSourceBudget budget) {
+        return acquire(plan,credentials,cancellation,owner,budget,null);
+    }
+    Accounted<Capture> acquireMetered(RefinementSourcePlanner.Plan plan,CredentialSnapshot credentials,
+            CancellationProbe cancellation,AttemptMemoryLedger.Owner owner,GeometryWorkContext work) {
+        return acquire(plan,credentials,cancellation,owner,new ManagedModernPreviewSource.RefinementSourceBudget(64,
+                Math.multiplyExact(64L,coordinator.maximumTransportBodyAllowancePerTile()),java.time.Instant.now().plusSeconds(30)),work);
+    }
+    private Accounted<Capture> acquire(RefinementSourcePlanner.Plan plan,CredentialSnapshot credentials,
+            CancellationProbe cancellation,AttemptMemoryLedger.Owner owner,ManagedModernPreviewSource.RefinementSourceBudget budget,
+            GeometryWorkContext work) {
         if(javax.swing.SwingUtilities.isEventDispatchThread())throw new IllegalStateException("Managed evidence acquisition requires worker thread");
         requirePlan(plan);
         if(!plan.settings().managed()||plan.acquiredPalettes().isEmpty())
@@ -194,9 +204,8 @@ public final class RefinementAcquisition {
             settings.inferenceZoom(),settings.generation(),radius,root.request().configuredSampleStepMeters(),root.sourceIdentity(),plan.acquiredPalettes());
         var stamp=coordinator.captureGenerationStamp(settings.generation());
         var acquired=source.acquireRefinementSources(request,new LinkedHashSet<>(List.of(settings.inferenceZoom(),settings.validationZoom())),
-            plan.aggregateRequested(),credentials,cancellation,operation,budget,grid);
-        acquired.value().requireCurrent(coordinator);
-        if(!coordinator.isCurrent(stamp))throw new IllegalStateException("Acquired source generation is stale");
+            plan.aggregateRequested(),credentials,cancellation,operation,budget,grid,work);
+        if(!acquired.value().isCurrent(coordinator)||!coordinator.isCurrent(stamp))throw new IllegalStateException("Acquired source generation is stale");
         var capture=new Capture(plan,acquired.value(),operation,coordinator,grid,geographic,stamp,acquired.owner());
         geometry.adopt(capture);
         return new Accounted<>(capture,operation);
@@ -232,7 +241,7 @@ public final class RefinementAcquisition {
             this.rasterOwner=rasterOwner;
             this.workReceipt=sources.workReceipt();
             this.acquiredPalettes=Set.copyOf(sources.palettes());
-            this.aggregateComplete=sources.completeAggregate();
+            this.aggregateComplete=sources.aggregateReceiptsComplete(coordinator);
             this.sourceOutcomes=sources.sourceOutcomes();
             this.sourceReceipts=sources.sourceReceipts();
         }
@@ -291,20 +300,20 @@ public final class RefinementAcquisition {
                     .orElseThrow(()->new IllegalArgumentException("Detector source was not requested"));
             cancellation.checkpoint();requireCurrent();
             if(sources==null)throw new IllegalStateException("Selected scalar source was already frozen");
-            sources.requireCurrent(coordinator);
             if(work!=null) {
                 if(!owner.sharesLedgerWith(work.owner()))throw new IllegalArgumentException("Original hash owner belongs to another attempt");
                 if(inputHashes==null){hashWork=work;inputHashes=new RasterEvidenceCapture.OriginalInputHashes(work);}else inputHashes.requireContext(work);
             }
-            var raster=sources.raster(palette,coordinator);
+            var inputs=sources.verifiedInputs(coordinator,palette,aggregate,work);
+            var raster=inputs.raster(palette);
             String inputHash="",inputHashProtocol="";
             if(work!=null) {
                 if(aggregate) {
                     var originals=new ArrayList<RasterEvidenceCapture.NamedOriginalRaster>();
-                    for(String name:RefinementSourcePlanner.BASE_PALETTES){var original=sources.raster(name,coordinator);originals.add(new RasterEvidenceCapture.NamedOriginalRaster(name,original.image(),original.transform()));}
+                    for(String name:RefinementSourcePlanner.BASE_PALETTES){var original=inputs.raster(name);originals.add(new RasterEvidenceCapture.NamedOriginalRaster(name,original.image(),original.transform()));}
                     inputHash=inputHashes.completeSet(sources,originals);inputHashProtocol=RasterEvidenceCapture.ORIGINAL_ARGB_SET_PROTOCOL;
                 }else{inputHash=inputHashes.single(raster.image(),raster.image());inputHashProtocol=RasterEvidenceCapture.ORIGINAL_ARGB_PROTOCOL;}
-                cancellation.checkpoint();requireCurrent();sources.requireCurrent(coordinator);
+                cancellation.checkpoint();requireCurrent();
             }
             var bounds=raster.transform().boundsForMetricCell(grid.coordinateFrame(),grid.footprint().polygons().get(0));
             if(bounds.minimumX()<0||bounds.minimumY()<0||bounds.maximumX()>=raster.image().getWidth()-1
@@ -319,7 +328,8 @@ public final class RefinementAcquisition {
             try(var scratch=work==null?owner.reserve(Math.addExact(1048576L,Math.multiplyExact(Math.addExact(input,output),96L)))
                     :work.reserveOn(owner,"refinement-scalar-inputs",callerArrays);
                     var retained=work==null?owner.reserve(retainedEvidenceBytes(plan,grid,mapping)):null) {
-                double[] scalar=aggregate?sources.aggregateScalars(cancellation):raster.scalarValues(mapping,plan.settings().intensity(),cancellation);
+                double[] scalar=aggregate?inputs.aggregateScalars(cancellation,work):raster.scalarValues(mapping,plan.settings().intensity(),cancellation,work);
+                if(work!=null)for(long start=0;start<input;start+=256)work.visit(GeometryWorkContext.Kind.COPY,Math.min(256,input-start));
                 boolean[] validity=raster.validity();
                 double pitch=ManagedModernPreviewSource.nativePitchMeters(raster.zoom(),grid.coordinateFrame().origin().latitudeDegrees());
                 var resolution=EvidenceResolution.nativeSource(pitch,grid.pitchMeters());
@@ -343,7 +353,7 @@ public final class RefinementAcquisition {
                     result=admitted.evidence();
                     backingBytes=admitted.retainedBytes();
                 }
-                cancellation.checkpoint();requireCurrent();sources.requireCurrent(coordinator);
+                cancellation.checkpoint();requireCurrent();sources.verifiedInputs(coordinator,palette,aggregate,work);
                 // Capture only the external generation owner, never the disposed five-palette acquisition.
                 var externalCoordinator=coordinator;var stamp=generationStamp;
                 var descriptor=new RetainedSmoothingSource(request,plan.settings().intensity(),"native",result,raster.transform(),

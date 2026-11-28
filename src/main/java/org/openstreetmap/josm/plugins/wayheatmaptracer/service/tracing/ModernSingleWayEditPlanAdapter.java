@@ -2399,21 +2399,22 @@ public final class ModernSingleWayEditPlanAdapter {
         for(var contact:measured.contacts()) {
             PostprocessingValidationWork.visit();
             if(contact.disposition()!=ContextContactAssessment.Disposition.REVIEW_REQUIRED)continue;
-            if(!isUnchangedSmoothingContact(parent,candidate,after,contact))return unprovedSmoothingContact(measured);
+            if(!hasExactSmoothingContactSlots(parent,candidate,after,contact)
+                    ||!unchangedSmoothingSlotEdge(parent,candidate,contact.routeSegmentIndex()))return unprovedSmoothingContact(measured);
             witnessed=true;
         }
         return witnessed?measured:unprovedSmoothingContact(measured);
     }
 
-    /** Admits only factual selected-parent slots; no proposed crossing can authorize retention. */
-    public static Set<Integer> retainedSmoothingContactSlots(SmoothingModels.Parent parent,
+    /** Finds fully attributed contact edges eligible for exact selected-slot retention. */
+    public static Set<Integer> smoothingContactRollbackSlots(SmoothingModels.Parent parent,
             ParentBackedComposer.Composed candidate,Map<PrimitiveKey,DetachedPrimitive> after,
             FinalTopologyAssessment measured) {
         var slots=new LinkedHashSet<Integer>();
         for(var contact:measured.contacts()) {
             PostprocessingValidationWork.visit();
             if(contact.disposition()==ContextContactAssessment.Disposition.REVIEW_REQUIRED
-                    &&isUnchangedSmoothingContact(parent,candidate,after,contact)) {
+                    &&hasExactSmoothingContactSlots(parent,candidate,after,contact)) {
                 slots.add(contact.routeSegmentIndex());
                 slots.add(contact.routeSegmentIndex()+1);
             }
@@ -2427,7 +2428,14 @@ public final class ModernSingleWayEditPlanAdapter {
         return new FinalTopologyAssessment(findings,measured.contacts());
     }
 
-    private static boolean isUnchangedSmoothingContact(SmoothingModels.Parent parent,
+    private static boolean unchangedSmoothingSlotEdge(SmoothingModels.Parent parent,
+            ParentBackedComposer.Composed candidate,int slot) {
+        var original=parent.reference().points();
+        return original.get(slot).equals(candidate.points().get(slot))
+                &&original.get(slot+1).equals(candidate.points().get(slot+1));
+    }
+
+    private static boolean hasExactSmoothingContactSlots(SmoothingModels.Parent parent,
             ParentBackedComposer.Composed candidate,Map<PrimitiveKey,DetachedPrimitive> after,
             ContextContactAssessment contact) {
         var root=parent.reference().root();
@@ -2446,11 +2454,10 @@ public final class ModernSingleWayEditPlanAdapter {
             PostprocessingValidationWork.visit();
             int slot=index+offset;
             var id=parent.pointIds().get(slot);
-            var expected=parent.reference().points().get(slot);
+            var expected=candidate.points().get(slot);
             var key=smoothingSlotKey(id);
             var contextKey=context.nodeKeys().get(contextIndex+offset);
-            if(!id.equals(candidate.pointIds().get(slot))||!expected.equals(candidate.points().get(slot))
-                    ||!key.equals(selected.nodeKeys().get(first+slot))
+            if(!id.equals(candidate.pointIds().get(slot))||!key.equals(selected.nodeKeys().get(first+slot))
                     ||!(after.get(key) instanceof DetachedNode actual)||!(before.get(contextKey) instanceof DetachedNode contextNode)
                     ||!contextNode.equals(after.get(contextKey)))return false;
             var frame=parent.evidence().coordinateFrame();

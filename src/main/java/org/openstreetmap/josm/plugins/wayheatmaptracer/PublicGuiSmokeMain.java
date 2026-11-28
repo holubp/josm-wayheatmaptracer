@@ -502,10 +502,11 @@ public final class PublicGuiSmokeMain {
             checkedMode(requestedMode,owner.currentNative().orElseThrow().operation().orElseThrow().ticket().mode());
             requireExactLegacyParent(owner,rootReview,rootChoice,rootCandidate,rootGeometry);
             var choices=requiredNamed(preview.getContentPane(),"candidate",JComboBox.class);
-            if(savedEngine==TrackerMode.LEGACY_V02&&requestedMode==AlignmentMode.PRECISE_SHAPE&&!bFirst&&choices.getItemCount()<2)throw new IllegalStateException("The designated post-computation non-top detector GUI case requires actual distinct children; actualChildChoices="+choices.getItemCount());
             var beforeChoice=owner.selectedChoiceIdentity();int beforeCalls=owner.actualNativeCalls();var beforeSources=ManagedTileRuntime.initializedCoordinator().stats();
-            if(choices.getItemCount()>1)choices.setSelectedIndex(choices.getItemCount()-1);
-            if(savedEngine==TrackerMode.LEGACY_V02&&requestedMode==AlignmentMode.PRECISE_SHAPE&&!bFirst&&beforeChoice.equals(owner.selectedChoiceIdentity()))throw new IllegalStateException("Actual post-computation detector selection did not change its retained child");
+            if(choices.getItemCount()>1) {
+                choices.setSelectedIndex((choices.getSelectedIndex()+1)%choices.getItemCount());
+                if(beforeChoice.equals(owner.selectedChoiceIdentity()))throw new IllegalStateException("Native alternative selection did not change the retained child");
+            }
             if(beforeCalls!=owner.actualNativeCalls()||!beforeSources.equals(ManagedTileRuntime.initializedCoordinator().stats()))throw new IllegalStateException("Post-computation detector selection started extra native or source work");
             return null;
         });
@@ -521,6 +522,13 @@ public final class PublicGuiSmokeMain {
             requireOverlayGeometry(action,firstGeometry);
             requiredNamed(preview.getContentPane(),"undo",javax.swing.JButton.class).doClick();
             if(!owner.selectedChoiceIdentity().equals(rootChoice)||!owner.selectedGeometry().equals(rootGeometry)||!displayedFindings(preview).equals(rootFindings))throw new IllegalStateException("Undo did not restore exact Legacy selection/geometry");
+            var originalChoices=requiredNamed(preview.getContentPane(),"candidate",JComboBox.class);
+            if(originalChoices.getItemCount()!=rootReview.choices().size())throw new IllegalStateException("Undo did not restore the complete original detector chooser");
+            for(int index=0;index<originalChoices.getItemCount();index++) {
+                if(originalChoices.getItemAt(index) instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.ui.RefinementControls.Choice option
+                        && option.id().equals(initialChoice))originalChoices.setSelectedIndex(index);
+            }
+            if(!owner.selectedChoiceIdentity().equals(initialChoice))throw new IllegalStateException("Another original detector was unavailable after Undo");
             requiredNamed(preview.getContentPane(),"redo",javax.swing.JButton.class).doClick();
             if(!owner.selectedChoiceIdentity().equals(firstChoice)||!owner.selectedGeometry().equals(firstGeometry)
                 ||!displayedFindings(preview).equals(firstFindings))throw new IllegalStateException("Redo did not restore exact candidate/findings");

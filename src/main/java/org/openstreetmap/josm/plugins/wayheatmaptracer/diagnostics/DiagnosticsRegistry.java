@@ -50,6 +50,9 @@ public final class DiagnosticsRegistry {
         }
         if(retired!=null)retired.close();return owner;
     }
+    public static synchronized boolean ownsRefinement(RefinementOwner owner) {
+        return owner!=null&&owner==refinementOwner&&!owner.sealed;
+    }
     /** Never calls owner/UI code or performs I/O while holding the registry monitor. */
     public static boolean publishRefinement(RefinementOwner owner,RefinementDiagnosticsMemory.Snapshot snapshot,boolean terminal) {
         Objects.requireNonNull(snapshot);

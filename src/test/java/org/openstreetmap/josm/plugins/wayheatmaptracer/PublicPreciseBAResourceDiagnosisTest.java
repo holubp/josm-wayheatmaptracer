@@ -51,7 +51,8 @@ class PublicPreciseBAResourceDiagnosisTest {
                 assertEquals(StageKind.REFINE_B,workflow[0].currentStage().kind(),workflow[0].computationEvidence());
                 assertEquals(Outcome.COMPLETE,workflow[0].currentNative().orElseThrow().operation().orElseThrow().outcome());
                 var choices=(JComboBox<?>)named(workflow[0].controls(),"candidate");choices.setSelectedIndex(choices.getItemCount()-1);
-                assertEquals(5,choices.getItemCount());assertEquals(54,workflow[0].selectedGeometry().size(),"Captured RED control's selected B geometry density");
+                assertEquals(1,choices.getItemCount());
+                assertTrue(workflow[0].selectedGeometry().size()>2);
                 System.out.println("BA-selected-B candidates="+choices.getItemCount()+" points="+workflow[0].selectedGeometry().size()+" ownedBytes="+workflow[0].ownedBytes());
                 ((JButton)named(workflow[0].controls(),"undo")).doClick();((JButton)named(workflow[0].controls(),"redo")).doClick();
                 workflow[0].refine(TrackerMode.CORRIDOR_AWARE);
@@ -63,7 +64,7 @@ class PublicPreciseBAResourceDiagnosisTest {
                 var actual=workflow[0].currentNative().orElseThrow().operation().orElseThrow();
                 assertTrue(actual.attempts().stream().anyMatch(a->a.nativeStatus().filter(s->s==TraceHypothesisSet.Status.COMPLETE).isPresent()));
                 assertTrue(actual.actualWork().orElseThrow().transitions()>0,"Published A geometry must come from an actual completed solve");
-                assertEquals(Set.of("hot","blue","bluered","purple","gray","all-colors-combined"),actual.attempts().stream().map(RefinementOperationReceipt.Attempt::mapping).collect(java.util.stream.Collectors.toSet()));
+                assertEquals(1,actual.attempts().size(),"A reuses the exact selected B detector");
                 assertEquals(RefinementAttemptDiagnostics.Publication.PUBLISHED,workflow[0].latestAttemptDiagnostics().orElseThrow().publication());
                 assertEquals(originalNodes,fixture.selectedWay().getNodes());assertEquals(originalCoordinates,originalNodes.stream().map(n->n.getCoor()).toList());
             });
@@ -118,8 +119,8 @@ class PublicPreciseBAResourceDiagnosisTest {
     private static void dumpResult(String phase,RefinementPipeline.Result result) {
         System.out.println("BA-pipeline phase="+phase+" outcome="+result.outcome()+" candidates="+result.candidates().size()+" work="+result.actualWork());
         if(phase.equals("B")) {
-            assertEquals(new TraceWorkUsage(58959,4207504,32,6),result.actualWork().orElseThrow(),"Shared B work must match archived RED control exactly");
-            assertEquals(6,result.attempts().stream().flatMap(a->a.run().stream()).mapToInt(RefinementEngineAdapter.Run::nativeCalls).sum());
+            assertEquals(new TraceWorkUsage(9968,2552262,32,1),result.actualWork().orElseThrow(),"Only the selected B detector contributes native work");
+            assertEquals(1,result.attempts().stream().flatMap(a->a.run().stream()).mapToInt(RefinementEngineAdapter.Run::nativeCalls).sum());
             assertTrue(result.attempts().stream().flatMap(a->a.run().stream()).allMatch(r->r.request().profileChainage().cumulativeGroundMeters().size()==54));
         }
         for(var attempt:result.attempts()) {

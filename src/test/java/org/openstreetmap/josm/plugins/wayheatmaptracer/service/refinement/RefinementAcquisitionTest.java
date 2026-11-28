@@ -391,6 +391,21 @@ class RefinementAcquisitionTest {
   var bytes=png();var decoder=new TileDecoderClassifier();try(var coordinator=new TileFetchCoordinator((r,c)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",bytes,null,Duration.ZERO,""),new ManagedTileCache(temp,decoder),decoder,TileReliabilityPolicy.defaults())){
    var generation=new ManagedTileGeneration(9);coordinator.updateActiveGeneration(generation);var request=new ManagedModernPreviewSource.Request(List.of(new GeographicPoint(50.001,14.001),new GeographicPoint(50.001,14.0011)),"all","purple",15,generation,8,3,"public-aggregate",List.of("purple","hot","blue","bluered","gray"));var ledger=AttemptMemoryLedger.production();try(var owner=ledger.rootOwner()){
     var result=new ManagedModernPreviewSource(coordinator).acquireRefinementSources(request,Set.of(15,14),true,CredentialSnapshot.fromConfig(null),()->false,owner);assertTrue(result.value().completeAggregate());assertEquals(5,result.value().sourceReceipts().size());assertTrue(result.value().sourceReceipts().values().stream().allMatch(r->r.size()==2&&r.values().stream().allMatch(ManagedModernPreviewSource.ZoomReceipt::complete)));assertEquals(10,result.value().workReceipt().logicalTileRequests());assertTrue(Arrays.stream(result.value().aggregateScalars(()->false)).allMatch(Double::isFinite));
+    var sources=result.value();
+    var work=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext(
+        8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,()->false,owner);
+    var allColors=sources.verifiedInputs(coordinator,"purple",true,work);
+    var selected=allColors.raster("purple");
+    long palettePixels=(long) selected.image().getWidth()*selected.image().getHeight();
+    assertEquals(5*palettePixels,work.visits(),"Verify each full input exactly once");
+    assertArrayEquals(sources.aggregateScalars(()->false),allColors.aggregateScalars(()->false,work));
+    assertEquals(10*palettePixels,work.visits(),"Map all five palettes of the one selected aggregate");
+    long beforeNative=work.visits();
+    var nativeOnly=sources.verifiedInputs(coordinator,"purple",false,work);
+    assertEquals(palettePixels,work.visits()-beforeNative,"An ordinary detector verifies only its own palette");
+    assertThrows(IllegalStateException.class,()->nativeOnly.aggregateScalars(()->false,work));
+    selected.image().setRGB(0,0,selected.image().getRGB(0,0)^1);
+    assertThrows(IllegalStateException.class,()->sources.verifiedInputs(coordinator,"purple",true,work));
    }
   }
  }

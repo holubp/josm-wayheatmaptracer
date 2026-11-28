@@ -336,10 +336,10 @@ public class VisibleRefinementCaptureTest {
    var captured=op.result().toCompletableFuture().join();var frame=captured.value();
    long copiedBefore=work.counters().get(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.COPY);
    var ticket=s.ticket();var otherTicket=new RefinementModels.OperationTicket(ticket.session(),ticket.sequence()+1,ticket.parent(),ticket.choice(),ticket.engine(),ticket.mode());var other=RefinementSourcePlanner.plan(otherTicket,s.settings(),s.parent());
-   assertThrows(IllegalArgumentException.class,()->RefinementAcquisition.captureVisible(other,p,frame,"blue",work));assertEquals(copiedBefore,work.counters().get(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.COPY));
-   var converted=RefinementAcquisition.captureVisible(s,p,frame,"blue",work);var evidence=converted.value().evidence();
+   var source=s.requests().get(0);
+   assertThrows(IllegalArgumentException.class,()->RefinementAcquisition.captureVisible(other,p,frame,source.mapping(),work));assertEquals(copiedBefore,work.counters().get(org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.GeometryWorkContext.Kind.COPY));
+   var converted=RefinementAcquisition.captureVisible(s,p,frame,source.mapping(),work);var evidence=converted.value().evidence();
    assertSame(s,converted.value().plan());assertEquals(p.grid().transform(),evidence.transform());
-   var source=s.requests().stream().filter(r->r.palette().equals("blue")&&r.mapping().equals("blue")).findFirst().orElseThrow();
    assertEquals(frame.inputHash(),converted.value().retentionDescriptor(source,evidence).inputByteHash());assertSame(originalEvidence,s.parent().root().evidence());assertEquals(originalHash,originalEvidence.canonicalHash());
    converted.owner().close();captured.owner().close();assertThrows(IllegalStateException.class,()->frame.argbAt(0,0,work));
   }assertEquals(0,ledger.currentBytes());

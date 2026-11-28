@@ -47,7 +47,7 @@ final class NativeRefinementSourceContext implements RefinementSourceContext {
             AttemptMemoryLedger.Owner owner,CancellationProbe cancellation) {
         facts=Optional.empty();requireCurrent();
         if(captured.managedRaster()!=null) {
-            var acquired=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquire(plan,CredentialSnapshot.fromConfig(config.heatmap()),cancellation,owner);
+            var acquired=new RefinementAcquisition(new ManagedModernPreviewSource(coordinator),coordinator).acquireMetered(plan,CredentialSnapshot.fromConfig(config.heatmap()),cancellation,owner,work);
             return RefinementPipeline.managedSources(acquired.value(),coordinator,work);
         }
         var raster=captured.raster();

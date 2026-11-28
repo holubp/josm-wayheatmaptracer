@@ -38,12 +38,12 @@ class WorkflowSourcePreparationDiagnosticsTest {
         assertThrows(IllegalArgumentException.class,()->new LegacyRefinementWorkflow.SourcePreparationControl(-1,AttemptMemoryLedger.MAX_BYTES,v->{}));
     }
     @ParameterizedTest @MethodSource("failures")
-    void actualHashFailureExportsItsCurrentOwnedWorkAndPriorNativeFacts(RefinementAttemptDiagnostics.Cause cause,boolean afterNative) throws Exception {
+    void selectedSourceHashFailureExportsOnlyItsCurrentOwnedWork(RefinementAttemptDiagnostics.Cause cause,boolean laterInHash) throws Exception {
         var decoder=new TileDecoderClassifier();var work=new LinkedBlockingQueue<Runnable>();var publications=new LinkedBlockingQueue<Runnable>();
         var workflow=new LegacyRefinementWorkflow[1];var review=new LegacyReviewOwner[1];var data=new DataSet[1];var fired=new AtomicBoolean();var firstCheckpoint=new java.util.concurrent.atomic.AtomicLong(-1);
-        try(var coordinator=new TileFetchCoordinator((request,credentials)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",ridge(request.address()),null,Duration.ZERO,""),new ManagedTileCache(temp.resolve(cause.name()+afterNative),decoder),decoder,TileReliabilityPolicy.defaults())) {
-            long limit=cause==RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT?(afterNative?262_200:0):8_000_000;
-            long trigger=afterNative?262_400:256;
+        try(var coordinator=new TileFetchCoordinator((request,credentials)->new TransportResponse(TileFetchStatus.SUCCESS_NETWORK,200,"image/png",ridge(request.address()),null,Duration.ZERO,""),new ManagedTileCache(temp.resolve(cause.name()+laterInHash),decoder),decoder,TileReliabilityPolicy.defaults())) {
+            long limit=cause==RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT?(laterInHash?400_000:0):8_000_000;
+            long trigger=laterInHash?400_000:256;
             var control=new LegacyRefinementWorkflow.SourcePreparationControl(limit,AttemptMemoryLedger.MAX_BYTES,visits->{
                 firstCheckpoint.compareAndSet(-1,visits);
                 if(cause==RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT||visits<trigger||!fired.compareAndSet(false,true))return;
@@ -78,17 +78,25 @@ class WorkflowSourcePreparationDiagnosticsTest {
                 SwingUtilities.invokeAndWait(publications.remove());
                 var diagnostic=workflow[0].latestAttemptDiagnostics().orElseThrow();var auxiliary=diagnostic.sourcePreparation().orElseThrow();
                 assertEquals(0,firstCheckpoint.get(),"New explicit click starts fresh work, unlike an inherited same-click phase");assertEquals(limit,auxiliary.maximumVisits().orElseThrow());
-                assertEquals(cause,auxiliary.cause());assertEquals(afterNative?"blue":"hot",auxiliary.failedSource().orElseThrow().palette());
+                assertEquals(cause,diagnostic.cause());
                 assertTrue(auxiliary.visits()<=limit);assertEquals(auxiliary.visits(),auxiliary.counters().values().stream().mapToLong(Long::longValue).sum());
-                var nativeWork=auxiliary.nativeWork().orElseThrow();assertEquals(afterNative,nativeWork.nativeCalls().orElseThrow()>0);assertEquals(afterNative,workflow[0].actualNativeCalls()>0);
-                assertEquals(afterNative,nativeWork.actualWork().orElseThrow().transitions()>0);
-                var receipt=diagnostic.pipeline().orElseThrow();assertEquals(nativeWork.actualWork(),receipt.actualWork());assertEquals(nativeWork.outcome(),receipt.outcome());
-                assertTrue(receipt.attempts().stream().anyMatch(a->a.reason().equals("source-preparation-"+cause.name().toLowerCase(java.util.Locale.ROOT).replace('_','-'))&&a.kind()==RefinementPipeline.AttemptKind.UNAVAILABLE&&a.nativeCalls().orElseThrow()==0));
+                var nativeWork=auxiliary.nativeWork().orElseThrow();assertEquals(0,nativeWork.nativeCalls().orElseThrow());assertEquals(0,workflow[0].actualNativeCalls());
+                if(laterInHash) {
+                    assertEquals(RefinementAttemptDiagnostics.Phase.SOURCE_PREPARATION,diagnostic.phase());
+                    assertEquals("hot",auxiliary.failedSource().orElseThrow().palette());
+                    assertEquals(0,nativeWork.actualWork().orElseThrow().transitions());
+                    var receipt=diagnostic.pipeline().orElseThrow();assertEquals(nativeWork.actualWork(),receipt.actualWork());assertEquals(nativeWork.outcome(),receipt.outcome());
+                    assertTrue(receipt.attempts().stream().anyMatch(a->a.reason().equals("source-preparation-"+cause.name().toLowerCase(java.util.Locale.ROOT).replace('_','-'))&&a.kind()==RefinementPipeline.AttemptKind.UNAVAILABLE&&a.nativeCalls().orElseThrow()==0));
+                } else {
+                    assertEquals(RefinementAttemptDiagnostics.Phase.ACQUISITION,diagnostic.phase());
+                    assertTrue(auxiliary.failedSource().isEmpty());
+                    assertTrue(nativeWork.actualWork().isEmpty());
+                    assertTrue(diagnostic.pipeline().isEmpty());
+                }
                 if(cause!=RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT)assertTrue(fired.get());
-                if(!afterNative||cause!=RefinementAttemptDiagnostics.Cause.RESOURCE_LIMIT){assertEquals(RefinementAttemptDiagnostics.Phase.SOURCE_PREPARATION,diagnostic.phase());assertEquals(cause,diagnostic.cause());}
-                Path file=temp.resolve("failure-"+cause+afterNative+".zip");DiagnosticsRegistry.writeLatest(file.toFile());
+                Path file=temp.resolve("failure-"+cause+laterInHash+".zip");DiagnosticsRegistry.writeLatest(file.toFile());
                 var archive=Format15ArchiveReader.read(file);var exported=RefinementLineageCodec.read(archive.artifact("refinement-lineage.json").orElseThrow()).latestPublication().orElseThrow().diagnostic();
-                assertEquals(diagnostic,exported,"Export retains actual phase/cause/counters and prior native work under the exact current attempt");
+                assertEquals(diagnostic,exported,"Export retains the actual phase, cause and counters for the exact current attempt");
                 SwingUtilities.invokeAndWait(()->{assertFalse(workflow[0].busy());assertFalse(data[0].isModified());});
             } finally {
                 SwingUtilities.invokeAndWait(()->{if(workflow[0]!=null)workflow[0].close();});while(!work.isEmpty())work.remove().run();while(!publications.isEmpty())SwingUtilities.invokeAndWait(publications.remove());
@@ -97,7 +105,7 @@ class WorkflowSourcePreparationDiagnosticsTest {
         }
     }
     @ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(ints = {8, 58})
+    @org.junit.jupiter.params.provider.ValueSource(ints = {8, 48})
     void managedFailureExportsItsOwnPhysicalReservationBeforeAnyNativeCall(int availableMiB) throws Exception {
         var decoder = new TileDecoderClassifier();
         var work = new LinkedBlockingQueue<Runnable>();

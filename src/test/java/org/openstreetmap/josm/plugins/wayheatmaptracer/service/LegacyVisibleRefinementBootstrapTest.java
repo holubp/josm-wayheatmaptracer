@@ -81,9 +81,7 @@ class LegacyVisibleRefinementBootstrapTest {
                 assertEquals(1.2,root.authority().request().configuredSampleStepMeters());
                 var selected=root.stage().candidates().stream().filter(c->c.id().equals(root.stage().selected())).findFirst().orElseThrow();
                 assertEquals("legacy-choice-2",selected.id().value());
-                assertEquals(2,root.stage().candidates().size());
-                var other=root.stage().candidates().stream().filter(c->c.id().value().equals("legacy-choice-1")).findFirst().orElseThrow();
-                assertTrue(other.payload().result().applicableCandidates().isEmpty());
+                assertEquals(1,root.stage().candidates().size());
                 assertEquals(1,selected.payload().result().applicableCandidates().size());
                 assertSame(seed.get().facts().receipt(),root.receipt());
                 assertSame(seed.get().facts().network(),root.authority().network());
@@ -292,10 +290,13 @@ class LegacyVisibleRefinementBootstrapTest {
             var work=new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,owner);
             try {
                 SwingUtilities.invokeAndWait(()->{
-                    var data=new DataSet();var selected=selection(data);var cfg=config(mode,true);var current=LegacyReviewOwner.begin(data,selected,cfg);review.set(current);
+                    var data=new DataSet();var selected=selection(data);var cfg=config(mode,true,true);var current=LegacyReviewOwner.begin(data,selected,cfg);review.set(current);
                     var receipt=new AtomicReference<TileHeatmapSampler.AcquisitionReceipt>();
                     var result=new AlignmentService(new TileHeatmapSampler(coordinator)).alignLegacyReviewed(selected,null,null,cfg,new AlignmentService.LegacyCaptureObserver(){public void managed(TileHeatmapSampler.AcquisitionReceipt actual){receipt.set(actual);}});
-                    current.captured(result,null,receipt.get());current.select(result.candidates().get(0));
+                    current.captured(result,null,receipt.get());
+                    current.select(result.candidates().stream().filter(candidate->result.detectorAttempts().stream()
+                            .anyMatch(attempt->attempt.sourcePalette().equals("hot")&&attempt.mappingName().equals("hot")
+                                    &&attempt.candidateIds().contains(candidate.id()))).findFirst().orElseThrow());
                     assertEquals(0,work.visits());assertEquals(0,owner.currentBytes());
                     oldSeed.set(new LegacyRefinementBootstrap().capture(current,coordinator,owner));
                     newSeed.set(new LegacyRefinementBootstrap().capture(current,coordinator,work));

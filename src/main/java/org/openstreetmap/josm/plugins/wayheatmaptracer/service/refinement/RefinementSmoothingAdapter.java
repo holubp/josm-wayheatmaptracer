@@ -123,8 +123,11 @@ public final class RefinementSmoothingAdapter {
         try(var scratch=work.reserve("baseline-smoothing-contact-retention",graphScratch);
             var growing=PostprocessingValidationWork.openGrowingScratch(work)) {
             var original=parent.reference().points();
+            var composer=new ParentBackedComposer();
             var baseline=composition(parent,original,strength,work);
-            var retainedSlots=new ParentBackedComposer().retainedSmoothingContactSlots(parent,baseline,cancellation);
+            var proposed=composition(parent,requested,strength,work);
+            var retainedSlots=new LinkedHashSet<>(composer.smoothingContactRollbackSlots(parent,baseline,cancellation));
+            retainedSlots.addAll(composer.smoothingContactRollbackSlots(parent,proposed,cancellation));
             if(retainedSlots.isEmpty())return requested;
             var adjusted=new ArrayList<>(requested);
             for(int index:retainedSlots) {

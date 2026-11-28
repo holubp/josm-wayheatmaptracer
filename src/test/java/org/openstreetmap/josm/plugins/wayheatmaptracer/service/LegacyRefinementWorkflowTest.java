@@ -84,6 +84,9 @@ class LegacyRefinementWorkflowTest {
                     var stage=workflow[0].currentStage();var chosen=stage.candidates().stream().filter(c->c.id().equals(stage.selected())).findFirst().orElseThrow();var parent=new ParentReferenceBinder().bind(root[0].authority(),stage.id(),chosen);
                     var activeField=LegacyRefinementWorkflow.class.getDeclaredField("active");activeField.setAccessible(true);var ticket=(org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.RefinementModels.OperationTicket)activeField.get(workflow[0]);
                     var plan=RefinementSourcePlanner.plan(ticket,seed.settings(),parent);assertEquals(List.of("hot/hot-corridor"),plan.requests().stream().map(s->s.palette()+"/"+s.mapping()).toList());
+                    assertNotNull(root[0].originalConversion(),"Original authority must retain its one actual selected source");
+                    assertEquals(plan.requests().get(0),root[0].originalConversion().source());
+                    assertSame(root[0].authority().evidence(),root[0].originalConversion().evidence());
                     assertSame(seed.facts().network(),root[0].authority().network());assertEquals(seed.config(),root[0].authority().effectiveConfig());assertEquals(TraceBudgets.defaults(),root[0].authority().request().budgets());
                     assertTrue(root[0].authority().request().profileChainage().cumulativeGroundMeters().size()<=6);
                 }catch(ReflectiveOperationException failure){throw new AssertionError(failure);}});

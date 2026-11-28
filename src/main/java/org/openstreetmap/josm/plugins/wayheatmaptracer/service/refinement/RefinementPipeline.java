@@ -294,6 +294,9 @@ public final class RefinementPipeline {
                     var whole=invoke(ticket,parent,evidence,source,AttemptKind.WHOLE,adapters,budget,nativeProbe,owner,attempts,(1+futureSources)*(1+fallbackCalls),completion.retention,retentionProbe);
                     if(aborts(whole,budget))throw terminal(whole,budget);
                     var candidates=new ArrayList<ParentBackedComposer.Assessed>();
+                    // A later optional alternative can hit the shared resource bound.
+                    // Record this list before assessment so already validated choices survive.
+                    completed.add(new SourceCandidates(source,candidates));
                     if(whole.finalized().isPresent())for(var route:whole.finalized().get().routes()) {
                         var choice=choice(whole,route,source);
                         admissionGate=PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH;
@@ -303,7 +306,7 @@ public final class RefinementPipeline {
                         sourceAssessments.add(assessed);
                         if(usable(assessed))candidates.add(assessed);else rejected.add(assessed);
                     }
-                    if(!candidates.isEmpty()) {completed.add(new SourceCandidates(source,candidates));continue;}
+                    if(!candidates.isEmpty())continue;
                     if(whole.outcome()==Outcome.RESOURCE_LIMIT||budget.exhausted()||budget.inferenceExpired()) {
                         stopped=true;outcome=Outcome.RESOURCE_LIMIT;recordRemainingIntervals(source,intervals,attempts,"operation-budget-stopped");continue;
                     }
@@ -362,7 +365,6 @@ public final class RefinementPipeline {
                             if(usable(assessed))candidates.add(assessed);else rejected.add(assessed);
                         }
                     }
-                    completed.add(new SourceCandidates(source,candidates));
                 }
             }
             finalProbe.checkpoint();

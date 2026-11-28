@@ -121,12 +121,18 @@ class ModernRefinementBootstrapTest {
         }
         assertTrue(assessment.intervals().stream().anyMatch(i->i.disposition()==FixedIntervalEditPlanComposer.Disposition.FROZEN_LOCAL_FAILURE),
             ()->"Native intervals="+computed.intervalBatch().runs().stream().map(run->run.interval().traceRange()+":"+run.result().inference().status()+":routes="+run.routes().size()+":quality="+run.routes().stream().limit(8).map(route->originalRouteFacts(computed.intervalBatch(),run,route)+":"+route.quality().disposition()+":"+route.quality().findings().stream().map(f->f.code().name()).toList()).toList()).toList()+"; composition="+assessment.intervals());
+        // An unselected catalog entry without the producer's original hash proof must never be
+        // traversed or admitted by the selected interval's optional preparation.
+        var unrelated=new LiveBPreviewService.Computed(computed.captured(),computed.evidence(),computed.request(),
+            computed.pipeline(),computed.options(),computed.counters(),computed.intervalBatch(),computed.settingsResolutionJson());
         var root=new ModernReviewRoot[1];
-        SwingUtilities.invokeAndWait(()->root[0]=ModernReviewRoot.fromIntervalSelection(data,selection,config,new ModernReviewRoot.IntervalSelection(computed,Map.of(),assessment),null,()->{}));
+        SwingUtilities.invokeAndWait(()->root[0]=ModernReviewRoot.fromIntervalSelection(data,selection,config,
+            new ModernReviewRoot.IntervalSelection(computed,Map.of(),assessment),List.of(computed,unrelated),null,()->{}));
         try(var memory=AttemptMemoryLedger.production().rootOwner()) {
             var work=new GeometryWorkContext(8_000_000,AttemptMemoryLedger.MAX_BYTES,Long.MAX_VALUE,CancellationProbe.NONE,memory);
             try(var prepared=new ModernRefinementBootstrap().complete(root[0],work)) {
                 var selected=prepared.root().stage().candidates().get(0);var payload=selected.payload();
+                assertThrows(IllegalArgumentException.class,()->prepared.memory().retainIfAbsent(unrelated));
                 assertSame(assessment.plan().orElseThrow(),payload.nativeReview().orElseThrow().plan());
                 var points=root[0].selectedCandidate().finalPreviewPoints();
                 assertEquals(nodes.get(1).getEastNorth(),points.get(0));assertEquals(nodes.get(29).getEastNorth(),points.get(points.size()-1));
@@ -183,25 +189,29 @@ class ModernRefinementBootstrapTest {
                 int calls=workflow[0].actualNativeCalls();
                 VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
                 SwingUtilities.invokeAndWait(()->{
-                    assertEquals(calls,workflow[0].actualNativeCalls(),"Root selection materialization performs no inference");
-                    var selected=workflow[0].currentStage().candidates().stream().filter(c->c.id().equals(workflow[0].currentStage().selected())).findFirst().orElseThrow();
-                    assertEquals(alternativeChoices,selected.payload().rootReviewState().orElseThrow().routeChoices());
-                    var selectedId=selected.id();
+                    assertTrue(workers.isEmpty(),"Browsing an original composition starts no preparation");
+                    assertEquals(calls,workflow[0].actualNativeCalls());
+                    String selectedId=workflow[0].selectedChoiceIdentity();
+                    assertFalse(workflow[0].nativeSelected());
+                    assertEquals(alternativeChoices,root[0].retainedIntervalSelection(selectedId).routeChoices());
                     var redo=(javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"redo");assertTrue(redo.isEnabled());redo.doClick();
-                    assertNotEquals(selectedId,workflow[0].currentStage().parentChoice().orElseThrow(),"The saved child retains its original exact composition parent");
+                    String originalParent=workflow[0].currentStage().parentChoice().orElseThrow().value();
+                    assertNotEquals(selectedId,originalParent,"The saved child retains its original exact composition parent");
                     ((javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"undo")).doClick();
-                    assertEquals(selectedId,workflow[0].currentStage().selected());assertEquals(calls,workflow[0].actualNativeCalls());
+                    assertEquals(originalParent,workflow[0].selectedChoiceIdentity());
+                    assertEquals(assessment,root[0].retainedIntervalSelection(originalParent).assessment());
+                    workflow[0].selectIntervalComposition(new ModernReviewRoot.IntervalSelection(computed,alternativeChoices,alternativeAssessment));
+                    assertEquals(selectedId,workflow[0].selectedChoiceIdentity());assertEquals(calls,workflow[0].actualNativeCalls());
                 });
-                var retainedRoot=VisibleRefinementWorkflowTest.stage(workflow[0]);
                 for(boolean cancel:List.of(false,true)) {
                     SwingUtilities.invokeAndWait(()->{
-                        assertNotEquals(ValidationReport.Disposition.HARD_BLOCKED,workflow[0].currentNative().orElseThrow().plan().validation().disposition());
-                        if(!workflow[0].canApplyNative())workflow[0].confirm();assertTrue(workflow[0].canApplyNative());
                         failRender.set(!cancel);cancelRender.set(cancel);workflow[0].refine(TrackerMode.CORRIDOR_AWARE);
                     });
                     VisibleRefinementWorkflowTest.drain(workers,publications,workflow[0]);
                     SwingUtilities.invokeAndWait(()->{
-                        assertSame(retainedRoot,workflow[0].currentStage());assertEquals(calls,workflow[0].actualNativeCalls());assertFalse(workflow[0].busy());
+                        var retainedRoot=workflow[0].currentStage();
+                        assertEquals(alternativeChoices,retainedRoot.candidates().get(0).payload().rootReviewState().orElseThrow().routeChoices());
+                        assertEquals(calls,workflow[0].actualNativeCalls());assertFalse(workflow[0].busy());
                         var diagnostic=workflow[0].latestAttemptDiagnostics().orElseThrow();
                         assertEquals(cancel?RefinementAttemptDiagnostics.Cause.CANCELLED:RefinementAttemptDiagnostics.Cause.FAILED,diagnostic.cause());
                         assertEquals(RefinementAttemptDiagnostics.Coverage.CAPTURE_REQUESTED,diagnostic.sourcePreparation().orElseThrow().sourceFacts().orElseThrow().coverage());
@@ -209,6 +219,16 @@ class ModernRefinementBootstrapTest {
                         if(!workflow[0].canApplyNative())workflow[0].confirm();assertTrue(workflow[0].canApplyNative(),"Source capture refusal/cancellation must preserve ordinary Apply on the exact safe retained parent");
                     });
                 }
+                SwingUtilities.invokeAndWait(()->{
+                    String selectedId=workflow[0].selectedChoiceIdentity();
+                    var redo=(javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"redo");redo.doClick();
+                    var saved=workflow[0].currentStage();
+                    assertEquals(RefinementModels.StageKind.REFINE_A,saved.kind());
+                    assertNotEquals(selectedId,saved.parentChoice().orElseThrow().value());
+                    ((javax.swing.JButton)VisibleRefinementWorkflowTest.find(workflow[0].controls(),"undo")).doClick();
+                    assertEquals(saved.parentChoice().orElseThrow().value(),workflow[0].selectedChoiceIdentity());
+                    assertEquals(calls,workflow[0].actualNativeCalls());assertTrue(workers.isEmpty());
+                });
                 assertEquals(3,recaptures.get());
             } finally {SwingUtilities.invokeAndWait(workflow[0]::close);}
         } finally {SwingUtilities.invokeAndWait(root[0]::close);}

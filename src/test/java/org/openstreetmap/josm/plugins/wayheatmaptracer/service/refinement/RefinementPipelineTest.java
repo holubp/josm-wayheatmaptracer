@@ -140,6 +140,59 @@ class RefinementPipelineTest {
         var forged=new ParentBackedComposer.Assessed(corrupt,assessed.quality(),List.of());
         assertThrows(IllegalArgumentException.class,()->adapter.adaptRefinement(parent,forged,parent.root().evidence()));
     }
+    @Test void resourceRefusalForAnExtraAssessmentKeepsTheAlreadyAssessedCandidate() throws Exception {
+        var parent=straightScene(ParentBackedComposerTest.parent(AlignmentMode.PRECISE_SHAPE));
+        var ticket=ticket(parent,TrackerMode.PROBABILISTIC);
+        var vertexMethod=RefinementPipeline.class.getDeclaredMethod("maximumAssembledVertices",ParentTraceReference.class,int.class);
+        vertexMethod.setAccessible(true);
+        long vertices=(long)vertexMethod.invoke(null,parent,new RefinementIntervalPlanner().plan(parent).size());
+        var scratchMethod=RefinementPipeline.class.getDeclaredMethod("assessmentScratchBytes",ParentTraceReference.class,EvidenceSnapshot.class,long.class);
+        scratchMethod.setAccessible(true);
+        long scratch=(long)scratchMethod.invoke(null,parent,parent.root().evidence(),vertices);
+        var ledger=AttemptMemoryLedger.production();
+        try(var owner=ledger.rootOwner();var admissions=PipelineAdmissionObserver.openForTesting(event->{})) {
+            var production=RefinementPipeline.productionRunner();
+            RefinementPipeline.NativeRunner runner=(t,p,e,b,c,o)->{
+                var run=production.run(t,p,e,b,c,o);
+                var nativeRun=run.nativeRun().orElseThrow();
+                var route=run.finalized().orElseThrow().routes().get(0);
+                // Add one controlled sibling to the same factual geometry and native work.
+                // Only its independent assessment admission is under test.
+                var raw=route.rawHypothesis();
+                var siblingRaw=new TraceHypothesis("test-sibling","test-sibling",raw.points(),raw.support(),
+                        raw.objective(),OptionalDouble.empty(),raw.diagnostics());
+                var finalRoute=route.hypothesis();
+                var siblingFinal=new TraceHypothesis(siblingRaw.id(),siblingRaw.branchSignature(),finalRoute.points(),
+                        finalRoute.support(),finalRoute.objective(),OptionalDouble.empty(),finalRoute.diagnostics());
+                var q=route.quality();
+                var quality=new FinalGeometryEvaluator.Result(siblingFinal.id(),q.disposition(),q.findings(),
+                        q.totalLengthMeters(),q.directlySupportedLengthMeters(),q.worstUnsupportedSpanMeters(),
+                        q.meanImageCenterCost(),q.bendPreservingRoughness());
+                var sibling=new ModernTracePipeline.Route(siblingRaw,siblingFinal,route.pointIds(),route.assignments(),
+                        route.sourceOwnership(),quality,route.cleanupStatus(),route.geometryChanged());
+                var evidence=nativeRun.result();
+                var hypotheses=new TraceHypothesisSet(evidence.engine(),List.of(raw,siblingRaw),evidence.status(),
+                        evidence.alternativesTruncated(),evidence.evaluatedStates(),evidence.evaluatedTransitions(),evidence.explanation());
+                var work=nativeRun.usage();
+                var issued=new TraceEngineRun(hypotheses,new TraceWorkUsage(work.pairVisits(),work.transitions(),
+                        Math.max(2,work.rawAlternatives()),2),nativeRun.peakAdditionalRetainedBytes());
+                o.reserve(AttemptMemoryLedger.MAX_BYTES-o.currentBytes()-scratch-vertices*2048L);
+                return new RefinementEngineAdapter.Run(run.reference(),run.request(),run.execution(),Optional.of(issued),
+                        Optional.of(new ModernTracePipeline.Result(hypotheses,List.of(route,sibling))),run.nativePointReferenceChainages(),
+                        Map.of(finalRoute.id(),run.finalCorrespondence().get(finalRoute.id()),siblingFinal.id(),
+                                run.finalCorrespondence().get(finalRoute.id())),run.nativeCalls(),run.unavailable(),run.outcome());
+            };
+            var result=new RefinementPipeline().run(ticket,parent,plan(ticket,parent,true),
+                    new RefinementPipeline.Adapters(sources(parent),runner,owner),
+                    RefinementPipeline.OperationBudget.production(TraceBudgets.defaults()),CancellationProbe.NONE);
+            assertEquals(Outcome.RESOURCE_LIMIT,result.outcome());
+            assertEquals(PipelineAdmissionObserver.Gate.ASSESSMENT_SCRATCH,admissions.latest(ticket).orElseThrow().gate());
+            assertEquals(1,result.sourceOutcomes().get(0).assessments().size());
+            assertEquals(1,result.candidates().size(),"A later optional reservation cannot erase the completed primary");
+            assertEquals(result.sourceOutcomes().get(0).assessments().get(0),result.candidates().get(0).assessed());
+        }
+        assertEquals(0,ledger.currentBytes());
+    }
     @ParameterizedTest @ValueSource(strings={"waterway","highway"})
     void exactRefinementPlanPreservesTheEstablishedCrossingClassification(String crossingTag) {
         var root=RefinementParentFixtures.authority(AlignmentMode.MOVE_EXISTING_NODES,false,false,false,crossingTag);
